@@ -93,7 +93,7 @@ The spike set five conditions. Each is met as follows:
 - **It finds only what the checks look for.**
 - **It runs only under `go test`, and a seed is tied to the exact code.** A trace that prints text that depends on the build, such as an error of Protocol Buffers, replays only in the same binary.
 
-The free-running mode has a limit of its own. Its tests run on the fake clock of a bubble, where time moves only when every goroutine is blocked, so a goroutine that wakes from a wait often runs alone. What the harness does not do yet is in [docs/todo.md](../../docs/todo.md#tests-of-the-storage-core).
+The free-running mode has a limit of its own. Its tests run on the fake clock of a bubble, where time moves only when every goroutine is blocked, so a goroutine that wakes from a wait often runs alone. What the harness does not do yet is in [docs/todo/storage-core-tests.md](../../docs/todo/storage-core-tests.md).
 
 ## Ideas to revisit later
 

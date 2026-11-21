@@ -4,7 +4,7 @@
 
 The parser already agrees with SQLite on whether a text parses, through [`internal/sql/parsetest`](../parsetest/README.md). That says nothing about the tree. A parser can accept the right language and still build `(NOT x) NOT NULL` where SQLite means `NOT (x NOT NULL)`.
 
-The check writes the tree out again as SQL, with every operation in parentheses and every clause explicit. SQLite must treat that text as it treats the original: the same `EXPLAIN` output for a statement, and the same values for an expression. This is the third of the four checks of the parser that [docs/todo.md](../../../docs/todo.md) lists.
+The check writes the tree out again as SQL, with every operation in parentheses and every clause explicit. SQLite must treat that text as it treats the original: the same `EXPLAIN` output for a statement, and the same values for an expression. This is the third of the four checks of the parser that [docs/todo/sql-front-end.md](../../../docs/todo/sql-front-end.md) lists.
 
 Some faults print the same tokens in the same order, such as a wrong boundary between a column's type and its constraints. No comparison of two texts can see them. For CREATE TABLE, ALTER TABLE ... ADD, CREATE INDEX, and CREATE VIEW, the check therefore makes a second comparison, without the printed text. It derives from the tree [what the statement declares](#what-the-tree-declares), and SQLite must record the same when it runs the original text.
 

@@ -10,7 +10,7 @@ Method: specifications, documentation, and source code read in this run. Postgre
 
 ## 1. What s4ql has agreed so far
 
-From `docs/spec.md` and the "Storage formats" item in `docs/todo.md`:
+From `docs/spec.md` and the "Storage formats" item in `docs/todo/storage-formats.md`:
 
 - A change file holds the net effect of one commit. A primary key appears at most once per table.
 - The changes are a list, applied in order. The first kinds are: create a table (name and columns as data, not SQL text), put a full row, and delete a row by its primary key.

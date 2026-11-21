@@ -59,7 +59,7 @@ Question: what must s4ql support so that `maragu.dev/glue` runs on it in place o
 - No primary key on `migrations`, so it cannot be `WITHOUT ROWID`. The fix is a change in maragu.dev/migrate.
 - No table is `strict, without rowid`. That holds for all 6 tables. Each can be fixed by changing its DDL text.
 - `REPLACE INTO` is a conflict resolution that the roadmap rejects for now, and `$1` is a parameter form that slice 2 rejects.
-- A trigger. The roadmap's restrictions do not forbid it, and replay of row-based commits never runs it (`docs/todo.md`).
+- A trigger. The roadmap's restrictions do not forbid it, and replay of row-based commits never runs it (`docs/todo/storage-formats.md`).
 - A read of `sqlite_master`, in one test.
 - No conflict was found with double-quoted strings, type conversion (every value has the type of its column), or settings (`pragma`).
 - Several processes: glue writes from one process. Its session store adds a cleanup goroutine that deletes every 5 minutes.
