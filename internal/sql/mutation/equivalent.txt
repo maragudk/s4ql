@@ -690,3 +690,225 @@ internal/core/tx.go Tx.dropKeys remove statement: return tx.fail(ctx, operation,
 	A statement at rest has been reset without an error, since conn.rest finalizes one whose reset fails, so its finalize gives no error but for want of memory.
 internal/core/tx.go Tx.dropKeys remove statement: delete(tx.c.stmts, sql) =>
 	The texts of the statements of a set name its table, whose number no later table of the transaction has, so a finalized statement that stays at rest is never prepared again, and forget finalizes it again, which the binding does without a call of SQLite and without an error.
+
+# The indexes of slice 9 in the recognizer, internal/sql/stmt.
+stmt/recognize.go recognizer.indexColumn remove statement: r.accept(x) =>
+	A column reference without a table name has one token, its column, which is the next one: name rejects it at once or takes it, so describe never looks inside the node, and names it the same whether it was accepted or not.
+
+# The indexes of slice 9 in the engine, internal/engine.
+internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, p.pins)
+	max is commutative.
+internal/engine/telemetry.go report.end condition: r.access != "" => true #2
+	drew sets the direction only for a query that buildQuery built, and every such query reads its rows by a scan, whose access reads records before, so the direction is never set without the access.
+internal/engine/operator.go buildCreateIndex swap arguments: indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) => indexTooBig(t.GetTable(), p.Index.Value, p.SQL, limit)
+	indexTooBig adds the quoted lengths of the name, the table, and the text alike, so their order does not change the sum.
+internal/engine/operator.go buildCreateIndex swap arguments: indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) => indexTooBig(p.Index.Value, p.SQL, t.GetTable(), limit)
+	indexTooBig adds the quoted lengths of the name, the table, and the text alike, so their order does not change the sum.
+internal/engine/operator.go build.access condition: err != nil => false
+	chooseAccess fails only for two bounds of one column with values of two kinds, which checkType in build.bind refuses before, so it never fails here; and if it did, chooseAccess with the indexes, after them, would fail in the same way at the fit of the primary key, which it runs first.
+internal/engine/operator.go build.access condition: err != nil => false #3
+	forcedAccess fails only in fit, for two bounds of one column with values of two kinds, which checkType in build.bind refuses before, so it never fails here; and if it did, it would give false, and chooseAccess after it would fail in the same way when it fits that index.
+internal/engine/engine.go Conn.checkOutside boolean: false => true
+	The planted bug checkOutside: its check of an insert then draws a direction for the scans of the sink, which an insert does not scan, and the bug is found as before.
+
+# The planted bug openBound, since slice 9 in openBounds.scan. A scan gets a bound without a value
+# only from access.scan, where such a bound is the zero bound, which is closed, and the core's
+# scanConditions skips a bound without a value, open or closed. A mutant that opens such a bound too
+# reads the same rows. One that leaves one bound closed plants half of the bug, and the simulation
+# finds it by the other bound.
+internal/engine/bugs.go openBounds.scan remove statement: s.Lower.Open = s.Lower.Open || s.Lower.Value != nil =>
+	The planted bug openBound: only a closed upper bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan remove statement: s.Upper.Open = s.Upper.Open || s.Upper.Value != nil =>
+	The planted bug openBound: only a closed lower bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan operator: s.Lower.Open || s.Lower.Value != nil => s.Lower.Open && s.Lower.Value != nil
+	The planted bug openBound: a lower bound stays as it is, only a closed upper bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Open => true
+	The planted bug openBound: every lower bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Open => false
+	The planted bug openBound: a lower bound with a value is open, and one without is closed, as the zero bound of access.scan is, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Open => !s.Lower.Open
+	The planted bug openBound: a lower bound with a value is open, and one without, which bounds nothing, is open too, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Value != nil => true
+	The planted bug openBound: every lower bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Lower.Value != nil => false
+	The planted bug openBound: a lower bound stays as it is, only a closed upper bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan operator: s.Lower.Value != nil => s.Lower.Value == nil
+	The planted bug openBound: a lower bound with a value stays as it is, one without bounds nothing, only a closed upper bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan operator: s.Upper.Open || s.Upper.Value != nil => s.Upper.Open && s.Upper.Value != nil
+	The planted bug openBound: an upper bound stays as it is, only a closed lower bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Open => true
+	The planted bug openBound: every upper bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Open => false
+	The planted bug openBound: an upper bound with a value is open, and one without is closed, as the zero bound of access.scan is, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Open => !s.Upper.Open
+	The planted bug openBound: an upper bound with a value is open, and one without, which bounds nothing, is open too, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Value != nil => true
+	The planted bug openBound: every upper bound is open, which for a bound without a value bounds nothing, so the scan reads the same rows.
+internal/engine/bugs.go openBounds.scan condition: s.Upper.Value != nil => false
+	The planted bug openBound: an upper bound stays as it is, only a closed lower bound is read as open, and the bug is found by it.
+internal/engine/bugs.go openBounds.scan operator: s.Upper.Value != nil => s.Upper.Value == nil
+	The planted bug openBound: an upper bound with a value stays as it is, one without bounds nothing, only a closed lower bound is read as open, and the bug is found by it.
+
+# The indexes of slice 9 in the core, internal/core.
+internal/core/cache.go conn.lookUp condition: err != nil => false
+	lookUpWithoutIndexes gives a nil table with every error, so the test of the table alone gives the error back.
+internal/core/cache.go conn.insert boolean: false => true
+	Tx.Insert, the one caller, returns at an error of insert before it reads whether the row was inserted.
+internal/core/cache.go conn.delete boolean: false => true
+	Tx.Delete and the replay of a commit, the two callers, return at an error of delete before they read whether there was a row.
+internal/core/index.go indexKey condition: columns != nil => true
+	The planted bug shortKey: the key of the primary key is empty too, another wrong key of a scan, and the bug is found by it.
+internal/core/index.go indexKey operator: columns != nil => columns == nil
+	The planted bug shortKey: the key of the primary key is empty and that of an index is whole, another wrong key of a scan, and the bug is found by it.
+internal/core/index.go conn.loadIndexes operator: s.ColumnText(2) == "pk" && schemaless && primary == "" => s.ColumnText(2) == "pk" && schemaless || primary == ""
+	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so it is the first row in the order by rowid, where NULL comes first, and the first row is the one for which primary is empty.
+internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) == "pk" && schemaless => true
+	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so it is the first row in the order by rowid, where NULL comes first, and the first row is the one for which primary is empty.
+internal/core/index.go conn.loadIndexes condition: primary == "" => true
+	A table has one index of the origin pk, so primary is empty when it comes.
+internal/core/index.go conn.loadIndexes operator: s.ColumnText(2) == "pk" && schemaless => s.ColumnText(2) == "pk" || schemaless
+	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so it is the first row in the order by rowid, where NULL comes first, and the first row is the one for which primary is empty.
+internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) == "pk" => true
+	The index of the primary key of a table without a rowid is the one index of pragma_index_list without a row in sqlite_schema, which a UNIQUE constraint's index has, so the one index without one is that of the primary key.
+internal/core/index.go conn.loadIndexes condition: schemaless => true
+	A table has one index of the origin pk, so primary is empty when it comes, and the index after it, which is not of the origin pk, goes on to the check of the others either way.
+internal/core/index.go conn.loadIndexes condition: schemaless => false #2
+	The one index without a row in sqlite_schema is that of the primary key, which the case before takes.
+internal/core/index.go conn.loadIndexes condition: s.ColumnText(2) != "c" => false
+	An index of a constraint is that of the primary key, which the case before takes, or that of a UNIQUE constraint, which is unique and refused by the test of unique.
+internal/core/index.go conn.loadIndexes condition: position >= int64(len(t.columns)) => false
+	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.
+internal/core/index.go conn.loadIndexes operator: position >= int64(len(t.columns)) => position > int64(len(t.columns))
+	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.
+internal/core/index.go conn.lookUpIndex condition: err != nil => false
+	found is set only by the row of the query, and its LIMIT 1 ends the statement at that row without another read, so the query fails only before the row, found is false whenever err is not nil, and !found alone gives the error back.
+internal/core/index.go conn.lookUpIndex condition: err != nil => false #3
+	lookUp has read the indexes of the table that it gives, so t.index does not fail as checkIndexed would.
+internal/core/index.go conn.lookUpIndex remove statement: return nil, nil, err => #3
+	lookUp has read the indexes of the table that it gives, so t.index does not fail as checkIndexed would.
+internal/core/index.go conn.lookUpIndex condition: ix == nil => false
+	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
+internal/core/index.go conn.lookUpIndex remove statement: return nil, nil, fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, name, t.name) =>
+	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
+internal/core/index.go conn.lookUpIndex swap arguments: fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, name, t.name) => fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", name, ErrCacheVersion, t.name)
+	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
+internal/core/index.go conn.lookUpIndex swap arguments: fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, name, t.name) => fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, t.name, name)
+	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
+internal/core/index.go conn.indexNames condition: !reserved(name) => true
+	Its one caller, Tx.spoolCreatedIndexes, keeps only the names of the indexes that the transaction created, and Tx.CreateIndex refuses a reserved name, so a reserved name that it gives is left out there either way.
+internal/core/index.go checkCreateIndex condition: err != nil => false
+	NewCommitWriter fails only for a header that it refuses, and its parent is the empty log and its commit time the clock of the host now, which a protobuf timestamp holds; the write of the header into io.Discard does not fail.
+internal/core/index.go checkCreateIndex remove statement: return err =>
+	NewCommitWriter fails only for a header that it refuses, and its parent is the empty log and its commit time the clock of the host now, which a protobuf timestamp holds; the write of the header into io.Discard does not fail.
+internal/core/index.go Tx.spoolCreatedIndexes remove statement: return 0, nil =>
+	Without an index that the transaction created, the loop below writes none and gives 0 and nil too, after a read of the names of the indexes, which changes nothing and does not fail where the reads of the commit before it did not.
+internal/core/index.go Tx.spoolCreatedIndexes condition: len(tx.createdIndexes) == 0 => false
+	Without an index that the transaction created, the loop below writes none and gives 0 and nil too, after a read of the names of the indexes, which changes nothing and does not fail where the reads of the commit before it did not.
+internal/core/index.go Tx.spoolCreatedIndexes constant: return 0, err => return 1, err
+	Its caller, Tx.spoolCommit, returns at the error before it reads the number.
+internal/core/index.go Tx.spoolCreatedIndexes constant: return 0, err => return 1, err #2
+	Its caller, Tx.spoolCommit, returns at the error before it reads the number.
+internal/core/index.go Tx.spoolCreatedIndexes condition: ix == nil => false
+	indexNames gives the names that sqlite_schema holds, in the same transaction, and lookUpIndex finds each of them: its strict load reads every index of the table from pragma_index_list, or refuses the table with an error before.
+internal/core/index.go Tx.spoolCreatedIndexes remove statement: return 0, fmt.Errorf("%w: its index %q is listed and cannot be found", ErrCacheVersion, name) =>
+	indexNames gives the names that sqlite_schema holds, in the same transaction, and lookUpIndex finds each of them: its strict load reads every index of the table from pragma_index_list, or refuses the table with an error before.
+internal/core/index.go Tx.spoolCreatedIndexes swap arguments: fmt.Errorf("%w: its index %q is listed and cannot be found", ErrCacheVersion, name) => fmt.Errorf("%w: its index %q is listed and cannot be found", name, ErrCacheVersion)
+	indexNames gives the names that sqlite_schema holds, in the same transaction, and lookUpIndex finds each of them: its strict load reads every index of the table from pragma_index_list, or refuses the table with an error before.
+internal/core/index.go Tx.spoolCreatedIndexes constant: 0 => 1
+	Its caller, Tx.spoolCommit, returns at the error before it reads the number.
+internal/core/index.go Tx.spoolCreatedIndexes constant: return 0, err => return 1, err #3
+	Its caller, Tx.spoolCommit, returns at the error before it reads the number.
+internal/core/index.go Tx.spoolCreatedIndexes condition: written != len(tx.createdIndexes) => false
+	Tx.CreateIndex records the name of each index that it creates, and Tx.DropIndex, the drop of its table, and a roll back to a savepoint forget the ones that they take away, and indexNames lists every index of the cache, so the loop writes each recorded index once and written is their number.
+internal/core/index.go Tx.spoolCreatedIndexes remove statement: return 0, fmt.Errorf("%w: it holds %v of the %v indexes that the transaction created", ErrCacheVersion, written, len(tx.createdIndexes)) =>
+	Tx.CreateIndex records the name of each index that it creates, and Tx.DropIndex, the drop of its table, and a roll back to a savepoint forget the ones that they take away, and indexNames lists every index of the cache, so the loop writes each recorded index once and written is their number.
+internal/core/index.go Tx.spoolCreatedIndexes constant: 0 => 1 #2
+	Tx.CreateIndex records the name of each index that it creates, and Tx.DropIndex, the drop of its table, and a roll back to a savepoint forget the ones that they take away, and indexNames lists every index of the cache, so the loop writes each recorded index once and written is their number.
+internal/core/index.go Tx.spoolCreatedIndexes swap arguments: fmt.Errorf("%w: it holds %v of the %v indexes that the transaction created", ErrCacheVersion, written, len(tx.createdIndexes)) => fmt.Errorf("%w: it holds %v of the %v indexes that the transaction created", written, ErrCacheVersion, len(tx.createdIndexes))
+	Tx.CreateIndex records the name of each index that it creates, and Tx.DropIndex, the drop of its table, and a roll back to a savepoint forget the ones that they take away, and indexNames lists every index of the cache, so the loop writes each recorded index once and written is their number.
+internal/core/index.go Tx.spoolCreatedIndexes swap arguments: fmt.Errorf("%w: it holds %v of the %v indexes that the transaction created", ErrCacheVersion, written, len(tx.createdIndexes)) => fmt.Errorf("%w: it holds %v of the %v indexes that the transaction created", ErrCacheVersion, len(tx.createdIndexes), written)
+	Tx.CreateIndex records the name of each index that it creates, and Tx.DropIndex, the drop of its table, and a roll back to a savepoint forget the ones that they take away, and indexNames lists every index of the cache, so the loop writes each recorded index once and written is their number.
+internal/core/index.go applyCreateIndex constant: 0 => 1
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 0, err => return 1, err
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 0, err => return 1, err #2
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: 0 => 1 #2
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 0, err => return 1, err #3
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: 0 => 1 #3
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: 0 => 1 #4
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 0, brokenf("it creates the index %q on %v", ci.GetIndex(), err) => return 1, brokenf("it creates the index %q on %v", ci.GetIndex(), err)
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyDropIndex constant: return 0, err => return 1, err
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyDropIndex constant: return 0, brokenf("it drops the index %q, which does not exist", name) => return 1, brokenf("it drops the index %q, which does not exist", name)
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 1, c.createIndex(t, ix) => return 2, c.createIndex(t, ix)
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
+internal/core/index.go applyCreateIndex constant: return 1, c.createIndex(t, ix) => return 0, c.createIndex(t, ix)
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
+internal/core/index.go applyDropIndex constant: return 1, c.dropIndex(ix) => return 2, c.dropIndex(ix)
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
+internal/core/index.go applyDropIndex constant: return 1, c.dropIndex(ix) => return 0, c.dropIndex(ix)
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
+internal/core/index.go scanConditions condition: key[len(scan.Equal)].Descending => true
+	The planted bug turnDescBound: the bounds change places on every column, also an ascending one, another wrong scan, and the bug is found by it.
+internal/core/index.go scanConditions condition: key[len(scan.Equal)].Descending => !key[len(scan.Equal)].Descending
+	The planted bug turnDescBound: the bounds change places on an ascending column and not on a descending one, another wrong scan, and the bug is found by it.
+internal/core/index.go scanConditions swap arguments: fmt.Sprint(names[len(scan.Equal)], " ", op, " ?", len(args)) => fmt.Sprint(names[len(scan.Equal)], op, " ", " ?", len(args))
+	The condition differs only in its spaces, and a quoted name, an operator, and a parameter read the same without a space between them.
+internal/core/index.go scanConditions swap arguments: fmt.Sprint(names[len(scan.Equal)], " ", op, " ?", len(args)) => fmt.Sprint(" ", names[len(scan.Equal)], op, " ?", len(args))
+	The condition differs only in its spaces, and a quoted name, an operator, and a parameter read the same without a space between them.
+internal/core/index.go conn.scanIndex condition: err != nil => false #2
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #2
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: return => #2
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex condition: err != nil => false #3
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #3
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: return => #3
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: _ = c.rest(sql, s) =>
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex condition: err != nil => false #4
+	A step that fails gives its error again in the reset that c.rest makes of the statement, and the scan yields that error, as TestTx_readFails shows for a read of the index that fails.
+internal/core/index.go conn.scanIndex remove statement: s = nil =>
+	A step that fails is a local failure, which stops the instance, so the finalized statement that the deferred rest then keeps at rest is never prepared again.
+internal/core/index.go conn.scanIndex condition: err != nil => false #5
+	c.rest resets a statement whose last step succeeded, which gives no error, and finalizes it if its text is at rest already, which fails only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #5
+	c.rest resets a statement whose last step succeeded, which gives no error, and finalizes it if its text is at rest already, which fails only for want of memory.
+internal/core/index.go conn.scanIndex condition: err != nil => false #6
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #6
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go conn.scanIndex remove statement: return => #6
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go conn.scanIndex remove statement: _ = c.rest(sql, s) => #3
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go conn.scanIndex remove statement: s = nil => #3
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go scanned condition: err != nil => false
+	The table comes from a lookup with its indexes, so t.index does not fail as checkIndexed would.
+internal/core/index.go scanned remove statement: return nil, err =>
+	The table comes from a lookup with its indexes, so t.index does not fail as checkIndexed would.
+internal/core/index.go ReadTx.ScanPlan condition: err != nil => false #4
+	scanSQL fails only as checkIndexed would, and the table comes from a lookup with its indexes.
+internal/core/index.go ReadTx.ScanPlan remove statement: return "", nil, err => #4
+	scanSQL fails only as checkIndexed would, and the table comes from a lookup with its indexes.
+internal/core/replay.go apply constant: return 0, err => return 1, err #2
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied; and replay returns at the error before it adds.
+internal/core/tx.go Tx.DropTable condition: err != nil => false #3
+	The table comes from a lookup with its indexes, so forgetIndexes, which fails only as checkIndexed would, gives nil.
+internal/core/tx.go Tx.DropTable remove statement: return tx.fail(ctx, operation, err) =>
+	The table comes from a lookup with its indexes, so forgetIndexes, which fails only as checkIndexed would, gives nil.
+internal/core/replay.go apply constant: 0 => 1 #3
+	Every return of 0 here is with an error, and the number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.

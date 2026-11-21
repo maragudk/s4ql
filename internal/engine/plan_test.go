@@ -47,6 +47,9 @@ func TestNewPlan(t *testing.T) {
 		{src: `update "T1" set v1 = ?, v2 = null where v1 = ? and v2 is not null`, want: "update \"T1\" set v1 = ?1, v2 = null\n  filter v1 = ?2 and v2 IS NOT NULL\n    scan \"T1\"\n"},
 		{src: "delete from t1", want: "delete from t1\n  scan t1\n"},
 		{src: "DELETE FROM t1 WHERE v1 >= 10 AND v2 < ?", want: "delete from t1\n  filter v1 >= 10 and v2 < ?1\n    scan t1\n"},
+		{src: `CREATE INDEX "I 1" ON t1 (v2 DESC, "V1" asc, v3)`, want: "create index \"I 1\" on t1 (v2 desc, \"V1\", v3)\n"},
+		{src: "create index i on t (v)", want: "create index i on t (v)\n"},
+		{src: `DROP INDEX "I 1"`, want: "drop index \"I 1\"\n"},
 		// A condition with its value on the left is the condition with its column first.
 		{src: "select v1 from t1 where 1 < v1 and ? >= v2 and null = v3 and v2 = ?", want: "query\n  project v1\n    filter v1 > 1 and v2 <= ?1 and v3 = null and v2 = ?2\n      scan t1\n"},
 		{src: "update t1 set v1 = ? where ? <> v2", want: "update t1 set v1 = ?1\n  filter v2 != ?2\n    scan t1\n"},

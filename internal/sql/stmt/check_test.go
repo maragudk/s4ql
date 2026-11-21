@@ -1363,6 +1363,8 @@ var checkCases = []checkCase{
 	{name: "an index of a single-quoted name", src: "create index 'i' on t (a)", err: "s4ql: not supported: single-quoted name (at offset 13)"},
 	{name: "drop index of an index in main", src: "drop index main.i", err: "s4ql: not supported: schema name (at offset 11)"},
 	{name: "drop index of an index in temp", src: "drop index temp.i", err: "s4ql: not supported: schema name (at offset 11)"},
+	{name: "drop index of a schema before a reserved name", src: "drop index main.sqlite_autoindex_t_1", err: "s4ql: not supported: schema name (at offset 11)"},
+	{name: "create index of a schema before a reserved name", src: "create index main.sqlite_i on t (a)", err: "s4ql: not supported: schema name (at offset 13)"},
 	{name: "drop index of the index of a primary key", src: "drop index sqlite_autoindex_t_1", err: "s4ql: not supported: reserved index name (at offset 11)"},
 	{name: "drop index of a name that starts with s4ql_", src: "drop index s4ql_x", err: "s4ql: not supported: reserved index name (at offset 11)"},
 	{name: "drop index of an empty name", src: `drop index ""`, err: "s4ql: not supported: empty name (at offset 11)"},

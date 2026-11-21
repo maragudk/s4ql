@@ -2938,6 +2938,12 @@ var reachedDifferential = map[string]int{
 	// "path with a pin of NULL" went from 2 to 11, and its least number is 3, and the other random
 	// numbers that the generator drew after such a pin took "delete WHERE that reads a scan between two
 	// bounds that hold no key ok, no row found" from 9 to 8, of which the least number is now a third.
+	// Since an update and a delete bound the key on one side by a value of an insert, where they had
+	// the key equal to it, for every third of the values that the sequence keeps, on 2026-11-21, the
+	// run reaches "update WHERE that reads a scan to an upper bound ok, rows changed" 11 times, which
+	// the sequences of create indexes and drop indexes had reached 0 to 3 times, and requires it again,
+	// and "update WHERE that reads a scan from a lower bound ok, rows changed" 3 times. The generator
+	// draws the same random numbers as without the bound, so the pins above did not move.
 	"update with WHERE ok, rows changed": 17, "update with WHERE ok, no row found": 76, "update without WHERE ok, rows changed": 20, "update without WHERE ok, no row found": 17,
 	"delete with WHERE ok, rows changed": 32, "delete with WHERE ok, no row found": 77, "delete without WHERE ok, rows changed": 23, "delete without WHERE ok, no row found": 12,
 	"update that changes every row of a table with rows": 27, "update that changes some rows of a table": 10, "update that changes no row of a table with rows": 42,
@@ -2955,8 +2961,8 @@ var reachedDifferential = map[string]int{
 	"update with WHERE UNIQUE constraint failed": 6, "update without WHERE UNIQUE constraint failed": 12,
 	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
 	"update with a literal longer than the length limit in SET": 1,
-	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10,
-	"update WHERE that reads a scan between two bounds ok, rows changed":                  1,
+	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
+	"update WHERE that reads a scan between two bounds ok, rows changed": 1, "update WHERE that reads a scan to an upper bound ok, rows changed": 3,
 	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 3,
 	"update WHERE that tests a column more than once ok, rows changed": 3, "update WHERE with contradicting conditions ok, no row found": 11,
 	"delete with WHERE no such column": 18, "delete WHERE with a column in double quotes that the table does not have no such column": 13,

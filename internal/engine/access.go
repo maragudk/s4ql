@@ -58,7 +58,9 @@ func (a access) scan() core.IndexScan {
 //     wins, and of those that pin as many, one with a bound on the next column wins over one
 //     without. Of those that are still the same, the primary key wins, and then the index that was
 //     created first.
-//  4. Every row, if the winner pins nothing and bounds nothing.
+//  4. Every row, if the winner pins nothing and bounds nothing. An index wins only by pinning or
+//     bounding more than the primary key, so the winner is then the primary key, whose access that
+//     pins and bounds nothing is the scan of every row.
 //
 // Rules 1 and 2 do not depend on the indexes: the access is no row, or the row of a primary key, for
 // no indexes exactly when it is for any. The values of the conditions are of the types of their
@@ -82,9 +84,6 @@ func chooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditio
 		if len(a.equal) > len(best.equal) || len(a.equal) == len(best.equal) && a.ranged() && !best.ranged() {
 			best = a
 		}
-	}
-	if len(best.equal) == 0 && !best.ranged() {
-		return access{}, nil
 	}
 	return best, nil
 }
@@ -115,11 +114,12 @@ func never(t *s4qlpb.CreateTable, conditions []condition) bool {
 }
 
 // pointOf the conditions on the table t: the primary key that they pin, with the value of the first
-// condition with = for each of its columns, in key order, or nil if some column has none.
+// condition with = for each of its columns, in key order, as [pinOf] gives it, or nil if some column
+// has none. No column of the primary key takes NULL, so a test for NULL pins none of them.
 func pointOf(t *s4qlpb.CreateTable, conditions []condition) []*s4qlpb.Value {
 	var point []*s4qlpb.Value
 	for _, position := range t.GetPrimaryKey() {
-		v := pinOf(t, int(position), conditions, false)
+		v := pinOf(t, int(position), conditions)
 		if v == nil {
 			return nil
 		}
@@ -129,11 +129,11 @@ func pointOf(t *s4qlpb.CreateTable, conditions []condition) []*s4qlpb.Value {
 }
 
 // pinOf the column at the position of the table t by the conditions: the value of the first
-// condition, in the order of the text, that pins it, which is one with =, or, if byNull, a test for
-// NULL of a column that takes NULL, whose value is NULL; or nil if no condition pins it. No row has
-// NULL in a column that does not take it, and the storage takes no scan for one, so a test for NULL
-// of such a column pins nothing.
-func pinOf(t *s4qlpb.CreateTable, position int, conditions []condition, byNull bool) *s4qlpb.Value {
+// condition, in the order of the text, that pins it, which is one with =, or a test for NULL of a
+// column that takes NULL, whose value is NULL; or nil if no condition pins it. No row has NULL in a
+// column that does not take it, and the storage takes no scan for one, so a test for NULL of such a
+// column pins nothing.
+func pinOf(t *s4qlpb.CreateTable, position int, conditions []condition) *s4qlpb.Value {
 	for _, c := range conditions {
 		if c.position != position {
 			continue
@@ -141,7 +141,7 @@ func pinOf(t *s4qlpb.CreateTable, position int, conditions []condition, byNull b
 		switch {
 		case c.op == stmt.OpEqual:
 			return c.value
-		case c.op == stmt.OpIsNull && byNull && t.GetColumns()[position].GetNullable():
+		case c.op == stmt.OpIsNull && t.GetColumns()[position].GetNullable():
 			return null()
 		}
 	}
@@ -181,7 +181,7 @@ func fit(t *s4qlpb.CreateTable, index string, key []int, conditions []condition,
 			// column of the table at its place in the key.
 			pinned = i
 		}
-		if v := pinOf(t, pinned, conditions, true); v != nil {
+		if v := pinOf(t, pinned, conditions); v != nil {
 			a.equal = append(a.equal, v)
 			continue
 		}

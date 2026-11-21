@@ -40,7 +40,8 @@ import (
 // values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every type meets a key
 // that exists. An update sets some columns of the shape, as [Sequence.update] draws it, and an
 // update three times in four and a delete four times in five have a WHERE, as [Sequence.changeConditions]
-// draws one: mostly as a select has one, and one time in three the key equal to a value of an insert.
+// draws one: mostly as a select has one, and one time in three the key equal to a value of an
+// insert, or, for every third of those values, bounded on one side by it.
 // A create index names an index from a few names in several spellings, or now and then a name of a
 // table, on a table of the sequence, and the columns of its shape, as [Sequence.createIndex] draws
 // them; a drop index names one of those names, or now and then a name of a table; and a create table
@@ -77,8 +78,8 @@ type Sequence struct {
 	// their table, the last [storedIndexes] of each, whether SQLite took the create index or not, with
 	// the fold of each name as its Name.Value, for the conditions of a WHERE that an index can serve.
 	indexed map[string][][]stmt.IndexColumn
-	// heavy is set by [Sequence.Indexed].
-	heavy bool
+	// heavy is set by [Sequence.Indexed], and mistyped by [Sequence.Mistyped].
+	heavy, mistyped bool
 }
 
 // IndexNames of the sequence: the values of the names of its indexes, without their quotes, each
@@ -99,6 +100,16 @@ const storedIndexes = 3
 // index as [Sequence.indexConditions] draws them, where it is one in two otherwise.
 func (q *Sequence) Indexed() {
 	q.heavy = true
+}
+
+// Mistyped makes one insert in eight of the sequence give an integer of a column of INT or INTEGER,
+// if it has one, as the real of the same value, which s4ql refuses, as it refuses every value of
+// another type than its column. SQLite converts the real back to the integer where a real holds the
+// integer exactly, as it does for the small integers that a sequence mostly gives; for an integer
+// beyond 2^53 the real is a neighbour of it, and SQLite refuses ±2^63, the real of the limits of 64
+// bits. The values that the conditions of a WHERE draw from keep the integer.
+func (q *Sequence) Mistyped() {
+	q.mistyped = true
 }
 
 // indexWhere reports whether a WHERE that an index of the sequence could serve is drawn as
@@ -411,6 +422,8 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 // one in ten has a value of any type, and one in three of these a second, and one in twelve has NULL
 // for any column, also the key. A list that leaves out a column with a long default has, one time in
 // two, a value of 85 hundredths of [LengthLimit] bytes for its first column of text or a blob.
+// After [Sequence.Mistyped], one insert in eight also gives an integer of a column of INT or
+// INTEGER as a real.
 func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	r := q.r
 	shape := q.shapeOf(table)
@@ -512,6 +525,26 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 		}
 	}
 	q.store(table, shape, list, values)
+	if q.mistyped && r.IntN(8) == 0 {
+		// An integer of a column of INT or INTEGER as the real of its value, which the values of the
+		// conditions keep as the integer. The column of a value is the one that the list names in its
+		// place, which is another than the one of order where the list names another column.
+		var integers []int
+		for i, position := range order[:min(len(order), len(values))] {
+			c := &shape[position]
+			if withList {
+				c = columnOfShape(shape, nameOf(list[i], 0).Fold())
+			}
+			if _, ok := values[i].(stmt.Integer); ok && c != nil && kindOf(c.Type) == stmt.TypeInt {
+				integers = append(integers, i)
+			}
+		}
+		if len(integers) > 0 {
+			values = slices.Clone(values)
+			at := integers[r.IntN(len(integers))]
+			values[at] = stmt.Real(float64(values[at].(stmt.Integer)))
+		}
+	}
 	return list, values
 }
 
@@ -567,6 +600,9 @@ func (q *Sequence) selectList(table stmt.Name) []string {
 
 // comparisons are the operators of a condition that compare a column with a value.
 var comparisons = []stmt.Operator{stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual}
+
+// bounds are the operators of a condition that bound a column on one side.
+var bounds = []stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual}
 
 // inverses of the operators: the condition with the inverse of a condition's operator, on its column
 // and with its value, is false wherever the condition is true.
@@ -883,14 +919,25 @@ func (q *Sequence) delete(table stmt.Name) []stmt.Condition {
 }
 
 // changeConditions of the WHERE of an update or a delete of table: one time in three, if an insert
-// gave the key a value, the one condition that the key is such a value, which finds the row of the
-// key if it is there, since most WHERE that [Sequence.conditions] draws find no row of a table of a
-// few rows; and otherwise as [Sequence.conditions] draws them.
+// gave the key a value, the one condition on the key with the i-th of the values that the sequence
+// keeps for it, which finds the row of the key if it is there, since most WHERE that
+// [Sequence.conditions] draws find no row of a table of a few rows. The condition is that the key is
+// the value, or, for every third i from the third on, that the key is on one side of it, with <,
+// <=, >, and >= in turn, which finds the rows on that side; the operator comes from i, so that the
+// sequence draws the same random numbers as for the key equal to the value. Otherwise the
+// conditions are as [Sequence.conditions] draws them.
 func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
 	shape := q.shapeOf(table)
 	key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
 	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 && q.r.IntN(3) == 0 {
-		return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[q.r.IntN(len(stored))]}}}
+		// The spelling first, and then the value, as for the key equal to the value.
+		column := stmt.Name{Raw: q.spell(key.Name.Value)}
+		i := q.r.IntN(len(stored))
+		op := stmt.OpEqual
+		if i%3 == 2 {
+			op = bounds[i/3%len(bounds)]
+		}
+		return []stmt.Condition{{Column: column, Operator: op, Value: stmt.Term{Value: stored[i]}}}
 	}
 	if q.indexWhere() {
 		if cs := q.indexConditions(table); cs != nil {

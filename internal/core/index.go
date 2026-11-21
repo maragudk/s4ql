@@ -237,9 +237,8 @@ func (c *conn) loadIndexes(t *table) error {
 		}, name); err != nil {
 			return err
 		}
-		if len(ix.columns) == 0 {
-			return foreign("the index %q of its table %q has no columns", name, t.name)
-		}
+		// An index of SQLite has a column of its own, and one on an expression is refused above, so ix
+		// has columns.
 		if sql != kept(t.createIndexSQL(ix)) {
 			return foreign("the index %q of its table %q is not declared as s4ql declares an index of its columns", name, t.name)
 		}
@@ -258,7 +257,7 @@ func (c *conn) lookUpIndex(name string) (*table, *index, error) {
 	}
 	var owner string
 	var found bool
-	if err := c.query("select tbl_name from main.sqlite_schema where type = 'index' and name = ?1 collate nocase", func(s *sqlite.Stmt) error {
+	if err := c.query("select tbl_name from main.sqlite_schema where type = 'index' and name = ?1 collate nocase limit 1", func(s *sqlite.Stmt) error {
 		owner, found = s.ColumnText(0), true
 		return nil
 	}, name); err != nil || !found {

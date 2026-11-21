@@ -37,7 +37,7 @@ func TestTable_checkIndexed(t *testing.T) {
 				return err
 			},
 			"scan": func() error {
-				for _, err := range c.scan(tb, Bound{}, Bound{}) {
+				for _, err := range c.scan(tb) {
 					return err
 				}
 				return nil

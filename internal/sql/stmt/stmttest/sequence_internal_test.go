@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -191,6 +192,82 @@ func TestSequence_delete(t *testing.T) {
 			}
 		}
 		is.True(t, none > 650 && none < 950, "one delete in five without WHERE")
+	})
+
+	t.Run("should give, of a WHERE, one time in three the key equal to a value of an insert, or bounded on one side by every third of those values", func(t *testing.T) {
+		q, err := NewSequence(rand.New(rand.NewPCG(13, 14)))
+		is.NotError(t, err)
+		table := stmt.Name{Raw: "t", Value: "t"}
+		shape := q.shapeOf(table)
+		key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+		for range 50 {
+			q.insert(table)
+		}
+		stored := map[string]bool{}
+		for _, v := range q.stored[[2]string{table.Value, key.Name.Value}] {
+			stored[valueKey(v)] = true
+		}
+		counts := map[stmt.Operator]int{}
+		for range 4000 {
+			where := q.changeConditions(table)
+			if len(where) != 1 || where[0].Value.Value == nil || nameOf(where[0].Column.Raw, 0).Fold() != key.Name.Value || !stored[valueKey(where[0].Value.Value)] {
+				continue
+			}
+			counts[where[0].Operator]++
+		}
+		t.Log(counts)
+		is.True(t, counts[stmt.OpEqual] > 800, "the key equal to a value of an insert two times in nine")
+		bounded := 0
+		for _, op := range bounds {
+			is.True(t, counts[op] > 80, fmt.Sprint("the key bounded by ", op))
+			bounded += counts[op]
+		}
+		is.True(t, bounded > 400 && bounded < 800, "the key bounded on one side one time in nine, and by the conditions of a select now and then")
+	})
+}
+
+func TestSequence_insert(t *testing.T) {
+	t.Run("should give an integer of a column of INT or INTEGER as the real of its value one insert in eight after Mistyped", func(t *testing.T) {
+		// wholeReals counts the inserts into table of the sequence q that give a column of INT or
+		// INTEGER a real that is a whole number.
+		wholeReals := func(q *Sequence, table stmt.Name) int {
+			shape := q.shapeOf(table)
+			n := 0
+			for range 4000 {
+				list, values := q.insert(table)
+				for i, v := range values {
+					var column *stmt.Column
+					switch {
+					case list == nil && i < len(shape):
+						column = &shape[i]
+					case i < len(list):
+						column = columnOfShape(shape, nameOf(list[i], 0).Fold())
+					}
+					if r, ok := v.(stmt.Real); ok && column != nil && kindOf(column.Type) == stmt.TypeInt && float64(r) == math.Trunc(float64(r)) {
+						n++
+						break
+					}
+				}
+			}
+			return n
+		}
+		q, err := NewSequence(rand.New(rand.NewPCG(15, 16)))
+		is.NotError(t, err)
+		// A table with a column of INT or INTEGER, which every seed of the shape's random numbers does
+		// not give.
+		var table stmt.Name
+		for i := 0; ; i++ {
+			table = stmt.Name{Raw: fmt.Sprint("t", i), Value: fmt.Sprint("t", i)}
+			if slices.ContainsFunc(q.shapeOf(table), func(c stmt.Column) bool { return kindOf(c.Type) == stmt.TypeInt }) {
+				break
+			}
+		}
+		without := wholeReals(q, table)
+		q.Mistyped()
+		with := wholeReals(q, table)
+		t.Log(without, with)
+		is.True(t, without < 150, "few whole reals of a value of any type")
+		is.True(t, with > without+150, "one insert in eight more, of those that give the column an integer")
 	})
 }
 

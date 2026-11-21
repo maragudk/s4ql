@@ -2465,6 +2465,69 @@ func TestTx_readFails(t *testing.T) {
 		_ = d.Close(ctx)
 		is.NotError(t, vfs.Close())
 	})
+
+	t.Run("should end a scan by an index with SQLite's error, as a local failure, when SQLite cannot read the index", func(t *testing.T) {
+		vfs, _, d := setUp(t)
+		ctx := t.Context()
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateIndex(t.Context(), indexOf("i", "t", 1)))
+		})
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		_, err = r.Table(ctx, "t")
+		is.NotError(t, err)
+		once := reads
+		once.Times = 1
+		vfs.Fail(once)
+		var rows int
+		err = nil
+		for _, e := range r.ScanIndex(ctx, "t", core.IndexScan{Index: "i"}) {
+			if e != nil {
+				err = e
+				break
+			}
+			rows++
+		}
+		is.True(t, vfs.Failures() > 0, "no read failed")
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, rows < 4000, fmt.Sprint(rows, " rows"))
+		vfs.Fail(faultvfs.Fault{})
+		_ = r.Close(ctx)
+		_ = d.Close(ctx)
+		is.NotError(t, vfs.Close())
+	})
+
+	t.Run("should fail the transaction for a create index and for a drop index when SQLite cannot read the rows or the index", func(t *testing.T) {
+		for _, drop := range []bool{false, true} {
+			vfs, _, d := setUp(t)
+			ctx := t.Context()
+			if drop {
+				transact(t, d, func(t *testing.T, tx *core.Tx) {
+					is.NotError(t, tx.CreateIndex(t.Context(), indexOf("i", "t", 1)))
+				})
+			}
+			tx, err := d.Begin(ctx)
+			is.NotError(t, err)
+			// The lookups of the table and of the index read the schema, which SQLite holds in its
+			// page cache, so the first read from the file is that of the rows or of the index.
+			_, err = tx.Table(ctx, "t")
+			is.NotError(t, err)
+			once := reads
+			once.Times = 1
+			vfs.Fail(once)
+			if drop {
+				err = tx.DropIndex(ctx, "i")
+			} else {
+				err = tx.CreateIndex(ctx, indexOf("i", "t", 1))
+			}
+			is.True(t, vfs.Failures() > 0, fmt.Sprint("no read failed, drop: ", drop))
+			is.Error(t, core.ErrLocal, err)
+			vfs.Fail(faultvfs.Fault{})
+			_ = tx.Rollback(ctx)
+			_ = d.Close(ctx)
+			is.NotError(t, vfs.Close())
+		}
+	})
 }
 
 func TestTx_null(t *testing.T) {

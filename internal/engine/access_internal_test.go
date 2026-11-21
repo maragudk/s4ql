@@ -245,6 +245,7 @@ func TestChooseAccess(t *testing.T) {
 		{name: "should take an index that pins one column over the primary key with a range", table: one, indexes: [][]string{{"i", "a"}}, where: "k > 1 and a = 1", want: "i = 1 > 1"},
 		{name: "should take, of two that pin as many, the one with a range on the next column", table: one, indexes: [][]string{{"i1", "a"}, {"i2", "a", "e"}}, where: "a = 1 and e > 2", want: "i2 = 1 > 2"},
 		{name: "should take, of two that pin as many, the one with a range also when it was created first", table: one, indexes: [][]string{{"i2", "a", "e"}, {"i1", "a"}}, where: "a = 1 and e > 2", want: "i2 = 1 > 2"},
+		{name: "should take an index that pins more over a later one that pins less and bounds the next column", table: one, indexes: [][]string{{"i2", "a", "e"}, {"i1", "b"}}, where: "a = 1 and e = 2 and b > 'x'", want: "i2 = 1,2"},
 		{name: "should take an index with a range over the primary key with nothing", table: one, indexes: [][]string{{"i", "a"}}, where: "a < 3", want: "i < 3"},
 		{name: "should give a tie of ranges to the primary key", table: one, indexes: [][]string{{"i", "a"}}, where: "a < 3 and k < 4", want: "primary < 4"},
 		{name: "should give a tie of pinned columns to the index that was created first", table: one, indexes: [][]string{{"i1", "a"}, {"i2", "a", "e"}}, where: "a = 1", want: "i1 = 1"},
@@ -354,6 +355,18 @@ func TestForcedAccess(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("should fail with an internal error for two bounds of values of two types, which the check of the types refuses before", func(t *testing.T) {
+		conditions := []condition{
+			{position: 1, op: stmt.OpGreater, value: s4qlpb.Value_builder{Integer: new(int64(1))}.Build()},
+			{position: 1, op: stmt.OpGreater, value: s4qlpb.Value_builder{Text: new("a")}.Build()},
+		}
+
+		a, ok, err := forcedAccess(one, indexes, conditions, path{kind: pathIndex, index: "i"}, bugs{})
+		is.True(t, errors.Is(err, ErrInternal))
+		is.True(t, !ok)
+		is.True(t, a.index == "" && !a.ranged())
+	})
 }
 
 // drawHost is a host that gives the numbers of draws, in turn, and counts them.
@@ -398,6 +411,21 @@ func TestEngine_reading(t *testing.T) {
 		e := newEngine(nil, h, Options{Directions: new(uint64(3))})
 		is.Equal(t, strings.Repeat("f", 8), directions(e, false, 8))
 		is.Equal(t, first, directions(e, true, 64), "a statement that is no query takes no draw of the seed")
+	})
+
+	t.Run("should draw the direction of the n-th query of a seed by the low bit of the n-th number of splitmix64 from that seed", func(t *testing.T) {
+		// splitmix64 as Sebastiano Vigna gives it, at https://prng.di.unimi.it/splitmix64.c.
+		state := uint64(3)
+		var want strings.Builder
+		for range 64 {
+			state += 0x9e3779b97f4a7c15
+			z := state
+			z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+			z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+			want.WriteString(map[uint64]string{0: "f", 1: "b"}[(z^(z>>31))&1])
+		}
+
+		is.Equal(t, want.String(), directions(newEngine(nil, &drawHost{draws: []uint64{1}}, Options{Directions: new(uint64(3))}), true, 64))
 	})
 
 	t.Run("should take the direction of a path that has one, for a query and for another statement, and draw nothing", func(t *testing.T) {

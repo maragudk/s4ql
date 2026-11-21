@@ -76,10 +76,15 @@ type workload struct {
 	// after the end of the workload: see [run.idler].
 	idlers int
 	idle   time.Duration
+	// mistyped makes the sequence give more inserts a value of another type than its column, as
+	// [stmttest.Sequence.Mistyped] says.
+	mistyped bool
 }
 
 // hammerWorkload has one instance whose callers hardly wait between their statements, so that two
-// statements of one instance often run at once.
+// statements of one instance often run at once. Its sequence gives more inserts a value of another
+// type than its column, among them whole reals for a column of INT or INTEGER, which SQLite converts
+// and s4ql refuses.
 var hammerWorkload = workload{
 	instances: 1,
 	callers:   4,
@@ -89,6 +94,7 @@ var hammerWorkload = workload{
 	durations: []time.Duration{30 * time.Second},
 	faults:    simstore.AllFaults(),
 	txs:       4,
+	mistyped:  true,
 }
 
 // defaultWorkload has two instances that compete for the lease, two callers on each, a crash and a
@@ -1267,6 +1273,9 @@ func (w workload) do(ctx context.Context, world *sim.Scheduler, seed uint64, dir
 		// The sequence of every second seed writes more create indexes, and more WHERE that an index
 		// serves, as [stmttest.Sequence.Indexed] says.
 		r.q.Indexed()
+	}
+	if w.mistyped {
+		r.q.Mistyped()
 	}
 	var tasks []host.Task
 	for i := range w.instances {
@@ -2734,8 +2743,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the callers did, and maybe one that a later insert of the log meets.
 		{"annotateNext", defaultWorkload, "default", []string{"and its caller gave the arguments", "the replay of the log holds", "fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A failed statement that is kept is in the commit object of its transaction, whose replay in
-		// SQLite then fails.
-		{"keepFailed", defaultWorkload, "default", []string{"whose statements that succeeded and write are", "fails in SQLite"}},
+		// SQLite then fails. What it changed before it failed is kept too: an update that changes the key
+		// of a row that the transaction inserted, and fails with UNIQUE after the delete of the old key,
+		// leaves the insert and the delete, whose net effect is nothing, so the commit object holds
+		// neither, and the insert that its caller was told of is not in the log.
+		{"keepFailed", defaultWorkload, "default", []string{"whose statements that succeeded and write are", "fails in SQLite", "is not in the log"}},
 		// A read-only transaction that moves on to the newest state reads rows that were committed after
 		// its beginning, and its later statements report the newer state. When its read of the newest
 		// state fails, the transaction keeps the read that the bug ended, whose end then fails.
@@ -2750,7 +2762,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// one instance that no other instance takes the lease from. Of the first 200 seeds, with WHERE
 		// in the sequence, 14 found the bug by its own violation there and 12 in the default workload;
 		// with updates and deletes in it, 18 there; and on 2026-11-20, with indexes in it, which take
-		// turns of the inserts, 8 there, and the second of them is seed 59.
+		// turns of the inserts, 8 there, and the second of them is seed 59. Since the sequence of the
+		// hammer workload gives whole reals for INT and INTEGER columns, [stmttest.Sequence.Mistyped],
+		// 81 there, and with the clauses of slice 10 and slices 11 and 12 too, 60.
 		{"convertReal", hammerWorkload, "hammer", []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
 		// A row that holds its values in other columns than its statement names: the replay of the log
 		// into an empty cache, which writes the rows, differs from SQLite, which runs the statements; a
@@ -2777,7 +2791,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the selects, and delete rows. The hammer workload runs more statements than the default one,
 		// on one engine that reads by the key. Of the first 200 seeds, with updates and deletes in the
 		// sequence, 32 found the bug there and 8 in the default workload; on 2026-11-20, with indexes
-		// in it, 27 there.
+		// in it, 27 there; and with the bounds of the key of updates and deletes, and the whole reals of
+		// [stmttest.Sequence.Mistyped], 24, and with the clauses of slice 10 and the defaults of slice
+		// 11 and the values on the left of slice 12 too, 11.
 		{"openBound", hammerWorkload, "hammer", []string{", and in SQLite", "which began at commit"}},
 		// A scan that pins a column of the key of an index, or of the primary key, to the value of a
 		// condition on another column. Where the value is of another type than the column, or NULL in
@@ -2785,7 +2801,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// internal error. Otherwise a select gives other rows than in SQLite, and an update or a delete
 		// changes other rows, after which the statements can differ. Of the first 200 seeds, on
 		// 2026-11-20, with the sequence of every second seed indexed, 19 found the bug, each by the
-		// refusal of the core, and the second of them is seed 23.
+		// refusal of the core, and the second of them is seed 23; with the bounds of the key of updates
+		// and deletes, 22, and with the clauses of slice 10 and slices 11 and 12 too, 15.
 		{"pinByPlace", defaultWorkload, "default", []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
@@ -2794,8 +2811,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// An update that changes the key and leaves the old row: the commit object holds the new row and
 		// no delete of the old key, so the replay of the log into an empty cache, which writes its rows,
 		// differs from SQLite, which runs the statements; and the row that stays makes later statements
-		// differ.
-		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes"}},
+		// differ, among them a write whose net effect on the rows that the bug left is nothing, which is
+		// then in no commit object, and not in the log that its caller was told of.
+		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "is not in the log"}},
 		// A create table with IF NOT EXISTS of a table that exists, which replaces the table with the
 		// one of the statement, empty, where SQLite does nothing: the commit object holds the drop and
 		// the create, so the replay of the log into an empty cache, which writes them, differs from

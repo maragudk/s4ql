@@ -388,12 +388,14 @@ func (c *Conn) queryIn(ctx context.Context, r *report, q *Query, args []*s4qlpb.
 		r.end(ctx, err)
 		return nil, err
 	}
-	src, err := buildQuery(ctx, c.e.bugs.reader(t.reader()), q, args, c.e.db.lengthLimit(), c.e.reading(true))
+	how := c.e.reading(true)
+	src, err := buildQuery(ctx, c.e.bugs.reader(t.reader()), q, args, c.e.db.lengthLimit(), how)
 	if err != nil {
 		r.end(ctx, err)
 		return nil, err
 	}
 	r.reads(t.reader(), src)
+	r.drew(how)
 	rows := &Rows{ctx: ctx, tx: inTx{}, src: src, columns: src.columns(), report: r}
 	c.rows = rows
 	return rows, nil

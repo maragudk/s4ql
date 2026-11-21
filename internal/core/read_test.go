@@ -107,6 +107,36 @@ func TestReadTx_Close(t *testing.T) {
 			is.Error(t, core.ErrTxDone, err)
 		}
 		is.Equal(t, 1, scanned)
+		_, err = r.Indexes(t.Context(), "t1")
+		is.Error(t, core.ErrTxDone, err)
+		_, err = r.Index(t.Context(), "i1")
+		is.Error(t, core.ErrTxDone, err)
+		scanned = 0
+		for _, err := range r.ScanIndex(t.Context(), "t1", core.IndexScan{Index: "i1"}) {
+			scanned++
+			is.Error(t, core.ErrTxDone, err)
+		}
+		is.Equal(t, 1, scanned)
+		_, _, err = r.ScanPlan(t.Context(), "t1", core.IndexScan{})
+		is.Error(t, core.ErrTxDone, err)
+	})
+
+	t.Run("should refuse the plan of a scan of a table that does not exist, by an index that does not exist, and that pins too many columns", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1))
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		_, _, err = r.ScanPlan(t.Context(), "t9", core.IndexScan{})
+		is.Error(t, core.ErrNoTable, err)
+		_, _, err = r.ScanPlan(t.Context(), "t1", core.IndexScan{Index: "i9"})
+		is.Error(t, core.ErrNoIndex, err)
+		_, _, err = r.ScanPlan(t.Context(), "t1", core.IndexScan{Equal: row(1, 2)})
+		is.Error(t, core.ErrInvalid, err)
+		sql, plan, err := r.ScanPlan(t.Context(), "t1", core.IndexScan{})
+		is.NotError(t, err)
+		is.True(t, sql != "" && len(plan) > 0, sql)
+		is.NotError(t, r.Close(t.Context()))
 	})
 }
 

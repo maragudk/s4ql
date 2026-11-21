@@ -1021,10 +1021,9 @@ func (t *table) checkBounds(limit int, bounds ...Bound) error {
 	return nil
 }
 
-// scan the rows of the table in the order of its primary key, from lower to upper on the first
-// column of the key, which [table.checkBounds] has accepted, as [conn.scanIndex] reads them.
-func (c *conn) scan(t *table, lower, upper Bound) iter.Seq2[[]*s4qlpb.Value, error] {
-	return c.scanIndex(t, nil, IndexScan{Lower: lower, Upper: upper}, nil)
+// scan every row of the table in the order of its primary key, as [conn.scanIndex] reads them.
+func (c *conn) scan(t *table) iter.Seq2[[]*s4qlpb.Value, error] {
+	return c.scanIndex(t, nil, IndexScan{}, nil)
 }
 
 // upsert the row into the table: insert it, or replace the row with the same primary key. The

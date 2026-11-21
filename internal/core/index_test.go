@@ -231,7 +231,7 @@ func TestTx_CreateIndex(t *testing.T) {
 		{name: "whose name an index has", index: indexOf("i1", "t2", 0), cause: core.ErrIndexExists, why: `"i1"`},
 		{name: "whose name an index has in another case of the letters", index: indexOf("I1", "t1", 0), cause: core.ErrIndexExists, why: `"i1"`},
 		{name: "whose name an index has, before it looks at its columns, one of which it names twice", index: indexOf("i1", "t1", 0, 0), cause: core.ErrIndexExists},
-		{name: "without a name", index: indexOf("", "t1", 0), cause: core.ErrInvalid, why: "index is empty"},
+		{name: "without a name", index: indexOf("", "t1", 0), cause: core.ErrInvalid, why: "invalid: malformed: change.create_index.index is empty"},
 		{name: "whose name holds the character NUL", index: indexOf("i\x00", "t1", 0), cause: core.ErrInvalid, why: "NUL"},
 		{name: "without columns", index: indexOf("i2", "t1"), cause: core.ErrInvalid, why: "has no columns"},
 		{name: "that names a column twice", index: indexOf("i2", "t1", 1, 0, 1), cause: core.ErrInvalid, why: "columns[2] lists column 1 twice"},
@@ -260,6 +260,21 @@ func TestTx_CreateIndex(t *testing.T) {
 			is.Equal(t, "t1(k*0,v) +i1(1): 1,10 | 2,20 | 3,10 | 4,40\nt2(a*0,b*1,c): 1,1,100", read(t, d))
 		})
 	}
+
+	t.Run("should refuse an index whose statement in the cache is longer than the length limit, with its length and the limit, and go on", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: 1000})
+		transact(t, d, start...)
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		// The statement in the cache is `CREATE INDEX "<name>" ON "t1" ("k")`, 29 bytes and the name.
+		err = tx.CreateIndex(t.Context(), indexOf(strings.Repeat("i", 1000), "t1", 0))
+		is.Error(t, core.ErrInvalid, err)
+		is.True(t, strings.Contains(err.Error(), "an index whose statement in the cache is 1029 bytes, where the limit is 1000"), err.Error())
+		upsert("t1", 4, 40)(t, tx)
+		is.NotError(t, tx.Commit(t.Context()))
+	})
 
 	t.Run("should take an index of 250 columns, and scan by it with every column of its key pinned", func(t *testing.T) {
 		w := newWorld(t)
@@ -652,6 +667,29 @@ func TestReplay_indexes(t *testing.T) {
 
 	})
 
+	t.Run("should apply an index of as many columns as this version takes", func(t *testing.T) {
+		w := newWorld(t)
+		l := newHandLog(t, w)
+		l.base()
+		columns := make([]any, core.MaxIndexColumns)
+		for i := range columns {
+			columns[i] = i + 1
+		}
+		l.commit(func(cw *format.CommitWriter) {
+			is.NotError(t, cw.CreateTable(tableOf("wide", 1, manyColumns(core.MaxIndexColumns+1)...)))
+			is.NotError(t, cw.CreateIndex(indexOf("iw", "wide", columns...)))
+		})
+		l.publish()
+
+		d := w.serve(t, "a", core.Options{})
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		ci, err := r.Index(t.Context(), "iw")
+		is.NotError(t, err)
+		is.Equal(t, core.MaxIndexColumns, len(ci.GetColumns()))
+		is.NotError(t, r.Close(t.Context()))
+	})
+
 	many := make([]any, 251)
 	for i := range many {
 		many[i] = i
@@ -816,6 +854,9 @@ func TestOpen_cache_indexes(t *testing.T) {
 			columns int
 			row     string
 			why     string
+			// reserved is the name of an index that the statement makes with a reserved name, which a
+			// call of an index by its name does not find, and which stops nothing.
+			reserved string
 		}{
 			{statement: "create unique index u on t1 (v)", table: "t1", index: "u", columns: 3, row: "1,1,1", why: `its table "t1" has the index "u", which is unique, partial, of a constraint, or of a reserved name`},
 			{statement: "create index p on t1 (v) where v > 1", table: "t1", index: "p", columns: 3, row: "1,1,1", why: `its table "t1" has the index "p", which is unique, partial`},
@@ -824,7 +865,7 @@ func TestOpen_cache_indexes(t *testing.T) {
 			{statement: "create index n on t1 (w collate nocase)", table: "t1", index: "n", columns: 3, row: "1,1,1", why: `the index "n" of its table "t1" has the collation "nocase"`},
 			{statement: "create index n on t1 (v, w collate rtrim desc)", table: "t1", index: "n", columns: 3, row: "1,1,1", why: `the index "n" of its table "t1" has the collation "rtrim"`},
 			{statement: "create index d on t1 (v, k, v)", table: "t1", index: "d", columns: 3, row: "1,1,1", why: `the index "d" of its table "t1" holds the column "v" twice`},
-			{statement: "create index s4ql_i on t1 (v)", table: "t1", columns: 3, row: "1,1,1", why: `its table "t1" has the index "s4ql_i", which is unique, partial, of a constraint, or of a reserved name`},
+			{statement: "create index s4ql_i on t1 (v)", table: "t1", columns: 3, row: "1,1,1", why: `its table "t1" has the index "s4ql_i", which is unique, partial, of a constraint, or of a reserved name`, reserved: "S4QL_I"},
 		} {
 			for _, write := range []bool{false, true} {
 				// A get, a table, and the tables read no index, so they answer. Every other call on the
@@ -873,6 +914,10 @@ func TestOpen_cache_indexes(t *testing.T) {
 						is.NotError(t, err, what)
 						is.True(t, slices.ContainsFunc(tables, func(ct *s4qlpb.CreateTable) bool { return ct.GetTable() == test.table }), what)
 					}
+					if test.reserved != "" {
+						_, err := r.Index(t.Context(), test.reserved)
+						is.Error(t, core.ErrNoIndex, err, what)
+					}
 					is.True(t, !isDone(d), what)
 
 					scanErr := func(rows iter.Seq2[[]*s4qlpb.Value, error]) error {
@@ -917,6 +962,25 @@ func TestOpen_cache_indexes(t *testing.T) {
 				}
 			}
 		}
+	})
+
+	t.Run("should stop for good at an index by its name when another process adds to the cache an index on a table of a reserved name", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"))
+		c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("create table s4ql_x (k int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("create index ix on s4ql_x (k)"))
+		is.NotError(t, c.Close())
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		_, err = tx.Index(t.Context(), "IX")
+		is.Error(t, core.ErrCacheVersion, err)
+		is.True(t, strings.Contains(err.Error(), `its index "IX" is on the table "s4ql_x", which cannot be found`), err.Error())
+		_ = tx.Rollback(t.Context())
+		is.True(t, isDone(d))
 	})
 }
 
@@ -1462,6 +1526,7 @@ func TestScanIndex(t *testing.T) {
 		{name: "that pins a column to no value", table: "t", scan: core.IndexScan{Index: "i", Equal: []*s4qlpb.Value{nil}}, cause: core.ErrInvalid},
 		{name: "that pins a column to a value of no kind", table: "t", scan: core.IndexScan{Index: "i", Equal: []*s4qlpb.Value{{}}}, cause: core.ErrInvalid},
 		{name: "with a bound of another storage class", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1), Lower: closed(1)}, cause: core.ErrInvalid, why: `in the column "c2"`},
+		{name: "with a valid lower bound and an upper bound of another storage class", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1), Lower: closed("a"), Upper: closed(1)}, cause: core.ErrInvalid, why: `in the column "c2"`},
 		{name: "with a bound that is text with the character NUL", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1), Upper: closed("a\x00")}, cause: core.ErrInvalid, why: "NUL"},
 		{name: "with a bound of no kind", table: "t", scan: core.IndexScan{Index: "i", Upper: core.Bound{Value: &s4qlpb.Value{}}}, cause: core.ErrInvalid},
 		{name: "that pins a column to text that is longer than SQLite takes", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1, strings.Repeat("x", 1001))}, cause: core.ErrTooBig},
