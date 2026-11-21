@@ -1,11 +1,19 @@
 package core
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/ctxtest"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 )
 
 func TestTable_checkIndexed(t *testing.T) {
@@ -37,7 +45,7 @@ func TestTable_checkIndexed(t *testing.T) {
 				return err
 			},
 			"scan": func() error {
-				for _, err := range c.scan(tb) {
+				for _, err := range c.scan(t.Context(), tb) {
 					return err
 				}
 				return nil
@@ -70,5 +78,47 @@ func TestTable_checkIndexed(t *testing.T) {
 		sql, _, err := tb.scanSQL(nil, IndexScan{}, bugs{})
 		is.NotError(t, err)
 		is.Equal(t, `select * from main."t1" indexed by "sqlite_autoindex_t1_1" order by "k"`, sql)
+	})
+}
+
+func TestConn_step(t *testing.T) {
+	t.Run("should put the length limit of the connection back after the step of a sort, when it gives a row, when SQLite cannot write the files of the sort, and when the context ends", func(t *testing.T) {
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		defer func() { is.NotError(t, vfs.Close()) }()
+		c, err := openConn(sqlite.OpenVFS, filepath.Join(t.TempDir(), "cache.db"), Options{VFS: vfs.Name(), BusyTimeout: time.Second, LengthLimit: 1000})
+		is.NotError(t, err)
+		defer func() { is.NotError(t, c.close()) }()
+		// 5,000 rows of 900 bytes each are 4.5 MB, and SQLite sorts up to 2 MB, the size of its page
+		// cache, in memory, and the rest in temporary files.
+		is.NotError(t, c.exec("create table t (k int primary key, v int, b blob) strict, without rowid"))
+		is.NotError(t, c.exec("with recursive c (x) as (select 0 union all select x + 1 from c where x < 4999) insert into t select x, (x * 7919) % 5000, randomblob(900) from c"))
+		// tooLong makes a blob that is longer than the limit of the connection, and shorter than
+		// SQLite's largest limit.
+		tooLong := func() error {
+			return c.query("select zeroblob(2000)", func(*sqlite.Stmt) error { return nil })
+		}
+		is.True(t, isTooBig(tooLong()))
+
+		for _, test := range []struct {
+			name  string
+			ctx   context.Context
+			fault faultvfs.Fault
+			check func(err error) bool
+		}{
+			{name: "a row", ctx: t.Context(), check: func(err error) bool { return err == nil }},
+			{name: "a write of a temporary file that fails", ctx: t.Context(), fault: faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.Temp},
+				check: func(err error) bool { return classify(err) == kindLocal }},
+			{name: "the end of the context", ctx: ctxtest.EndAtErr(t.Context(), 2), check: func(err error) bool { return errors.Is(err, context.Canceled) }},
+		} {
+			s, err := c.prepare("select k, +v, b from t order by +v")
+			is.NotError(t, err)
+			vfs.Fail(test.fault)
+			_, err = c.step(test.ctx, s, true)
+			vfs.Fail(faultvfs.Fault{})
+			is.True(t, test.check(err), fmt.Sprint(test.name, ": ", err))
+			_ = s.Finalize()
+			is.True(t, isTooBig(tooLong()), test.name)
+		}
 	})
 }

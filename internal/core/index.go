@@ -821,6 +821,11 @@ func (t *table) sortColumns(scan IndexScan) string {
 
 // countSQL is the statement that counts the rows of the scan of [table.scanSQL], by the same
 // conditions on the same index, with the arguments of its parameters, which are the same.
+//
+// It counts the values of the first column of the primary key, which no row has NULL in, and not
+// count(*): SQLite runs a count(*) without conditions in one instruction of its virtual machine,
+// which reads the whole table and which the progress handler of [sqlite.Stmt.StepContext] cannot
+// stop, and a count of a column in a loop of instructions, which it stops.
 func (t *table) countSQL(ix *index, scan IndexScan, bugs bugs) (string, []any) {
 	key := t.scanKey(ix, bugs)
 	names := make([]string, len(key))
@@ -832,7 +837,7 @@ func (t *table) countSQL(ix *index, scan IndexScan, bugs bugs) (string, []any) {
 		by = ix.name
 	}
 	conditions, args := scanConditions(names, key, scan, bugs)
-	sql := fmt.Sprint("select count(*) from main.", quote(t.name), " indexed by ", quote(by))
+	sql := fmt.Sprint("select count(", quote(t.columns[t.key[0]].name), ") from main.", quote(t.name), " indexed by ", quote(by))
 	if len(conditions) > 0 {
 		sql += " where " + strings.Join(conditions, " and ")
 	}
@@ -846,7 +851,11 @@ func (t *table) countSQL(ix *index, scan IndexScan, bugs bugs) (string, []any) {
 // gives: [conn.unread] counts the rest. The statement is given back also when a panic or
 // [runtime.Goexit] in the loop over the scan unwinds through it: a statement that stays stepped
 // would hold its transaction's snapshot and locks, and the connection could not close.
-func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.Seq2[[]*s4qlpb.Value, error] {
+//
+// SQLite stops the first step of the scan once ctx has ended, as [conn.step] says, and the sequence
+// then ends with the error of ctx. The steps after the first each read one row, from the index or
+// from the sort, and run to their end.
+func (c *conn) scanIndex(ctx context.Context, t *table, ix *index, scan IndexScan, read *int64) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		sql, args, err := t.scanSQL(ix, scan, c.bugs)
 		if err != nil {
@@ -869,11 +878,16 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 				_ = c.rest(sql, s)
 			}
 		}()
-		// sorting is set until the first step of a scan with Order, in which SQLite sorts.
-		sorting := len(scan.Order) > 0
+		first := true
 		for {
-			ok, err := c.step(s, sorting)
-			sorting = false
+			var ok bool
+			var err error
+			if first {
+				ok, err = c.step(ctx, s, len(scan.Order) > 0)
+				first = false
+			} else {
+				ok, err = s.Step()
+			}
 			if err != nil {
 				_ = s.Finalize()
 				s = nil
@@ -905,20 +919,27 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 	}
 }
 
-// step the statement s of a scan, and report whether it has a row. A step in which SQLite sorts, the
-// first of a scan with Order, runs under SQLite's largest length limit, and the limit of the
-// connection is put back after it. SQLite builds a record of what it sorts for each row, under the
-// length limit, and that record is longer than the row is in the table where a real of the row
-// holds an integer, which the table keeps in fewer bytes: without the larger limit, a row that the
-// table holds under a small limit could not be sorted. The limit bounds nothing else in the step.
-func (c *conn) step(s *sqlite.Stmt, sorting bool) (bool, error) {
+// step the statement s of a scan for the first time, and report whether it has a row. It is the step
+// that reads the most: SQLite reads and sorts every row of the scan in it if the scan is sorting,
+// with Order, or if its key has more than 63 columns that the scan does not pin. So SQLite stops it
+// once ctx has ended, with [sqlite.Stmt.StepContext], and it then fails with the error of ctx. The
+// statement only reads, so the transaction of the connection and its writes stay: SQLite rolls
+// nothing back for a read that it stops.
+//
+// The step of a sorting scan runs under SQLite's largest length limit, and the limit of the
+// connection is put back after it, also when it fails. SQLite builds a record of what it sorts for
+// each row, under the length limit, and that record is longer than the row is in the table where a
+// real of the row holds an integer, which the table keeps in fewer bytes: without the larger limit,
+// a row that the table holds under a small limit could not be sorted. The limit bounds nothing else
+// in the step.
+func (c *conn) step(ctx context.Context, s *sqlite.Stmt, sorting bool) (bool, error) {
 	if !sorting || c.limit == maxLength {
-		return s.Step()
+		return s.StepContext(ctx)
 	}
 	if err := c.c.SetLengthLimit(maxLength); err != nil {
 		return false, err
 	}
-	ok, err := s.Step()
+	ok, err := s.StepContext(ctx)
 	if limitErr := c.c.SetLengthLimit(c.limit); err == nil && limitErr != nil {
 		return false, limitErr
 	}
@@ -930,14 +951,15 @@ func (c *conn) step(s *sqlite.Stmt, sorting bool) (bool, error) {
 // the cache counts by the same conditions on the same index, in the same transaction, less those,
 // and for every other scan none. The cache read them all to sort them, and does not say how many
 // they were, and to step through the rest would cost a call for each. The statement of the scan is
-// at rest when it is called. A count that fails gives its error, and no rows.
-func (c *conn) unread(t *table, ix *index, scan IndexScan, given int64) (int64, error) {
+// at rest when it is called. A count that fails gives its error, and no rows. SQLite stops the count
+// once ctx has ended, and it then fails with the error of ctx, as [conn.step] says.
+func (c *conn) unread(ctx context.Context, t *table, ix *index, scan IndexScan, given int64) (int64, error) {
 	if len(scan.Order) == 0 {
 		return 0, nil
 	}
 	sql, args := t.countSQL(ix, scan, c.bugs)
 	var rows int64
-	err := c.query(sql, func(s *sqlite.Stmt) error {
+	err := c.queryContext(ctx, sql, func(s *sqlite.Stmt) error {
 		rows = s.ColumnInt64(0)
 		return nil
 	}, args...)
@@ -984,6 +1006,10 @@ func scanned(t *table, scan IndexScan, limit int, bugs bugs) (*index, error) {
 // page cache, and in temporary files beyond that, so a scan of any number of rows needs no more
 // memory of Go than one row at a time. RowsRead counts every row that the sort read, also when the
 // loop over the sequence stops early.
+//
+// SQLite stops the sort once ctx has ended, within 10,000 instructions of its virtual machine,
+// however many rows it sorts, and the sequence then ends with the error of ctx, [context.Canceled]
+// or [context.DeadlineExceeded], and no row. The transaction goes on.
 func (r *ReadTx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return r.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
 		ix, err := scanned(t, scan, r.c.limit, r.c.bugs)
@@ -1043,7 +1069,7 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 		}
 		var given int64
 		stopped := false
-		for row, err := range r.c.scanIndex(t, ix, scan, &r.read) {
+		for row, err := range r.c.scanIndex(ctx, t, ix, scan, &r.read) {
 			if err == nil {
 				// A read that is running when the instance stops is aborted.
 				err = r.d.stoppedError()
@@ -1062,7 +1088,7 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 		if stopped && ctx.Err() == nil {
 			// The sequence has ended, so an error of the count cannot be given through it. A local
 			// failure stops the instance all the same.
-			unread, err := r.c.unread(t, ix, scan, given)
+			unread, err := r.c.unread(ctx, t, ix, scan, given)
 			r.read += unread
 			_ = r.d.cacheError(ctx, operation, err)
 		}
@@ -1087,16 +1113,18 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 // which is every row within its bounds, however early the loop over it stops: once the scan has
 // given its first row, or has ended without one. When the loop stops early, the cache counts the
 // rows of the scan once more, by the index alone, to know how many those were. It does not count
-// them when the loop ends by a panic, or after the context has ended: RowsRead then has the rows
-// that the loop stepped to.
+// them when the loop ends by a panic, or after the context has ended, which also stops a count that
+// runs: RowsRead then has the rows that the loop stepped to.
 func (r *ReadTx) RowsRead() int64 {
 	return r.read
 }
 
 // ScanIndex is [Tx.Scan] by an index of the table, or by its primary key, as the transaction sees
 // the rows, and as [ReadTx.ScanIndex] reads and fails, also where SQLite sorts the rows and so
-// reads every row within the bounds before it gives the first. The transaction must not create or
-// drop an index or a table while it scans. A loop over a scan with Order that writes rows of the
+// reads every row within the bounds before it gives the first, and as it stops the sort when ctx
+// ends: the sequence then ends with the error of ctx, which does not fail the transaction, and the
+// transaction's writes stay. The transaction must not create or drop an index or a table while it
+// scans. A loop over a scan with Order that writes rows of the
 // table and then stops early makes [Tx.RowsRead] count the rows as they are when it stops.
 func (tx *Tx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return tx.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
@@ -1127,7 +1155,12 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 		}
 		var given int64
 		stopped := false
-		for row, err := range tx.c.scanIndex(t, ix, scan, &tx.read) {
+		for row, err := range tx.c.scanIndex(ctx, t, ix, scan, &tx.read) {
+			if ended(ctx, err) {
+				// SQLite stopped a read for the context, which leaves the transaction as it was.
+				yield(nil, err)
+				return
+			}
 			if err != nil {
 				yield(nil, tx.fail(ctx, operation, err))
 				return
@@ -1147,10 +1180,13 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 		}
 		if stopped && ctx.Err() == nil {
 			// The sequence has ended, so an error of the count cannot be given through it. It fails
-			// the transaction as an error of the scan does.
-			unread, err := tx.c.unread(t, ix, scan, given)
+			// the transaction as an error of the scan does, and the error of the context does not, as
+			// it does not for the scan.
+			unread, err := tx.c.unread(ctx, t, ix, scan, given)
 			tx.read += unread
-			_ = tx.fail(ctx, operation, err)
+			if !ended(ctx, err) {
+				_ = tx.fail(ctx, operation, err)
+			}
 		}
 	}
 }

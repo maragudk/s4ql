@@ -17,6 +17,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/ctxtest"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite"
@@ -2419,6 +2420,214 @@ func TestScanIndex_order(t *testing.T) {
 		_ = d.Close(t.Context())
 		is.NotError(t, vfs.Close())
 	})
+}
+
+// TestScanIndex_context ends the context of a scan with an order at points of SQLite's work, with
+// [ctxtest.EndAtErr]: within the sort of its first step, and within the count of the rows that it read
+// and did not give, where SQLite's progress handler looks at the context every 10,000 instructions.
+// So each test stops SQLite at the same point on any machine.
+func TestScanIndex_context(t *testing.T) {
+	// The table big has 10,000 rows, which SQLite sorts in about 100,000 instructions and counts in
+	// about 40,000, and its column c1 orders them otherwise than their key: 7919 is a prime that
+	// does not divide 10,000, so each value from 0 to 9,999 is in one row.
+	const rows = 10_000
+	big := typedTable("big", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_TEXT)
+	fill := func(t *testing.T, d *core.DB, body string) {
+		t.Helper()
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), big))
+			for k := range rows {
+				is.NotError(t, tx.Upsert(t.Context(), "big", row(k, (k*7919)%rows, body, "")))
+			}
+		})
+	}
+	sorted := core.IndexScan{Order: orderOf(desc(1))}
+	type scanner interface {
+		ScanIndex(ctx context.Context, table string, scan core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error]
+		RowsRead() int64
+	}
+	// begin a read transaction, or a write transaction that has written a row of its own, and give
+	// it with the number of rows of big that it sees.
+	begin := func(t *testing.T, d *core.DB, read bool) (scanner, *core.Tx, int) {
+		t.Helper()
+		if read {
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			t.Cleanup(func() { _ = r.Close(t.Context()) })
+			return r, nil, rows
+		}
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = tx.Rollback(t.Context()) })
+		is.NotError(t, tx.Upsert(t.Context(), "big", row(rows, -1, "tx", "")))
+		return tx, tx, rows + 1
+	}
+	// all scans big to its end, checks that the rows come in the order of the scan, and gives their
+	// number and the number of looks of SQLite at the context in the first step of the scan, in which
+	// it sorts.
+	all := func(t *testing.T, s scanner) (n, looks int) {
+		t.Helper()
+		ctx := ctxtest.EndAtErr(t.Context(), math.MaxInt)
+		previous := int64(math.MaxInt64)
+		for row, err := range s.ScanIndex(ctx, "big", sorted) {
+			is.NotError(t, err)
+			if n == 0 {
+				looks = ctx.Calls()
+			}
+			is.True(t, row[1].GetInteger() < previous, "the rows in the order of the scan")
+			previous = row[1].GetInteger()
+			n++
+		}
+		return n, looks
+	}
+
+	for _, read := range []bool{true, false} {
+		t.Run(fmt.Sprint("should end a sort with the error of the context at the look of SQLite at which the context ends, give no row, and leave the transaction going on, in a read transaction ", read), func(t *testing.T) {
+			// The length limit is the smallest that SQLite takes, so the step that sorts raises it, and
+			// puts it back after it.
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{LengthLimit: 1000})
+			fill(t, d, "x")
+			s, tx, total := begin(t, d, read)
+
+			n, looks := all(t, s)
+			is.Equal(t, total, n)
+			is.True(t, looks >= 3, fmt.Sprint("SQLite looked at the context ", looks, " times in the sort"))
+
+			for _, at := range []int{1, 2, 3} {
+				ctx := ctxtest.EndAtErr(t.Context(), at)
+				before, n := s.RowsRead(), 0
+				for row, err := range s.ScanIndex(ctx, "big", sorted) {
+					n++
+					is.True(t, row == nil)
+					is.Error(t, context.Canceled, err)
+				}
+				is.Equal(t, 1, n)
+				// The scan gave no row, and SQLite's sort counts none.
+				is.Equal(t, before, s.RowsRead())
+				// The same scan without the context runs to its end, on the same connection.
+				n, _ = all(t, s)
+				is.Equal(t, total, n)
+			}
+			// A deadline that has passed ends the scan in the same way.
+			ctx, cancel := context.WithTimeout(t.Context(), -time.Second)
+			defer cancel()
+			for _, err := range s.ScanIndex(ctx, "big", sorted) {
+				is.Error(t, context.DeadlineExceeded, err)
+			}
+			if read {
+				return
+			}
+
+			// The transaction goes on: it reads its own row and writes another, and SQLite refuses a
+			// row whose record is longer than the limit of the connection, which the sort put back.
+			got, err := tx.Get(t.Context(), "big", row(rows))
+			is.NotError(t, err)
+			is.Equal(t, int64(-1), got[1].GetInteger())
+			is.NotError(t, tx.Upsert(t.Context(), "big", row(rows+1, -2, "tx", "")))
+			is.Error(t, core.ErrTooBig, tx.Upsert(t.Context(), "big", row(rows+2, -3, strings.Repeat("a", 600), strings.Repeat("b", 600))))
+			is.NotError(t, tx.Commit(t.Context()))
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			defer func() { is.NotError(t, r.Close(t.Context())) }()
+			n, _ = all(t, r)
+			is.Equal(t, rows+2, n)
+		})
+
+		t.Run(fmt.Sprint("should end the count of the rows that a sort read and did not give with the error of the context, count none of them, and leave the transaction going on, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fill(t, d, "x")
+			s, tx, total := begin(t, d, read)
+
+			// A loop that stops at the first row makes the cache count the rows, after it has looked at
+			// the context once more to see that it has not ended. probe gives the number of looks of
+			// the context in the sort, and the count of a loop that does not end it counts every row.
+			probe := ctxtest.EndAtErr(t.Context(), math.MaxInt)
+			before, looks := s.RowsRead(), 0
+			for _, err := range s.ScanIndex(probe, "big", sorted) {
+				is.NotError(t, err)
+				looks = probe.Calls()
+				break
+			}
+			is.Equal(t, int64(total), s.RowsRead()-before)
+			is.True(t, probe.Calls() > looks+1, fmt.Sprint("SQLite looked at the context ", probe.Calls()-looks-1, " times in the count"))
+
+			// The context ends at the first look of SQLite in the count, which then counts nothing, and
+			// the scan has read the row that it gave.
+			ctx := ctxtest.EndAtErr(t.Context(), looks+2)
+			before = s.RowsRead()
+			for _, err := range s.ScanIndex(ctx, "big", sorted) {
+				is.NotError(t, err)
+				break
+			}
+			is.Error(t, context.Canceled, ctx.Err())
+			is.Equal(t, int64(1), s.RowsRead()-before)
+
+			// The transaction goes on, and so does the instance.
+			n, _ := all(t, s)
+			is.Equal(t, total, n)
+			is.True(t, !isDone(d))
+			if tx != nil {
+				is.NotError(t, tx.Upsert(t.Context(), "big", row(rows+1, -2, "tx", "")))
+				is.NotError(t, tx.Commit(t.Context()))
+			}
+		})
+
+		t.Run(fmt.Sprint("should not count the rows that a sort read and did not give when the context has ended before the loop over it stops, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fill(t, d, "x")
+			s, tx, _ := begin(t, d, read)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			before := s.RowsRead()
+			for _, err := range s.ScanIndex(ctx, "big", sorted) {
+				is.NotError(t, err)
+				cancel()
+				break
+			}
+			is.Equal(t, int64(1), s.RowsRead()-before)
+			if tx != nil {
+				is.NotError(t, tx.Upsert(t.Context(), "big", row(rows+1, -2, "tx", "")))
+				is.NotError(t, tx.Commit(t.Context()))
+			}
+		})
+
+		t.Run(fmt.Sprint("should stop the instance as for a local failure, count none of the rows, and fail a write transaction, when the count of the rows that a sort read and did not give cannot read the cache, in a read transaction ", read), func(t *testing.T) {
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			// The rows are larger than the page cache, so the count reads pages of the cache again.
+			fill(t, d, strings.Repeat("x", 400))
+			is.NotError(t, d.Close(t.Context()))
+			o := core.Options{}
+			o.VFS = vfs.Name()
+			d = w.serve(t, "a", o)
+			s, tx, _ := begin(t, d, read)
+
+			before := s.RowsRead()
+			for _, err := range s.ScanIndex(t.Context(), "big", sorted) {
+				is.NotError(t, err)
+				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL})
+				break
+			}
+			vfs.Fail(faultvfs.Fault{})
+			is.True(t, vfs.Failures() > 0, "no read of the cache failed")
+			is.Equal(t, int64(1), s.RowsRead()-before)
+			is.True(t, isDone(d), "the instance stopped")
+			if tx != nil {
+				err := tx.Upsert(t.Context(), "big", row(rows+1, -2, "tx", ""))
+				is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+				is.True(t, strings.Contains(err.Error(), "can only be rolled back"), err.Error())
+				_ = tx.Rollback(t.Context())
+			}
+			_ = d.Close(t.Context())
+			is.NotError(t, vfs.Close())
+		})
+	}
 }
 
 // indexFault is a transaction of the fault tests of indexes, on top of [indexFaultBase].
