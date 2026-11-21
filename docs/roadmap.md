@@ -446,7 +446,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 12: a value on the left of a comparison
 
-Status: agreed on 2026-11-20, not built.
+Status: built on 2026-11-21, with its generated checks; mutation testing is still to come. The statement pass, the engine, and the `database/sql` driver run a comparison with its literal or `?` on the left and its column on the right, in the `where` of a `select`, an `update`, and a `delete`, and the engine uses the primary key and the indexes for it as for the other order. It is checked by table tests against SQLite. Generated conditions of both orders run through every path that can serve them, in the engine's differential tests and in the driver's against mattn/go-sqlite3, and the engine's choice is compared with the model of the rules. The golden plans hold goqite's receive query in both orders. The simulation finds a planted bug, `unturnedBound`, and an independent review checked the branch with a random test of its own.
 
 ```sql
 select v1 from t1 where 5 < v1;
