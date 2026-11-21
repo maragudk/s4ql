@@ -231,7 +231,7 @@ func TestTx_CreateIndex(t *testing.T) {
 		{name: "whose name an index has", index: indexOf("i1", "t2", 0), cause: core.ErrIndexExists, why: `"i1"`},
 		{name: "whose name an index has in another case of the letters", index: indexOf("I1", "t1", 0), cause: core.ErrIndexExists, why: `"i1"`},
 		{name: "whose name an index has, before it looks at its columns, one of which it names twice", index: indexOf("i1", "t1", 0, 0), cause: core.ErrIndexExists},
-		{name: "without a name", index: indexOf("", "t1", 0), cause: core.ErrInvalid, why: "index is empty"},
+		{name: "without a name", index: indexOf("", "t1", 0), cause: core.ErrInvalid, why: "invalid: malformed: change.create_index.index is empty"},
 		{name: "whose name holds the character NUL", index: indexOf("i\x00", "t1", 0), cause: core.ErrInvalid, why: "NUL"},
 		{name: "without columns", index: indexOf("i2", "t1"), cause: core.ErrInvalid, why: "has no columns"},
 		{name: "that names a column twice", index: indexOf("i2", "t1", 1, 0, 1), cause: core.ErrInvalid, why: "columns[2] lists column 1 twice"},
