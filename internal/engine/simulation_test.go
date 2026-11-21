@@ -2589,7 +2589,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 	}{
 		// An insert of a write transaction that replaces a row succeeds, where SQLite fails.
 		{"skipUnique", defaultWorkload, "default", stmttest.Tables, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed", "(write), which began at commit"}},
-		{"ackUnknown", defaultWorkload, "default", stmttest.Mixed, []string{"is not in the log"}},
+		{"ackUnknown", defaultWorkload, "default", stmttest.Tables, []string{"is not in the log"}},
 		{"checkOutside", hammerWorkload, "hammer", stmttest.Tables, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A write transaction left open keeps the instance from a write, and from a close that
 		// releases the lease, so the next instance never runs the queries of its connections.
@@ -2663,7 +2663,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// 2026-11-20, with the sequence of every second seed indexed, 19 found the bug, each by the
 		// refusal of the core, and the second of them is seed 23; with the bounds of the key of updates
 		// and deletes, 22, and with the clauses of slice 10 and slices 11 and 12 too, 15.
-		{"pinByPlace", defaultWorkload, "default", stmttest.Indexes, []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
+		{"pinByPlace", hammerWorkload, "hammer", stmttest.Indexes, []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
 		// another count; and the rows that it should have changed make later statements differ.
