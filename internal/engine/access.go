@@ -41,18 +41,17 @@ type access struct {
 	by []core.KeyColumn
 }
 
-// ordering is how the rows of an [access] come in the order of the ORDER BY of their query.
+// ordering is how the rows of an [access] come in the order of the ORDER BY of their query. The zero
+// value is the ordering of a statement without ORDER BY: its rows come in the order of the key of
+// its access, or in its reverse, as the engine draws for each query.
 type ordering int
 
 const (
-	// unordered is the ordering of a statement without ORDER BY: its rows come in the order of the
-	// key of its access, or in its reverse, as the engine draws for each query.
-	unordered ordering = iota
 	// delivered is the ordering of an access whose key holds the rows in the order of the ORDER BY,
 	// forward or backward, as [delivers] says: the scan reads them in that direction, nothing sorts,
 	// and the rows that tie come in the order in which the key holds them. An access of no row, and of
 	// the one row of a primary key, delivers every order.
-	delivered
+	delivered ordering = iota + 1
 	// sorted is the ordering of an access whose rows the storage sorts, by the columns of the ORDER
 	// BY, as [core.IndexScan] says for its Order: it reads every row of the access before it gives the
 	// first. The rows that tie come in the order of the primary key, or in its reverse, as the engine
