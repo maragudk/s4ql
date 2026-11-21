@@ -724,6 +724,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			return
 		}
 		p.reachWhere(sel, runs, got, o, kind, columns, count)
+		p.reachOrder(sel, runs, got, o, kind, columns, count)
 		for _, out := range got.runs() {
 			null := out.null
 			if got.call == callQueryRow && out.failed == "" {
@@ -860,6 +861,66 @@ func (p *pair) reachWhere(sel *stmt.Select, runs [][]any, got outcome, o runner,
 			count("WHERE that gives every row of a table with rows")
 		default:
 			count("WHERE that gives some rows of a table")
+		}
+	}
+}
+
+// reachOrder counts what the select sel with ORDER BY or LIMIT, of slice 13, with the arguments of
+// each run, whose outcome of s4ql is got, reaches on its table with the columns on o, as [pair.reach]
+// says, with the kind of each outcome as kind gives it: for each run that s4ql takes to the instance,
+// a LIMIT by an argument, and an argument of LIMIT that s4ql refuses, by what it is, as
+// [limitRefusal] names it; and for a query that reads its rows to their end and succeeds, an ORDER
+// BY that gives two rows or more, whose order the comparison with SQLite checks, and a LIMIT that
+// keeps some of the rows of the select without it and not all.
+func (p *pair) reachOrder(sel *stmt.Select, runs [][]any, got outcome, o runner, kind func(outcome) string, columns []stmttest.TableColumn, count func(string)) {
+	tb := p.tb
+	tb.Helper()
+	if sel.OrderBy == nil && !sel.Limited() {
+		return
+	}
+	for i, out := range got.runs() {
+		if i >= len(runs) {
+			break
+		}
+		if !reachesSelect(sel, runs[i]) {
+			continue
+		}
+		var bound []any
+		for _, a := range runs[i] {
+			if v, ok := stmttest.Integers([]any{a}); ok {
+				a = v[0]
+			}
+			bound = append(bound, converted(a))
+		}
+		if sel.Limit.Parameter > 0 {
+			if refusal := limitRefusal(columns, sel, bound); refusal != "" {
+				which, _, _ := strings.Cut(refusal[strings.Index(refusal, "which is ")+len("which is "):], ", for LIMIT")
+				count("LIMIT with an argument that is " + which + " " + kind(out))
+				continue
+			}
+			count("LIMIT by an argument " + kind(out))
+		}
+		query := got.call == callQuery || got.call == callPrepareQuery || got.call == callStmtQuery
+		if out.failed != "" || !query {
+			continue
+		}
+		if sel.OrderBy != nil && len(out.rows) >= 2 {
+			count("ORDER BY that gives two rows or more")
+		}
+		if !sel.Limited() {
+			continue
+		}
+		var limit int64
+		if sel.Limit.Parameter > 0 {
+			limit, _ = bound[sel.Limit.Parameter-1].(int64)
+		} else {
+			limit = int64(sel.Limit.Value.(stmt.Integer))
+		}
+		whole, args := stmttest.SelectText(&stmt.Select{Table: sel.Table, Where: sel.Where}, bound, "")
+		var n int64
+		is.NotError(tb, o.QueryRowContext(tb.Context(), "select count(*) from ("+whole+")", args...).Scan(&n))
+		if limit > 0 && limit < n {
+			count("LIMIT that cuts")
 		}
 	}
 }
@@ -3544,6 +3605,8 @@ func TestGenerated(t *testing.T) {
 // times can have gone, and the profiles of the clauses of slice 10, the defaults, and the values on
 // the left reach a kind that no other profile reaches three times. Each runs every variant of
 // [generated] once at least.
+// The profile of the ORDER BY runs 50 for its rarest refusals of an argument of LIMIT, a blob and
+// NULL, each about once in ten sequences.
 // The defaults and the transactions also reach the statements of a transaction while its rows are
 // open the most, of which a read-only transaction's insert is the rarest.
 func generatedOf(p *stmttest.Profile) uint64 {
@@ -3562,6 +3625,8 @@ func generatedOf(p *stmttest.Profile) uint64 {
 		return 20
 	case stmttest.Indexes:
 		return 16
+	case stmttest.Order:
+		return 50
 	case stmttest.Tables:
 		return 14
 	}
