@@ -1175,6 +1175,9 @@ func (p *pair) step(c stmttest.Call) string {
 		if failure := p.checkOrder(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
+		if failure := p.checkAccess(sel, args, got); failure != "" {
+			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
+		}
 	}
 	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
 	// except one that fails while SQLite steps it, which sets it to 0: a broken constraint, an insert,
@@ -1284,6 +1287,35 @@ func (p *pair) checkOrder(s *stmt.Select, args []any, got answer) string {
 			p.count("delivered select whose rows that tie came in the order of the key of its access")
 		}
 	}
+	return ""
+}
+
+// checkAccess of the rows got of the engine of the select s with the arguments args, which SQLite
+// gives as well: the access that the run reports, as [engine.Rows.Access] gives it, must be the
+// model's choice, as [stmttest.ChosenAccess] gives it for the indexes of the table as SQLite lists
+// them: the same candidate, the same pins and bounds, and delivered, in the same direction, or
+// sorted alike. [checkChoice] checks the rules on the indexes that SQLite lists, and this the choice
+// that the run made on the indexes that it read itself. An engine that forces a path is not checked.
+// It gives what differs, or "".
+func (p *pair) checkAccess(s *stmt.Select, args []any, got answer) string {
+	t, o := p.t, p.o
+	t.Helper()
+	if got.access == nil || p.i.e == nil || p.i.e.Forced() {
+		return ""
+	}
+	table, columns := o.columns(t, s.Table.Value)
+	if columns == nil {
+		return ""
+	}
+	_, indexes := o.tableIndexes(t, table, columns)
+	want, ok := stmttest.ChosenAccess(columns, indexes, s, args)
+	if !ok {
+		return ""
+	}
+	if a := accessOf(*got.access); !a.Same(want) {
+		return fmt.Sprintf("the run reads the rows by %v, and the model chooses %v", a, want)
+	}
+	p.count("select read by the access that the model chooses")
 	return ""
 }
 
@@ -2229,6 +2261,9 @@ func reachOrder(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 			}
 		}
 	}
+	if s.OrderBy != nil && got.err != tooBig {
+		reachKeyShapes(t, o, s, args, c, got, columns, count)
+	}
 	if !c.Query || got.err != "" {
 		return
 	}
@@ -2284,6 +2319,110 @@ func reachOrder(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 			if s.OrderBy != nil && ranks.rows[limit-1] == ranks.rows[limit] {
 				count("LIMIT that cuts a group of rows that tie")
 			}
+		}
+	}
+}
+
+// reachKeyShapes counts the shapes of the ORDER BY of the select s, with the arguments args, of the
+// call c, whose answer of the engine is got, against the keys of the indexes of its table, of the
+// columns in o, where a column that the WHERE pins, with = or with IS NULL on a column that takes
+// NULL, is taken out of the ORDER BY and of each key, as the rules take it out:
+//
+//   - "ORDER BY delivered around a pinned column", where the model's access delivers the order by a
+//     key of which the WHERE pins a column after one that it does not pin, and before one that the
+//     ORDER BY names;
+//   - for a query that gives two rows or more, "ORDER BY of the key of an index with a gap, over rows
+//     that the gap orders", where the ORDER BY names the first column of the key of an index and
+//     then later ones, in the directions of the key or all turned, but leaves out a column between
+//     them, and the rows of the select in the order of that key, up to the last column that the
+//     ORDER BY names, differ in the columns of the ORDER BY from SQLite's rows for the ORDER BY: so
+//     that a key that took the ORDER BY for its own order would give the rows in another order.
+func reachKeyShapes(t testing.TB, o *oracle, s *stmt.Select, args []any, c stmttest.Call, got answer, columns []stmttest.TableColumn, count func(string)) {
+	t.Helper()
+	table, _ := o.columns(t, s.Table.Value)
+	_, indexes := o.tableIndexes(t, table, columns)
+	pinned := map[int]bool{}
+	for _, w := range s.Where {
+		if at := stmttest.ColumnOf(columns, w.Column); at >= 0 && (w.Operator == stmt.OpEqual || w.Operator == stmt.OpIsNull && columns[at].Nullable) {
+			pinned[at] = true
+		}
+	}
+	unpinned := func(key []stmttest.IndexKeyColumn) []stmttest.IndexKeyColumn {
+		return slices.DeleteFunc(slices.Clone(key), func(k stmttest.IndexKeyColumn) bool { return pinned[k.Position] })
+	}
+	var by []stmttest.IndexKeyColumn
+	for _, oc := range s.OrderBy {
+		by = append(by, stmttest.IndexKeyColumn{Position: stmttest.ColumnOf(columns, oc.Name), Descending: oc.Descending})
+	}
+	by = unpinned(by)
+	if len(by) == 0 {
+		return
+	}
+	primary := slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })
+	keyOf := func(ix stmttest.TableIndex) []stmttest.IndexKeyColumn {
+		key := slices.Clone(ix.Columns)
+		if !slices.ContainsFunc(key, func(k stmttest.IndexKeyColumn) bool { return k.Position == primary }) {
+			key = append(key, stmttest.IndexKeyColumn{Position: primary})
+		}
+		return key
+	}
+	if with, ok := stmttest.ChosenAccess(columns, indexes, s, args); ok && with.Delivered && with.Index != "" {
+		for _, ix := range indexes {
+			if !strings.EqualFold(ix.Name, with.Index) {
+				continue
+			}
+			key := keyOf(ix)
+			last := -1
+			for i, k := range key {
+				if slices.ContainsFunc(by, func(b stmttest.IndexKeyColumn) bool { return b.Position == k.Position }) {
+					last = i
+				}
+			}
+			first := slices.IndexFunc(key, func(k stmttest.IndexKeyColumn) bool { return !pinned[k.Position] })
+			if first >= 0 && slices.ContainsFunc(key[first+1:max(last, first+1)], func(k stmttest.IndexKeyColumn) bool { return pinned[k.Position] }) {
+				count("ORDER BY delivered around a pinned column")
+			}
+			break
+		}
+	}
+	if !c.Query || got.err != "" || len(got.rows) < 2 {
+		return
+	}
+	for _, ix := range indexes {
+		key := unpinned(keyOf(ix))
+		if len(key) == 0 || key[0].Position != by[0].Position {
+			continue
+		}
+		turned := key[0].Descending != by[0].Descending
+		at, gap, ok := 0, false, true
+		for _, b := range by {
+			j := slices.IndexFunc(key[at:], func(k stmttest.IndexKeyColumn) bool { return k.Position == b.Position })
+			if j < 0 || key[at+j].Descending != (b.Descending != turned) {
+				ok = false
+				break
+			}
+			gap = gap || j > 0
+			at += j + 1
+		}
+		if !ok || !gap {
+			continue
+		}
+		var fill []stmt.OrderColumn
+		for _, k := range key[:at] {
+			fill = append(fill, stmt.OrderColumn{Name: stmt.Name{Value: columns[k.Position].Name}, Descending: k.Descending != turned})
+		}
+		q := orderedOf(s, args).unlimited()
+		var names []string
+		for _, oc := range s.OrderBy {
+			names = append(names, stmttest.Quote(oc.Name.Value))
+		}
+		q.columns = strings.Join(names, ", ")
+		want := o.unlimited(t, q.src(), q.args...)
+		q.by = strings.Join(orderTerms(fill), ", ")
+		keyed := o.unlimited(t, q.src(), q.args...)
+		if want.err == "" && keyed.err == "" && !slices.Equal(want.rows, keyed.rows) {
+			count("ORDER BY of the key of an index with a gap, over rows that the gap orders")
+			return
 		}
 	}
 }
@@ -3368,22 +3507,27 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		// on 2026-11-21, 21 and 15 of 30, each by the rows of a select or by the count of an update or
 		// a delete that differ from SQLite's, and for the bugs of slice 13 4 of 30, 5 of 12, and 6 of 9.
 		least int
-		// finds is in the failure of each sequence that finds the bug, or empty for any failure: for
-		// the bugs of slice 13, the rows of an ordered select at a place where SQLite has other rows,
-		// as [ordered.compare] says.
-		finds string
+		// finds holds a part of each failure that the bug causes, its own first, by which least of the
+		// sequences must find it, or is nil for any failure. For the bugs of slice 13 its own is the
+		// rows of an ordered select at a place where SQLite has other rows, as [ordered.compare] says,
+		// and a bug that changes the choice of an access is found by [pair.checkAccess] too, where the
+		// rows that it gives are SQLite's; for lastIndexWins its own is that of [pair.checkAccess].
+		finds []string
 		// sequences is the number of the n sequences that the bug runs, for a bug that its sequences
 		// find so often that fewer of them find it often enough, or 0 for all n.
 		sequences int
 	}{
-		{"pinByPlace", stmttest.Indexes, 7, "", 0},
-		{"unturnedBound", stmttest.ValueFirst, 5, "", 0},
-		{"turnMixed", stmttest.Order, 1, "where SQLite has the rows", 0},
-		{"limitFirst", stmttest.Order, 1, "where SQLite has the rows", 12},
-		{"ascendLast", stmttest.Order, 2, "where SQLite has the rows", 9},
+		{"pinByPlace", stmttest.Indexes, 7, nil, 0},
+		{"unturnedBound", stmttest.ValueFirst, 5, nil, 0},
+		{"turnMixed", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses"}, 0},
+		{"limitFirst", stmttest.Order, 1, []string{"where SQLite has the rows", "the select gives the rows"}, 12},
+		{"ascendLast", stmttest.Order, 2, []string{"where SQLite has the rows"}, 9},
+		{"skipGap", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses"}, 0},
+		{"lastIndexWins", stmttest.Order, 1, []string{"and the model chooses"}, 0},
 	} {
 		t.Run(b.name, func(t *testing.T) {
-			found := 0
+			// own is the number of the sequences that find the bug by its own failure.
+			found, own := 0, 0
 			first := ""
 			runs := n
 			if b.sequences > 0 {
@@ -3401,8 +3545,11 @@ func TestDifferential_plantedBugs(t *testing.T) {
 				if failure == "" {
 					continue
 				}
-				if !strings.Contains(failure, b.finds) {
-					t.Errorf("seed %v finds the bug by another failure than its own: %v", s, failure[max(0, len(failure)-2000):])
+				if b.finds != nil && !slices.ContainsFunc(b.finds, func(f string) bool { return strings.Contains(failure, f) }) {
+					t.Errorf("seed %v finds the bug by another failure than its own: %v", s, failure)
+				}
+				if b.finds == nil || strings.Contains(failure, b.finds[0]) {
+					own++
 				}
 				found++
 				if first == "" {
@@ -3414,9 +3561,9 @@ func TestDifferential_plantedBugs(t *testing.T) {
 				}
 				clean.close()
 			}
-			t.Logf("%v of %v sequences of the profile %v find the bug; the first finds: %v", found, runs, b.profile.Name, first)
+			t.Logf("%v of %v sequences of the profile %v find the bug, %v of them by its own failure; the first finds: %v", found, runs, b.profile.Name, own, first)
 			if !slow() && atDefault("length") {
-				is.True(t, found >= b.least, fmt.Sprint("the bug is found too rarely: ", found))
+				is.True(t, own >= b.least, fmt.Sprint("the bug is found by its own failure too rarely: ", own))
 			}
 		})
 	}

@@ -87,6 +87,15 @@ type bugs struct {
 	// ascendLast makes a sort of the rows of a query with ORDER BY sort by its last column ascending,
 	// also where the column is descending.
 	ascendLast bool
+	// skipGap makes a key deliver the order of an ORDER BY that names its columns with a gap, of slice
+	// 13, as if the columns of the key after the first that the ORDER BY names, and that it does not
+	// name, were not in the key, so that a key (x, y, z) delivers ORDER BY x, z, and the rows come in
+	// the order of y where x ties.
+	skipGap bool
+	// lastIndexWins makes the choice of an access, at run time, take the indexes of the table in the
+	// reverse of the order in which they were created, so that of two indexes that the rules rank
+	// alike, the one created last wins, where the rules choose the one created first.
+	lastIndexWins bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.
@@ -125,6 +134,24 @@ func turnedLike(key, by []core.KeyColumn) []core.KeyColumn {
 		turned[i].Descending = key[at].Descending != against
 	}
 	return turned
+}
+
+// skippedGaps is the key with each column after the first that the ORDER BY by names left out
+// where by does not name it, which the planted bug skipGap delivers by in place of key.
+func skippedGaps(key, by []core.KeyColumn) []core.KeyColumn {
+	named := func(k core.KeyColumn) bool {
+		return slices.ContainsFunc(by, func(c core.KeyColumn) bool { return c.Position == k.Position })
+	}
+	var kept []core.KeyColumn
+	matched := false
+	for _, k := range key {
+		if matched && !named(k) {
+			continue
+		}
+		matched = matched || named(k)
+		kept = append(kept, k)
+	}
+	return kept
 }
 
 // ascendedLast is the ORDER BY by with its last column ascending, which the planted bug ascendLast

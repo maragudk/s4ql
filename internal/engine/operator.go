@@ -799,7 +799,7 @@ func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Lim
 		}
 	}
 	b.order.limited = l != nil
-	b.order.turnMixed, b.order.ascendLast = b.how.bugs.turnMixed, b.how.bugs.ascendLast
+	b.order.turnMixed, b.order.ascendLast, b.order.skipGap = b.how.bugs.turnMixed, b.how.bugs.ascendLast, b.how.bugs.skipGap
 
 	if f != nil {
 		if err := b.values(f, conditions); err != nil {
@@ -1005,6 +1005,11 @@ func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []c
 	indexes, err := b.r.indexes(ctx, t.GetTable())
 	if err != nil {
 		return access{}, err
+	}
+	if b.how.bugs.lastIndexWins {
+		// The planted bug lastIndexWins.
+		indexes = slices.Clone(indexes)
+		slices.Reverse(indexes)
 	}
 	if p.kind == pathIndex {
 		if a, ok, err := forcedAccess(t, indexes, conditions, o, p, b.how.bugs); err != nil || ok {

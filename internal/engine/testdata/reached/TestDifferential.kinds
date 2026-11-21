@@ -457,3 +457,7 @@
 2	reached: sorted select whose rows that tie came in the order of the primary key
 4	reached: sorted select whose rows that tie came in the reverse of the order of the primary key
 10	reached: delivered select whose rows that tie came in the order of the key of its access
+1	reached: select read by the access that the model chooses
+1	reached: ORDER BY delivered around a pinned column
+1	reached: ORDER BY of the key of an index with a gap, over rows that the gap orders
+1	reached: ORDER BY with LIMIT read by an index that delivers the order with a pin beside an index that narrows a range

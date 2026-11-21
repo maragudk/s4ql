@@ -6,11 +6,11 @@
 mixed	16	5	createtable duplicate column name
 mixed	1	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
 mixed	2	=	excused: a literal longer than the length limit, checked against s4ql's rule
-mixed	337	=	excused: a value of another type than its column, checked against s4ql's rule
+mixed	336	=	excused: a value of another type than its column, checked against s4ql's rule
 mixed	17	=	excused: already exists after the start of a table, accepted
-mixed	207	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	208	=	excused: an argument that no column holds, checked against s4ql's rule
 mixed	5	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
-mixed	574	=	excused: the wrong number of arguments, checked against s4ql's rule
+mixed	573	=	excused: the wrong number of arguments, checked against s4ql's rule
 mixed	41	13	insert  values for 
 mixed	111	37	insert NOT NULL constraint failed
 mixed	38	12	insert values were supplied
@@ -43,10 +43,10 @@ mixed	15	5	reached: IS NOT NULL on the key ok
 mixed	11	3	reached: IS NULL on another column ok
 mixed	21	7	reached: IS NULL on the key ok
 mixed	13	4	reached: LIMIT 0
-mixed	31	10	reached: LIMIT above the number of rows
+mixed	33	11	reached: LIMIT above the number of rows
 mixed	22	7	reached: LIMIT by an argument ok
 mixed	4	1	reached: LIMIT of the number of rows
-mixed	61	20	reached: LIMIT run by every path
+mixed	63	21	reached: LIMIT run by every path
 mixed	5	1	reached: LIMIT that cuts
 mixed	4	1	reached: LIMIT with an argument that is NULL not supported
 mixed	4	1	reached: LIMIT with an argument that is a blob not supported
@@ -63,24 +63,24 @@ mixed	24	8	reached: NULL literal into a column that does not take NULL NOT NULL 
 mixed	8	2	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
 mixed	36	12	reached: NULL literal into a column that takes NULL ok
 mixed	47	15	reached: NULL literal into the key NOT NULL constraint failed
-mixed	65	21	reached: ORDER BY ascending ok
+mixed	64	21	reached: ORDER BY ascending ok
 mixed	60	20	reached: ORDER BY descending ok
-mixed	112	37	reached: ORDER BY of 1 columns ok
+mixed	111	37	reached: ORDER BY of 1 columns ok
 mixed	18	6	reached: ORDER BY of 2 columns ok
 mixed	8	2	reached: ORDER BY of 3 columns ok
 mixed	32	10	reached: ORDER BY of a column of type BLOB ok
 mixed	30	10	reached: ORDER BY of a column of type INT ok
 mixed	34	11	reached: ORDER BY of a column of type INTEGER ok
-mixed	42	14	reached: ORDER BY of a column of type REAL ok
+mixed	41	13	reached: ORDER BY of a column of type REAL ok
 mixed	34	11	reached: ORDER BY of a column of type TEXT ok
 mixed	26	8	reached: ORDER BY of a column that takes NULL ok
 mixed	14	4	reached: ORDER BY of a column that the WHERE pins ok
-mixed	21	7	reached: ORDER BY of a column that the table does not have no such column
+mixed	22	7	reached: ORDER BY of a column that the table does not have no such column
 mixed	13	4	reached: ORDER BY of mixed directions ok
-mixed	33	11	reached: ORDER BY or LIMIT with arguments that s4ql refuses wrong number of arguments
+mixed	32	10	reached: ORDER BY or LIMIT with arguments that s4ql refuses wrong number of arguments
 mixed	6	2	reached: ORDER BY over rows with NULL in its columns
-mixed	136	45	reached: ORDER BY run by every path
-mixed	86	28	reached: ORDER BY without WHERE ok
+mixed	135	45	reached: ORDER BY run by every path
+mixed	85	28	reached: ORDER BY without WHERE ok
 mixed	27	9	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
 mixed	17	5	reached: SET of NULL for a column that does not take it ok, no row found
 mixed	25	8	reached: SET of a column in double quotes that the table does not have no such column
@@ -123,12 +123,12 @@ mixed	23	7	reached: WHERE with a column that the table does not have in a compar
 mixed	3	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
 mixed	5	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
 mixed	6	2	reached: WHERE with a literal longer than the length limit
-mixed	55	18	reached: WHERE with a value of another type a value of another type
+mixed	54	18	reached: WHERE with a value of another type a value of another type
 mixed	280	93	reached: WHERE with a value on the left run by every path
 mixed	103	34	reached: WHERE with a value on the left run by every path on a table with an index
-mixed	13	4	reached: WHERE with an argument that no column holds not supported
+mixed	14	4	reached: WHERE with an argument that no column holds not supported
 mixed	22	7	reached: WHERE with contradicting conditions ok
-mixed	35	11	reached: WHERE with the wrong number of arguments wrong number of arguments
+mixed	34	11	reached: WHERE with the wrong number of arguments wrong number of arguments
 mixed	8	2	reached: argument NaN
 mixed	210	70	reached: argument []uint8
 mixed	4	1	reached: argument bool
@@ -158,7 +158,7 @@ mixed	18	6	reached: chosen a get of a table of several indexes
 mixed	7	2	reached: chosen a get, delivered forward
 mixed	3	1	reached: chosen an index with 0 pinned and a range
 mixed	3	1	reached: chosen an index with 0 pinned, delivered backward
-mixed	4	1	reached: chosen an index with 0 pinned, delivered forward
+mixed	3	1	reached: chosen an index with 0 pinned, delivered forward
 mixed	11	3	reached: chosen an index with 1 pinned
 mixed	4	1	reached: chosen an index with 1 pinned and a range
 mixed	3	1	reached: chosen an index with 1 pinned and a range by a value on the left
@@ -323,27 +323,27 @@ mixed	593	197	reached: literal real
 mixed	96	32	reached: literal real -0.0
 mixed	513	171	reached: literal text
 mixed	122	40	reached: long value
-mixed	1358	452	reached: path backward
-mixed	1412	470	reached: path forward
+mixed	1356	452	reached: path backward
+mixed	1410	470	reached: path forward
 mixed	207	69	reached: path of an index of a descending column
-mixed	331	110	reached: path of an index that holds every column
-mixed	279	93	reached: path of an index with 0 pinned
+mixed	328	109	reached: path of an index that holds every column
+mixed	277	92	reached: path of an index with 0 pinned
 mixed	60	20	reached: path of an index with 0 pinned and a range
 mixed	26	8	reached: path of an index with 0 pinned and a range of a WHERE with a value on the left
-mixed	102	34	reached: path of an index with 1 pinned
+mixed	101	33	reached: path of an index with 1 pinned
 mixed	10	3	reached: path of an index with 1 pinned and a range
 mixed	9	3	reached: path of an index with 1 pinned and a range of a WHERE with a value on the left
 mixed	16	5	reached: path of an index with 2 pinned
-mixed	1376	458	reached: path of every row
+mixed	1375	458	reached: path of every row
 mixed	388	129	reached: path of the primary key with 0 pinned and a range
 mixed	180	60	reached: path of the primary key with 0 pinned and a range of a WHERE with a value on the left
 mixed	402	134	reached: path of the primary key with 1 pinned
 mixed	125	41	reached: path that delivers the order
 mixed	135	45	reached: path that reads no row
-mixed	319	106	reached: path that sorts
+mixed	315	105	reached: path that sorts
 mixed	10	3	reached: path with a pin of NULL
 mixed	18	6	reached: path with a range on a descending column
-mixed	786	262	reached: plan of the cache checked
+mixed	784	261	reached: plan of the cache checked
 mixed	794	264	reached: read both ways
 mixed	56	18	reached: replay of indexes into an empty cache
 mixed	57	19	reached: restart with indexes in the cache
@@ -352,10 +352,10 @@ mixed	109	36	reached: select * of 2 columns ok
 mixed	109	36	reached: select * of 3 columns ok
 mixed	29	9	reached: select * with NULL ok
 mixed	25	8	reached: select of a name in double quotes that the table does not have no such column
-mixed	20	6	reached: select of a name that the table does not have no such column
-mixed	178	59	reached: select of a name twice ok
+mixed	21	7	reached: select of a name that the table does not have no such column
+mixed	177	59	reached: select of a name twice ok
 mixed	61	20	reached: select of names in another order ok
-mixed	287	95	reached: select of names ok
+mixed	286	95	reached: select of names ok
 mixed	13	4	reached: select of names with NULL ok
 mixed	83	27	reached: select with a value on the left ok, no row found
 mixed	16	5	reached: select with a value on the left ok, rows found
@@ -409,11 +409,11 @@ mixed	4	1	reached: value on the left of <= finds rows
 mixed	11	3	reached: value on the left of <= no such column
 mixed	9	3	reached: value on the left of <= not supported
 mixed	6	2	reached: value on the left of <= wrong number of arguments
-mixed	23	7	reached: value on the left of = a value of another type
+mixed	22	7	reached: value on the left of = a value of another type
 mixed	80	26	reached: value on the left of = finds no row
 mixed	22	7	reached: value on the left of = finds rows
 mixed	24	8	reached: value on the left of = no such column
-mixed	10	3	reached: value on the left of = not supported
+mixed	11	3	reached: value on the left of = not supported
 mixed	17	5	reached: value on the left of = wrong number of arguments
 mixed	22	7	reached: value on the left of > a value of another type
 mixed	40	13	reached: value on the left of > finds no row
@@ -429,7 +429,7 @@ mixed	5	1	reached: value on the left of >= not supported
 mixed	9	3	reached: value on the left of >= wrong number of arguments
 mixed	144	48	reached: value on the left on a table that a create table if not exists found
 mixed	8	2	reached: value on the left string or blob too big
-mixed	75	25	select no such column
+mixed	76	25	select no such column
 mixed	48	16	select wrong number of arguments
 tables	7	2	createtable duplicate column name
 tables	171	=	excused: a value of another type than its column, checked against s4ql's rule
@@ -2384,7 +2384,7 @@ arguments	8	2	reached: update without WHERE ok, rows changed
 arguments	12	4	select no such column
 arguments	13	4	select wrong number of arguments
 order	1	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
-order	224	=	excused: a value of another type than its column, checked against s4ql's rule
+order	222	=	excused: a value of another type than its column, checked against s4ql's rule
 order	5	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
 order	9	3	insert  values for 
 order	24	8	insert NOT NULL constraint failed
@@ -2393,37 +2393,36 @@ order	76	25	insert with a parameter not supported
 order	676	225	insert with a parameter ok
 order	19	6	reached: != on another column ok
 order	5	1	reached: != on the key a value of another type
-order	15	5	reached: != on the key ok
-order	18	6	reached: < on another column ok
+order	13	4	reached: != on the key ok
+order	17	5	reached: < on another column ok
 order	6	2	reached: < on the key a value of another type
-order	58	19	reached: < on the key ok
+order	46	15	reached: < on the key ok
 order	22	7	reached: <= on another column ok
-order	55	18	reached: <= on the key ok
-order	154	51	reached: = on another column ok
-order	6	2	reached: = on the key a value of another type
-order	80	26	reached: = on the key ok
-order	22	7	reached: > on another column ok
-order	3	1	reached: > on the key a value of another type
-order	43	14	reached: > on the key ok
-order	26	8	reached: >= on another column ok
-order	3	1	reached: >= on the key a value of another type
-order	62	20	reached: >= on the key ok
-order	11	3	reached: IS NOT NULL on another column ok
-order	14	4	reached: IS NOT NULL on the key ok
-order	42	14	reached: IS NULL on another column ok
-order	21	7	reached: IS NULL on the key ok
-order	37	12	reached: LIMIT 0
-order	73	24	reached: LIMIT above the number of rows
-order	70	23	reached: LIMIT by an argument ok
-order	10	3	reached: LIMIT of the number of rows
-order	268	89	reached: LIMIT run by every path
-order	51	17	reached: LIMIT that cuts
-order	6	2	reached: LIMIT that cuts a group of rows that tie
-order	13	4	reached: LIMIT with an argument that is NULL not supported
-order	9	3	reached: LIMIT with an argument that is a blob not supported
-order	15	5	reached: LIMIT with an argument that is a negative integer not supported
-order	14	4	reached: LIMIT with an argument that is a real not supported
-order	30	10	reached: LIMIT with an argument that is text not supported
+order	47	15	reached: <= on the key ok
+order	235	78	reached: = on another column ok
+order	5	1	reached: = on the key a value of another type
+order	64	21	reached: = on the key ok
+order	20	6	reached: > on another column ok
+order	4	1	reached: > on the key a value of another type
+order	42	14	reached: > on the key ok
+order	23	7	reached: >= on another column ok
+order	51	17	reached: >= on the key ok
+order	9	3	reached: IS NOT NULL on another column ok
+order	11	3	reached: IS NOT NULL on the key ok
+order	46	15	reached: IS NULL on another column ok
+order	16	5	reached: IS NULL on the key ok
+order	39	13	reached: LIMIT 0
+order	104	34	reached: LIMIT above the number of rows
+order	84	28	reached: LIMIT by an argument ok
+order	18	6	reached: LIMIT of the number of rows
+order	342	114	reached: LIMIT run by every path
+order	34	11	reached: LIMIT that cuts
+order	4	1	reached: LIMIT that cuts a group of rows that tie
+order	8	2	reached: LIMIT with an argument that is NULL not supported
+order	8	2	reached: LIMIT with an argument that is a blob not supported
+order	20	6	reached: LIMIT with an argument that is a negative integer not supported
+order	15	5	reached: LIMIT with an argument that is a real not supported
+order	22	7	reached: LIMIT with an argument that is text not supported
 order	5	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
 order	46	15	reached: NULL argument into a column that takes NULL ok
 order	4	1	reached: NULL argument into the key NOT NULL constraint failed
@@ -2431,24 +2430,24 @@ order	7	2	reached: NULL literal into a column that does not take NULL NOT NULL c
 order	8	2	reached: NULL literal into a column that takes NULL a value of another type
 order	116	38	reached: NULL literal into a column that takes NULL ok
 order	6	2	reached: NULL literal into the key NOT NULL constraint failed
-order	195	65	reached: ORDER BY ascending ok
-order	217	72	reached: ORDER BY descending ok
-order	335	111	reached: ORDER BY of 1 columns ok
-order	131	43	reached: ORDER BY of 2 columns ok
-order	34	11	reached: ORDER BY of 3 columns ok
-order	104	34	reached: ORDER BY of a column of type BLOB ok
-order	123	41	reached: ORDER BY of a column of type INT ok
-order	145	48	reached: ORDER BY of a column of type INTEGER ok
-order	148	49	reached: ORDER BY of a column of type REAL ok
-order	179	59	reached: ORDER BY of a column of type TEXT ok
-order	198	66	reached: ORDER BY of a column that takes NULL ok
-order	115	38	reached: ORDER BY of a column that the WHERE pins ok
-order	67	22	reached: ORDER BY of a column that the table does not have no such column
-order	88	29	reached: ORDER BY of mixed directions ok
-order	70	23	reached: ORDER BY over rows with NULL in its columns
-order	500	166	reached: ORDER BY run by every path
-order	5	1	reached: ORDER BY with LIMIT read by an index that delivers the order beside one that narrows a range
-order	294	98	reached: ORDER BY without WHERE ok
+order	232	77	reached: ORDER BY ascending ok
+order	224	74	reached: ORDER BY descending ok
+order	354	118	reached: ORDER BY of 1 columns ok
+order	170	56	reached: ORDER BY of 2 columns ok
+order	44	14	reached: ORDER BY of 3 columns ok
+order	154	51	reached: ORDER BY of a column of type BLOB ok
+order	147	49	reached: ORDER BY of a column of type INT ok
+order	173	57	reached: ORDER BY of a column of type INTEGER ok
+order	166	55	reached: ORDER BY of a column of type REAL ok
+order	186	62	reached: ORDER BY of a column of type TEXT ok
+order	197	65	reached: ORDER BY of a column that takes NULL ok
+order	126	42	reached: ORDER BY of a column that the WHERE pins ok
+order	46	15	reached: ORDER BY of a column that the table does not have no such column
+order	112	37	reached: ORDER BY of mixed directions ok
+order	61	20	reached: ORDER BY over rows with NULL in its columns
+order	568	189	reached: ORDER BY run by every path
+order	14	4	reached: ORDER BY with LIMIT read by an index that delivers the order beside one that narrows a range
+order	249	83	reached: ORDER BY without WHERE ok
 order	5	1	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
 order	4	1	reached: SET of NULL for a column that does not take it ok, no row found
 order	3	1	reached: SET of every column ok, rows changed
@@ -2461,26 +2460,26 @@ order	5	1	reached: SET with argument int64 ok, rows changed
 order	13	4	reached: SET with literal integer ok, rows changed
 order	5	1	reached: SET with literal real ok, rows changed
 order	6	2	reached: SET with literal text ok, rows changed
-order	299	99	reached: WHERE run by a sample of its paths
-order	445	148	reached: WHERE run by every path
-order	310	103	reached: WHERE run by every path on a table with an index
-order	3	1	reached: WHERE that gives every row of a table with rows
-order	53	17	reached: WHERE that gives no row of a table with rows
-order	16	5	reached: WHERE that gives some rows of a table
-order	73	24	reached: WHERE that reads a get of one key ok
-order	21	7	reached: WHERE that reads a scan between two bounds ok
-order	17	5	reached: WHERE that reads a scan between two bounds that hold no key ok
-order	29	9	reached: WHERE that reads a scan from a lower bound ok
-order	104	34	reached: WHERE that reads a scan of every row ok
-order	32	10	reached: WHERE that reads a scan to an upper bound ok
-order	26	8	reached: WHERE that reads no row ok
-order	128	42	reached: WHERE that tests a column more than once ok
-order	7	2	reached: WHERE with a column in double quotes that the table does not have no such column
-order	4	1	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+order	394	131	reached: WHERE run by a sample of its paths
+order	534	178	reached: WHERE run by every path
+order	399	133	reached: WHERE run by every path on a table with an index
+order	4	1	reached: WHERE that gives every row of a table with rows
+order	36	12	reached: WHERE that gives no row of a table with rows
+order	7	2	reached: WHERE that gives some rows of a table
+order	58	19	reached: WHERE that reads a get of one key ok
+order	19	6	reached: WHERE that reads a scan between two bounds ok
+order	13	4	reached: WHERE that reads a scan between two bounds that hold no key ok
+order	27	9	reached: WHERE that reads a scan from a lower bound ok
+order	228	76	reached: WHERE that reads a scan of every row ok
+order	25	8	reached: WHERE that reads a scan to an upper bound ok
+order	21	7	reached: WHERE that reads no row ok
+order	110	36	reached: WHERE that tests a column more than once ok
+order	6	2	reached: WHERE with a column in double quotes that the table does not have no such column
+order	3	1	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
 order	5	1	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
 order	5	1	reached: WHERE with a literal longer than the length limit
-order	21	7	reached: WHERE with a value of another type a value of another type
-order	16	5	reached: WHERE with contradicting conditions ok
+order	27	9	reached: WHERE with a value of another type a value of another type
+order	13	4	reached: WHERE with contradicting conditions ok
 order	175	58	reached: argument []uint8
 order	18	6	reached: argument empty []byte
 order	10	3	reached: argument empty string
@@ -2490,44 +2489,46 @@ order	412	137	reached: argument int64
 order	63	21	reached: argument nil
 order	227	75	reached: argument string
 order	168	56	reached: changed both ways
-order	46	15	reached: chosen a get
-order	49	16	reached: chosen a get of a table of several indexes
-order	25	8	reached: chosen a get, delivered forward
-order	35	11	reached: chosen an index with 0 pinned of a table of several indexes, delivered backward
+order	47	15	reached: chosen a get
+order	44	14	reached: chosen a get of a table of several indexes
+order	21	7	reached: chosen a get, delivered forward
+order	3	1	reached: chosen an index with 0 pinned and a range
+order	30	10	reached: chosen an index with 0 pinned of a table of several indexes, delivered backward
 order	30	10	reached: chosen an index with 0 pinned of a table of several indexes, delivered forward
 order	25	8	reached: chosen an index with 0 pinned, delivered backward
-order	26	8	reached: chosen an index with 0 pinned, delivered forward
+order	17	5	reached: chosen an index with 0 pinned, delivered forward
 order	12	4	reached: chosen an index with 1 pinned
-order	10	3	reached: chosen an index with 1 pinned and a range
-order	8	2	reached: chosen an index with 1 pinned and a range, delivered forward
-order	9	3	reached: chosen an index with 1 pinned of a table of several indexes
-order	10	3	reached: chosen an index with 1 pinned, delivered forward
-order	3	1	reached: chosen an index with 2 pinned
-order	19	6	reached: chosen every row
-order	29	9	reached: chosen every row of a table of several indexes, sorted
-order	42	14	reached: chosen every row, delivered backward
-order	43	14	reached: chosen every row, delivered forward
-order	70	23	reached: chosen every row, sorted
-order	5	1	reached: chosen no row
-order	9	3	reached: chosen no row, delivered forward
-order	36	12	reached: chosen the primary key with 0 pinned and a range
+order	12	4	reached: chosen an index with 1 pinned and a range
+order	3	1	reached: chosen an index with 1 pinned and a range, delivered forward
+order	5	1	reached: chosen an index with 1 pinned of a table of several indexes
+order	26	8	reached: chosen an index with 1 pinned, delivered forward
+order	3	1	reached: chosen an index with 2 pinned and a range
+order	18	6	reached: chosen every row
+order	24	8	reached: chosen every row of a table of several indexes, sorted
+order	41	13	reached: chosen every row, delivered backward
+order	39	13	reached: chosen every row, delivered forward
+order	91	30	reached: chosen every row, sorted
+order	3	1	reached: chosen no row
+order	13	4	reached: chosen no row, delivered forward
+order	35	11	reached: chosen the primary key with 0 pinned and a range
 order	10	3	reached: chosen the primary key with 0 pinned and a range, delivered backward
-order	5	1	reached: chosen the primary key with 0 pinned and a range, delivered forward
-order	17	5	reached: chosen the primary key with 0 pinned and a range, sorted
-order	24	8	reached: comparison with argument []uint8 ok
+order	7	2	reached: chosen the primary key with 0 pinned and a range, delivered forward
+order	16	5	reached: chosen the primary key with 0 pinned and a range, sorted
+order	22	7	reached: comparison with argument []uint8 ok
 order	5	1	reached: comparison with argument empty []byte ok
-order	11	3	reached: comparison with argument empty string ok
-order	46	15	reached: comparison with argument float64 ok
-order	63	21	reached: comparison with argument int64 ok
-order	36	12	reached: comparison with argument string ok
-order	70	23	reached: comparison with literal blob ok
-order	10	3	reached: comparison with literal empty blob ok
-order	12	4	reached: comparison with literal empty text ok
-order	157	52	reached: comparison with literal integer ok
-order	5	1	reached: comparison with literal null ok
-order	7	2	reached: comparison with literal real -0.0 ok
-order	56	18	reached: comparison with literal real ok
-order	69	23	reached: comparison with literal text ok
+order	14	4	reached: comparison with argument empty string ok
+order	4	1	reached: comparison with argument float64 -0.0 ok
+order	41	13	reached: comparison with argument float64 ok
+order	66	22	reached: comparison with argument int64 ok
+order	38	12	reached: comparison with argument string ok
+order	60	20	reached: comparison with literal blob ok
+order	12	4	reached: comparison with literal empty blob ok
+order	14	4	reached: comparison with literal empty text ok
+order	172	57	reached: comparison with literal integer ok
+order	4	1	reached: comparison with literal null ok
+order	6	2	reached: comparison with literal real -0.0 ok
+order	67	22	reached: comparison with literal real ok
+order	73	24	reached: comparison with literal text ok
 order	247	82	reached: create index already exists
 order	11	3	reached: create index no such column
 order	35	11	reached: create index no such table
@@ -2566,7 +2567,7 @@ order	41	13	reached: delete with WHERE ok, no row found
 order	33	11	reached: delete with WHERE ok, rows changed
 order	5	1	reached: delete without WHERE ok, no row found
 order	10	3	reached: delete without WHERE ok, rows changed
-order	31	10	reached: delivered select whose rows that tie came in the order of the key of its access
+order	23	7	reached: delivered select whose rows that tie came in the order of the key of its access
 order	37	12	reached: drop index no such index
 order	74	24	reached: drop index ok
 order	36	12	reached: insert into BLOB a value of another type
@@ -2609,42 +2610,42 @@ order	425	141	reached: literal real
 order	30	10	reached: literal real -0.0
 order	351	117	reached: literal text
 order	46	15	reached: long value
-order	1314	438	reached: path backward
-order	1417	472	reached: path forward
-order	546	182	reached: path of an index of a descending column
-order	1145	381	reached: path of an index that holds every column
-order	895	298	reached: path of an index with 0 pinned
-order	77	25	reached: path of an index with 0 pinned and a range
-order	163	54	reached: path of an index with 1 pinned
-order	55	18	reached: path of an index with 1 pinned and a range
-order	72	24	reached: path of an index with 2 pinned
-order	12	4	reached: path of an index with 2 pinned and a range
-order	9	3	reached: path of an index with 3 pinned
-order	1091	363	reached: path of every row
-order	189	63	reached: path of the primary key with 0 pinned and a range
-order	128	42	reached: path of the primary key with 1 pinned
-order	402	134	reached: path that delivers the order
-order	40	13	reached: path that reads no row
-order	1407	469	reached: path that sorts
-order	43	14	reached: path with a pin of NULL
-order	32	10	reached: path with a range on a descending column
-order	813	271	reached: plan of the cache checked
-order	447	149	reached: read both ways
+order	1390	463	reached: path backward
+order	1516	505	reached: path forward
+order	603	201	reached: path of an index of a descending column
+order	1276	425	reached: path of an index that holds every column
+order	947	315	reached: path of an index with 0 pinned
+order	68	22	reached: path of an index with 0 pinned and a range
+order	321	107	reached: path of an index with 1 pinned
+order	40	13	reached: path of an index with 1 pinned and a range
+order	42	14	reached: path of an index with 2 pinned
+order	4	1	reached: path of an index with 2 pinned and a range
+order	8	2	reached: path of an index with 3 pinned
+order	1140	380	reached: path of every row
+order	174	58	reached: path of the primary key with 0 pinned and a range
+order	132	44	reached: path of the primary key with 1 pinned
+order	481	160	reached: path that delivers the order
+order	30	10	reached: path that reads no row
+order	1599	533	reached: path that sorts
+order	53	17	reached: path with a pin of NULL
+order	24	8	reached: path with a range on a descending column
+order	864	288	reached: plan of the cache checked
+order	529	176	reached: read both ways
 order	55	18	reached: replay of indexes into an empty cache
 order	78	26	reached: restart with indexes in the cache
-order	230	76	reached: select * of 2 columns ok
-order	103	34	reached: select * of 3 columns ok
-order	51	17	reached: select * with NULL ok
+order	248	82	reached: select * of 2 columns ok
+order	107	35	reached: select * of 3 columns ok
+order	47	15	reached: select * with NULL ok
 order	6	2	reached: select of a name in double quotes that the table does not have no such column
 order	9	3	reached: select of a name that the table does not have no such column
-order	222	74	reached: select of a name twice ok
-order	113	37	reached: select of names in another order ok
-order	358	119	reached: select of names ok
-order	48	16	reached: select of names with NULL ok
-order	34	11	reached: select without ORDER BY whose rows came in the order of the key of its access
-order	29	9	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
-order	7	2	reached: sorted select whose rows that tie came in the order of the primary key
-order	10	3	reached: sorted select whose rows that tie came in the reverse of the order of the primary key
+order	231	77	reached: select of a name twice ok
+order	117	39	reached: select of names in another order ok
+order	363	121	reached: select of names ok
+order	47	15	reached: select of names with NULL ok
+order	32	10	reached: select without ORDER BY whose rows came in the order of the key of its access
+order	20	6	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+order	6	2	reached: sorted select whose rows that tie came in the order of the primary key
+order	8	2	reached: sorted select whose rows that tie came in the reverse of the order of the primary key
 order	8	2	reached: update WHERE that reads a get of one key ok, rows changed
 order	3	1	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
 order	4	1	reached: update WHERE that reads a scan from a lower bound ok, rows changed
@@ -2659,4 +2660,4 @@ order	18	6	reached: update with WHERE ok, rows changed
 order	3	1	reached: update without WHERE NOT NULL constraint failed
 order	6	2	reached: update without WHERE UNIQUE constraint failed
 order	12	4	reached: update without WHERE ok, rows changed
-order	49	16	select no such column
+order	44	14	select no such column

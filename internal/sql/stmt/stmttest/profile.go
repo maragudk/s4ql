@@ -79,6 +79,15 @@ type Profile struct {
 	// index hold the first column of such an index and then another column, so that two indexes of
 	// a table begin alike, as goqite's two do.
 	Shared int
+	// Aimed, if not 0, makes one select in Aimed of a table of which the sequence keeps an index have
+	// a WHERE and an ORDER BY that are drawn together for the key of one of its indexes, as
+	// [Sequence.aimedWhere] draws them: goqite's receive, or a pin of one column of the key and an
+	// ORDER BY of the rest.
+	Aimed int
+	// Ties, if not 0, makes one value in Ties of an insert, for a column that is not the key and gets
+	// no NULL, one of two values of its type, as [tieValue] gives them, so that rows tie on a column
+	// of an index and differ in the next, where the order of a key and of an ORDER BY can part.
+	Ties int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
@@ -121,8 +130,8 @@ var (
 	// descending, with NULL and with rows that tie, with WHERE and without, by an index that delivers
 	// the order and beside one that only narrows a range, and the LIMIT as a literal and as a ?, also
 	// with an argument that s4ql refuses.
-	Order = &Profile{Name: "order", Faults: []string{areaOrder}, Aim: 3, Weights: weights(2, 14, 9, 1, 1, 1, 6, 1), Where: 2, Indexes: 2, Columns: 2,
-		Parameters: 3, Transactions: 4, Order: 3, Limit: 2, Keys: 1, Shared: 2}
+	Order = &Profile{Name: "order", Faults: []string{areaOrder}, Aim: 3, Weights: weights(2, 14, 9, 1, 1, 1, 6, 1), Where: 2, Indexes: 2, Columns: 3,
+		Parameters: 3, Transactions: 4, Order: 3, Limit: 2, Keys: 1, Shared: 2, Aimed: 3, Ties: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].

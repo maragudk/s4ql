@@ -37,6 +37,7 @@ mixed	46	15	reached: path that sorts
 mixed	182	60	reached: read both ways
 mixed	39	13	reached: read both ways in a read-only transaction
 mixed	4	1	reached: roll back of a transaction whose update or delete changed rows
+mixed	110	36	reached: select read by the access that the model chooses
 mixed	14	4	reached: select with a value on the left ok, no row found in a write transaction
 mixed	11	3	reached: select without ORDER BY whose rows came in the order of the key of its access
 mixed	10	3	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
@@ -46,11 +47,13 @@ mixed	49	16	reached: value on the left on a table that a create table if not exi
 mixed	9	3	update attempt to write a readonly database
 mixed	7	2	update with a parameter attempt to write a readonly database
 tables	42	=	excused: a value of another type than its column, checked against s4ql's rule
+tables	240	80	reached: select read by the access that the model chooses
 tables	63	21	reached: select without ORDER BY whose rows came in the order of the key of its access
 tables	88	29	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 where	81	=	excused: a value of another type than its column, checked against s4ql's rule
 where	439	146	reached: read both ways
 where	136	45	reached: read both ways in a read-only transaction
+where	347	115	reached: select read by the access that the model chooses
 where	43	14	reached: select without ORDER BY whose rows came in the order of the key of its access
 where	37	12	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 changes	11	3	delete attempt to write a readonly database
@@ -61,6 +64,7 @@ changes	16	5	reached: commit of a transaction whose update or delete changed row
 changes	67	22	reached: read both ways
 changes	13	4	reached: read both ways in a read-only transaction
 changes	6	2	reached: roll back of a transaction whose update or delete changed rows
+changes	84	28	reached: select read by the access that the model chooses
 changes	20	6	reached: select without ORDER BY whose rows came in the order of the key of its access
 changes	14	4	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 changes	24	8	update attempt to write a readonly database
@@ -78,6 +82,7 @@ indexes	215	71	reached: read both ways
 indexes	58	19	reached: read both ways in a read-only transaction
 indexes	5	1	reached: roll back of a transaction whose update or delete changed rows
 indexes	8	2	reached: roll back of a transaction with a create index or a drop index
+indexes	196	65	reached: select read by the access that the model chooses
 indexes	19	6	reached: select without ORDER BY whose rows came in the order of the key of its access
 indexes	28	9	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 indexes	4	1	update attempt to write a readonly database
@@ -109,6 +114,7 @@ exists	14	4	reached: drop table if exists did nothing: no table of the name exis
 exists	89	29	reached: read both ways
 exists	27	9	reached: read both ways in a read-only transaction
 exists	19	6	reached: roll back of a transaction with a create index or a drop index
+exists	106	35	reached: select read by the access that the model chooses
 exists	6	2	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 exists	6	2	update attempt to write a readonly database
 exists	13	4	update with a parameter attempt to write a readonly database
@@ -128,6 +134,7 @@ defaults	6	2	reached: insert that leaves out the key with a default ok in a writ
 defaults	116	38	reached: read both ways
 defaults	25	8	reached: read both ways in a read-only transaction
 defaults	3	1	reached: roll back of a transaction whose update or delete changed rows
+defaults	360	120	reached: select read by the access that the model chooses
 defaults	108	36	reached: select without ORDER BY whose rows came in the order of the key of its access
 defaults	83	27	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 defaults	8	2	update attempt to write a readonly database
@@ -149,6 +156,7 @@ valuefirst	581	193	reached: read both ways
 valuefirst	151	50	reached: read both ways in a read-only transaction
 valuefirst	10	3	reached: roll back of a transaction whose update or delete changed rows
 valuefirst	12	4	reached: roll back of a transaction with a create index or a drop index
+valuefirst	206	68	reached: select read by the access that the model chooses
 valuefirst	25	8	reached: select with a value on the left ok, no row found in a read-only transaction
 valuefirst	47	15	reached: select with a value on the left ok, no row found in a write transaction
 valuefirst	3	1	reached: select with a value on the left ok, rows found in a read-only transaction
@@ -171,6 +179,7 @@ transactions	127	42	reached: read both ways
 transactions	37	12	reached: read both ways in a read-only transaction
 transactions	5	1	reached: roll back of a transaction whose update or delete changed rows
 transactions	4	1	reached: roll back of a transaction with a create index or a drop index
+transactions	124	41	reached: select read by the access that the model chooses
 transactions	16	5	reached: select without ORDER BY whose rows came in the order of the key of its access
 transactions	13	4	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 transactions	11	3	update attempt to write a readonly database
@@ -188,28 +197,30 @@ arguments	3	1	reached: drop table if exists attempt to write a readonly database
 arguments	3	1	reached: drop table if exists did its work in a write transaction
 arguments	186	62	reached: read both ways
 arguments	39	13	reached: read both ways in a read-only transaction
+arguments	84	28	reached: select read by the access that the model chooses
 arguments	6	2	reached: select without ORDER BY whose rows came in the order of the key of its access
 arguments	3	1	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 arguments	8	2	update with a parameter attempt to write a readonly database
 order	4	1	delete attempt to write a readonly database
-order	58	=	excused: a value of another type than its column, checked against s4ql's rule
-order	17	5	reached: LIMIT by an argument ok
-order	10	3	reached: LIMIT that cuts
-order	21	7	reached: ORDER BY that gives rows in a write transaction after a change of rows
-order	103	34	reached: WHERE run by every path on a table with an index
+order	57	=	excused: a value of another type than its column, checked against s4ql's rule
+order	25	8	reached: LIMIT by an argument ok
+order	5	1	reached: LIMIT that cuts
+order	20	6	reached: ORDER BY that gives rows in a write transaction after a change of rows
+order	134	44	reached: WHERE run by every path on a table with an index
 order	54	18	reached: changed both ways
 order	15	5	reached: changed both ways in a read-only transaction
-order	23	7	reached: chosen every row, sorted
+order	30	10	reached: chosen every row, sorted
 order	7	2	reached: commit of a transaction whose update or delete changed rows
 order	21	7	reached: commit of a transaction with a create index or a drop index
 order	20	6	reached: create index attempt to write a readonly database
 order	3	1	reached: drop index attempt to write a readonly database
-order	116	38	reached: path that delivers the order
-order	460	153	reached: path that sorts
-order	152	50	reached: read both ways
-order	40	13	reached: read both ways in a read-only transaction
+order	160	53	reached: path that delivers the order
+order	524	174	reached: path that sorts
+order	186	62	reached: read both ways
+order	43	14	reached: read both ways in a read-only transaction
 order	3	1	reached: roll back of a transaction whose update or delete changed rows
 order	3	1	reached: roll back of a transaction with a create index or a drop index
-order	11	3	reached: select without ORDER BY whose rows came in the order of the key of its access
+order	202	67	reached: select read by the access that the model chooses
+order	7	2	reached: select without ORDER BY whose rows came in the order of the key of its access
 order	6	2	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 order	3	1	update with a parameter attempt to write a readonly database
