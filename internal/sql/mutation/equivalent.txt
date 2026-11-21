@@ -786,3 +786,15 @@ internal/core/index.go conn.lookUpIndex condition: err != nil => false
 	found is set only by the row of the query, and its LIMIT 1 ends the statement at that row without another read, so the query fails only before the row, found is false whenever err is not nil, and !found alone gives the error back.
 internal/core/index.go conn.loadIndexes condition: primary == "" => false #2
 	The load of a table refuses one that s4ql did not declare, and s4ql declares every table WITHOUT ROWID, so a table that loadIndexes reads has the index of its primary key, and primary is never empty here.
+internal/core/index.go conn.lookUpIndex condition: err != nil => false #3
+	lookUp has read the indexes of the table that it gives, so t.index does not fail as checkIndexed would.
+internal/core/index.go conn.lookUpIndex remove statement: return nil, nil, err => #3
+	lookUp has read the indexes of the table that it gives, so t.index does not fail as checkIndexed would.
+internal/core/index.go conn.lookUpIndex condition: ix == nil => false
+	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
+internal/core/index.go conn.lookUpIndex remove statement: return nil, nil, fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, name, t.name) =>
+	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
+internal/core/index.go conn.lookUpIndex swap arguments: fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, name, t.name) => fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", name, ErrCacheVersion, t.name)
+	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
+internal/core/index.go conn.lookUpIndex swap arguments: fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, name, t.name) => fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, t.name, name)
+	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
