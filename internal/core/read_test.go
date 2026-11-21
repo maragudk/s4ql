@@ -107,6 +107,16 @@ func TestReadTx_Close(t *testing.T) {
 			is.Error(t, core.ErrTxDone, err)
 		}
 		is.Equal(t, 1, scanned)
+		_, err = r.Indexes(t.Context(), "t1")
+		is.Error(t, core.ErrTxDone, err)
+		_, err = r.Index(t.Context(), "i1")
+		is.Error(t, core.ErrTxDone, err)
+		scanned = 0
+		for _, err := range r.ScanIndex(t.Context(), "t1", core.IndexScan{Index: "i1"}) {
+			scanned++
+			is.Error(t, core.ErrTxDone, err)
+		}
+		is.Equal(t, 1, scanned)
 	})
 }
 
