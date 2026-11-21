@@ -1207,13 +1207,14 @@ func (p *pair) step(c stmttest.Call) string {
 // the engine is got, is the known difference of slice 13 under a length limit: a select with ORDER
 // BY, which SQLite refuses with `string or blob too big` for the record of what it sorts of a row,
 // and whose rows of s4ql are those that SQLite gives for it without the length limit, in order, as
-// [ordered.compare] says.
+// [ordered.compare] says. A select with a literal in a condition that is longer than the limit is
+// not, as [pair.longCondition] says: the rule of the length of a literal refuses it in s4ql.
 func (p *pair) sortTooBig(src string, args []any, got answer) bool {
 	t, o := p.t, p.o
 	t.Helper()
 	s, _ := stmt.Check(src)
 	sel, ok := s.(*stmt.Select)
-	if !ok || sel.OrderBy == nil || p.i.limit == 0 || len(args) != sel.Parameters() {
+	if !ok || sel.OrderBy == nil || p.i.limit == 0 || len(args) != sel.Parameters() || p.longCondition(src) {
 		return false
 	}
 	want := o.unlimited(t, src, args...)
@@ -3727,6 +3728,16 @@ func TestPair_sortTooBig(t *testing.T) {
 		wrong.rows = []string{strings.Replace(got.rows[0], "1", "2", 1)}
 		is.True(t, !p.sortTooBig("select * from l order by b", nil, wrong))
 		is.True(t, !p.sortTooBig("select * from l", nil, p.i.queryValues("select * from l", nil)))
+	})
+
+	t.Run("should not excuse a sorted select with a literal in a condition that is longer than the limit, which the rule of the length refuses", func(t *testing.T) {
+		p, _ := newSetUp(t)
+		src := "select k from l where a < '" + strings.Repeat("z", 1001) + "' order by k"
+		is.Equal(t, tooBig, p.o.run(t, src).err)
+		// The rows of an engine that ignores the rule of the length of a literal.
+		ignores := p.o.unlimited(t, src)
+		is.Equal(t, 1, len(ignores.rows))
+		is.True(t, !p.sortTooBig(src, nil, ignores))
 	})
 }
 
