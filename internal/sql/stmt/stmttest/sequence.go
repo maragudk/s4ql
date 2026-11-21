@@ -80,7 +80,7 @@ type Sequence struct {
 	// selected are the conditions of the WHERE of the select that the sequence writes, as
 	// [Sequence.where] gave them, for its ORDER BY.
 	selected []stmt.Condition
-	tables                                                                                 []string
+	tables   []string
 	// columns are the spellings of the names of columns, folds the folds of their names, in the order
 	// that the spellings first have them, and spelled the spellings of each fold.
 	columns []string
