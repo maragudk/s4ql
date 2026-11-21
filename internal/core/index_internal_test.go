@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -10,7 +9,6 @@ import (
 
 	"maragu.dev/is"
 
-	"maragu.dev/s4ql/internal/ctxtest"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
@@ -81,44 +79,47 @@ func TestTable_checkIndexed(t *testing.T) {
 	})
 }
 
-func TestConn_step(t *testing.T) {
-	t.Run("should put the length limit of the connection back after the step of a sort, when it gives a row, when SQLite cannot write the files of the sort, and when the context ends", func(t *testing.T) {
-		vfs, err := faultvfs.New()
-		is.NotError(t, err)
-		defer func() { is.NotError(t, vfs.Close()) }()
-		c, err := openConn(sqlite.OpenVFS, filepath.Join(t.TempDir(), "cache.db"), Options{VFS: vfs.Name(), BusyTimeout: time.Second, LengthLimit: 1000})
-		is.NotError(t, err)
-		defer func() { is.NotError(t, c.close()) }()
-		// 5,000 rows of 900 bytes each are 4.5 MB, and SQLite sorts up to 2 MB, the size of its page
-		// cache, in memory, and the rest in temporary files.
-		is.NotError(t, c.exec("create table t (k int primary key, v int, b blob) strict, without rowid"))
-		is.NotError(t, c.exec("with recursive c (x) as (select 0 union all select x + 1 from c where x < 4999) insert into t select x, (x * 7919) % 5000, randomblob(900) from c"))
-		// tooLong makes a blob that is longer than the limit of the connection, and shorter than
-		// SQLite's largest limit.
-		tooLong := func() error {
-			return c.query("select zeroblob(2000)", func(*sqlite.Stmt) error { return nil })
-		}
-		is.True(t, isTooBig(tooLong()))
+// stepSort opens a connection of the cache through a VFS of faultvfs, with a length limit of 1000
+// bytes and a table of 5,000 rows, and gives a function that runs the step of a sort of the table with
+// ctx while the VFS fails as fault, checks that the limit of the connection is back after it, and
+// gives the error of the step.
+func stepSort(t *testing.T) func(ctx context.Context, fault faultvfs.Fault) error {
+	t.Helper()
+	vfs, err := faultvfs.New()
+	is.NotError(t, err)
+	t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+	c, err := openConn(sqlite.OpenVFS, filepath.Join(t.TempDir(), "cache.db"), Options{VFS: vfs.Name(), BusyTimeout: time.Second, LengthLimit: 1000})
+	is.NotError(t, err)
+	t.Cleanup(func() { is.NotError(t, c.close()) })
+	// 5,000 rows of 900 bytes each are 4.5 MB, and SQLite sorts up to 2 MB, the size of its page
+	// cache, in memory, and the rest in temporary files.
+	is.NotError(t, c.exec("create table t (k int primary key, v int, b blob) strict, without rowid"))
+	is.NotError(t, c.exec("with recursive c (x) as (select 0 union all select x + 1 from c where x < 4999) insert into t select x, (x * 7919) % 5000, randomblob(900) from c"))
+	// tooLong makes a blob that is longer than the limit of the connection, and shorter than
+	// SQLite's largest limit.
+	tooLong := func() error {
+		return c.query("select zeroblob(2000)", func(*sqlite.Stmt) error { return nil })
+	}
+	is.True(t, isTooBig(tooLong()))
 
-		for _, test := range []struct {
-			name  string
-			ctx   context.Context
-			fault faultvfs.Fault
-			check func(err error) bool
-		}{
-			{name: "a row", ctx: t.Context(), check: func(err error) bool { return err == nil }},
-			{name: "a write of a temporary file that fails", ctx: t.Context(), fault: faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.Temp},
-				check: func(err error) bool { return classify(err) == kindLocal }},
-			{name: "the end of the context", ctx: ctxtest.EndAtErr(t.Context(), 2), check: func(err error) bool { return errors.Is(err, context.Canceled) }},
-		} {
-			s, err := c.prepare("select k, +v, b from t order by +v")
-			is.NotError(t, err)
-			vfs.Fail(test.fault)
-			_, err = c.step(test.ctx, s, true)
-			vfs.Fail(faultvfs.Fault{})
-			is.True(t, test.check(err), fmt.Sprint(test.name, ": ", err))
-			_ = s.Finalize()
-			is.True(t, isTooBig(tooLong()), test.name)
-		}
+	return func(ctx context.Context, fault faultvfs.Fault) error {
+		t.Helper()
+		s, err := c.prepare("select k, +v, b from t order by +v")
+		is.NotError(t, err)
+		vfs.Fail(fault)
+		_, err = c.step(ctx, s, true)
+		vfs.Fail(faultvfs.Fault{})
+		_ = s.Finalize()
+		is.True(t, isTooBig(tooLong()), "the limit of the connection is back")
+		return err
+	}
+}
+
+func TestConn_step(t *testing.T) {
+	t.Run("should put the length limit of the connection back after the step of a sort, when it gives a row, and when SQLite cannot write the files of the sort", func(t *testing.T) {
+		step := stepSort(t)
+		is.NotError(t, step(t.Context(), faultvfs.Fault{}))
+		err := step(t.Context(), faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.Temp})
+		is.True(t, classify(err) == kindLocal, fmt.Sprint(err))
 	})
 }

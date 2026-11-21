@@ -11,6 +11,11 @@ import (
 
 type key struct{}
 
+// lookAt the Err of ctx, from a function of a name that [ctxtest.Context.EndedBy] can give.
+func lookAt(ctx context.Context) error {
+	return ctx.Err()
+}
+
 func TestEndAtErr(t *testing.T) {
 	t.Run("should end at the nth call of Err, and stay ended", func(t *testing.T) {
 		ctx := ctxtest.EndAtErr(t.Context(), 3)
@@ -26,6 +31,15 @@ func TestEndAtErr(t *testing.T) {
 		<-ctx.Done()
 		is.Error(t, context.Canceled, ctx.Err())
 		is.Equal(t, 4, ctx.Calls())
+	})
+
+	t.Run("should give the function that made the call of Err that ended it, and none before", func(t *testing.T) {
+		ctx := ctxtest.EndAtErr(t.Context(), 2)
+		is.NotError(t, ctx.Err())
+		is.Equal(t, "", ctx.EndedBy())
+		is.Error(t, context.Canceled, lookAt(ctx))
+		is.Error(t, context.Canceled, ctx.Err())
+		is.Equal(t, "maragu.dev/s4ql/internal/ctxtest_test.lookAt", ctx.EndedBy())
 	})
 
 	t.Run("should end at the first call of Err for an n below 1", func(t *testing.T) {

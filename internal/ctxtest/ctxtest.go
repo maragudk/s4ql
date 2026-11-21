@@ -5,6 +5,7 @@ package ctxtest
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -17,9 +18,10 @@ type Context struct {
 	// mu guards the fields after it.
 	mu sync.Mutex
 	// left is the number of calls of Err up to the one that ends the context.
-	left  int
-	calls int
-	err   error
+	left    int
+	calls   int
+	err     error
+	endedBy string
 }
 
 // EndAtErr gives a context that ends with [context.Canceled] at the nth call of its Err, counted
@@ -32,6 +34,15 @@ type Context struct {
 // every time, on any machine.
 func EndAtErr(parent context.Context, n int) *Context {
 	return &Context{parent: parent, left: n, done: make(chan struct{})}
+}
+
+// EndedBy is the name of the function that made the call of Err that ended the context, such as
+// "maragu.dev/s4ql/internal/sqlite.s4qlInterrupted", and "" before that call. A test so knows which
+// of the points at which the code under test looks at the context found it ended.
+func (c *Context) EndedBy() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.endedBy
 }
 
 // Calls of Err so far.
@@ -57,6 +68,11 @@ func (c *Context) Err() error {
 		if c.left--; c.left <= 0 {
 			c.err = context.Canceled
 			close(c.done)
+			var pc [1]uintptr
+			if runtime.Callers(2, pc[:]) == 1 {
+				f, _ := runtime.CallersFrames(pc[:]).Next()
+				c.endedBy = f.Function
+			}
 		}
 	}
 	return c.err

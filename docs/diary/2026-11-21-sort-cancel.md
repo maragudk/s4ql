@@ -149,3 +149,53 @@ The two open items in `/docs/todo/storage-core.md`.
 ### Future work
 
 None beyond those items.
+
+## Step 4: The browser build, which does not interrupt a step
+
+**Author:** sort-cancel browser builder
+
+### Prompt Context
+
+**Verbatim prompt:** "#124 lets a running sort be cancelled: `sqlite.Stmt.StepContext(ctx)` installs SQLite's progress handler for one step in the cgo binding. In the browser build (tag `s4ql_browser`, wasm in headless Chrome) `StepContext` is plain `Step`, so nothing is interrupted there. CI job `browser-test (4)` (covers `internal/core`) fails in `TestScanIndex_context` [...] 1. Decide by reading the browser binding in `internal/sqlite` (the files built under wasm) whether interruption can be built there simply and correctly. [...] If not (likely), do not build it [...] 2. In that case the subtests that assert an interruption inside a step move to test files that are not built for the browser [...] 3. While you are in `TestScanIndex_context`: the count subtest ends its context at `looks+2`, which assumes exactly one call of `Err` between the first row and the unread count [...] Make the test fail when the count was not the step that was interrupted [...] 4. In `docs/todo/storage-core.md`, at the item about a sort that an instance's stop or close does not interrupt, add: a review measured the cost of `StepContext` at about 47 ns on the first step of a scan, with no allocation per step." (abridged; the full brief also asks for the checks, this diary step, and landing pull request #124)
+
+**Interpretation:** make CI's browser jobs pass on #124 without weakening what the cgo build tests, decide whether the browser can interrupt, and harden the count subtest so that it cannot pass without an interrupted count.
+
+**Inferred intent:** land #124 with the tests telling the truth about each build.
+
+### What I did
+
+I read `/internal/sqlite/sqlite_browser.go` and the vendored build. `sqlite3.wasm` exports `sqlite3_progress_handler`, and `sqlite3.js` has `wasm.installFunction`, and the binding already calls Go from SQLite through `syscall/js` (`s4qlYield`, from the VFS). So a handler could be built. I did not build it: Go's runtime, on every call from JavaScript into Go, runs every goroutine that is ready before it returns (`handleEvent` parks the callback's goroutine until all others wait). A handler that calls Go every 10,000 instructions would so run the simulation's other goroutines in the middle of a step, and they could call SQLite there, which has `SQLITE_THREADSAFE=0` in that build. That changes the interleavings of the simulation and is not simple. The doc comment of the browser's `StepContext` now says that it does not interrupt and why, and `/docs/todo/storage-core.md` has the open item.
+
+The tests that assert an interruption inside a step moved to two new files with `//go:build cgo`, which is where the cgo binding, whose `StepContext` installs the handler, is built: `/internal/core/index_cgo_test.go` (`TestScanIndex_interrupt`: the interrupted sort and the interrupted count, in a read and a write transaction) and `/internal/core/index_cgo_internal_test.go` (`TestConn_stepContext`). `TestScanIndex_context` in `/internal/core/index_test.go` keeps the context ended between rows and the count that fails on a read of the cache, and `TestConn_step` keeps the limit put back after a step that gives a row and one that fails on a temporary file. Their setup became helpers shared by both files: `fillBig`, `beginBig`, `bigScanner`, `bigSorted`, `bigRows` in `index_test.go`, `scanBig` in the cgo file (lint found it unused in the browser build), and `stepSort` in `index_internal_test.go`. `TestStmt_StepContext` in `/internal/sqlite/sqlite_test.go`, the engine's event subtest, and the driver's `TestRows` subtest needed nothing: `sqlite_test.go` has `!s4ql_browser`, and `internal/engine` and the root package are not in `BROWSERPKGS`.
+
+For the count, `ctxtest.Context` got `EndedBy`, the name of the function whose call of `Err` ended the context (from `runtime.Callers` at that call). The count subtest now ends the context at each look after the first row in turn, asserts for each that nothing was counted, stops at the first look made by `maragu.dev/s4ql/internal/sqlite.s4qlInterrupted`, and fails if no look was. The sort subtest also asserts that its ends at the 1st, 2nd, and 3rd look are the handler's, and `TestConn_stepContext` the same. The 47 ns of the review went into the item on the stop that does not interrupt a sort, and the test names in `/docs/todo/slice-13.md` were brought up to date.
+
+### Why
+
+The browser build is the site's simulator, where a context that ends mid-sort does not matter, and a build constraint keeps the cgo build's tests whole without a skip. `EndedBy` turns "the count was interrupted" from an assumption about how many times the cache calls `Err` into something the test observes.
+
+### What worked
+
+A planted fault showed that the moved tests catch the browser's behaviour natively: with `StepContext` changed to `if true { return s.Step() }` in `/internal/sqlite/sqlite.go`, `go test -count=1 -run 'TestScanIndex_interrupt|TestConn_step' ./internal/core` failed with "SQLite looked at the context 0 times in the sort", "SQLite's progress handler looked at the context in no count", and, at the next look, `Expected "1", but got "10001"` with "ended at the look 3 by maragu.dev/s4ql/internal/core.ended", the same failures CI had in the browser. With the binding back, everything passed: `go test -count=20` and `-race -count=5` of the four tests and of `internal/ctxtest`, `make test`, `make lint`, `make check-browser`, and `make test-browser BROWSERSHARD=4/6` (`internal/core`, 56 s) and `BROWSERSHARD=5/6` (`internal/sqlite` and the rest).
+
+### What didn't work
+
+`make lint` failed first on the browser's build: `internal/core/index_test.go:2472:6: func scanBig is unused (unused)`, because only the cgo file uses it, so it moved there. `go vet` then gave `"maragu.dev/s4ql/internal/ctxtest" imported and not used` in `index_test.go`. A combined shell command that spliced the test file was refused by the worktree guard as too complex to verify; plain separate commands worked.
+
+### What I learned
+
+In the browser build, a callback from JavaScript into Go is a scheduling point for every goroutine, not only the callback's. Any hook inside SQLite that calls Go is therefore a yield.
+
+### What was tricky
+
+The count's first look is after the cache's own calls of `Err` (one in `ReadTx.scan` before the count, and `ended` in the loop of `Tx.scan` before the first row), and its number differs by path. Searching for the handler's first look, instead of computing it, avoids depending on that number.
+
+### What warrants review
+
+The constant `progressHandler` in `/internal/core/index_cgo_test.go` names the unexported `s4qlInterrupted` of `internal/sqlite`; a rename there fails these tests loudly, it cannot make them pass falsely. The constraint `cgo`, not `!s4ql_browser`, is the exact condition under which `StepContext` interrupts, also natively with the tag `s4ql_browser`.
+
+The self-review (`/code-review medium`) found no bug in the change. It gave two nits that I fixed: `/docs/todo/slice-13.md` still named `TestScanIndex_context` for the write transaction that goes on after an interrupted sort, now `TestScanIndex_interrupt`, and the test of `EndedBy` compared the compiler's name of a closure, `TestEndAtErr.func2.1`, which a new subtest would renumber; it now calls a named helper, `lookAt`. Its two other findings are known and recorded in `/docs/todo/storage-core.md`: the scan with more than 63 unpinned key columns sorts under the lowered length limit, and a stop or close does not interrupt a sort.
+
+### Future work
+
+The open item on the browser build in `/docs/todo/storage-core.md`.
