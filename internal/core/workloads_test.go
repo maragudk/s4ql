@@ -628,6 +628,9 @@ func TestSimulation(t *testing.T) {
 			reached := y.reached()
 			var short bool
 			for _, name := range slices.Sorted(maps.Keys(test.reaches)) {
+				if test.reaches[name] < 1 {
+					t.Errorf("the minimum of %q is %v, so it checks nothing: raise it or drop it, and say where the kind is still required", name, test.reaches[name])
+				}
 				if least := test.reaches[name]; reached[name] < least {
 					short = true
 					t.Errorf("the workload reached %q %v times, and must reach it %v times at least", name, reached[name], least)

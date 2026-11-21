@@ -2831,19 +2831,21 @@ func TestDifferential(t *testing.T) {
 // Each sequence that finds the bug runs again without it and must find nothing, as every sequence of
 // [TestDifferential] does.
 func TestDifferential_plantedBugs(t *testing.T) {
-	n := 60
+	n := 30
 	if slow() {
-		n = 6
+		n = 3
 	}
 	for _, b := range []struct {
 		name    string
 		profile *stmttest.Profile
 		// least is the number of the n sequences that must find the bug, a third of what they found
-		// on 2026-11-21.
+		// on 2026-11-21, 21 and 15 of 30, each by the rows of a select or by the count of an update or
+		// a delete that differ from SQLite's. Of the first 60 sequences of the one sequence before the
+		// profiles, 11 and 6 found them.
 		least int
 	}{
-		{"pinByPlace", stmttest.Indexes, 1},
-		{"unturnedBound", stmttest.ValueFirst, 1},
+		{"pinByPlace", stmttest.Indexes, 7},
+		{"unturnedBound", stmttest.ValueFirst, 5},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			found := 0
