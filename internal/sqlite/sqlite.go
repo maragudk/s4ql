@@ -329,7 +329,6 @@ func (c *Conn) Close() error {
 	}
 	c.db = nil
 	c.progress.handle.Delete()
-	c.progress = nil
 	return nil
 }
 

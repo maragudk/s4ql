@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -217,6 +218,16 @@ func TestConn_Close(t *testing.T) {
 		is.Equal(t, codeMisuse, code(t, err))
 		is.Equal(t, "bad parameter or other API misuse", message(t, err))
 		is.Equal(t, codeMisuse, code(t, c.Exec("select 1")))
+	})
+
+	t.Run("should release the handle through which the progress handler reads its step, so that nothing keeps it", func(t *testing.T) {
+		c, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		collected := c.ProgressCollected()
+		is.NotError(t, c.Close())
+		c = nil
+		runtime.GC()
+		is.True(t, collected())
 	})
 }
 
