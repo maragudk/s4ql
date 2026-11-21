@@ -35,6 +35,7 @@ The mutation testing of slice 9 (#120) left 18 mutants of `internal/core` open: 
 
 ### What didn't work
 
+- CI's job `browser-test (4)` failed on the first push: in headless Chrome every subtest of `TestTx_Commit_indexFaults` logged `read :  1  runs,  0  failed` and `index_test.go:2150: no commit failed at a read`. The browser's SQLite keeps the cache in memory without the PRAGMA, and a commit reads nothing from the file. `shrinkPageCache` now reports whether the cache keeps the size, and the test requires a failed commit at a read only where it does; `make test-browser BROWSERPKGS=./internal/core "BROWSERFLAGS=-run '_indexFaults'"` passes locally.
 - Nothing failed in the code. The first sketch of the row transaction had 80 rows of 1 KB, which with the one-page cache took 974 read positions and 12 s; one row of 70 KiB gives the same writes of the spool file before the end of the commit object (its buffer is 64 KiB) in 60 positions.
 
 ### What I learned
