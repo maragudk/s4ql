@@ -484,7 +484,7 @@ Included:
 
 - `order by` takes one or more column names, each with `asc` or `desc`. When neither is written, it is `asc`.
 - `limit` takes a number or `?`.
-- Rows that tie under `order by` follow the rule on row order of [the spec](spec.md), which slice 9 builds.
+- Rows that tie under `order by` follow the rule on row order of [the spec](spec.md). Where s4ql sorts, the order of tied rows varies from one query to the next: the sort gets a tie-break whose direction is drawn per query. Where an index delivers the order, tied rows come in the order of that index, because varying them would mean reading a whole group of tied rows before the first is returned, which defeats the index (with `limit 1` and a thousand ties, a thousand rows read to return one). That order is not a promise either: it depends on the index the engine picks, and the rules for picking may change. Agreed by Markus on 2026-11-21.
 - Two rules for picking an index come with this slice. With the same leading columns pinned and a `limit`, an index that gives the order beats one that only narrows a range. On goqite's receive query with 100,000 rows, that is about 400 times faster when all messages are ready, as [the research note](research/index-selection.md) measured. With nothing pinned, an index that gives the order beats a full scan with a sort.
 - `null` sorts where SQLite sorts it: first in `asc`, last in `desc`.
 - The commit format does not change.
