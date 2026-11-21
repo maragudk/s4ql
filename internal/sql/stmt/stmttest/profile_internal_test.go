@@ -3,6 +3,8 @@ package stmttest
 import (
 	"crypto/sha256"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"testing"
 
 	"maragu.dev/is"
@@ -39,6 +41,40 @@ func TestProfileOf(t *testing.T) {
 			areaValueFirst, areaArguments, areaOthers, areaText} {
 			is.True(t, Mixed.on(area), area)
 		}
+	})
+}
+
+func TestPCG(t *testing.T) {
+	t.Run("should give the numbers of the PCG of math/rand/v2 with the same seeds, as they are and below every kind of bound", func(t *testing.T) {
+		for seed := range uint64(50) {
+			p := &pcg{hi: mix(seed), lo: seed * 7}
+			r := rand.New(rand.NewPCG(mix(seed), seed*7))
+			for i := range 2000 {
+				switch i % 4 {
+				case 0:
+					is.Equal(t, r.Uint64(), p.Uint64())
+				case 1:
+					// A small bound, as most draws of a sequence have.
+					n := 1 + i%61
+					is.Equal(t, r.IntN(n), p.IntN(n))
+				case 2:
+					// A power of two.
+					n := 1 << (i % 62)
+					is.Equal(t, r.IntN(n), p.IntN(n))
+				default:
+					// A bound so large that many numbers are drawn again.
+					n := math.MaxInt64/2 + 1 + i
+					is.Equal(t, r.IntN(n), p.IntN(n))
+				}
+			}
+		}
+	})
+
+	t.Run("should panic for a bound that is not above 0", func(t *testing.T) {
+		defer func() {
+			is.True(t, recover() != nil)
+		}()
+		(&pcg{}).IntN(0)
 	})
 }
 

@@ -2,7 +2,7 @@ package stmttest
 
 import (
 	"hash/fnv"
-	"math/rand/v2"
+	"math/bits"
 )
 
 // Profile of a [Sequence]: how often it writes each kind of statement, and the odds of each area
@@ -225,10 +225,53 @@ func keyOf(area, what string) uint64 {
 	return h.Sum64()
 }
 
+// pcg is a generator of random numbers whose numbers are a function of its two seeds alone: the
+// PCG of math/rand/v2, with the numbers below a bound as its Rand draws them on a machine of 64
+// bits, written out here so that a stream draws nothing from the machine and gives the same numbers
+// wherever it runs.
+type pcg struct {
+	hi, lo uint64
+}
+
+func (p *pcg) Uint64() uint64 {
+	// The state times a multiplier of 128 bits, plus an increment.
+	hi, lo := bits.Mul64(p.lo, 4865540595714422341)
+	hi += p.hi*4865540595714422341 + p.lo*2549297995355413924
+	lo, carry := bits.Add64(lo, 1442695040888963407, 0)
+	hi, _ = bits.Add64(hi, 6364136223846793005, carry)
+	p.hi, p.lo = hi, lo
+	// The output, by two xorshifts and two multiplications.
+	hi ^= hi >> 32
+	hi *= 0xda942042e4dd58b5
+	hi ^= hi >> 48
+	hi *= lo | 1
+	return hi
+}
+
+// IntN is a number in [0, n), each as likely as another. It panics if n is not above 0.
+func (p *pcg) IntN(n int) int {
+	if n <= 0 {
+		panic("stmttest: a number below a bound that is not above 0")
+	}
+	bound := uint64(n)
+	if bound&(bound-1) == 0 {
+		return int(p.Uint64() & (bound - 1))
+	}
+	// The high half of a number times the bound, drawn again where the low half is among the few
+	// values that would make some numbers more likely than others.
+	hi, lo := bits.Mul64(p.Uint64(), bound)
+	if lo < bound {
+		for threshold := -bound % bound; lo < threshold; {
+			hi, lo = bits.Mul64(p.Uint64(), bound)
+		}
+	}
+	return int(hi)
+}
+
 // newStream of the seed for the area and what its numbers are for: the same numbers for the same
 // three, whatever else a sequence draws.
-func newStream(seed uint64, area, what string) *rand.Rand {
-	return rand.New(rand.NewPCG(mix(seed), mix(keyOf(area, what))))
+func newStream(seed uint64, area, what string) *pcg {
+	return &pcg{hi: mix(seed), lo: mix(keyOf(area, what))}
 }
 
 // stepStream is the stream of an area that starts anew at each statement of a sequence: its
@@ -236,35 +279,33 @@ func newStream(seed uint64, area, what string) *rand.Rand {
 // statements before drew.
 type stepStream struct {
 	seed, key uint64
-	// step is the number of the statement of the sequence, and at one more than the step that pcg is
-	// seeded for, or 0 before the first number.
+	// step is the number of the statement of the sequence, and at one more than the step that the
+	// generator is seeded for, or 0 before the first number.
 	step *uint64
 	at   uint64
-	pcg  *rand.PCG
-	r    *rand.Rand
+	pcg  pcg
 }
 
 func newStepStream(seed uint64, area string, step *uint64) *stepStream {
-	pcg := rand.NewPCG(0, 0)
-	return &stepStream{seed: mix(seed), key: keyOf(area, "statement"), step: step, pcg: pcg, r: rand.New(pcg)}
+	return &stepStream{seed: mix(seed), key: keyOf(area, "statement"), step: step}
 }
 
 // sync seeds the stream for the statement of now, if it is another than that of the last number.
 func (s *stepStream) sync() {
 	if s.at != *s.step+1 {
 		s.at = *s.step + 1
-		s.pcg.Seed(s.seed, mix(s.key^mix(*s.step)))
+		s.pcg = pcg{hi: s.seed, lo: mix(s.key ^ mix(*s.step))}
 	}
 }
 
 func (s *stepStream) IntN(n int) int {
 	s.sync()
-	return s.r.IntN(n)
+	return s.pcg.IntN(n)
 }
 
 func (s *stepStream) Uint64() uint64 {
 	s.sync()
-	return s.r.Uint64()
+	return s.pcg.Uint64()
 }
 
 // offStream is the stream of an area that is off in the profile of a sequence: a draw from it
