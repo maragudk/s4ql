@@ -524,7 +524,8 @@ func DefaultCases(columns []TableColumn, insert *stmt.Insert, args []any) []stri
 // LeavesOutIndexed reports whether the insert into the table of the columns, in the order of the
 // table, with the indexes, leaves out a column with a default, also DEFAULT NULL, that an index
 // holds, so that the index must hold the default. It is false for an insert that SQLite refuses for
-// its names or its number of values.
+// its names or its number of values. A position of an index that is no column, such as SQLite's -1
+// for the rowid, holds no default.
 func LeavesOutIndexed(columns []TableColumn, indexes []TableIndex, insert *stmt.Insert) bool {
 	positions, ok := Positions(columns, insert)
 	if !ok {
@@ -533,7 +534,7 @@ func LeavesOutIndexed(columns []TableColumn, indexes []TableIndex, insert *stmt.
 	values := valuesOf(columns, positions)
 	for _, ix := range indexes {
 		for _, c := range ix.Columns {
-			if values[c.Position] < 0 && columns[c.Position].Default != "" {
+			if c.Position >= 0 && c.Position < len(columns) && values[c.Position] < 0 && columns[c.Position].Default != "" {
 				return true
 			}
 		}

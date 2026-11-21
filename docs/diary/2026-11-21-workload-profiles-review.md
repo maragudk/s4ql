@@ -24,6 +24,8 @@ An independent review of pull request #123 found three ways in which the branch 
 - Two kinds that count a meeting of areas, in `pair.reach` of `/internal/engine/differential_test.go` and `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`: "insert that leaves out a column with a default that an index holds ok" (`stmttest.LeavesOutIndexed`, with a table test in `/internal/sql/stmt/stmttest/rule_test.go`) and "value on the left on a table that a create table if not exists found" (the pair keeps the tables that such a create table found, until a drop table succeeds). Only `mixed` reaches either: 47 and 144 times in `TestDifferential`, 7 and 49 in `TestConn_differential`, and 19 and 62 in `TestGenerated`. All three require both.
 - Recounted the four tests with `S4QL_RECOUNT=1`, and checked the diff of each `.tsv` row by row with a script.
 - Timed each package back to back with test binaries built before the change (in `/Volumes/990/s4ql/workload-profiles-fix/before/`) and after, see below.
+- A review of the commit by the code-review skill found six things. I fixed four: the comment of `generatedOf` and the todo file claimed that each focused profile reaches its rows as often as before, where it reaches their least numbers; `stmttest.LeavesOutIndexed` took a position of an index for a column without a check, which SQLite's -1 for the rowid would have made panic; no test covered `Reached` without `Totaled`; and the diary said only that the set of found tables can count too much. I left two: the variants "in a write transaction" that `pair.reach` counts of the new kind of defaults, which nothing requires and which harm nothing, and the 26 rows of `TestGenerated.tsv` that the smaller focused profiles lost, see below.
+- `make test`, `make lint`, `make test-sql` (the full run of the engine and the SQL packages, with the planted bugs), and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` pass.
 
 ### Why
 
@@ -59,7 +61,8 @@ A third of each run's count is only as good as the count that the recount writes
 - `/internal/sql/stmt/stmttest/reached.go`, `Reached.totals`, and that `Least` checks the totals too, also for the nightly runs.
 - The four `.kinds` files against `main`: the scripts are in the session's scratchpad, and their method is above.
 - `generatedOf` in `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`: each size is the fewest first sequences that meet the profile's rows of before, or that a kind needs, and the rows of `changes`, `defaults`, `tables`, and `transactions` fell in the diff of `TestGenerated.tsv` for that reason.
-- The two kinds of meetings: the set of found tables is kept by the pair, so a roll back of a transaction can leave a table in it that is gone, which makes the count a little higher than the meeting; it is a tally, not a check of an answer.
+- The two kinds of meetings: the set of found tables is kept by the pair from the statements alone, so a roll back of a transaction can leave a table in it that is gone, or take out one that is back, which makes the count a little off the meeting either way; it is a tally, not a check of an answer.
+- 26 rows of `TestGenerated.tsv` are gone: kinds that `changes`, `defaults`, `tables`, or `transactions` reached three to five times, and now once or twice. Each still meets the least number of its old row, which is how I read "where their least numbers allow", and its total in `.kinds` holds it. Keeping every row would take those profiles back to their sizes of before, and `mixed` lower than 128.
 
 ### Future work
 

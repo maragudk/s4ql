@@ -3,6 +3,7 @@ package stmttest_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -120,6 +121,22 @@ func TestReached_Check(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("should add every run to a total without Totaled", func(t *testing.T) {
+		t.Setenv(stmttest.RecountVariable, "")
+		r := reached(t, kinds, counts+"a/c\t3\t1\trows found\n")
+		r.Totaled = nil
+		all := runs()
+		all["a"]["rows found"], all["b"]["rows found"] = 3, 1
+		all["a/c"] = map[string]int{"rows found": 3}
+		failures, err := r.Check([]string{"a", "b", "a/c"}, all)
+		is.NotError(t, err)
+		is.Equal(t, 0, len(failures), strings.Join(failures, "\n"))
+		all["a/c"]["rows found"] = 0
+		failures, err = r.Check([]string{"a", "b", "a/c"}, all)
+		is.NotError(t, err)
+		is.True(t, slices.ContainsFunc(failures, func(f string) bool { return strings.Contains(f, `the runs reach "rows found" 4 times in all`) }), strings.Join(failures, "\n"))
+	})
 
 	t.Run("should write, with S4QL_RECOUNT=1, a file that the check then passes, with a row for each required kind that a run reaches three times and for each exact kind", func(t *testing.T) {
 		r := reached(t, kinds, "")

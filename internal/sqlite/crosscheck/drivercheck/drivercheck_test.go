@@ -3539,10 +3539,11 @@ func TestGenerated(t *testing.T) {
 // area meets the others, such as a default with an index or a clause of slice 10 with a value on the
 // left, and no tally of a focused profile counts what only such a meeting reaches. The 250 of the
 // one sequence of all areas before the profiles each met them. A focused profile runs as many as its
-// rarest kinds of outcome need: each reaches every row of its own in testdata/reached at least as
-// often as when it ran more, and the profiles of the clauses of slice 10, the defaults, and the
-// values on the left reach a kind that no other profile reaches three times. Each runs every variant
-// of [generated] once at least.
+// rarest kinds of outcome need: each reaches the least number of every row of its own that
+// testdata/reached had when it ran more, though a row of a kind that it then reached three to five
+// times can have gone, and the profiles of the clauses of slice 10, the defaults, and the values on
+// the left reach a kind that no other profile reaches three times. Each runs every variant of
+// [generated] once at least.
 // The defaults and the transactions also reach the statements of a transaction while its rows are
 // open the most, of which a read-only transaction's insert is the rarest.
 func generatedOf(p *stmttest.Profile) uint64 {

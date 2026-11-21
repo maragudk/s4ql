@@ -188,6 +188,8 @@ func TestLeavesOutIndexed(t *testing.T) {
 		{name: "should not report a column with a default that no index holds", src: "insert into t (k, b, c) values (1, 2.5, x'00')", indexes: []stmttest.TableIndex{j}},
 		{name: "should not report a column without a default that an index holds", src: "insert into t (k, a, c) values (1, 'y', x'00')", indexes: []stmttest.TableIndex{i, j}},
 		{name: "should not report a table without indexes", src: "insert into t (k) values (1)"},
+		{name: "should not report a position of an index that is no column", src: "insert into t (k) values (1)",
+			indexes: []stmttest.TableIndex{{Name: "x", Columns: []stmttest.IndexKeyColumn{{Position: -1}, {Position: -2}, {Position: 4}}}}},
 		{name: "should not report an insert without a list, which leaves out nothing", src: "insert into t values (1, 'y', 2.5, x'00')", indexes: []stmttest.TableIndex{i, j}},
 		{name: "should not report an insert that SQLite refuses for its names", src: "insert into t (k, z) values (1, 2)", indexes: []stmttest.TableIndex{i, j}},
 	}
