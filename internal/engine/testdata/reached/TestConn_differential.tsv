@@ -1,8 +1,8 @@
 # What each profile of TestConn_differential of the engine reaches in its full run.
-# A row is a run, what the run reached when this file was written, the least number that the
-# test requires of it, a third, or = for a count that is pinned exactly, and the kind. The kinds
-# are those of testdata/reached/TestConn_differential.kinds. Written by the test with S4QL_RECOUNT=1 in a full run: see
-# stmttest.Reached. Do not edit a number by hand.
+# A row is a run, what the run reached when this file was written, the least number that is
+# required of it, a third, or = for a count that is pinned exactly, and the kind. The kinds are
+# those of testdata/reached/TestConn_differential.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
+# Do not edit a number by hand.
 mixed	9	3	delete attempt to write a readonly database
 mixed	101	=	excused: a value of another type than its column, checked against s4ql's rule
 mixed	2	=	excused: already exists after the start of a table, accepted
@@ -29,6 +29,7 @@ mixed	4	1	reached: drop table if exists did its work in a write transaction
 mixed	4	1	reached: drop table if exists did nothing: no table of the name exists in a read-only transaction
 mixed	5	1	reached: drop table if exists did nothing: no table of the name exists in a write transaction
 mixed	6	2	reached: insert that leaves out a column with a default of integer ok in a write transaction
+mixed	7	2	reached: insert that leaves out a column with a default that an index holds ok
 mixed	3	1	reached: insert that leaves out the key with a default ok in a write transaction
 mixed	182	60	reached: read both ways
 mixed	39	13	reached: read both ways in a read-only transaction
@@ -36,6 +37,7 @@ mixed	4	1	reached: roll back of a transaction whose update or delete changed row
 mixed	14	4	reached: select with a value on the left ok, no row found in a write transaction
 mixed	5	1	reached: update with a value on the left a value of another type in a write transaction
 mixed	3	1	reached: update with a value on the left attempt to write a readonly database in a read-only transaction
+mixed	49	16	reached: value on the left on a table that a create table if not exists found
 mixed	9	3	update attempt to write a readonly database
 mixed	7	2	update with a parameter attempt to write a readonly database
 tables	42	=	excused: a value of another type than its column, checked against s4ql's rule

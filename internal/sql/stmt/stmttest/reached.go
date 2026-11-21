@@ -19,12 +19,16 @@ func Recounting() bool {
 	return os.Getenv(RecountVariable) == "1"
 }
 
-// Reached is what the runs of a test must reach: the kinds of outcome that are required, in a file
-// that is written by hand, and how often each run reached each of them at the last count, in a file
-// that [Reached.Check] writes. A run is a named set of sequences, such as those of a [Profile].
+// Reached is what the runs of a test must reach: the kinds of outcome that are required, with the
+// least number of each over all runs, in a file that is written by hand, and how often each run
+// reached each of them at the last count, in a file that [Reached.Check] writes. A run is a named
+// set of sequences, such as those of a [Profile].
 type Reached struct {
-	// Kinds is the path of the file of the required kinds, one on a line. A line that begins with #
-	// is a comment. The file holds one kind at least.
+	// Kinds is the path of the file of the required kinds, one on a line: the least number of the
+	// total of the kind, a tab, and the kind. The total is what the runs that [Reached.Totaled] names
+	// reached of the kind together. A line that begins with # is a comment. The file holds one kind
+	// at least, and each least number is 1 at least. Only a builder writes it, so a least number of a
+	// total falls only with a change of the file.
 	Kinds string
 	// Counts is the path of the file of the counts, which [Reached.Check] writes with
 	// [RecountVariable] set to 1 and checks otherwise. A row is a run, what the run reached, the
@@ -36,6 +40,17 @@ type Reached struct {
 	// Exact reports whether the kind is pinned exactly: a run must give it as often as its row says,
 	// and a run without a row of it not at all. It may be nil, for no such kind.
 	Exact func(kind string) bool
+	// Totaled reports whether what the run reached adds to the totals of the kinds. It may be nil, for
+	// every run. Where the counts of a run are the sums of those of other runs, only one of the two
+	// adds.
+	Totaled func(run string) bool
+}
+
+// requiredKind is a line of the file of the kinds of a [Reached]: a kind, and the least number of
+// its total.
+type requiredKind struct {
+	kind  string
+	least int
 }
 
 // reachedRow is a row of the counts of a [Reached].
@@ -49,22 +64,27 @@ type reachedRow struct {
 // and give what fails, or with [RecountVariable] set to 1 write the file of the counts from the
 // runs.
 //
-// A run must reach each kind of its rows at least as often as the least number of the row, which is
-// a third of what the run reached when the file was written, rounded down. A kind that a run reaches
-// fewer than three times has no row of that run, so no least number is 0, and a row whose least
-// number is not the third of its count fails the check: a lower one checks less than the file says,
-// and a higher one has no margin. Each required kind must have a row in one run at least, so a kind
-// that every run reaches fewer than three times fails the check and the recount, which then writes
-// nothing, and the failure says which runs reach it how often. Each run must have a row at least,
-// so a run that was added without a recount fails. Only a required kind and an exact kind have
-// rows.
+// The runs that [Reached.Totaled] names must together reach each required kind at least as often
+// as the least number of the kind in the file of the kinds. That file is written by hand, and the
+// recount does not write it, so a total that falls fails the check and the recount until a builder
+// lowers its number there. A run must reach each kind of its rows at least as often as the least
+// number of the row, which is a third of what the run reached when the file was written, rounded
+// down. A kind that a run reaches fewer than three times has no row of that run, so no least number
+// is 0, and a row whose least number is not the third of its count fails the check: a lower one
+// checks less than the file says, and a higher one has no margin. A row whose count was lowered
+// with its least number, or that was deleted, passes these rules, and the total of its kind is what
+// still holds then. Each required kind must have a row in one run at least, so a kind that every
+// run reaches fewer than three times fails the check and the recount, which then writes nothing,
+// and the failure says which runs reach it how often. Each run must have a row at least, so a run
+// that was added without a recount fails. Only a required kind and an exact kind have rows.
 func (c Reached) Check(names []string, runs map[string]map[string]int) ([]string, error) {
-	required, exact, err := c.kinds()
+	lines, exact, err := c.kinds()
 	if err != nil {
 		return nil, err
 	}
+	required := kindsOf(lines)
 	if Recounting() {
-		return c.recount(names, runs, required, exact)
+		return c.recount(names, runs, lines, exact)
 	}
 	rows, err := readCounts(c.Counts)
 	if err != nil {
@@ -108,14 +128,18 @@ func (c Reached) Check(names []string, runs map[string]map[string]int) ([]string
 			}
 		}
 	}
-	return failures, nil
+	return append(failures, c.totals(names, runs, lines)...), nil
 }
 
-// Least checks the least numbers of the rows of the runs named, and nothing else, and gives what
-// fails: for runs that hold more sequences than those of the file of the counts, each of which they
-// hold too, so that they reach each kind at least as often, and give an exact kind more often. It
-// never writes the file.
+// Least checks the least numbers of the rows of the runs named and those of the totals of the
+// kinds, and nothing else, and gives what fails: for runs that hold more sequences than those of
+// the file of the counts, each of which they hold too, so that they reach each kind at least as
+// often, and give an exact kind more often. It never writes the file.
 func (c Reached) Least(names []string, runs map[string]map[string]int) ([]string, error) {
+	lines, _, err := c.kinds()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := readCounts(c.Counts)
 	if err != nil {
 		return nil, err
@@ -126,12 +150,34 @@ func (c Reached) Least(names []string, runs map[string]map[string]int) ([]string
 			failures = append(failures, fmt.Sprintf("%v reaches %q %v times, and at least %v were expected, a third of %v: something that the run did stopped happening", row.run, row.kind, got, row.least, row.reached))
 		}
 	}
-	return failures, nil
+	return append(failures, c.totals(names, runs, lines)...), nil
 }
 
-// kinds gives the required kinds of the file of [Reached.Kinds], and [Reached.Exact], or a function
-// that is false for every kind if it is nil.
-func (c Reached) kinds() ([]string, func(string) bool, error) {
+// totals gives the required kinds whose total, over the runs named that [Reached.Totaled] names, is
+// below the least number of the kind.
+func (c Reached) totals(names []string, runs map[string]map[string]int, required []requiredKind) []string {
+	totaled := c.Totaled
+	if totaled == nil {
+		totaled = func(string) bool { return true }
+	}
+	var failures []string
+	for _, k := range required {
+		total := 0
+		for _, name := range names {
+			if totaled(name) {
+				total += runs[name][k.kind]
+			}
+		}
+		if total < k.least {
+			failures = append(failures, fmt.Sprintf("the runs reach %q %v times in all, and %v requires %v of them: %v; something that the test did stopped happening, or lower the number by hand and say why in the file", k.kind, total, c.Kinds, k.least, reachedBy(names, runs, k.kind)))
+		}
+	}
+	return failures
+}
+
+// kinds gives the required kinds of the file of [Reached.Kinds], with their least numbers, and
+// [Reached.Exact], or a function that is false for every kind if it is nil.
+func (c Reached) kinds() ([]requiredKind, func(string) bool, error) {
 	required, err := readKinds(c.Kinds)
 	if err != nil {
 		return nil, nil, err
@@ -143,12 +189,21 @@ func (c Reached) kinds() ([]string, func(string) bool, error) {
 	if exact == nil {
 		exact = func(string) bool { return false }
 	}
-	for _, kind := range required {
-		if exact(kind) {
-			return nil, nil, fmt.Errorf("%v holds the kind %q, which is exact: an exact kind is pinned for each run that gives it, and is not required", c.Kinds, kind)
+	for _, k := range required {
+		if exact(k.kind) {
+			return nil, nil, fmt.Errorf("%v holds the kind %q, which is exact: an exact kind is pinned for each run that gives it, and is not required", c.Kinds, k.kind)
 		}
 	}
 	return required, exact, nil
+}
+
+// kindsOf the lines of a file of kinds.
+func kindsOf(lines []requiredKind) []string {
+	kinds := make([]string, len(lines))
+	for i, k := range lines {
+		kinds[i] = k.kind
+	}
+	return kinds
 }
 
 // reachedBy says how often each run reaches the kind.
@@ -168,7 +223,8 @@ func reachedBy(names []string, runs map[string]map[string]int, kind string) stri
 // recount writes the file of the counts from the runs, as [Reached.Check] says, or gives the
 // required kinds that no run reaches three times and the runs that would have no row, and writes
 // nothing.
-func (c Reached) recount(names []string, runs map[string]map[string]int, required []string, exact func(string) bool) ([]string, error) {
+func (c Reached) recount(names []string, runs map[string]map[string]int, lines []requiredKind, exact func(string) bool) ([]string, error) {
+	required := kindsOf(lines)
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %v\n", c.Doc)
 	b.WriteString("# A row is a run, what the run reached when this file was written, the least number that is\n")
@@ -203,6 +259,9 @@ func (c Reached) recount(names []string, runs map[string]map[string]int, require
 			failures = append(failures, fmt.Sprintf("no run reaches %q, which is required, three times: %v; %v is not written", kind, reachedBy(names, runs, kind), c.Counts))
 		}
 	}
+	for _, failure := range c.totals(names, runs, lines) {
+		failures = append(failures, fmt.Sprintf("%v; %v is not written", failure, c.Counts))
+	}
 	if len(failures) > 0 {
 		return failures, nil
 	}
@@ -210,18 +269,36 @@ func (c Reached) recount(names []string, runs map[string]map[string]int, require
 }
 
 // readKinds reads the kinds of the file at path, as [Reached.Kinds] says.
-func readKinds(path string) ([]string, error) {
+func readKinds(path string) ([]requiredKind, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	var kinds []string
+	var kinds []requiredKind
+	seen := map[string]bool{}
 	lines := bufio.NewScanner(f)
-	for lines.Scan() {
-		if line := lines.Text(); line != "" && !strings.HasPrefix(line, "#") {
-			kinds = append(kinds, line)
+	for n := 1; lines.Scan(); n++ {
+		line := lines.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
 		}
+		least, kind, ok := strings.Cut(line, "\t")
+		if !ok || kind == "" {
+			return nil, fmt.Errorf("%v:%v: not a least number, a tab, and a kind", path, n)
+		}
+		k := requiredKind{kind: kind}
+		if k.least, err = strconv.Atoi(least); err != nil {
+			return nil, fmt.Errorf("%v:%v: not a least number, a tab, and a kind: %w", path, n, err)
+		}
+		if k.least < 1 {
+			return nil, fmt.Errorf("%v:%v: the least number %v of %q is not 1 at least, so it would check nothing", path, n, k.least, kind)
+		}
+		if seen[kind] {
+			return nil, fmt.Errorf("%v:%v: the kind %q is there twice", path, n, kind)
+		}
+		seen[kind] = true
+		kinds = append(kinds, k)
 	}
 	return kinds, lines.Err()
 }

@@ -2450,14 +2450,15 @@ type simEnvironment struct {
 // planted bugs, run the same sequences; its cells, each a profile and the number of its seeds; and
 // the largest share of its statements that may be refused for want of the lease, about twice what
 // its seeds gave on 2026-11-21, 0.034, 0.106, and 0.032. Each profile runs in the default and in the
-// hammer environment, and the idle one, whose kinds are those of the lease, runs five. A cell that
-// is added to an environment adds to what the environment reaches, and takes nothing from another
-// cell.
+// hammer environment, and the idle one, whose kinds are those of the lease, runs five. The cells of
+// the mixed profile, the only one in which every area meets the others, hold 100 seeds, two thirds
+// of the 150 of the one sequence of all areas before the profiles. A cell that is added to an
+// environment adds to what the environment reaches, and takes nothing from another cell.
 var simEnvironments = []simEnvironment{
-	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 12}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
+	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 34}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
 		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.07},
-	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 16}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
-	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 12}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
+	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
+	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
 		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.06},
 }
 
@@ -2468,7 +2469,9 @@ var simEnvironments = []simEnvironment{
 // every kind of outcome, of fault of the store, and of event of
 // testdata/reached/TestSimulation.kinds, which [tallyOf] counts, at least a third as often as when
 // the file was written, so that the test fails when a kind stops happening; and the integrity checks
-// of the caches exactly, since every seed runs each. S4QL_RECOUNT=1 writes the file again. And at
+// of the caches exactly, since every seed runs each. S4QL_RECOUNT=1 writes the file again. The
+// environments together must reach each kind at least as often as the number before it in
+// TestSimulation.kinds, which is written by hand, so that a recount cannot lower a floor. And at
 // most the share noLease of the statements of an environment may be refused for want of the lease,
 // so that the test fails when most statements no longer reach a transaction. The seeds are the same
 // in every run, so the counts are too.
@@ -2541,7 +2544,9 @@ func TestSimulation(t *testing.T) {
 	}
 	path := filepath.Join("testdata", "reached", "TestSimulation")
 	reached := stmttest.Reached{Kinds: path + ".kinds", Counts: path + ".tsv", Doc: "What the seeds of each environment of TestSimulation of the engine, and of each of its cells, reach.",
-		Exact: func(kind string) bool { return strings.HasPrefix(kind, "integrity checks ") }}
+		Exact: func(kind string) bool { return strings.HasPrefix(kind, "integrity checks ") },
+		// The counts of an environment are the sums of those of its cells.
+		Totaled: func(run string) bool { return !strings.Contains(run, "/") }}
 	check := reached.Check
 	switch {
 	case t.Failed():

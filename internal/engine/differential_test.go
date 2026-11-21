@@ -953,7 +953,10 @@ type pair struct {
 	// allPaths is set for a pair whose [pair.everyPath] runs each WHERE by every candidate, and not by
 	// [pathSample] of them.
 	allPaths bool
-	y        tally
+	// found holds the tables, folded, that a create table if not exists of the sequence found, and
+	// that no drop table dropped since, for [pair.reach].
+	found map[string]bool
+	y     tally
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -966,7 +969,7 @@ func newPair(t testing.TB, i *instance, y tally) *pair {
 // newPairWith is [newPair] with the options of the other instance on the core, options.
 func newPairWith(t testing.TB, i *instance, y tally, options engine.Options) *pair {
 	t.Helper()
-	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), y: y, rnd: rand.New(rand.NewPCG(0, 0x9a7))}
+	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), found: map[string]bool{}, y: y, rnd: rand.New(rand.NewPCG(0, 0x9a7))}
 	if i.memory != nil {
 		p.other = newMemoryInstance(t)
 	} else {
@@ -1766,8 +1769,10 @@ func (p *pair) count(kind string) {
 func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
 	if p.y != nil {
+		found := false
 		reach(p.t, p.o, c, got, p.i.changes, func(what string) {
 			p.y["reached: "+what]++
+			found = found || what == "create table if not exists did nothing: a table of the name exists"
 			// The statements of slice 10 count again by the transaction that they ran in.
 			if p.inTx && slices.ContainsFunc([]string{"create table if not exists ", "drop table if exists ", "create index if not exists ", "drop index if exists "}, func(k string) bool { return strings.HasPrefix(what, k) }) {
 				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
@@ -1788,7 +1793,36 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 		if _, ok := s.(*stmt.Update); ok && kind == "" && got.err == tooBig && !slices.ContainsFunc(c.Args, func(a any) bool { return byteLength(a) > p.i.limit }) {
 			p.y["reached: update of a row whose record is too long"]++
 		}
+		// A value on the left, of slice 12, on a table that a create table if not exists, of slice 10,
+		// found: a meeting of two areas that only the mixed profile has on.
+		switch s := s.(type) {
+		case *stmt.CreateTable:
+			if found {
+				p.found[s.Table.Fold()] = true
+			}
+		case *stmt.DropTable:
+			if got.err == "" {
+				delete(p.found, s.Table.Fold())
+			}
+		case *stmt.Select, *stmt.Update, *stmt.Delete:
+			if table, where := tableWhere(s); p.found[table.Fold()] && slices.ContainsFunc(where, func(c stmt.Condition) bool { return c.ValueFirst }) {
+				p.y["reached: value on the left on a table that a create table if not exists found"]++
+			}
+		}
 	}
+}
+
+// tableWhere gives the table and the WHERE of the select, the update, or the delete s.
+func tableWhere(s stmt.Statement) (stmt.Name, []stmt.Condition) {
+	switch s := s.(type) {
+	case *stmt.Select:
+		return s.Table, s.Where
+	case *stmt.Update:
+		return s.Table, s.Where
+	case *stmt.Delete:
+		return s.Table, s.Where
+	}
+	return stmt.Name{}, nil
 }
 
 // reach counts with count what the call c, whose answer of the engine is got, reaches on the
@@ -2326,7 +2360,7 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 	if long {
 		count("long value")
 	}
-	_, columns := o.columns(t, s.Table.Value)
+	table, columns := o.columns(t, s.Table.Value)
 	if columns == nil {
 		return
 	}
@@ -2357,6 +2391,11 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 		}
 		for _, what := range stmttest.DefaultCases(columns, s, args) {
 			count(what + " " + outcome)
+		}
+		// A default, of slice 11, that an index, of slice 9, holds: a meeting of two areas that only
+		// the mixed profile has on.
+		if _, indexes := o.tableIndexes(t, table, columns); stmttest.LeavesOutIndexed(columns, indexes, s) {
+			count("insert that leaves out a column with a default that an index holds " + outcome)
 		}
 	}
 	if len(columns) < 2 || refused {
@@ -2831,13 +2870,18 @@ func variantOf(seed uint64) (restarts bool, limit int) {
 	return k%2 == 1, map[bool]int{true: stmttest.LengthLimit}[k%4 >= 2]
 }
 
-// sequencesOf the profile p in a test that runs n sequences of each profile: n, and twice as many
-// of the mixed profile, in which every area meets the others, and of the profiles of the updates
-// and deletes, the indexes, the clauses of slice 10, and the values on the left, whose kinds of
-// outcome are the most and the rarest.
+// sequencesOf the profile p in a test that runs n sequences of each profile: n, twice as many of
+// the profiles of the updates and deletes, the indexes, the clauses of slice 10, and the values on
+// the left, whose kinds of outcome are the most and the rarest, and five times as many of the mixed
+// profile. The mixed profile is the only one in which every area meets the others, such as a default
+// with an index or a clause of slice 10 with a value on the left, and no tally of a focused profile
+// counts what only such a meeting reaches. With the default n, it runs 200 sequences, two thirds of
+// the 300 of the one sequence of all areas before the profiles.
 func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
-	case stmttest.Mixed, stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst:
+	case stmttest.Mixed:
+		n *= 5
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst:
 		n *= 2
 	}
 	return uint64(n)
@@ -2897,6 +2941,9 @@ func flagSet(name string) bool {
 // often, and the texts that the run excuses from the comparison with SQLite, by kind, exactly. Of
 // the calls that are excused because s4ql refuses their arguments by its rule, each is checked
 // against the rule instead. After a change of the generator, S4QL_RECOUNT=1 writes the file again.
+// The profiles together must reach each kind at least as often as the number before it in
+// testdata/reached/TestDifferential.kinds, which is written by hand, so that a recount cannot lower
+// a floor.
 //
 // With the flag -seed, also -seed 0, the test runs -sequences sequences from that seed, each with
 // the profile of its seed, and checks no count. With more -sequences than the default, it runs that

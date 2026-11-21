@@ -1,49 +1,57 @@
-# What each profile of TestConn_differential of the engine must reach: see stmttest.Reached.
-# A kind on a line. A kind that no run reaches three times fails the test.
-delete attempt to write a readonly database
-reached: NULL given for a column with a default, which takes NULL ok in a write transaction
-reached: WHERE run by every path on a table with an index
-reached: changed both ways
-reached: changed both ways in a read-only transaction
-reached: commit of a transaction whose update or delete changed rows
-reached: commit of a transaction with a create index or a drop index
-reached: create index attempt to write a readonly database
-reached: create index if not exists attempt to write a readonly database in a read-only transaction
-reached: create index if not exists did its work in a write transaction
-reached: create index if not exists did nothing: an index of the name exists in a read-only transaction
-reached: create index if not exists did nothing: an index of the name exists in a write transaction
-reached: create table if not exists attempt to write a readonly database in a read-only transaction
-reached: create table if not exists did its work in a write transaction
-reached: create table if not exists did nothing: a table of the name exists in a read-only transaction
-reached: create table if not exists did nothing: a table of the name exists in a write transaction
-reached: create table with a default on the key attempt to write a readonly database in a read-only transaction
-reached: create table with a default on the key ok in a write transaction
-reached: delete with a value on the left attempt to write a readonly database in a read-only transaction
-reached: delete with a value on the left ok, rows changed in a write transaction
-reached: drop index attempt to write a readonly database
-reached: drop index if exists did its work in a write transaction
-reached: drop index if exists did nothing: no index of the name exists in a read-only transaction
-reached: drop index if exists did nothing: no index of the name exists in a write transaction
-reached: drop table if exists attempt to write a readonly database in a read-only transaction
-reached: drop table if exists did its work in a write transaction
-reached: drop table if exists did nothing: no table of the name exists in a read-only transaction
-reached: drop table if exists did nothing: no table of the name exists in a write transaction
-reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed in a write transaction
-reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok in a write transaction
-reached: insert that leaves out a column with a default of integer attempt to write a readonly database in a read-only transaction
-reached: insert that leaves out a column with a default of integer ok in a write transaction
-reached: insert that leaves out the key with a default UNIQUE constraint failed in a write transaction
-reached: insert that leaves out the key with a default ok in a write transaction
-reached: read both ways
-reached: read both ways in a read-only transaction
-reached: roll back of a transaction whose update or delete changed rows
-reached: roll back of a transaction with a create index or a drop index
-reached: select with a value on the left ok, no row found in a read-only transaction
-reached: select with a value on the left ok, no row found in a write transaction
-reached: select with a value on the left ok, rows found in a read-only transaction
-reached: select with a value on the left ok, rows found in a write transaction
-reached: update with a value on the left a value of another type in a write transaction
-reached: update with a value on the left attempt to write a readonly database in a read-only transaction
-reached: update with a value on the left ok, rows changed in a write transaction
-update attempt to write a readonly database
-update with a parameter attempt to write a readonly database
+# What the profiles of TestConn_differential of the engine must reach: see stmttest.Reached.
+# A line is the least number of the total of a kind over all profiles, a tab, and the kind.
+# The numbers are written by hand, and a recount does not change them. They start from the
+# least numbers of main on 2026-11-21, and for a kind that main did not require from a third of
+# its total then. A total below its number fails the test, and so does a kind that no run
+# reaches three times.
+1	delete attempt to write a readonly database
+2	reached: NULL given for a column with a default, which takes NULL ok in a write transaction
+30	reached: WHERE run by every path on a table with an index
+181	reached: changed both ways
+38	reached: changed both ways in a read-only transaction
+7	reached: commit of a transaction whose update or delete changed rows
+9	reached: commit of a transaction with a create index or a drop index
+6	reached: create index attempt to write a readonly database
+2	reached: create index if not exists attempt to write a readonly database in a read-only transaction
+4	reached: create index if not exists did its work in a write transaction
+1	reached: create index if not exists did nothing: an index of the name exists in a read-only transaction
+2	reached: create index if not exists did nothing: an index of the name exists in a write transaction
+5	reached: create table if not exists attempt to write a readonly database in a read-only transaction
+6	reached: create table if not exists did its work in a write transaction
+6	reached: create table if not exists did nothing: a table of the name exists in a read-only transaction
+12	reached: create table if not exists did nothing: a table of the name exists in a write transaction
+11	reached: create table with a default on the key attempt to write a readonly database in a read-only transaction
+11	reached: create table with a default on the key ok in a write transaction
+2	reached: delete with a value on the left attempt to write a readonly database in a read-only transaction
+1	reached: delete with a value on the left ok, rows changed in a write transaction
+1	reached: drop index attempt to write a readonly database
+1	reached: drop index if exists did its work in a write transaction
+1	reached: drop index if exists did nothing: no index of the name exists in a read-only transaction
+3	reached: drop index if exists did nothing: no index of the name exists in a write transaction
+1	reached: drop table if exists attempt to write a readonly database in a read-only transaction
+3	reached: drop table if exists did its work in a write transaction
+2	reached: drop table if exists did nothing: no table of the name exists in a read-only transaction
+2	reached: drop table if exists did nothing: no table of the name exists in a write transaction
+1	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed in a write transaction
+1	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok in a write transaction
+3	reached: insert that leaves out a column with a default of integer attempt to write a readonly database in a read-only transaction
+2	reached: insert that leaves out a column with a default of integer ok in a write transaction
+1	reached: insert that leaves out the key with a default UNIQUE constraint failed in a write transaction
+2	reached: insert that leaves out the key with a default ok in a write transaction
+146	reached: read both ways
+32	reached: read both ways in a read-only transaction
+2	reached: roll back of a transaction whose update or delete changed rows
+4	reached: roll back of a transaction with a create index or a drop index
+1	reached: select with a value on the left ok, no row found in a read-only transaction
+3	reached: select with a value on the left ok, no row found in a write transaction
+1	reached: select with a value on the left ok, rows found in a read-only transaction
+1	reached: select with a value on the left ok, rows found in a write transaction
+3	reached: update with a value on the left a value of another type in a write transaction
+2	reached: update with a value on the left attempt to write a readonly database in a read-only transaction
+1	reached: update with a value on the left ok, rows changed in a write transaction
+1	update attempt to write a readonly database
+1	update with a parameter attempt to write a readonly database
+# Where two areas meet that only the mixed profile has on together: a default that an index holds,
+# and a value on the left on a table that a create table if not exists found.
+2	reached: insert that leaves out a column with a default that an index holds ok
+16	reached: value on the left on a table that a create table if not exists found

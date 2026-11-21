@@ -693,12 +693,31 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		return "ok"
 	}
 	s, _ := stmt.Check(src)
+	// A value on the left, of slice 12, on a table that a create table if not exists, of slice 10,
+	// found: a meeting of two areas that only the mixed profile has on.
+	if table, where := tableWhere(s); p.found[table.Fold()] && slices.ContainsFunc(where, func(c stmt.Condition) bool { return c.ValueFirst }) {
+		count("value on the left on a table that a create table if not exists found")
+	}
 	switch s.(type) {
 	case *stmt.Update, *stmt.Delete:
 		p.reachChange(s, runs, got, o, kind, count)
 		return
 	}
-	p.reachExists(src, s, runs, got, o, kind, count)
+	found := false
+	p.reachExists(src, s, runs, got, o, kind, func(what string) {
+		count(what)
+		found = found || what == "create table if not exists did nothing: a table of the name exists"
+	})
+	switch s := s.(type) {
+	case *stmt.CreateTable:
+		if found {
+			p.found[s.Table.Fold()] = true
+		}
+	case *stmt.DropTable:
+		if outs := got.runs(); len(outs) > 0 && outs[0].failed == "" {
+			delete(p.found, s.Table.Fold())
+		}
+	}
 	if sel, ok := s.(*stmt.Select); ok {
 		_, columns := p.columnsIn(o, sel.Table.Value)
 		if columns == nil {
@@ -742,7 +761,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			count("literal " + stmttest.LiteralKind(v.Value))
 		}
 	}
-	_, columns := p.columnsIn(o, insert.Table.Value)
+	table, columns := p.columnsIn(o, insert.Table.Value)
 	var typ string
 	for _, c := range columns {
 		if c.PrimaryKey {
@@ -752,6 +771,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	if typ == "" {
 		return
 	}
+	indexes := p.indexesIn(o, table)
 	for i, o := range got.runs() {
 		count("insert into " + typ + " " + kind(o))
 		if i >= len(runs) || !reaches(src, runs[i]) {
@@ -769,6 +789,11 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		}
 		for _, what := range stmttest.DefaultCases(columns, insert, bound) {
 			count(what + " " + kind(o))
+		}
+		// A default, of slice 11, that an index, of slice 9, holds: a meeting of two areas that only
+		// the mixed profile has on.
+		if len(bound) == insert.Parameters() && stmttest.LeavesOutIndexed(columns, indexes, insert) {
+			count("insert that leaves out a column with a default that an index holds " + kind(o))
 		}
 		if len(columns) < 2 {
 			continue
@@ -1054,7 +1079,10 @@ type pair struct {
 	// created are the names of the tables that a text created, as their values, so that the
 	// comparison of the tables also asks for those that SQLite no longer has.
 	created map[string]bool
-	y       tally
+	// found holds the tables, folded, that a create table if not exists of the sequence found, and
+	// that no drop table dropped since, for [pair.reach].
+	found map[string]bool
+	y     tally
 	// tx is the transaction that is open on both sides, or nil.
 	tx *transaction
 }
@@ -1087,7 +1115,7 @@ func (t *transaction) kind() string {
 // outcomes counted in y.
 func newPair(tb testing.TB, w *world, pinned bool, y tally) *pair {
 	tb.Helper()
-	p := &pair{tb: tb, w: w, prefix: fmt.Sprint("db", w.prefixes.Add(1)), cache: filepath.Join(tb.TempDir(), "cache"), pinned: pinned, created: map[string]bool{}, y: y}
+	p := &pair{tb: tb, w: w, prefix: fmt.Sprint("db", w.prefixes.Add(1)), cache: filepath.Join(tb.TempDir(), "cache"), pinned: pinned, created: map[string]bool{}, found: map[string]bool{}, y: y}
 	p.s4ql = open(tb, w.options(p.prefix, p.cache))
 	var err error
 	// A file, so that every connection of the pool reaches the same database. Its transactions begin
@@ -2063,6 +2091,43 @@ func (p *pair) columnsIn(o runner, name string) (string, []stmttest.TableColumn)
 	}
 	is.NotError(tb, rows.Err())
 	return table, columns
+}
+
+// indexesIn gives the indexes that a create index made on the table of the name on o, in the order in
+// which they were created, each with the positions of its columns, or nil for a table that o does
+// not have.
+func (p *pair) indexesIn(o runner, table string) []stmttest.TableIndex {
+	tb := p.tb
+	tb.Helper()
+	rows, err := o.QueryContext(tb.Context(), `select il.name, ii.cid from pragma_index_list(?) il, pragma_index_info(il.name) ii where il.origin = 'c' order by il.name, ii.seqno`, table)
+	is.NotError(tb, err)
+	defer func() { is.NotError(tb, rows.Close()) }()
+	var indexes []stmttest.TableIndex
+	for rows.Next() {
+		var name string
+		var position int
+		is.NotError(tb, rows.Scan(&name, &position))
+		if len(indexes) == 0 || indexes[len(indexes)-1].Name != name {
+			indexes = append(indexes, stmttest.TableIndex{Name: name})
+		}
+		last := &indexes[len(indexes)-1]
+		last.Columns = append(last.Columns, stmttest.IndexKeyColumn{Position: position})
+	}
+	is.NotError(tb, rows.Err())
+	return indexes
+}
+
+// tableWhere gives the table and the WHERE of the select, the update, or the delete s.
+func tableWhere(s stmt.Statement) (stmt.Name, []stmt.Condition) {
+	switch s := s.(type) {
+	case *stmt.Select:
+		return s.Table, s.Where
+	case *stmt.Update:
+		return s.Table, s.Where
+	case *stmt.Delete:
+		return s.Table, s.Where
+	}
+	return stmt.Name{}, nil
 }
 
 // reachExists counts with count what the statement s of IF NOT EXISTS or IF EXISTS of slice 10 of
@@ -3421,7 +3486,9 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 // testdata/reached/TestGenerated.kinds that the tally counts three times or more in the profile, at
 // least a third as often, and the texts that the comparison excuses, by kind, exactly, so that a
 // change that excuses more cannot pass unseen. After a change of the generator or of the test,
-// S4QL_RECOUNT=1 writes the file again.
+// S4QL_RECOUNT=1 writes the file again. The profiles together must reach each kind at least as
+// often as the number before it in TestGenerated.kinds, which is written by hand, so that a recount
+// cannot lower a floor.
 func TestGenerated(t *testing.T) {
 	const length = 48
 	w := newWorld(t)
@@ -3467,29 +3534,37 @@ func TestGenerated(t *testing.T) {
 	}
 }
 
-// generatedOf the profile p: the number of sequences of it that [TestGenerated] runs, 16, twice the
-// variants of [generated], and more of the mixed profile, in which every area meets the others, and
-// of the profiles whose rarest kinds of outcome take more sequences to reach three times: the
-// WHERE, the clauses of slice 10, the defaults, the values on the left, the transactions, and the
-// arguments.
+// generatedOf the profile p: the number of sequences of it that [TestGenerated] runs. The mixed
+// profile runs 128, the most that the time of the package allows: it is the only one in which every
+// area meets the others, such as a default with an index or a clause of slice 10 with a value on the
+// left, and no tally of a focused profile counts what only such a meeting reaches. The 250 of the
+// one sequence of all areas before the profiles each met them. A focused profile runs as many as its
+// rarest kinds of outcome need: each reaches every row of its own in testdata/reached at least as
+// often as when it ran more, and the profiles of the clauses of slice 10, the defaults, and the
+// values on the left reach a kind that no other profile reaches three times. Each runs every variant
+// of [generated] once at least.
 // The defaults and the transactions also reach the statements of a transaction while its rows are
 // open the most, of which a read-only transaction's insert is the rarest.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:
-		return 64
-	case stmttest.Exists:
-		return 55
-	case stmttest.Defaults:
-		return 60
+		return 128
+	case stmttest.Exists, stmttest.Defaults:
+		return 56
+	case stmttest.Arguments:
+		return 40
 	case stmttest.ValueFirst:
 		return 35
+	case stmttest.Transactions:
+		return 33
 	case stmttest.Where:
 		return 20
-	case stmttest.Transactions, stmttest.Arguments:
-		return 40
+	case stmttest.Indexes:
+		return 16
+	case stmttest.Tables:
+		return 14
 	}
-	return 16
+	return 13
 }
 
 // fuzzSeparator separates the texts of the input of [FuzzSequence]. SQLite reads it as no token, so

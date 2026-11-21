@@ -472,7 +472,8 @@ func TestConn_netEffect(t *testing.T) {
 // of the log into an empty cache.
 //
 // What the full run of each profile must reach is in testdata/reached/TestConn_differential.tsv,
-// as [TestDifferential] says of its file: among it the selects with WHERE that [pair.bothWays] reads
+// and what the profiles must reach together in testdata/reached/TestConn_differential.kinds, as
+// [TestDifferential] says of its files: among it the selects with WHERE that [pair.bothWays] reads
 // both ways and the updates and deletes that it changes both ways, also in a read-only transaction,
 // which refuses a change; the commits and the roll backs of a write transaction whose update or
 // delete changed rows, and of one with a create index or a drop index; and the statements of slices

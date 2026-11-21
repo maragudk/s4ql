@@ -135,13 +135,14 @@ If the digest of a profile changes that has the area off, the change reaches mor
 
 Each generated test counts kinds of outcome for each run. A run is the sequences of one profile. In the simulation, a run is the seeds of one cell, named as `default/indexes`, or those of one environment, named as `default`, whose counts are the sums of those of its cells. `stmttest.Reached` checks the counts against two files in `testdata/reached/` of the package of the test, both named after the test:
 
-- **`<Test>.kinds` holds the kinds that the test requires,** one on a line. A builder writes this file. It holds one kind at least, and no exact kind. Otherwise the check fails.
+- **`<Test>.kinds` holds the kinds that the test requires,** one on a line: the least number of the total of the kind, a tab, and the kind. A builder writes this file, and the recount never writes it. It holds one kind at least, no exact kind, and no kind twice, and each least number is 1 at least. Otherwise the check fails.
 - **`<Test>.tsv` holds the counts.** The test writes this file. A row is a run, what the run reached when the file was written, the least number that the test requires, and the kind. Do not edit a number by hand.
 
 `Reached.Check` has these rules:
 
-- **The least number is a third.** A run must reach each kind of its rows at least a third as often as when the file was written, rounded down.
-- **No least number is 0.** A kind that a run reaches fewer than three times has no row for that run. A row with a least number of 0 fails the check. So does a row whose least number is not exactly the third of its count, rounded down. So a number that was edited by hand fails.
+- **A total must reach the number of its kind in `.kinds`.** The total of a kind is what the runs reached of it together. In the simulation, only the environments add to the totals, since their counts are the sums of those of their cells (`Reached.Totaled`). A total below its number fails the check and the recount. So a floor falls only with a change of the `.kinds` file, which a reviewer sees in the diff. If a change of the generator makes a kind rarer on purpose, lower its number by hand, and say why in a comment in the file. The numbers started from the least numbers that `main` had on 2026-11-21, and from a third of the total for a kind that `main` did not require.
+- **The least number of a row is a third.** A run must reach each kind of its rows at least a third as often as when the file was written, rounded down.
+- **No least number of a row is 0.** A kind that a run reaches fewer than three times has no row for that run. A row with a least number of 0 fails the check. So does a row whose least number is not exactly the third of its count, rounded down. So a least number that was edited by hand alone fails. A row whose count and least number were both lowered, or a row that was deleted, passes the rules of the rows: the totals in `.kinds` are what still hold the floor then. A recount after a kind became rarer writes such rows too.
 - **A required kind needs a row in one run at least.** If every run reaches a required kind fewer than three times, the check fails. The recount fails too, and writes nothing. The message says how often each run reaches the kind.
 - **A run needs a row.** A run without any row fails the check. Such a run is a profile, a cell, or an environment that was added without a recount.
 - **An exact kind is pinned exactly.** `Reached.Exact` names the exact kinds. In the differential tests of the engine and in the driver check, they are the kinds that begin with `excused: `. These count the texts that the test does not compare with SQLite. In the simulation, they are the three kinds of integrity checks of the caches. A run must give an exact kind as often as its row says. A run without a row must not give it.
@@ -157,6 +158,8 @@ The driver check, `TestGenerated`, runs as many sequences of each profile as `ge
 - "reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column"
 
 `TestGenerated` requires each of the two once over all profiles. `TestDifferential` of the engine requires both by profile.
+
+Only `mixed` has every area on, so only `mixed` reaches what lies where two areas meet that no focused profile has on together. Two kinds count such a meeting, so that fewer sequences of `mixed` show in the totals: "insert that leaves out a column with a default that an index holds ok", where the index must hold the default, and "value on the left on a table that a create table if not exists found". `TestDifferential`, `TestConn_differential`, and `TestGenerated` require both. In `TestDifferential` and `TestSimulation`, `mixed` runs two thirds of the sequences or seeds that the one sequence of all areas ran before the profiles: 200 of 300, and 100 of 150. In `TestConn_differential` it runs 40 of 60. In `TestGenerated` it runs 128 of 250, the most that the time of its package allows.
 
 ### The recount
 
@@ -176,7 +179,7 @@ S4QL_RECOUNT=1 go test -count=1 -run '^TestGenerated$' ./drivercheck/
 
 A recount needs a full run. Do not pass `-short`, `-race`, or `-asan`. Keep the flags of the test at their defaults, do not set `S4QL_ENGINE_SIM_SEEDS`, and do not filter the subtests of `TestSimulation` with `-run`. In every other run, the tests of the engine run fewer or other sequences and cannot count. `S4QL_RECOUNT=1` then fails the test (`noRecount`), and writes nothing.
 
-Then read the diff of the `.tsv` file. Rows can change only for the runs that the change reaches. If an exact count changes, say why in the commit.
+Then read the diff of the `.tsv` file. Rows can change only for the runs that the change reaches. If an exact count changes, say why in the commit. The recount does not write the `.kinds` file: if a total falls below its number there, the recount fails and writes nothing, and the message says how often each run reaches the kind.
 
 ## Add a statement or an option to an area
 
@@ -186,7 +189,7 @@ Then read the diff of the `.tsv` file. Rows can change only for the runs that th
 4. Make sure that no other digest changes. Then put the new digests in `TestNewSequence`.
 5. If the tests need a rule for the answer, or names for the cases, add a function to `rule.go`. Add a table test for it to `rule_test.go`. `WhereCases`, `ValueFirstCases`, and `IndexRule` are examples.
 6. Count the new kinds in the tests. See "Where the kinds are counted" below.
-7. Add each new kind to the `.kinds` file of each test that must reach it. Write the kind as the tally has it.
+7. Add each new kind to the `.kinds` file of each test that must reach it. Write the kind as the tally has it, after its least number and a tab: a third of its total over the runs of the test.
 8. Recount each test, and read the diffs.
 
 Never draw from the stream of another area. Such a draw moves the numbers of that area in the same statement. In a profile that has that area off, it panics.

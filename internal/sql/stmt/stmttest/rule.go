@@ -521,6 +521,26 @@ func DefaultCases(columns []TableColumn, insert *stmt.Insert, args []any) []stri
 	return cases
 }
 
+// LeavesOutIndexed reports whether the insert into the table of the columns, in the order of the
+// table, with the indexes, leaves out a column with a default, also DEFAULT NULL, that an index
+// holds, so that the index must hold the default. It is false for an insert that SQLite refuses for
+// its names or its number of values.
+func LeavesOutIndexed(columns []TableColumn, indexes []TableIndex, insert *stmt.Insert) bool {
+	positions, ok := Positions(columns, insert)
+	if !ok {
+		return false
+	}
+	values := valuesOf(columns, positions)
+	for _, ix := range indexes {
+		for _, c := range ix.Columns {
+			if values[c.Position] < 0 && columns[c.Position].Default != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // WhereCases of the select s with WHERE of the table of the columns, in the order of the table, with
 // the arguments args as for [TypeRule], for a count of what a test reaches of slice 7. For a column of
 // a condition that the table does not have, where the select list has every column that it names:
