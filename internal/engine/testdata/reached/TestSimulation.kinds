@@ -87,3 +87,9 @@
 271	updates and deletes with SQLite's error
 4	updates read by an index
 47	values of a default in the log
+# The kinds of the ORDER BY and LIMIT of slice 13, from a third of their totals on 2026-11-21.
+6	selects with LIMIT and without ORDER BY that gave rows
+48	selects with LIMIT and without ORDER BY with SQLite's error
+101	selects with LIMIT that succeeded
+33	selects with ORDER BY that gave rows
+99	selects with ORDER BY with SQLite's error

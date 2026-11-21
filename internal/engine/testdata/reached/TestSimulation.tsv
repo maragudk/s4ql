@@ -3,168 +3,177 @@
 # required of it, a third, or = for a count that is pinned exactly, and the kind. The kinds are
 # those of testdata/reached/TestSimulation.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
 # Do not edit a number by hand.
-default	160	53	NULL values in the log
-default	4090	1363	SQLite's error
-default	1642	547	acknowledged writes
-default	121	40	close and open
-default	1178	392	commits
-default	199	66	commits of more than one statement
-default	355	118	commits with a parameter
-default	42	14	crash, then a copy of the cache
-default	52	17	crash, then an empty cache
-default	6	2	crash, then an empty cache, of a log with an index
-default	81	27	create index: 1/1: index … already exists
-default	31	10	create index: 1/1: no such column: …
-default	143	47	create index: 1/1: no such table: …
-default	112	37	create index: 1/1: there is already a table named …
-default	25	8	create index: 8/8: attempt to write a readonly database
-default	190	63	create index: ok
+default	181	60	NULL values in the log
+default	4312	1437	SQLite's error
+default	1807	602	acknowledged writes
+default	131	43	close and open
+default	1305	435	commits
+default	222	74	commits of more than one statement
+default	419	139	commits with a parameter
+default	45	15	crash, then a copy of the cache
+default	57	19	crash, then an empty cache
+default	8	2	crash, then an empty cache, of a log with an index
+default	117	39	create index: 1/1: index … already exists
+default	37	12	create index: 1/1: no such column: …
+default	166	55	create index: 1/1: no such table: …
+default	107	35	create index: 1/1: there is already a table named …
+default	30	10	create index: 8/8: attempt to write a readonly database
+default	221	73	create index: ok
 default	56	18	create tables with a default in the log
-default	8	2	deletes read by an index
-default	137	45	drop index: 1/1: no such index: …
-default	98	32	drop index: ok
-default	306	102	failed: no lease
+default	7	2	deletes read by an index
+default	154	51	drop index: 1/1: no such index: …
+default	3	1	drop index: 8/8: attempt to write a readonly database
+default	108	36	drop index: ok
+default	340	113	failed: no lease
 default	12	4	failed: stopped
-default	89	29	failed: timeout
-default	95	31	fault: broken read
-default	54	18	fault: conflict
-default	39	13	fault: cut-off
-default	205	68	fault: lost request
-default	177	59	fault: lost response
-default	157	52	fault: no answer
-default	22	7	fault: outage
-default	350	116	fault: slow way
-default	17	5	fault: write applied after a crash
-default	40	13	fault: write applied after its caller gave up
-default	118	39	fault: write stuck in the network
-default	8	2	indexes dropped while the rows of a query that read by them were open
-default	94	=	integrity checks after a crash
-default	94	=	integrity checks after the replay
-default	188	=	integrity checks at the end
-default	71	23	pending
-default	316	105	query not read to its end
-default	365	121	read-only transactions
-default	320	106	refused for the type
-default	27	9	replays of a log with an index
-default	536	178	rows of several columns
-default	37	12	selects read by an index
-default	486	162	selects with WHERE in a transaction compared with SQLite
-default	33	11	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
-default	142	47	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
-default	21	7	selects with WHERE in a transaction compared with SQLite, read by an index
+default	99	33	failed: timeout
+default	101	33	fault: broken read
+default	53	17	fault: conflict
+default	45	15	fault: cut-off
+default	215	71	fault: lost request
+default	199	66	fault: lost response
+default	172	57	fault: no answer
+default	24	8	fault: outage
+default	375	125	fault: slow way
+default	19	6	fault: write applied after a crash
+default	37	12	fault: write applied after its caller gave up
+default	134	44	fault: write stuck in the network
+default	13	4	indexes dropped while the rows of a query that read by them were open
+default	102	=	integrity checks after a crash
+default	102	=	integrity checks after the replay
+default	204	=	integrity checks at the end
+default	79	26	pending
+default	346	115	query not read to its end
+default	385	128	read-only transactions
+default	357	119	refused for the type
+default	32	10	replays of a log with an index
+default	655	218	rows of several columns
+default	59	19	selects read by an index
+default	6	2	selects with LIMIT and without ORDER BY that gave rows
+default	39	13	selects with LIMIT and without ORDER BY with SQLite's error
+default	85	28	selects with LIMIT that succeeded
+default	21	7	selects with ORDER BY that gave rows
+default	92	30	selects with ORDER BY with SQLite's error
+default	513	171	selects with WHERE in a transaction compared with SQLite
+default	35	11	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+default	151	50	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+default	27	9	selects with WHERE in a transaction compared with SQLite, read by an index
 default	58	19	selects with WHERE in a transaction that give rows, compared with SQLite
-default	237	79	selects with WHERE of their own compared with SQLite
-default	12	4	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
-default	68	22	selects with WHERE of their own compared with SQLite, on an engine that reads every row
-default	6	2	selects with WHERE of their own compared with SQLite, read by an index
-default	30	10	selects with WHERE of their own that give rows, compared with SQLite
-default	1070	356	skipped
-default	5115	1705	statements in a transaction
-default	237	79	statements of IF NOT EXISTS or IF EXISTS that did nothing
-default	130	43	statements of IF NOT EXISTS or IF EXISTS that did their work
-default	104	34	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-default	719	239	statements on an engine that forces an index path
-default	13	4	statements read by the index that their engine forces
-default	134	44	statements that do nothing in a transaction, compared with SQLite
-default	103	34	statements that do nothing, compared with SQLite
-default	481	160	statements with a value on the left
-default	114	38	statements with a value on the left read by a key or an index
-default	30	10	statements with a value on the left that found rows
-default	194	64	statements with a value on the left with SQLite's error
-default	3304	1101	succeeded
-default	910	303	transactions committed
-default	28	9	transactions not committed
-default	312	104	transactions rolled back
-default	34	11	transactions unknown
-default	53	17	unknown
-default	1339	446	updates and deletes
-default	286	95	updates and deletes in a transaction whose count of changes is compared with SQLite
-default	68	22	updates and deletes of their own whose count of changes is compared with SQLite
-default	136	45	updates and deletes that change no row, compared with SQLite
-default	170	56	updates and deletes that succeeded and changed rows
-default	568	189	updates and deletes with SQLite's error
-default	7	2	updates read by an index
-default	75	25	values of a default in the log
-default/mixed	34	11	NULL values in the log
-default/mixed	1593	531	SQLite's error
-default/mixed	447	149	acknowledged writes
+default	274	91	selects with WHERE of their own compared with SQLite
+default	21	7	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+default	73	24	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+default	10	3	selects with WHERE of their own compared with SQLite, read by an index
+default	35	11	selects with WHERE of their own that give rows, compared with SQLite
+default	1099	366	skipped
+default	5463	1821	statements in a transaction
+default	241	80	statements of IF NOT EXISTS or IF EXISTS that did nothing
+default	125	41	statements of IF NOT EXISTS or IF EXISTS that did their work
+default	102	34	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+default	762	254	statements on an engine that forces an index path
+default	23	7	statements read by the index that their engine forces
+default	140	46	statements that do nothing in a transaction, compared with SQLite
+default	101	33	statements that do nothing, compared with SQLite
+default	475	158	statements with a value on the left
+default	105	35	statements with a value on the left read by a key or an index
+default	31	10	statements with a value on the left that found rows
+default	192	64	statements with a value on the left with SQLite's error
+default	3633	1211	succeeded
+default	973	324	transactions committed
+default	27	9	transactions not committed
+default	342	114	transactions rolled back
+default	39	13	transactions unknown
+default	62	20	unknown
+default	1376	458	updates and deletes
+default	308	102	updates and deletes in a transaction whose count of changes is compared with SQLite
+default	71	23	updates and deletes of their own whose count of changes is compared with SQLite
+default	142	47	updates and deletes that change no row, compared with SQLite
+default	187	62	updates and deletes that succeeded and changed rows
+default	570	190	updates and deletes with SQLite's error
+default	8	2	updates read by an index
+default	79	26	values of a default in the log
+default/mixed	33	11	NULL values in the log
+default/mixed	1552	517	SQLite's error
+default/mixed	433	144	acknowledged writes
 default/mixed	45	15	close and open
-default/mixed	344	114	commits
-default/mixed	46	15	commits of more than one statement
-default/mixed	74	24	commits with a parameter
+default/mixed	324	108	commits
+default/mixed	47	15	commits of more than one statement
+default/mixed	81	27	commits with a parameter
 default/mixed	15	5	crash, then a copy of the cache
 default/mixed	19	6	crash, then an empty cache
 default/mixed	3	1	crash, then an empty cache, of a log with an index
-default/mixed	28	9	create index: 1/1: index … already exists
-default/mixed	21	7	create index: 1/1: no such column: …
-default/mixed	90	30	create index: 1/1: no such table: …
-default/mixed	71	23	create index: 1/1: there is already a table named …
-default/mixed	6	2	create index: 8/8: attempt to write a readonly database
-default/mixed	75	25	create index: ok
+default/mixed	29	9	create index: 1/1: index … already exists
+default/mixed	22	7	create index: 1/1: no such column: …
+default/mixed	92	30	create index: 1/1: no such table: …
+default/mixed	61	20	create index: 1/1: there is already a table named …
+default/mixed	8	2	create index: 8/8: attempt to write a readonly database
+default/mixed	69	23	create index: ok
 default/mixed	44	14	create tables with a default in the log
-default/mixed	3	1	deletes read by an index
-default/mixed	47	15	drop index: 1/1: no such index: …
-default/mixed	48	16	drop index: ok
-default/mixed	110	36	failed: no lease
+default/mixed	50	16	drop index: 1/1: no such index: …
+default/mixed	43	14	drop index: ok
+default/mixed	111	37	failed: no lease
 default/mixed	6	2	failed: stopped
-default/mixed	28	9	failed: timeout
+default/mixed	29	9	failed: timeout
 default/mixed	35	11	fault: broken read
-default/mixed	18	6	fault: conflict
-default/mixed	15	5	fault: cut-off
-default/mixed	65	21	fault: lost request
-default/mixed	55	18	fault: lost response
+default/mixed	15	5	fault: conflict
+default/mixed	18	6	fault: cut-off
+default/mixed	60	20	fault: lost request
+default/mixed	56	18	fault: lost response
 default/mixed	54	18	fault: no answer
 default/mixed	10	3	fault: outage
-default/mixed	121	40	fault: slow way
+default/mixed	110	36	fault: slow way
 default/mixed	6	2	fault: write applied after a crash
-default/mixed	15	5	fault: write applied after its caller gave up
-default/mixed	39	13	fault: write stuck in the network
-default/mixed	4	1	indexes dropped while the rows of a query that read by them were open
+default/mixed	8	2	fault: write applied after its caller gave up
+default/mixed	46	15	fault: write stuck in the network
 default/mixed	34	=	integrity checks after a crash
 default/mixed	34	=	integrity checks after the replay
 default/mixed	68	=	integrity checks at the end
 default/mixed	22	7	pending
-default/mixed	79	26	query not read to its end
-default/mixed	113	37	read-only transactions
-default/mixed	107	35	refused for the type
-default/mixed	12	4	replays of a log with an index
-default/mixed	111	37	rows of several columns
-default/mixed	13	4	selects read by an index
-default/mixed	134	44	selects with WHERE in a transaction compared with SQLite
-default/mixed	23	7	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
-default/mixed	24	8	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
-default/mixed	9	3	selects with WHERE in a transaction compared with SQLite, read by an index
-default/mixed	12	4	selects with WHERE in a transaction that give rows, compared with SQLite
-default/mixed	70	23	selects with WHERE of their own compared with SQLite
-default/mixed	8	2	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+default/mixed	78	26	query not read to its end
+default/mixed	110	36	read-only transactions
+default/mixed	116	38	refused for the type
+default/mixed	13	4	replays of a log with an index
+default/mixed	120	40	rows of several columns
+default/mixed	12	4	selects read by an index
+default/mixed	5	1	selects with LIMIT and without ORDER BY that gave rows
+default/mixed	32	10	selects with LIMIT and without ORDER BY with SQLite's error
+default/mixed	40	13	selects with LIMIT that succeeded
+default/mixed	6	2	selects with ORDER BY that gave rows
+default/mixed	56	18	selects with ORDER BY with SQLite's error
+default/mixed	124	41	selects with WHERE in a transaction compared with SQLite
+default/mixed	15	5	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+default/mixed	25	8	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+default/mixed	7	2	selects with WHERE in a transaction compared with SQLite, read by an index
+default/mixed	10	3	selects with WHERE in a transaction that give rows, compared with SQLite
+default/mixed	72	24	selects with WHERE of their own compared with SQLite
+default/mixed	7	2	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
 default/mixed	14	4	selects with WHERE of their own compared with SQLite, on an engine that reads every row
-default/mixed	8	2	selects with WHERE of their own that give rows, compared with SQLite
-default/mixed	547	182	skipped
-default/mixed	1790	596	statements in a transaction
-default/mixed	143	47	statements of IF NOT EXISTS or IF EXISTS that did nothing
-default/mixed	71	23	statements of IF NOT EXISTS or IF EXISTS that did their work
-default/mixed	68	22	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-default/mixed	558	186	statements on an engine that forces an index path
+default/mixed	7	2	selects with WHERE of their own that give rows, compared with SQLite
+default/mixed	548	182	skipped
+default/mixed	1778	592	statements in a transaction
+default/mixed	147	49	statements of IF NOT EXISTS or IF EXISTS that did nothing
+default/mixed	66	22	statements of IF NOT EXISTS or IF EXISTS that did their work
+default/mixed	66	22	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+default/mixed	438	146	statements on an engine that forces an index path
 default/mixed	9	3	statements read by the index that their engine forces
-default/mixed	83	27	statements that do nothing in a transaction, compared with SQLite
-default/mixed	60	20	statements that do nothing, compared with SQLite
-default/mixed	299	99	statements with a value on the left
-default/mixed	72	24	statements with a value on the left read by a key or an index
-default/mixed	20	6	statements with a value on the left that found rows
-default/mixed	143	47	statements with a value on the left with SQLite's error
-default/mixed	938	312	succeeded
-default/mixed	315	105	transactions committed
-default/mixed	10	3	transactions not committed
-default/mixed	107	35	transactions rolled back
-default/mixed	9	3	transactions unknown
-default/mixed	18	6	unknown
-default/mixed	494	164	updates and deletes
-default/mixed	83	27	updates and deletes in a transaction whose count of changes is compared with SQLite
+default/mixed	89	29	statements that do nothing in a transaction, compared with SQLite
+default/mixed	58	19	statements that do nothing, compared with SQLite
+default/mixed	293	97	statements with a value on the left
+default/mixed	63	21	statements with a value on the left read by a key or an index
+default/mixed	21	7	statements with a value on the left that found rows
+default/mixed	141	47	statements with a value on the left with SQLite's error
+default/mixed	915	305	succeeded
+default/mixed	322	107	transactions committed
+default/mixed	8	2	transactions not committed
+default/mixed	110	36	transactions rolled back
+default/mixed	6	2	transactions unknown
+default/mixed	16	5	unknown
+default/mixed	485	161	updates and deletes
+default/mixed	91	30	updates and deletes in a transaction whose count of changes is compared with SQLite
 default/mixed	25	8	updates and deletes of their own whose count of changes is compared with SQLite
-default/mixed	35	11	updates and deletes that change no row, compared with SQLite
-default/mixed	53	17	updates and deletes that succeeded and changed rows
-default/mixed	231	77	updates and deletes with SQLite's error
-default/mixed	44	14	values of a default in the log
+default/mixed	33	11	updates and deletes that change no row, compared with SQLite
+default/mixed	59	19	updates and deletes that succeeded and changed rows
+default/mixed	215	71	updates and deletes with SQLite's error
+default/mixed	48	16	values of a default in the log
 default/tables	12	4	NULL values in the log
 default/tables	310	103	SQLite's error
 default/tables	86	28	acknowledged writes
@@ -590,157 +599,229 @@ default/arguments	10	3	updates and deletes in a transaction whose count of chang
 default/arguments	10	3	updates and deletes that change no row, compared with SQLite
 default/arguments	6	2	updates and deletes that succeeded and changed rows
 default/arguments	32	10	updates and deletes with SQLite's error
-idle	15	5	NULL values in the log
-idle	1697	565	SQLite's error
-idle	157	52	acknowledged writes
+default/order	22	7	NULL values in the log
+default/order	263	87	SQLite's error
+default/order	179	59	acknowledged writes
+default/order	10	3	close and open
+default/order	147	49	commits
+default/order	22	7	commits of more than one statement
+default/order	57	19	commits with a parameter
+default/order	3	1	crash, then a copy of the cache
+default/order	5	1	crash, then an empty cache
+default/order	35	11	create index: 1/1: index … already exists
+default/order	5	1	create index: 1/1: no such column: …
+default/order	21	7	create index: 1/1: no such table: …
+default/order	5	1	create index: 1/1: there is already a table named …
+default/order	3	1	create index: 8/8: attempt to write a readonly database
+default/order	37	12	create index: ok
+default/order	14	4	drop index: 1/1: no such index: …
+default/order	15	5	drop index: ok
+default/order	33	11	failed: no lease
+default/order	9	3	failed: timeout
+default/order	6	2	fault: broken read
+default/order	3	1	fault: cut-off
+default/order	15	5	fault: lost request
+default/order	21	7	fault: lost response
+default/order	15	5	fault: no answer
+default/order	36	12	fault: slow way
+default/order	4	1	fault: write applied after its caller gave up
+default/order	9	3	fault: write stuck in the network
+default/order	7	2	indexes dropped while the rows of a query that read by them were open
+default/order	8	=	integrity checks after a crash
+default/order	8	=	integrity checks after the replay
+default/order	16	=	integrity checks at the end
+default/order	8	2	pending
+default/order	31	10	query not read to its end
+default/order	23	7	read-only transactions
+default/order	28	9	refused for the type
+default/order	4	1	replays of a log with an index
+default/order	110	36	rows of several columns
+default/order	23	7	selects read by an index
+default/order	7	2	selects with LIMIT and without ORDER BY with SQLite's error
+default/order	45	15	selects with LIMIT that succeeded
+default/order	15	5	selects with ORDER BY that gave rows
+default/order	36	12	selects with ORDER BY with SQLite's error
+default/order	37	12	selects with WHERE in a transaction compared with SQLite
+default/order	10	3	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+default/order	8	2	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+default/order	8	2	selects with WHERE in a transaction compared with SQLite, read by an index
+default/order	35	11	selects with WHERE of their own compared with SQLite
+default/order	10	3	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+default/order	5	1	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+default/order	5	1	selects with WHERE of their own compared with SQLite, read by an index
+default/order	6	2	selects with WHERE of their own that give rows, compared with SQLite
+default/order	28	9	skipped
+default/order	360	120	statements in a transaction
+default/order	163	54	statements on an engine that forces an index path
+default/order	10	3	statements read by the index that their engine forces
+default/order	352	117	succeeded
+default/order	56	18	transactions committed
+default/order	27	9	transactions rolled back
+default/order	8	2	transactions unknown
+default/order	11	3	unknown
+default/order	46	15	updates and deletes
+default/order	14	4	updates and deletes in a transaction whose count of changes is compared with SQLite
+default/order	3	1	updates and deletes of their own whose count of changes is compared with SQLite
+default/order	8	2	updates and deletes that change no row, compared with SQLite
+default/order	11	3	updates and deletes that succeeded and changed rows
+default/order	18	6	updates and deletes with SQLite's error
+idle	19	6	NULL values in the log
+idle	1708	569	SQLite's error
+idle	158	52	acknowledged writes
 idle	89	29	close and open
-idle	102	34	commits
-idle	28	9	commits of more than one statement
+idle	101	33	commits
+idle	30	10	commits of more than one statement
 idle	35	11	commits with a parameter
 idle	32	10	crash, then a copy of the cache
 idle	37	12	crash, then an empty cache
-idle	6	2	create index: 1/1: index … already exists
+idle	7	2	create index: 1/1: index … already exists
 idle	11	3	create index: 1/1: no such column: …
-idle	147	49	create index: 1/1: no such table: …
+idle	146	48	create index: 1/1: no such table: …
 idle	8	2	create index: 1/1: there is already a table named …
-idle	8	2	create index: 8/8: attempt to write a readonly database
-idle	34	11	create index: ok
+idle	7	2	create index: 8/8: attempt to write a readonly database
+idle	33	11	create index: ok
 idle	11	3	create tables with a default in the log
-idle	56	18	drop index: 1/1: no such index: …
-idle	48	16	drop index: ok
-idle	429	143	failed: no lease
+idle	55	18	drop index: 1/1: no such index: …
+idle	46	15	drop index: ok
+idle	431	143	failed: no lease
 idle	184	61	failed: stopped
-idle	744	248	failed: timeout
+idle	745	248	failed: timeout
 idle	77	25	fault: broken read
-idle	51	17	fault: conflict
+idle	53	17	fault: conflict
 idle	39	13	fault: cut-off
-idle	82	27	fault: lost request
-idle	103	34	fault: lost response
-idle	782	260	fault: no answer
-idle	14	4	fault: outage
-idle	255	85	fault: slow way
-idle	31	10	fault: write applied after its caller gave up
-idle	1195	398	fault: write stuck in the network
+idle	80	26	fault: lost request
+idle	104	34	fault: lost response
+idle	780	260	fault: no answer
+idle	15	5	fault: outage
+idle	256	85	fault: slow way
+idle	30	10	fault: write applied after its caller gave up
+idle	1211	403	fault: write stuck in the network
 idle	69	=	integrity checks after a crash
 idle	69	=	integrity checks after the replay
 idle	138	=	integrity checks at the end
 idle	100	33	kept transactions ended for the lease
 idle	54	18	pending
-idle	51	17	query not read to its end
-idle	228	76	read-only transactions
-idle	43	14	refused for the type
-idle	8	2	replays of a log with an index
-idle	35	11	rows of several columns
-idle	8	2	selects read by an index
-idle	171	57	selects with WHERE in a transaction compared with SQLite
-idle	24	8	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
-idle	31	10	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
-idle	7	2	selects with WHERE in a transaction that give rows, compared with SQLite
-idle	129	43	selects with WHERE of their own compared with SQLite
-idle	26	8	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
-idle	25	8	selects with WHERE of their own compared with SQLite, on an engine that reads every row
-idle	3	1	selects with WHERE of their own that give rows, compared with SQLite
-idle	304	101	skipped
-idle	2041	680	statements in a transaction
+idle	53	17	query not read to its end
+idle	229	76	read-only transactions
+idle	44	14	refused for the type
+idle	9	3	replays of a log with an index
+idle	37	12	rows of several columns
+idle	11	3	selects read by an index
+idle	32	10	selects with LIMIT and without ORDER BY with SQLite's error
+idle	8	2	selects with LIMIT that succeeded
+idle	33	11	selects with ORDER BY with SQLite's error
+idle	172	57	selects with WHERE in a transaction compared with SQLite
+idle	27	9	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+idle	29	9	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+idle	5	1	selects with WHERE in a transaction compared with SQLite, read by an index
+idle	8	2	selects with WHERE in a transaction that give rows, compared with SQLite
+idle	128	42	selects with WHERE of their own compared with SQLite
+idle	24	8	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+idle	23	7	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+idle	307	102	skipped
+idle	2056	685	statements in a transaction
 idle	106	35	statements of IF NOT EXISTS or IF EXISTS that did nothing
 idle	61	20	statements of IF NOT EXISTS or IF EXISTS that did their work
 idle	59	19	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-idle	446	148	statements on an engine that forces an index path
-idle	10	3	statements read by the index that their engine forces
-idle	55	18	statements that do nothing in a transaction, compared with SQLite
-idle	51	17	statements that do nothing, compared with SQLite
-idle	183	61	statements with a value on the left
+idle	462	154	statements on an engine that forces an index path
+idle	14	4	statements read by the index that their engine forces
+idle	56	18	statements that do nothing in a transaction, compared with SQLite
+idle	50	16	statements that do nothing, compared with SQLite
+idle	182	60	statements with a value on the left
 idle	14	4	statements with a value on the left read by a key or an index
 idle	3	1	statements with a value on the left that found rows
 idle	78	26	statements with a value on the left with SQLite's error
-idle	704	234	succeeded
-idle	185	61	transactions committed
+idle	702	234	succeeded
+idle	190	63	transactions committed
 idle	101	33	transactions ended for the lease
 idle	16	5	transactions not committed
-idle	225	75	transactions rolled back
-idle	7	2	transactions unknown
-idle	801	267	updates and deletes
-idle	87	29	updates and deletes in a transaction whose count of changes is compared with SQLite
+idle	223	74	transactions rolled back
+idle	6	2	transactions unknown
+idle	3	1	unknown
+idle	803	267	updates and deletes
+idle	86	28	updates and deletes in a transaction whose count of changes is compared with SQLite
 idle	3	1	updates and deletes of their own whose count of changes is compared with SQLite
 idle	12	4	updates and deletes that change no row, compared with SQLite
-idle	25	8	updates and deletes that succeeded and changed rows
-idle	310	103	updates and deletes with SQLite's error
+idle	24	8	updates and deletes that succeeded and changed rows
+idle	311	103	updates and deletes with SQLite's error
 idle	4	1	updates read by an index
-idle	5	1	values of a default in the log
-idle/mixed	9	3	NULL values in the log
-idle/mixed	766	255	SQLite's error
-idle/mixed	61	20	acknowledged writes
+idle	6	2	values of a default in the log
+idle/mixed	13	4	NULL values in the log
+idle/mixed	777	259	SQLite's error
+idle/mixed	62	20	acknowledged writes
 idle/mixed	49	16	close and open
-idle/mixed	45	15	commits
-idle/mixed	10	3	commits of more than one statement
+idle/mixed	44	14	commits
+idle/mixed	12	4	commits of more than one statement
 idle/mixed	14	4	commits with a parameter
 idle/mixed	11	3	crash, then a copy of the cache
 idle/mixed	22	7	crash, then an empty cache
-idle/mixed	4	1	create index: 1/1: index … already exists
+idle/mixed	5	1	create index: 1/1: index … already exists
 idle/mixed	4	1	create index: 1/1: no such column: …
-idle/mixed	72	24	create index: 1/1: no such table: …
+idle/mixed	71	23	create index: 1/1: no such table: …
 idle/mixed	4	1	create index: 1/1: there is already a table named …
-idle/mixed	3	1	create index: 8/8: attempt to write a readonly database
-idle/mixed	11	3	create index: ok
+idle/mixed	10	3	create index: ok
 idle/mixed	11	3	create tables with a default in the log
-idle/mixed	17	5	drop index: 1/1: no such index: …
-idle/mixed	26	8	drop index: ok
-idle/mixed	212	70	failed: no lease
+idle/mixed	16	5	drop index: 1/1: no such index: …
+idle/mixed	24	8	drop index: ok
+idle/mixed	214	71	failed: no lease
 idle/mixed	118	39	failed: stopped
-idle/mixed	330	110	failed: timeout
+idle/mixed	331	110	failed: timeout
 idle/mixed	34	11	fault: broken read
-idle/mixed	17	5	fault: conflict
+idle/mixed	19	6	fault: conflict
 idle/mixed	24	8	fault: cut-off
-idle/mixed	42	14	fault: lost request
-idle/mixed	50	16	fault: lost response
-idle/mixed	391	130	fault: no answer
-idle/mixed	9	3	fault: outage
-idle/mixed	116	38	fault: slow way
-idle/mixed	15	5	fault: write applied after its caller gave up
-idle/mixed	541	180	fault: write stuck in the network
+idle/mixed	40	13	fault: lost request
+idle/mixed	51	17	fault: lost response
+idle/mixed	389	129	fault: no answer
+idle/mixed	10	3	fault: outage
+idle/mixed	117	39	fault: slow way
+idle/mixed	14	4	fault: write applied after its caller gave up
+idle/mixed	557	185	fault: write stuck in the network
 idle/mixed	33	=	integrity checks after a crash
 idle/mixed	33	=	integrity checks after the replay
 idle/mixed	66	=	integrity checks at the end
 idle/mixed	46	15	kept transactions ended for the lease
 idle/mixed	26	8	pending
-idle/mixed	21	7	query not read to its end
-idle/mixed	105	35	read-only transactions
-idle/mixed	27	9	refused for the type
-idle/mixed	4	1	replays of a log with an index
-idle/mixed	13	4	rows of several columns
-idle/mixed	5	1	selects read by an index
-idle/mixed	56	18	selects with WHERE in a transaction compared with SQLite
-idle/mixed	10	3	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
-idle/mixed	10	3	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
-idle/mixed	51	17	selects with WHERE of their own compared with SQLite
-idle/mixed	15	5	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
-idle/mixed	8	2	selects with WHERE of their own compared with SQLite, on an engine that reads every row
-idle/mixed	288	96	skipped
-idle/mixed	920	306	statements in a transaction
+idle/mixed	23	7	query not read to its end
+idle/mixed	106	35	read-only transactions
+idle/mixed	28	9	refused for the type
+idle/mixed	5	1	replays of a log with an index
+idle/mixed	15	5	rows of several columns
+idle/mixed	8	2	selects read by an index
+idle/mixed	32	10	selects with LIMIT and without ORDER BY with SQLite's error
+idle/mixed	8	2	selects with LIMIT that succeeded
+idle/mixed	33	11	selects with ORDER BY with SQLite's error
+idle/mixed	57	19	selects with WHERE in a transaction compared with SQLite
+idle/mixed	13	4	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+idle/mixed	8	2	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+idle/mixed	3	1	selects with WHERE in a transaction compared with SQLite, read by an index
+idle/mixed	50	16	selects with WHERE of their own compared with SQLite
+idle/mixed	13	4	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+idle/mixed	6	2	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+idle/mixed	291	97	skipped
+idle/mixed	935	311	statements in a transaction
 idle/mixed	61	20	statements of IF NOT EXISTS or IF EXISTS that did nothing
 idle/mixed	31	10	statements of IF NOT EXISTS or IF EXISTS that did their work
 idle/mixed	35	11	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-idle/mixed	213	71	statements on an engine that forces an index path
-idle/mixed	10	3	statements read by the index that their engine forces
-idle/mixed	29	9	statements that do nothing in a transaction, compared with SQLite
-idle/mixed	32	10	statements that do nothing, compared with SQLite
-idle/mixed	183	61	statements with a value on the left
+idle/mixed	229	76	statements on an engine that forces an index path
+idle/mixed	14	4	statements read by the index that their engine forces
+idle/mixed	30	10	statements that do nothing in a transaction, compared with SQLite
+idle/mixed	31	10	statements that do nothing, compared with SQLite
+idle/mixed	182	60	statements with a value on the left
 idle/mixed	14	4	statements with a value on the left read by a key or an index
 idle/mixed	3	1	statements with a value on the left that found rows
 idle/mixed	78	26	statements with a value on the left with SQLite's error
-idle/mixed	278	92	succeeded
-idle/mixed	75	25	transactions committed
+idle/mixed	276	92	succeeded
+idle/mixed	80	26	transactions committed
 idle/mixed	46	15	transactions ended for the lease
 idle/mixed	10	3	transactions not committed
-idle/mixed	107	35	transactions rolled back
-idle/mixed	3	1	transactions unknown
-idle/mixed	342	114	updates and deletes
-idle/mixed	27	9	updates and deletes in a transaction whose count of changes is compared with SQLite
+idle/mixed	105	35	transactions rolled back
+idle/mixed	344	114	updates and deletes
+idle/mixed	26	8	updates and deletes in a transaction whose count of changes is compared with SQLite
 idle/mixed	8	2	updates and deletes that change no row, compared with SQLite
-idle/mixed	7	2	updates and deletes that succeeded and changed rows
-idle/mixed	121	40	updates and deletes with SQLite's error
+idle/mixed	6	2	updates and deletes that succeeded and changed rows
+idle/mixed	122	40	updates and deletes with SQLite's error
 idle/mixed	4	1	updates read by an index
-idle/mixed	5	1	values of a default in the log
+idle/mixed	6	2	values of a default in the log
 idle/changes	137	45	SQLite's error
 idle/changes	13	4	acknowledged writes
 idle/changes	11	3	close and open
@@ -929,137 +1010,148 @@ idle/transactions	200	66	updates and deletes
 idle/transactions	29	9	updates and deletes in a transaction whose count of changes is compared with SQLite
 idle/transactions	11	3	updates and deletes that succeeded and changed rows
 idle/transactions	98	32	updates and deletes with SQLite's error
-hammer	293	97	NULL values in the log
-hammer	8930	2976	SQLite's error
-hammer	2863	954	acknowledged writes
-hammer	2003	667	commits
-hammer	390	130	commits of more than one statement
-hammer	688	229	commits with a parameter
-hammer	144	48	create index: 1/1: index … already exists
-hammer	38	12	create index: 1/1: no such column: …
-hammer	322	107	create index: 1/1: no such table: …
-hammer	293	97	create index: 1/1: there is already a table named …
-hammer	59	19	create index: 8/8: attempt to write a readonly database
-hammer	268	89	create index: ok
-hammer	95	31	create tables with a default in the log
-hammer	12	4	deletes read by an index
-hammer	255	85	drop index: 1/1: no such index: …
-hammer	26	8	drop index: 8/8: attempt to write a readonly database
-hammer	200	66	drop index: ok
-hammer	569	189	failed: no lease
-hammer	1280	426	failed: timeout
-hammer	7	2	fault: broken read
-hammer	75	25	fault: conflict
-hammer	23	7	fault: cut-off
-hammer	112	37	fault: lost request
-hammer	109	36	fault: lost response
-hammer	109	36	fault: no answer
+hammer	335	111	NULL values in the log
+hammer	9528	3176	SQLite's error
+hammer	3137	1045	acknowledged writes
+hammer	2205	735	commits
+hammer	435	145	commits of more than one statement
+hammer	791	263	commits with a parameter
+hammer	222	74	create index: 1/1: index … already exists
+hammer	39	13	create index: 1/1: no such column: …
+hammer	357	119	create index: 1/1: no such table: …
+hammer	304	101	create index: 1/1: there is already a table named …
+hammer	74	24	create index: 8/8: attempt to write a readonly database
+hammer	309	103	create index: ok
+hammer	87	29	create tables with a default in the log
+hammer	15	5	deletes read by an index
+hammer	285	95	drop index: 1/1: no such index: …
+hammer	29	9	drop index: 8/8: attempt to write a readonly database
+hammer	219	73	drop index: ok
+hammer	642	214	failed: no lease
+hammer	1433	477	failed: timeout
+hammer	8	2	fault: broken read
+hammer	90	30	fault: conflict
+hammer	32	10	fault: cut-off
+hammer	124	41	fault: lost request
+hammer	123	41	fault: lost response
+hammer	136	45	fault: no answer
 hammer	13	4	fault: outage
-hammer	216	72	fault: slow way
-hammer	44	14	fault: write applied after its caller gave up
-hammer	163	54	fault: write stuck in the network
-hammer	20	6	indexes dropped while the rows of a query that read by them were open
-hammer	101	=	integrity checks after the replay
-hammer	101	=	integrity checks at the end
-hammer	686	228	query not read to its end
-hammer	821	273	read-only transactions
-hammer	586	195	refused for the type
-hammer	17	5	replays of a log with an index
-hammer	1013	337	rows of several columns
-hammer	69	23	selects read by an index
-hammer	1012	337	selects with WHERE in a transaction compared with SQLite
-hammer	21	7	selects with WHERE in a transaction compared with SQLite, read by an index
-hammer	135	45	selects with WHERE in a transaction that give rows, compared with SQLite
-hammer	732	244	selects with WHERE of their own compared with SQLite
-hammer	18	6	selects with WHERE of their own compared with SQLite, read by an index
-hammer	90	30	selects with WHERE of their own that give rows, compared with SQLite
-hammer	2050	683	skipped
-hammer	10361	3453	statements in a transaction
-hammer	485	161	statements of IF NOT EXISTS or IF EXISTS that did nothing
-hammer	181	60	statements of IF NOT EXISTS or IF EXISTS that did their work
-hammer	260	86	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-hammer	236	78	statements that do nothing in a transaction, compared with SQLite
-hammer	249	83	statements that do nothing, compared with SQLite
-hammer	1070	356	statements with a value on the left
-hammer	332	110	statements with a value on the left read by a key or an index
-hammer	55	18	statements with a value on the left that found rows
-hammer	408	136	statements with a value on the left with SQLite's error
-hammer	6377	2125	succeeded
-hammer	1826	608	transactions committed
-hammer	69	23	transactions not committed
-hammer	631	210	transactions rolled back
-hammer	52	17	transactions unknown
-hammer	99	33	unknown
-hammer	2864	954	updates and deletes
-hammer	532	177	updates and deletes in a transaction whose count of changes is compared with SQLite
-hammer	131	43	updates and deletes of their own whose count of changes is compared with SQLite
-hammer	243	81	updates and deletes that change no row, compared with SQLite
-hammer	343	114	updates and deletes that succeeded and changed rows
-hammer	1206	402	updates and deletes with SQLite's error
-hammer	13	4	updates read by an index
-hammer	126	42	values of a default in the log
-hammer/mixed	105	35	NULL values in the log
-hammer/mixed	2882	960	SQLite's error
-hammer/mixed	847	282	acknowledged writes
-hammer/mixed	608	202	commits
-hammer/mixed	107	35	commits of more than one statement
-hammer/mixed	166	55	commits with a parameter
-hammer/mixed	75	25	create index: 1/1: index … already exists
-hammer/mixed	23	7	create index: 1/1: no such column: …
-hammer/mixed	161	53	create index: 1/1: no such table: …
-hammer/mixed	119	39	create index: 1/1: there is already a table named …
-hammer/mixed	15	5	create index: 8/8: attempt to write a readonly database
-hammer/mixed	135	45	create index: ok
-hammer/mixed	76	25	create tables with a default in the log
-hammer/mixed	73	24	drop index: 1/1: no such index: …
-hammer/mixed	10	3	drop index: 8/8: attempt to write a readonly database
-hammer/mixed	72	24	drop index: ok
-hammer/mixed	149	49	failed: no lease
-hammer/mixed	413	137	failed: timeout
-hammer/mixed	19	6	fault: conflict
-hammer/mixed	27	9	fault: lost request
-hammer/mixed	33	11	fault: lost response
-hammer/mixed	20	6	fault: no answer
-hammer/mixed	7	2	fault: outage
-hammer/mixed	60	20	fault: slow way
-hammer/mixed	9	3	fault: write applied after its caller gave up
-hammer/mixed	26	8	fault: write stuck in the network
+hammer	243	81	fault: slow way
+hammer	56	18	fault: write applied after its caller gave up
+hammer	222	74	fault: write stuck in the network
+hammer	32	10	indexes dropped while the rows of a query that read by them were open
+hammer	109	=	integrity checks after the replay
+hammer	109	=	integrity checks at the end
+hammer	734	244	query not read to its end
+hammer	883	294	read-only transactions
+hammer	603	201	refused for the type
+hammer	22	7	replays of a log with an index
+hammer	1224	408	rows of several columns
+hammer	111	37	selects read by an index
+hammer	13	4	selects with LIMIT and without ORDER BY that gave rows
+hammer	73	24	selects with LIMIT and without ORDER BY with SQLite's error
+hammer	212	70	selects with LIMIT that succeeded
+hammer	76	25	selects with ORDER BY that gave rows
+hammer	174	58	selects with ORDER BY with SQLite's error
+hammer	1066	355	selects with WHERE in a transaction compared with SQLite
+hammer	29	9	selects with WHERE in a transaction compared with SQLite, read by an index
+hammer	137	45	selects with WHERE in a transaction that give rows, compared with SQLite
+hammer	789	263	selects with WHERE of their own compared with SQLite
+hammer	24	8	selects with WHERE of their own compared with SQLite, read by an index
+hammer	97	32	selects with WHERE of their own that give rows, compared with SQLite
+hammer	2080	693	skipped
+hammer	11137	3712	statements in a transaction
+hammer	479	159	statements of IF NOT EXISTS or IF EXISTS that did nothing
+hammer	182	60	statements of IF NOT EXISTS or IF EXISTS that did their work
+hammer	254	84	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+hammer	249	83	statements that do nothing in a transaction, compared with SQLite
+hammer	230	76	statements that do nothing, compared with SQLite
+hammer	1062	354	statements with a value on the left
+hammer	321	107	statements with a value on the left read by a key or an index
+hammer	52	17	statements with a value on the left that found rows
+hammer	422	140	statements with a value on the left with SQLite's error
+hammer	6986	2328	succeeded
+hammer	1937	645	transactions committed
+hammer	83	27	transactions not committed
+hammer	717	239	transactions rolled back
+hammer	60	20	transactions unknown
+hammer	109	36	unknown
+hammer	2932	977	updates and deletes
+hammer	543	181	updates and deletes in a transaction whose count of changes is compared with SQLite
+hammer	137	45	updates and deletes of their own whose count of changes is compared with SQLite
+hammer	260	86	updates and deletes that change no row, compared with SQLite
+hammer	351	117	updates and deletes that succeeded and changed rows
+hammer	1244	414	updates and deletes with SQLite's error
+hammer	16	5	updates read by an index
+hammer	95	31	values of a default in the log
+hammer/mixed	114	38	NULL values in the log
+hammer/mixed	2983	994	SQLite's error
+hammer/mixed	788	262	acknowledged writes
+hammer/mixed	575	191	commits
+hammer/mixed	101	33	commits of more than one statement
+hammer/mixed	161	53	commits with a parameter
+hammer/mixed	85	28	create index: 1/1: index … already exists
+hammer/mixed	20	6	create index: 1/1: no such column: …
+hammer/mixed	166	55	create index: 1/1: no such table: …
+hammer/mixed	114	38	create index: 1/1: there is already a table named …
+hammer/mixed	14	4	create index: 8/8: attempt to write a readonly database
+hammer/mixed	124	41	create index: ok
+hammer/mixed	68	22	create tables with a default in the log
+hammer/mixed	78	26	drop index: 1/1: no such index: …
+hammer/mixed	8	2	drop index: 8/8: attempt to write a readonly database
+hammer/mixed	70	23	drop index: ok
+hammer/mixed	159	53	failed: no lease
+hammer/mixed	394	131	failed: timeout
+hammer/mixed	14	4	fault: conflict
+hammer/mixed	4	1	fault: cut-off
+hammer/mixed	29	9	fault: lost request
+hammer/mixed	30	10	fault: lost response
+hammer/mixed	24	8	fault: no answer
+hammer/mixed	4	1	fault: outage
+hammer/mixed	62	20	fault: slow way
+hammer/mixed	11	3	fault: write applied after its caller gave up
+hammer/mixed	40	13	fault: write stuck in the network
 hammer/mixed	33	=	integrity checks after the replay
 hammer/mixed	33	=	integrity checks at the end
-hammer/mixed	172	57	query not read to its end
-hammer/mixed	226	75	read-only transactions
-hammer/mixed	174	58	refused for the type
-hammer/mixed	11	3	replays of a log with an index
-hammer/mixed	253	84	rows of several columns
-hammer/mixed	10	3	selects read by an index
-hammer/mixed	191	63	selects with WHERE in a transaction compared with SQLite
-hammer/mixed	16	5	selects with WHERE in a transaction that give rows, compared with SQLite
-hammer/mixed	163	54	selects with WHERE of their own compared with SQLite
-hammer/mixed	13	4	selects with WHERE of their own that give rows, compared with SQLite
-hammer/mixed	944	314	skipped
-hammer/mixed	3176	1058	statements in a transaction
-hammer/mixed	294	98	statements of IF NOT EXISTS or IF EXISTS that did nothing
-hammer/mixed	123	41	statements of IF NOT EXISTS or IF EXISTS that did their work
-hammer/mixed	153	51	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-hammer/mixed	139	46	statements that do nothing in a transaction, compared with SQLite
-hammer/mixed	155	51	statements that do nothing, compared with SQLite
-hammer/mixed	529	176	statements with a value on the left
-hammer/mixed	148	49	statements with a value on the left read by a key or an index
-hammer/mixed	24	8	statements with a value on the left that found rows
-hammer/mixed	227	75	statements with a value on the left with SQLite's error
-hammer/mixed	1776	592	succeeded
-hammer/mixed	578	192	transactions committed
-hammer/mixed	14	4	transactions not committed
-hammer/mixed	167	55	transactions rolled back
+hammer/mixed	154	51	query not read to its end
+hammer/mixed	234	78	read-only transactions
+hammer/mixed	146	48	refused for the type
+hammer/mixed	12	4	replays of a log with an index
+hammer/mixed	219	73	rows of several columns
+hammer/mixed	11	3	selects read by an index
+hammer/mixed	4	1	selects with LIMIT and without ORDER BY that gave rows
+hammer/mixed	64	21	selects with LIMIT and without ORDER BY with SQLite's error
+hammer/mixed	85	28	selects with LIMIT that succeeded
+hammer/mixed	16	5	selects with ORDER BY that gave rows
+hammer/mixed	112	37	selects with ORDER BY with SQLite's error
+hammer/mixed	182	60	selects with WHERE in a transaction compared with SQLite
+hammer/mixed	12	4	selects with WHERE in a transaction that give rows, compared with SQLite
+hammer/mixed	165	55	selects with WHERE of their own compared with SQLite
+hammer/mixed	9	3	selects with WHERE of their own that give rows, compared with SQLite
+hammer/mixed	929	309	skipped
+hammer/mixed	3206	1068	statements in a transaction
+hammer/mixed	288	96	statements of IF NOT EXISTS or IF EXISTS that did nothing
+hammer/mixed	124	41	statements of IF NOT EXISTS or IF EXISTS that did their work
+hammer/mixed	147	49	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+hammer/mixed	152	50	statements that do nothing in a transaction, compared with SQLite
+hammer/mixed	136	45	statements that do nothing, compared with SQLite
+hammer/mixed	521	173	statements with a value on the left
+hammer/mixed	137	45	statements with a value on the left read by a key or an index
+hammer/mixed	21	7	statements with a value on the left that found rows
+hammer/mixed	241	80	statements with a value on the left with SQLite's error
+hammer/mixed	1695	565	succeeded
+hammer/mixed	571	190	transactions committed
+hammer/mixed	17	5	transactions not committed
+hammer/mixed	202	67	transactions rolled back
 hammer/mixed	14	4	transactions unknown
-hammer/mixed	25	8	unknown
-hammer/mixed	937	312	updates and deletes
-hammer/mixed	133	44	updates and deletes in a transaction whose count of changes is compared with SQLite
-hammer/mixed	45	15	updates and deletes of their own whose count of changes is compared with SQLite
-hammer/mixed	75	25	updates and deletes that change no row, compared with SQLite
-hammer/mixed	95	31	updates and deletes that succeeded and changed rows
-hammer/mixed	404	134	updates and deletes with SQLite's error
-hammer/mixed	101	33	values of a default in the log
+hammer/mixed	26	8	unknown
+hammer/mixed	933	311	updates and deletes
+hammer/mixed	124	41	updates and deletes in a transaction whose count of changes is compared with SQLite
+hammer/mixed	41	13	updates and deletes of their own whose count of changes is compared with SQLite
+hammer/mixed	81	27	updates and deletes that change no row, compared with SQLite
+hammer/mixed	85	28	updates and deletes that succeeded and changed rows
+hammer/mixed	424	141	updates and deletes with SQLite's error
+hammer/mixed	70	23	values of a default in the log
 hammer/tables	10	3	NULL values in the log
 hammer/tables	767	255	SQLite's error
 hammer/tables	211	70	acknowledged writes
@@ -1441,3 +1533,64 @@ hammer/arguments	7	2	updates and deletes of their own whose count of changes is 
 hammer/arguments	10	3	updates and deletes that change no row, compared with SQLite
 hammer/arguments	17	5	updates and deletes that succeeded and changed rows
 hammer/arguments	58	19	updates and deletes with SQLite's error
+hammer/order	33	11	NULL values in the log
+hammer/order	497	165	SQLite's error
+hammer/order	333	111	acknowledged writes
+hammer/order	235	78	commits
+hammer/order	51	17	commits of more than one statement
+hammer/order	108	36	commits with a parameter
+hammer/order	68	22	create index: 1/1: index … already exists
+hammer/order	4	1	create index: 1/1: no such column: …
+hammer/order	30	10	create index: 1/1: no such table: …
+hammer/order	16	5	create index: 1/1: there is already a table named …
+hammer/order	16	5	create index: 8/8: attempt to write a readonly database
+hammer/order	52	17	create index: ok
+hammer/order	3	1	deletes read by an index
+hammer/order	25	8	drop index: 1/1: no such index: …
+hammer/order	5	1	drop index: 8/8: attempt to write a readonly database
+hammer/order	21	7	drop index: ok
+hammer/order	63	21	failed: no lease
+hammer/order	172	57	failed: timeout
+hammer/order	20	6	fault: conflict
+hammer/order	5	1	fault: cut-off
+hammer/order	10	3	fault: lost request
+hammer/order	17	5	fault: lost response
+hammer/order	23	7	fault: no answer
+hammer/order	3	1	fault: outage
+hammer/order	25	8	fault: slow way
+hammer/order	10	3	fault: write applied after its caller gave up
+hammer/order	45	15	fault: write stuck in the network
+hammer/order	14	4	indexes dropped while the rows of a query that read by them were open
+hammer/order	8	=	integrity checks after the replay
+hammer/order	8	=	integrity checks at the end
+hammer/order	66	22	query not read to its end
+hammer/order	54	18	read-only transactions
+hammer/order	45	15	refused for the type
+hammer/order	4	1	replays of a log with an index
+hammer/order	245	81	rows of several columns
+hammer/order	41	13	selects read by an index
+hammer/order	9	3	selects with LIMIT and without ORDER BY that gave rows
+hammer/order	9	3	selects with LIMIT and without ORDER BY with SQLite's error
+hammer/order	127	42	selects with LIMIT that succeeded
+hammer/order	60	20	selects with ORDER BY that gave rows
+hammer/order	62	20	selects with ORDER BY with SQLite's error
+hammer/order	63	21	selects with WHERE in a transaction compared with SQLite
+hammer/order	8	2	selects with WHERE in a transaction compared with SQLite, read by an index
+hammer/order	6	2	selects with WHERE in a transaction that give rows, compared with SQLite
+hammer/order	55	18	selects with WHERE of their own compared with SQLite
+hammer/order	8	2	selects with WHERE of their own compared with SQLite, read by an index
+hammer/order	11	3	selects with WHERE of their own that give rows, compared with SQLite
+hammer/order	45	15	skipped
+hammer/order	746	248	statements in a transaction
+hammer/order	690	230	succeeded
+hammer/order	118	39	transactions committed
+hammer/order	11	3	transactions not committed
+hammer/order	51	17	transactions rolled back
+hammer/order	8	2	transactions unknown
+hammer/order	9	3	unknown
+hammer/order	72	24	updates and deletes
+hammer/order	20	6	updates and deletes in a transaction whose count of changes is compared with SQLite
+hammer/order	10	3	updates and deletes of their own whose count of changes is compared with SQLite
+hammer/order	11	3	updates and deletes that change no row, compared with SQLite
+hammer/order	18	6	updates and deletes that succeeded and changed rows
+hammer/order	18	6	updates and deletes with SQLite's error
