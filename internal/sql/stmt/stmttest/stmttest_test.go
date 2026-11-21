@@ -471,3 +471,112 @@ func TestGenerator_ValueFirst(t *testing.T) {
 		}
 	})
 }
+
+func TestGenerator_OrderBy(t *testing.T) {
+	pools, err := stmttest.NamePools()
+	is.NotError(t, err)
+	// count the selects of g, which must each be the statement that the pass gives for its text, with
+	// the argument of a ? of LIMIT, by what their ORDER BY and LIMIT have.
+	count := func(g *stmttest.Generator) map[string]int {
+		kinds := map[string]int{}
+		for range 600 {
+			src, s, args := g.CallOf(stmttest.KindSelect)
+			got, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+			sel := s.(*stmt.Select)
+			is.Equal(t, len(args), sel.Parameters(), src)
+			kinds[fmt.Sprint(len(sel.OrderBy), " ordering columns")]++
+			named := map[string]bool{}
+			for _, n := range sel.Columns {
+				named[n.Fold()] = true
+			}
+			for _, c := range sel.Where {
+				named[c.Column.Fold()] = true
+			}
+			for _, c := range sel.OrderBy {
+				kinds[fmt.Sprint("descending ", c.Descending)]++
+				kinds[fmt.Sprint("named before ", named[c.Name.Fold()])]++
+			}
+			lower := strings.ToLower(src)
+			if strings.Contains(lower, " asc") || strings.Contains(lower, "\nasc") || strings.Contains(lower, "/asc") {
+				kinds["asc"]++
+			}
+			switch {
+			case sel.Limit.Parameter > 0:
+				kinds["limit ?"]++
+				// The ? of LIMIT is the last one, and its argument an int64 from 0.
+				is.Equal(t, sel.Parameters(), sel.Limit.Parameter, src)
+				is.True(t, args[len(args)-1].(int64) >= 0, src)
+			case sel.Limited():
+				v := sel.Limit.Value.(stmt.Integer)
+				is.True(t, v >= 0, src)
+				kinds[map[bool]string{true: "limit small", false: "limit large"}[v <= 5]]++
+				if src[sel.Limit.Span.Start] == '0' && v != 0 {
+					kinds["limit with leading zeros"]++
+				}
+			default:
+				kinds["no limit"]++
+			}
+		}
+		return kinds
+	}
+
+	t.Run("should write ORDER BY and LIMIT only with OrderBy", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(19, 20)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.ValueFirst = 3, 3, 3, 4, 3
+		kinds := count(g)
+		is.Equal(t, 600, kinds["0 ordering columns"], fmt.Sprint(kinds))
+		is.Equal(t, 600, kinds["no limit"], fmt.Sprint(kinds))
+	})
+
+	t.Run("should write ORDER BY of one or more columns in every direction, and LIMIT of every kind, with OrderBy", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(19, 20)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.ValueFirst, g.OrderBy = 3, 3, 3, 4, 3, 2
+		kinds := count(g)
+		for _, k := range []string{"0 ordering columns", "1 ordering columns", "2 ordering columns", "3 ordering columns", "4 ordering columns",
+			"descending true", "descending false", "asc", "named before true", "named before false",
+			"no limit", "limit ?", "limit small", "limit large", "limit with leading zeros"} {
+			is.True(t, kinds[k] > 5, fmt.Sprint(k, " ", kinds))
+		}
+	})
+
+	t.Run("should write the ORDER BY and the LIMIT that the hook gives, whatever OrderBy is", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(19, 20)), pools)
+		g.Parameters = 2
+		var tables []string
+		g.Order = func(table stmt.Name) ([]stmt.OrderColumn, stmt.Term) {
+			tables = append(tables, table.Raw)
+			if len(tables)%4 == 0 {
+				return nil, stmt.Term{}
+			}
+			return []stmt.OrderColumn{{Name: stmt.Name{Raw: "priority"}, Descending: true}, {Name: stmt.Name{Raw: `"created"`}}},
+				stmt.Term{Value: stmt.Integer(1)}
+		}
+		without, parameters := 0, 0
+		for range 100 {
+			src, s, args := g.CallOf(stmttest.KindSelect)
+			got, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+			sel := s.(*stmt.Select)
+			if sel.OrderBy == nil {
+				without++
+				is.True(t, !sel.Limited() && !strings.Contains(strings.ToLower(src), "order"), src)
+				continue
+			}
+			is.Equal(t, 2, len(sel.OrderBy), src)
+			is.True(t, sel.OrderBy[0].Name.Raw == "priority" && sel.OrderBy[0].Descending, src)
+			is.True(t, sel.OrderBy[1].Name.Raw == `"created"` && !sel.OrderBy[1].Descending, src)
+			if sel.Limit.Parameter > 0 {
+				parameters++
+				is.Equal(t, fmt.Sprintf("%#v", int64(1)), fmt.Sprintf("%#v", args[sel.Limit.Parameter-1]), src)
+			} else {
+				is.Equal(t, fmt.Sprintf("%#v", stmt.Integer(1)), fmt.Sprintf("%#v", sel.Limit.Value), src)
+			}
+		}
+		is.Equal(t, 100, len(tables))
+		is.Equal(t, 25, without)
+		is.True(t, parameters > 10, "too few parameters")
+	})
+}

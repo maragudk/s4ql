@@ -561,7 +561,8 @@ func unaryName(op ast.Token) string {
 	}
 }
 
-// selectCmd: SELECT, * or the names of one or more columns, FROM table.
+// selectCmd: SELECT, * or the names of one or more columns, FROM table, and an optional WHERE, ORDER
+// BY, and LIMIT, in that order.
 func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	r.accept(c)
 	r.accept(c.Select)
@@ -597,7 +598,130 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	if core.Where != nil {
 		s.Where = r.where(core.Where, 0)
 	}
+	if core.OrderBy != nil {
+		s.OrderBy = r.orderBy(core.OrderBy)
+	}
+	if core.Limit != nil {
+		// The ? of the LIMIT comes after those of the conditions in the text.
+		s.Limit = r.limit(core.Limit, conditionParameters(s.Where))
+	}
 	return s
+}
+
+// orderBy: ORDER BY and one or more columns, separated by commas, of which no two are one name.
+func (r *recognizer) orderBy(o *ast.OrderBy) []OrderColumn {
+	r.accept(o)
+	r.take(o.Order)
+	r.take(o.By)
+	seen := map[string]bool{}
+	var columns []OrderColumn
+	for i, term := range o.Terms {
+		if i > 0 {
+			r.take(o.Commas[i-1])
+		}
+		c := r.orderColumn(term, seen)
+		seen[c.Name.Fold()] = true
+		columns = append(columns, c)
+	}
+	return columns
+}
+
+// orderColumn o of an ORDER BY, after the columns of seen, by their folds: the bare name of a column,
+// or one in double quotes, that seen does not have, and ASC, DESC, or neither. SQLite reads any
+// expression there, an integer literal as the position of a result column; the pass supports none.
+// A column that an earlier one names is not supported: SQLite orders by the first, so the later one
+// orders nothing.
+func (r *recognizer) orderColumn(o *ast.OrderingTerm, seen map[string]bool) OrderColumn {
+	r.accept(o)
+	switch x := o.X.(type) {
+	case *ast.ColumnRef:
+		switch {
+		case x.Table.Present():
+			r.reject("column with the name of a table")
+		case isTrueOrFalse(x):
+			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+			r.reject("TRUE or FALSE")
+		case r.isNext(x.Column) && seen[asciiLower(dequote(x.Column))]:
+			r.reject("column named twice")
+		}
+		r.accept(x)
+	case *ast.Collate:
+		r.reject("COLLATE")
+	case *ast.Paren:
+		r.reject("parentheses")
+	default:
+		r.reject("ordering term other than a column")
+	}
+	c := OrderColumn{Name: r.name(o.X.(*ast.ColumnRef).Column)}
+	if o.Order.Present() {
+		r.take(o.Order)
+		c.Descending = o.Order.Kind == token.Desc
+	}
+	return c
+}
+
+// limit: LIMIT and the number of rows, after before parameters of the statement: a decimal integer
+// literal without a sign that fits in 64 bits, or a plain ?. SQLite takes any expression there,
+// which it converts to an integer when the select runs: a real or a text that holds an integer is
+// that integer, and any other value is `datatype mismatch`; a negative number is no limit. By the
+// exact types of s4ql, only an integer that is a limit is supported. LIMIT with OFFSET, also as
+// LIMIT and two numbers, is not supported.
+func (r *recognizer) limit(l *ast.Limit, before int) Term {
+	r.accept(l)
+	r.take(l.Limit)
+	v := r.limitCount(l.X, before)
+	if l.Sep.Present() {
+		// The next token is OFFSET, or the comma of `LIMIT a, b`, whose first number is the offset and
+		// the second the count.
+		r.reject("OFFSET")
+	}
+	return v
+}
+
+// limitCount: the number of rows of a LIMIT, the expression x, which starts at the next token, after
+// before parameters of the statement.
+func (r *recognizer) limitCount(x ast.Expr, before int) Term {
+	switch x := x.(type) {
+	case *ast.Variable:
+		var v Term
+		v.Parameter, v.Span = r.parameter(x, before)
+		return v
+	case *ast.Literal:
+		t := x.Value
+		switch t.Kind {
+		case token.Integer:
+			if strings.HasPrefix(t.Text, "0x") || strings.HasPrefix(t.Text, "0X") {
+				r.reject("hex literal")
+			}
+			i, err := strconv.ParseInt(t.Text, 10, 64)
+			if err != nil {
+				// SQLite reads the literal as a real, which is no integer.
+				r.reject("integer outside 64 bits")
+			}
+			r.take(t)
+			return Term{Value: Integer(i), Span: Span{Start: t.Offset, End: t.End()}}
+		case token.Float, token.String, token.Blob, token.Null:
+			r.reject("LIMIT other than an integer")
+		}
+		r.reject(literalName(t))
+	case *ast.Unary:
+		switch x.Op.Kind {
+		case token.Minus:
+			// SQLite reads a negative number as no limit.
+			r.reject("negative LIMIT")
+		case token.Plus:
+			r.reject("+ sign")
+		}
+	case *ast.ColumnRef:
+		if isTrueOrFalse(x) {
+			// SQLite reads a bare TRUE or FALSE as 1 or 0.
+			r.reject("TRUE or FALSE")
+		}
+	case *ast.Paren:
+		r.reject("parentheses")
+	}
+	r.reject("LIMIT of an expression")
+	return Term{}
 }
 
 // where: WHERE and its conditions, after before parameters of the statement.

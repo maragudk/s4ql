@@ -259,7 +259,23 @@ type Generator struct {
 	// written so whatever ValueFirst is. A test for NULL keeps its column on the left. With 0 and no
 	// such comparison the generator draws as it did before slice 12.
 	ValueFirst int
-	b          strings.Builder
+	// OrderBy, if not 0, makes the generator write the ORDER BY and LIMIT of slice 13 on a select: one
+	// select in OrderBy has an ORDER BY of from 1 to Columns+1 columns, or 1 or 2 without
+	// [Generator.Columns], each another name from the pool of [SelectColumn], or one time in three
+	// that of a column of the select list or of a condition, with ASC, DESC, or neither; and, drawn
+	// apart from it, one select in OrderBy has a LIMIT of an integer from 0 to the largest of 64 bits,
+	// small ones more often, with leading zeros now and then, or with [Generator.Parameters] a ? now
+	// and then, with the integer as its argument, after those of the conditions. [Generator.Order]
+	// gives them instead if it is not nil, whatever OrderBy is. With 0 and Order nil, the generator
+	// draws as it did before slice 13.
+	OrderBy int
+	// Order, if not nil, gives the ORDER BY and the LIMIT of a select of the table, in place of ones
+	// at random: the columns of ORDER BY, each with the raw text of its name and whether it is
+	// Descending, or nil for a select without ORDER BY; and the LIMIT, with its integer as Value.Value,
+	// or the zero Term for a select without LIMIT. No two of the columns may be one name. The
+	// generator writes ASC or nothing for a column that is not descending.
+	Order func(table stmt.Name) ([]stmt.OrderColumn, stmt.Term)
+	b     strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -785,6 +801,107 @@ func (g *Generator) update(c *stmt.Update) []any {
 	return args
 }
 
+// order of the select s, of slice 13, after its WHERE, after the arguments args of the parameters
+// before it, and the arguments with that of its LIMIT: the ORDER BY and the LIMIT that
+// [Generator.Order] gives, or with [Generator.OrderBy] ones at random, or none, without a draw.
+func (g *Generator) order(s *stmt.Select, args []any) ([]stmt.OrderColumn, stmt.Term, []any) {
+	var given []stmt.OrderColumn
+	var limit stmt.Term
+	random := g.Order == nil
+	switch {
+	case g.Order != nil:
+		given, limit = g.Order(s.Table)
+	case g.OrderBy > 0:
+		if g.r.IntN(g.OrderBy) == 0 {
+			given = make([]stmt.OrderColumn, 1+g.r.IntN(max(g.Columns, 1)+1))
+		}
+		if g.r.IntN(g.OrderBy) == 0 {
+			limit.Value = g.limitValue()
+		}
+	default:
+		return nil, stmt.Term{}, args
+	}
+	// A column at random is one time in three a column of the select list or of a condition.
+	var named []stmt.Name
+	named = append(named, s.Columns...)
+	for _, c := range s.Where {
+		named = append(named, c.Column)
+	}
+	var columns []stmt.OrderColumn
+	seen := map[string]bool{}
+	for i, c := range given {
+		if random {
+			var others []string
+			for _, n := range named {
+				if !seen[n.Fold()] {
+					others = append(others, n.Raw)
+				}
+			}
+			raw := ""
+			if len(others) > 0 && g.r.IntN(3) == 0 {
+				raw = others[g.r.IntN(len(others))]
+			} else if raw = g.pickOther(SelectColumn, seen); raw == "" {
+				break
+			}
+			c = stmt.OrderColumn{Name: stmt.Name{Raw: raw}, Descending: g.r.IntN(3) == 0}
+		}
+		if i == 0 {
+			g.gap(true)
+			g.keyword("order")
+			g.gap(true)
+			g.keyword("by")
+			g.gap(true)
+		} else {
+			g.gap(false)
+			g.punct(",")
+			g.gap(false)
+		}
+		w := stmt.OrderColumn{Name: g.write(c.Name.Raw), Descending: c.Descending}
+		seen[w.Name.Fold()] = true
+		switch {
+		case w.Descending:
+			g.gap(true)
+			g.keyword("desc")
+		case g.r.IntN(2) == 0:
+			g.gap(true)
+			g.keyword("asc")
+		}
+		columns = append(columns, w)
+	}
+	if limit.Value == nil {
+		return columns, stmt.Term{}, args
+	}
+	g.gap(true)
+	g.keyword("limit")
+	g.gap(true)
+	if g.Parameters > 0 && g.r.IntN(g.Parameters) == 0 {
+		v := limit.Value
+		limit = stmt.Term{Parameter: len(args) + 1, Span: stmt.Span{Start: g.b.Len(), End: g.b.Len() + 1}}
+		g.punct("?")
+		return columns, limit, append(args, Argument(v))
+	}
+	digits := fmt.Sprint(limit.Value)
+	if g.r.IntN(4) == 0 {
+		digits = strings.Repeat("0", 1+g.r.IntN(30)) + digits
+	}
+	limit.Span = stmt.Span{Start: g.b.Len(), End: g.b.Len() + len(digits)}
+	g.b.WriteString(digits)
+	return columns, limit, args
+}
+
+// limitValue at random of a LIMIT: an integer from 0 to the largest of 64 bits, from 0 to 5 one time
+// in two, and otherwise one of [Integer] with its bits turned over if it is negative.
+func (g *Generator) limitValue() stmt.Value {
+	if g.r.IntN(2) == 0 {
+		return stmt.Integer(g.r.IntN(6))
+	}
+	i := Integer(g.r)
+	if i < 0 {
+		i = ^i
+	}
+	return stmt.Integer(i)
+}
+
 // indexColumns of a create index of the name index on the table, of slice 9, between its
 // parentheses: those that [Generator.CreateIndex] gives, or from 1 to [Generator.Columns] at random,
 // or 1 without Columns, each another name from the pool of [IndexColumn]. Each is descending one time
@@ -1015,6 +1132,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 			c.Table = g.name(SelectTable)
 		}
 		c.Where, args = g.where(c)
+		c.OrderBy, c.Limit, args = g.order(c, args)
 		s, span = c, &c.Span
 	case KindUpdate:
 		c := &stmt.Update{}

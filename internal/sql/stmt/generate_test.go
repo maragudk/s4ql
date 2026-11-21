@@ -42,8 +42,9 @@ var positionTexts = stmttest.PositionTexts
 // or a delete in one statement in three, with a WHERE as a select has one, those of slice 9, a
 // create index or a drop index in one statement in four, with up to three columns, those of slice
 // 10, IF NOT EXISTS or IF EXISTS in one create or drop in three, those of slice 11, a DEFAULT on
-// one column in three of a create table, and those of slice 12, the value on the left of one
-// comparison in three.
+// one column in three of a create table, those of slice 12, the value on the left of one
+// comparison in three, and those of slice 13, an ORDER BY on one select in three and a LIMIT on one
+// in three.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
@@ -55,6 +56,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.Exists = 3
 	g.Defaults = 3
 	g.ValueFirst = 3
+	g.OrderBy = 3
 	return g
 }
 
@@ -131,7 +133,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 27, 150)
+	excused(t, c, 41, 131)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -250,6 +252,26 @@ func difference(a, b stmt.Statement) string {
 		}
 		names(a.Columns, b.Columns, "result column")
 		conditions(a.Where, b.Where)
+		var ao, bo []stmt.Name
+		for _, c := range a.OrderBy {
+			ao = append(ao, c.Name)
+		}
+		for _, c := range b.OrderBy {
+			bo = append(bo, c.Name)
+		}
+		names(ao, bo, "ordering column")
+		if len(a.OrderBy) == len(b.OrderBy) {
+			for i := range a.OrderBy {
+				if a.OrderBy[i].Descending != b.OrderBy[i].Descending {
+					diffs = append(diffs, "direction")
+				}
+			}
+		}
+		if a.Limited() != b.Limited() {
+			diffs = append(diffs, "limit or none")
+		} else if a.Limited() {
+			values([]stmt.Term{a.Limit}, []stmt.Term{b.Limit})
+		}
 	case *stmt.Update:
 		b := b.(*stmt.Update)
 		if a.Table.Value != b.Table.Value {
@@ -571,8 +593,6 @@ var nearMisses = map[string][]string{
 		"select [%[2]v] from %[1]v",
 		"select distinct %[2]v from %[1]v",
 		"select %[2]v from %[1]v where 1",
-		"select %[2]v from %[1]v order by %[2]v",
-		"select %[2]v from %[1]v limit 1",
 		"select %[2]v from %[1]v, u",
 		"select %[2]v",
 		"select %[2]v, from %[1]v",
@@ -593,7 +613,6 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v group by 1 having 1",
 		"select * from %[1]v window w as ()",
 		"select * from %[1]v order by 1",
-		"select * from %[1]v limit 1",
 		"select * from %[1]v limit 1 offset 1",
 		"select * from %[1]v union select * from %[1]v",
 		"select * from %[1]v union all select * from %[1]v",
@@ -639,8 +658,6 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v where %[2]v is not distinct from null",
 		"select * from %[1]v where %[2]v collate nocase = 'a'",
 		"select * from %[1]v where %[2]v = 'a' collate nocase",
-		"select * from %[1]v where %[2]v = 1 order by %[2]v",
-		"select * from %[1]v where %[2]v = 1 limit 1",
 		"select * from %[1]v where %[2]v = +1",
 		"select * from %[1]v where %[2]v = -?",
 		"select * from %[1]v where %[2]v = ?1",
@@ -648,6 +665,60 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v where %[2]v = 1 and",
 		"select * from %[1]v where %[2]v",
 		"select * from %[1]v where %[2]v = 1 returning *",
+		"select %[2]v from %[1]v order by 1",
+		"select * from %[1]v order by 0",
+		"select * from %[1]v order by -1",
+		"select * from %[1]v order by %[2]v + 1",
+		"select * from %[1]v order by (%[2]v)",
+		"select * from %[1]v order by -%[2]v",
+		"select * from %[1]v order by %[1]v.%[2]v",
+		"select * from %[1]v order by %[2]v collate nocase",
+		"select * from %[1]v order by %[2]v asc desc",
+		"select * from %[1]v order by %[2]v nulls first",
+		"select * from %[1]v order by %[2]v desc nulls last",
+		"select * from %[1]v order by %[2]v, %[2]v",
+		"select * from %[1]v order by %[2]v asc, %[2]v desc",
+		"select * from %[1]v order by '%[2]v'",
+		"select * from %[1]v order by [%[2]v]",
+		"select * from %[1]v order by ?",
+		"select * from %[1]v order by null",
+		"select * from %[1]v order by true",
+		"select * from %[1]v order by",
+		"select * from %[1]v order by %[2]v,",
+		"select * from %[1]v order %[2]v",
+		"select * from %[1]v order by %[2]v order by %[2]v",
+		"select * from %[1]v group by %[2]v order by %[2]v",
+		"select %[2]v from %[1]v union select %[2]v from %[1]v order by %[2]v",
+		"select * from %[1]v where %[2]v = 1 or %[2]v = 2 order by %[2]v",
+		"select * from %[1]v order by %[2]v limit",
+		"select * from %[1]v limit",
+		"select * from %[1]v limit -1",
+		"select * from %[1]v limit -0",
+		"select * from %[1]v limit +1",
+		"select * from %[1]v limit 1.5",
+		"select * from %[1]v limit 1.0",
+		"select * from %[1]v limit 1e2",
+		"select * from %[1]v limit '5'",
+		"select * from %[1]v limit x'05'",
+		"select * from %[1]v limit null",
+		"select * from %[1]v limit 0x5",
+		"select * from %[1]v limit 9223372036854775808",
+		"select * from %[1]v limit 1_0",
+		"select * from %[1]v limit current_time",
+		"select * from %[1]v limit true",
+		"select * from %[1]v limit %[2]v",
+		"select * from %[1]v limit 1 + 1",
+		"select * from %[1]v limit (1)",
+		"select * from %[1]v limit ?1",
+		"select * from %[1]v limit :a",
+		"select * from %[1]v limit -?",
+		"select * from %[1]v limit 1, 1",
+		"select * from %[1]v offset 1",
+		"select * from %[1]v limit 1 order by %[2]v",
+		"select * from %[1]v limit 1 limit 1",
+		"select %[2]v from %[1]v where %[2]v = 1 order by %[2]v nulls first limit 1",
+		"select %[2]v from %[1]v order by %[2]v limit 1 offset 0",
+		"select * from %[1]v order by %[2]v limit 1; select 1",
 	},
 	"*stmt.Update": {
 		"explain update %[1]v set %[2]v = %[3]v",
@@ -904,5 +975,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 1979)
+	excused(t, c, 0, 2089)
 }

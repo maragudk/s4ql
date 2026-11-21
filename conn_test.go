@@ -418,8 +418,8 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, s4ql.Error{Code: 1, ExtendedCode: 1, Message: `near "selec": syntax error`}, *sqlite)
 		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1 or v1 = 2")
 		is.Equal(t, "OR (at offset 30)", notSupported(t, err))
-		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1 order by v1")
-		is.Equal(t, "ORDER BY clause (at offset 30)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1 group by v1")
+		is.Equal(t, "GROUP BY clause (at offset 30)", notSupported(t, err))
 		// A select with WHERE that s4ql supports prepares without the instance.
 		p, err := db.PrepareContext(t.Context(), "select * from t1 where v1 = ? and v1 is not null")
 		is.NotError(t, err)

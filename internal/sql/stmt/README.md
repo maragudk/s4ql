@@ -721,6 +721,11 @@ A test checks that every name the pass gives in any test is in these tables.
 | `index on an expression` | A column of CREATE INDEX is an expression, such as `a + 1`, `lower(a)`, `-a`, a number, NULL, or a parameter. A string in single quotes is `single-quoted name`. The offset is that of the expression. |
 | `partial index` | CREATE INDEX has a WHERE. The offset is that of the WHERE. |
 | `EXPLAIN QUERY PLAN` | The statement starts with EXPLAIN QUERY PLAN. The offset is that of the EXPLAIN. |
+| `ordering term other than a column` | A term of ORDER BY is not the bare name of a column or a name in double quotes, such as `1`, `'a'`, `?`, `null`, `-a`, or `a + 1`. SQLite reads an integer literal that fits 32 bits as the position of a result column, and every other such term as an expression. The offset is that of the term. |
+| `LIMIT other than an integer` | The number of LIMIT is a real, a string, a blob, or NULL literal, such as `1.0`, `'5'`, or `null`. SQLite converts a real or a text that holds an integer to it when the select runs, and gives `datatype mismatch` for any other value. |
+| `negative LIMIT` | The number of LIMIT has a `-` before it, as in `-1`, which SQLite reads as no limit. |
+| `LIMIT of an expression` | The number of LIMIT is an expression other than a literal, a parameter, a value after a sign, TRUE or FALSE, or parentheses, such as `1 + 1` or a name. |
+| `OFFSET` | LIMIT has OFFSET, or a second number after a comma, `limit 10, 5`, whose first number is the offset. The offset of the error is that of the OFFSET or of the comma. |
 
 ### Names of fields
 
