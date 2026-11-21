@@ -480,6 +480,8 @@ func TestEngine_write(t *testing.T) {
 		is.Equal(t, 2, d.opened, "the readers opened")
 		is.Equal(t, 0, d.readers, "the readers open")
 		is.Equal(t, 0, d.open, "the transactions open")
+		// It wrote nothing, so its event has the position of the read transaction and no parent.
+		is.Equal(t, fmt.Sprintf("map[msg:statement outcome:ok statement.kind:drop_table statement.nothing:true statement.position:%v statement.rows:0 statement.table:nosuch]", format.EmptyLog), h.last())
 
 		// A statement that has work to do still takes the write path.
 		_, err := conn.Exec(t.Context(), "drop table if exists t1")

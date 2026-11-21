@@ -935,7 +935,8 @@ func (c *conn) load(name string) (*table, error) {
 		if pk > 0 {
 			keyed[pk] = len(t.columns)
 		}
-		t.columns = append(t.columns, column{name: name, typ: typ, nullable: pk == 0 && !notNull, dflt: dflt})
+		// A primary-key column that takes NULL is refused above.
+		t.columns = append(t.columns, column{name: name, typ: typ, nullable: !notNull, dflt: dflt})
 		return nil
 	}, t.name); err != nil {
 		return nil, err

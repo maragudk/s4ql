@@ -2782,6 +2782,7 @@ func TestTx_tooBig(t *testing.T) {
 		err = tx.CreateTable(t.Context(), tableOf(strings.Repeat("t", n+1), 1, "k"))
 		is.Error(t, core.ErrInvalid, err)
 		is.Error(t, core.ErrTooLongForCache, err)
+		is.Equal(t, fmt.Sprint(core.ErrInvalid, ": ", core.ErrTooLongForCache, ": a table whose statement in the cache is ", limit+1, " bytes, where the limit is ", limit), err.Error())
 		is.NotError(t, tx.CreateTable(t.Context(), tableOf(strings.Repeat("t", n), 1, "k")))
 		is.NotError(t, tx.Commit(t.Context()))
 		is.NotError(t, d.Close(t.Context()))
