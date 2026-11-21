@@ -242,7 +242,7 @@ mixed	286	95	reached: literal text
 mixed	38	12	reached: select * of 1 columns ok
 mixed	45	15	reached: select * of 2 columns ok
 mixed	50	16	reached: select * of 3 columns ok
-mixed	11	3	reached: select * with NULL ok
+mixed	10	3	reached: select * with NULL ok
 mixed	31	10	reached: select of a name that the table does not have no such column
 mixed	108	36	reached: select of names ok
 mixed	4	1	reached: select of names with NULL ok
@@ -2175,79 +2175,78 @@ arguments	20	6	write transaction: insert with a parameter ok
 arguments	24	8	write transaction: insert with a parameter wrong number of arguments
 arguments	5	1	write transaction: other syntax error
 arguments	3	1	write transaction: rows left open
-order	41	13	begin ok
-order	39	13	call begin
-order	207	69	call exec
-order	72	24	call exec with arguments
-order	104	34	call prepare, exec
-order	41	13	call prepare, exec several times
-order	16	5	call prepare, exec several times with arguments
+order	42	14	begin ok
+order	40	13	call begin
+order	208	69	call exec
+order	71	23	call exec with arguments
+order	103	34	call prepare, exec
+order	38	12	call prepare, exec several times
+order	14	4	call prepare, exec several times with arguments
 order	35	11	call prepare, exec with arguments
 order	33	11	call prepare, query
 order	9	3	call prepare, query with arguments
-order	67	22	call query
-order	33	11	call query row
+order	66	22	call query
+order	34	11	call query row
 order	12	4	call query row with arguments
-order	16	5	call query with arguments
+order	15	5	call query with arguments
 order	34	11	createindex already exists
 order	19	6	createindex no such table
 order	36	12	createindex ok
 order	15	5	createtable already exists
 order	25	8	createtable ok
-order	11	3	dropindex no such index
+order	9	3	dropindex no such index
 order	9	3	dropindex ok
 order	8	2	droptable no such table
 order	9	3	droptable ok
-order	57	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
-order	1	=	excused: a begin on a connection whose transaction is open, refused by both with their own errors
+order	56	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
+order	2	=	excused: a begin on a connection whose transaction is open, refused by both with their own errors
 order	5	=	excused: a select, an update, a delete, or a create index with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error
 order	3	=	excused: a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it
 order	4	=	excused: a statement while the rows of the transaction are open, checked against s4ql's rule
-order	40	=	excused: a value of another type than its column, checked against s4ql's rule
+order	39	=	excused: a value of another type than its column, checked against s4ql's rule
 order	14	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
 order	8	2	insert UNIQUE constraint failed
 order	14	4	insert no such table
 order	58	19	insert ok
 order	10	3	insert with a parameter UNIQUE constraint failed
-order	18	6	insert with a parameter argument of a type not supported
+order	16	5	insert with a parameter argument of a type not supported
 order	30	10	insert with a parameter no such table
 order	70	23	insert with a parameter ok
 order	3	1	reached: != on another column ok
 order	3	1	reached: != on the key ok
 order	5	1	reached: < on the key ok
 order	11	3	reached: <= on the key ok
-order	17	5	reached: = on another column ok
+order	12	4	reached: = on another column ok
 order	8	2	reached: = on the key ok
 order	5	1	reached: > on the key ok
 order	7	2	reached: >= on the key ok
-order	8	2	reached: IS NULL on another column ok
+order	7	2	reached: IS NULL on another column ok
 order	3	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
 order	9	3	reached: NULL argument into a column that takes NULL ok
 order	5	1	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
 order	3	1	reached: NULL literal into a column that takes NULL a value of another type
 order	3	1	reached: NULL literal into a column that takes NULL attempt to write a readonly database
 order	18	6	reached: NULL literal into a column that takes NULL ok
-order	11	3	reached: WHERE that gives no row of a table with rows
+order	9	3	reached: WHERE that gives no row of a table with rows
 order	8	2	reached: WHERE that reads a get of one key ok
 order	5	1	reached: WHERE that reads a scan between two bounds ok
-order	12	4	reached: WHERE that reads a scan of every row ok
+order	7	2	reached: WHERE that reads a scan of every row ok
 order	4	1	reached: WHERE that reads a scan to an upper bound ok
 order	15	5	reached: WHERE that tests a column more than once ok
 order	5	1	reached: WHERE with a value of another type a value of another type
 order	4	1	reached: argument NULL as *float64
 order	3	1	reached: argument NULL as sql.NullFloat64
 order	3	1	reached: argument NULL as sql.Null[[]uint8]
-order	33	11	reached: argument []uint8
+order	32	10	reached: argument []uint8
 order	6	2	reached: argument empty []byte
 order	52	17	reached: argument float64
 order	6	2	reached: argument float64 -0.0
 order	61	20	reached: argument int64
-order	14	4	reached: argument string
+order	12	4	reached: argument string
 order	7	2	reached: comparison with argument float64 ok
-order	4	1	reached: comparison with argument int64 ok
 order	6	2	reached: comparison with literal blob ok
 order	3	1	reached: comparison with literal empty blob ok
-order	16	5	reached: comparison with literal integer ok
+order	14	4	reached: comparison with literal integer ok
 order	15	5	reached: comparison with literal real ok
 order	7	2	reached: comparison with literal text ok
 order	8	2	reached: delete with WHERE ok, no row found
@@ -2258,7 +2257,7 @@ order	4	1	reached: insert into BLOB attempt to write a readonly database
 order	32	10	reached: insert into BLOB ok
 order	5	1	reached: insert into INT UNIQUE constraint failed
 order	17	5	reached: insert into INT ok
-order	18	6	reached: insert into INTEGER a value of another type
+order	15	5	reached: insert into INTEGER a value of another type
 order	9	3	reached: insert into INTEGER ok
 order	8	2	reached: insert into REAL UNIQUE constraint failed
 order	6	2	reached: insert into REAL attempt to write a readonly database
@@ -2270,21 +2269,21 @@ order	22	7	reached: insert that leaves out a column that takes NULL ok
 order	16	5	reached: insert with a list UNIQUE constraint failed
 order	4	1	reached: insert with a list attempt to write a readonly database
 order	93	31	reached: insert with a list ok
-order	31	10	reached: insert with a value of another type in the key: a value of another type
+order	28	9	reached: insert with a value of another type in the key: a value of another type
 order	3	1	reached: insert with the wrong number of values:  values for 
 order	6	2	reached: insert without a list attempt to write a readonly database
 order	35	11	reached: insert without a list ok
 order	59	19	reached: literal blob
-order	5	1	reached: literal empty blob
+order	4	1	reached: literal empty blob
 order	110	36	reached: literal integer
 order	34	11	reached: literal null
 order	105	35	reached: literal real
 order	5	1	reached: literal real -0.0
-order	16	5	reached: literal text
+order	15	5	reached: literal text
 order	31	10	reached: select * of 2 columns ok
-order	17	5	reached: select * of 3 columns ok
-order	6	2	reached: select * with NULL ok
-order	39	13	reached: select of names ok
+order	14	4	reached: select * of 3 columns ok
+order	7	2	reached: select * with NULL ok
+order	38	12	reached: select of names ok
 order	5	1	reached: select of names with NULL ok
 order	15	5	reached: table read back after an update or a delete
 order	3	1	reached: update with WHERE ok, no row found
@@ -2293,24 +2292,24 @@ order	4	1	read-only transaction rollback ok on a pinned connection
 order	3	1	read-only transaction rollback ok through the pool
 order	8	2	read-only transaction: insert attempt to write a readonly database
 order	3	1	read-only transaction: select ok with rows
-order	4	1	select no rows
+order	3	1	select no rows
 order	20	6	select no such table
-order	62	20	select ok
+order	64	21	select ok
 order	21	7	select ok with rows
-order	30	10	write transaction begin ok
+order	31	10	write transaction begin ok
 order	3	1	write transaction commit ok after a drop table
 order	7	2	write transaction commit ok after a failed call
 order	6	2	write transaction commit ok after an insert
 order	9	3	write transaction commit ok on a pinned connection
 order	7	2	write transaction commit ok through the pool
 order	3	1	write transaction rollback ok after a create table
-order	9	3	write transaction rollback ok after a failed call
-order	6	2	write transaction rollback ok after an insert
-order	9	3	write transaction rollback ok on a pinned connection
+order	10	3	write transaction rollback ok after a failed call
+order	7	2	write transaction rollback ok after an insert
+order	10	3	write transaction rollback ok on a pinned connection
 order	5	1	write transaction rollback ok through the pool
-order	15	5	write transaction: call exec with arguments
+order	17	5	write transaction: call exec with arguments
 order	3	1	write transaction: call prepare, exec several times with arguments
-order	7	2	write transaction: call prepare, exec with arguments
+order	9	3	write transaction: call prepare, exec with arguments
 order	3	1	write transaction: call query beside the transaction
 order	22	7	write transaction: call query, rows left open
 order	7	2	write transaction: createtable already exists
@@ -2318,7 +2317,7 @@ order	5	1	write transaction: createtable ok
 order	4	1	write transaction: droptable ok
 order	3	1	write transaction: insert no such table
 order	13	4	write transaction: insert ok
-order	4	1	write transaction: insert with a parameter argument of a type not supported
-order	14	4	write transaction: insert with a parameter ok
+order	7	2	write transaction: insert with a parameter argument of a type not supported
+order	15	5	write transaction: insert with a parameter ok
 order	6	2	write transaction: rows left open
 order	5	1	write transaction: select ok with rows after a write of the transaction

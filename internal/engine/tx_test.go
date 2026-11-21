@@ -521,7 +521,7 @@ func TestConn_differential(t *testing.T) {
 // [TestConn_differential] describes.
 func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	t.Helper()
-	i := newInstance(t, engine.Options{})
+	i := newInstanceDirected(t, engine.Options{}, 0, seed)
 	defer i.close()
 	q := newSequence(t, seed)
 	// The transactions draw from a stream of their own, so that they move no statement.

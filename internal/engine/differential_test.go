@@ -575,6 +575,26 @@ func newInstanceLimited(t testing.TB, options engine.Options, coreLog *slog.Logg
 	return i
 }
 
+// newInstanceDirected is [newInstanceLimited] whose engines draw the directions of their scans from
+// a seed that the seed of a sequence gives, unless the flag -directions gives one, so that what a
+// generated test counts of the directions, such as the order of the rows that tie under a sort, is a
+// function of the seeds of its sequences, as every other count is.
+func newInstanceDirected(t testing.TB, options engine.Options, limit int, seed uint64) *instance {
+	t.Helper()
+	h := sim.NewFree(sim.Buggify{})
+	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), limit: limit}
+	i.seeded()
+	if *directions == 0 {
+		i.seed = seed*0x9e3779b97f4a7c15 + 0x5ca1ab1e
+	}
+	i.open(true, options)
+	t.Cleanup(func() {
+		i.close()
+		is.NotError(t, i.c.Close(context.WithoutCancel(t.Context())))
+	})
+	return i
+}
+
 // open an instance of the database, with an empty cache if empty, and with the last one otherwise.
 func (i *instance) open(empty bool, options engine.Options) {
 	i.t.Helper()
@@ -890,7 +910,7 @@ func differential(t testing.TB, seed uint64, n int, restarts bool, limit int, y 
 	t.Helper()
 	// The instance closes at the end of the sequence, so that a test of many sequences does not keep
 	// the files of each open until it ends.
-	i := newInstanceLimited(t, generatedOptions(), nil, limit)
+	i := newInstanceDirected(t, generatedOptions(), limit, seed)
 	defer i.close()
 	differentialOn(t, seed, n, restarts, y, i)
 }

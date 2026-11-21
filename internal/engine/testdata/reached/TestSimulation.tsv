@@ -1011,138 +1011,138 @@ idle/transactions	29	9	updates and deletes in a transaction whose count of chang
 idle/transactions	11	3	updates and deletes that succeeded and changed rows
 idle/transactions	98	32	updates and deletes with SQLite's error
 hammer	335	111	NULL values in the log
-hammer	9528	3176	SQLite's error
-hammer	3137	1045	acknowledged writes
-hammer	2205	735	commits
-hammer	435	145	commits of more than one statement
-hammer	791	263	commits with a parameter
+hammer	9532	3177	SQLite's error
+hammer	3129	1043	acknowledged writes
+hammer	2199	733	commits
+hammer	430	143	commits of more than one statement
+hammer	794	264	commits with a parameter
 hammer	222	74	create index: 1/1: index … already exists
-hammer	39	13	create index: 1/1: no such column: …
-hammer	357	119	create index: 1/1: no such table: …
-hammer	304	101	create index: 1/1: there is already a table named …
-hammer	74	24	create index: 8/8: attempt to write a readonly database
+hammer	38	12	create index: 1/1: no such column: …
+hammer	362	120	create index: 1/1: no such table: …
+hammer	297	99	create index: 1/1: there is already a table named …
+hammer	78	26	create index: 8/8: attempt to write a readonly database
 hammer	309	103	create index: ok
-hammer	87	29	create tables with a default in the log
-hammer	15	5	deletes read by an index
-hammer	285	95	drop index: 1/1: no such index: …
+hammer	88	29	create tables with a default in the log
+hammer	14	4	deletes read by an index
+hammer	283	94	drop index: 1/1: no such index: …
 hammer	29	9	drop index: 8/8: attempt to write a readonly database
-hammer	219	73	drop index: ok
-hammer	642	214	failed: no lease
-hammer	1433	477	failed: timeout
-hammer	8	2	fault: broken read
-hammer	90	30	fault: conflict
-hammer	32	10	fault: cut-off
-hammer	124	41	fault: lost request
-hammer	123	41	fault: lost response
-hammer	136	45	fault: no answer
-hammer	13	4	fault: outage
+hammer	217	72	drop index: ok
+hammer	648	216	failed: no lease
+hammer	1432	477	failed: timeout
+hammer	6	2	fault: broken read
+hammer	89	29	fault: conflict
+hammer	33	11	fault: cut-off
+hammer	127	42	fault: lost request
+hammer	119	39	fault: lost response
+hammer	138	46	fault: no answer
+hammer	12	4	fault: outage
 hammer	243	81	fault: slow way
-hammer	56	18	fault: write applied after its caller gave up
+hammer	53	17	fault: write applied after its caller gave up
 hammer	222	74	fault: write stuck in the network
-hammer	32	10	indexes dropped while the rows of a query that read by them were open
+hammer	31	10	indexes dropped while the rows of a query that read by them were open
 hammer	109	=	integrity checks after the replay
 hammer	109	=	integrity checks at the end
-hammer	734	244	query not read to its end
-hammer	883	294	read-only transactions
-hammer	603	201	refused for the type
-hammer	22	7	replays of a log with an index
-hammer	1224	408	rows of several columns
-hammer	111	37	selects read by an index
-hammer	13	4	selects with LIMIT and without ORDER BY that gave rows
-hammer	73	24	selects with LIMIT and without ORDER BY with SQLite's error
-hammer	212	70	selects with LIMIT that succeeded
-hammer	76	25	selects with ORDER BY that gave rows
-hammer	174	58	selects with ORDER BY with SQLite's error
-hammer	1066	355	selects with WHERE in a transaction compared with SQLite
+hammer	736	245	query not read to its end
+hammer	881	293	read-only transactions
+hammer	607	202	refused for the type
+hammer	23	7	replays of a log with an index
+hammer	1218	406	rows of several columns
+hammer	107	35	selects read by an index
+hammer	14	4	selects with LIMIT and without ORDER BY that gave rows
+hammer	74	24	selects with LIMIT and without ORDER BY with SQLite's error
+hammer	210	70	selects with LIMIT that succeeded
+hammer	72	24	selects with ORDER BY that gave rows
+hammer	173	57	selects with ORDER BY with SQLite's error
+hammer	1067	355	selects with WHERE in a transaction compared with SQLite
 hammer	29	9	selects with WHERE in a transaction compared with SQLite, read by an index
-hammer	137	45	selects with WHERE in a transaction that give rows, compared with SQLite
-hammer	789	263	selects with WHERE of their own compared with SQLite
-hammer	24	8	selects with WHERE of their own compared with SQLite, read by an index
-hammer	97	32	selects with WHERE of their own that give rows, compared with SQLite
-hammer	2080	693	skipped
-hammer	11137	3712	statements in a transaction
-hammer	479	159	statements of IF NOT EXISTS or IF EXISTS that did nothing
+hammer	138	46	selects with WHERE in a transaction that give rows, compared with SQLite
+hammer	784	261	selects with WHERE of their own compared with SQLite
+hammer	23	7	selects with WHERE of their own compared with SQLite, read by an index
+hammer	95	31	selects with WHERE of their own that give rows, compared with SQLite
+hammer	2084	694	skipped
+hammer	11129	3709	statements in a transaction
+hammer	477	159	statements of IF NOT EXISTS or IF EXISTS that did nothing
 hammer	182	60	statements of IF NOT EXISTS or IF EXISTS that did their work
-hammer	254	84	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-hammer	249	83	statements that do nothing in a transaction, compared with SQLite
-hammer	230	76	statements that do nothing, compared with SQLite
+hammer	253	84	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+hammer	248	82	statements that do nothing in a transaction, compared with SQLite
+hammer	229	76	statements that do nothing, compared with SQLite
 hammer	1062	354	statements with a value on the left
 hammer	321	107	statements with a value on the left read by a key or an index
 hammer	52	17	statements with a value on the left that found rows
 hammer	422	140	statements with a value on the left with SQLite's error
-hammer	6986	2328	succeeded
-hammer	1937	645	transactions committed
-hammer	83	27	transactions not committed
-hammer	717	239	transactions rolled back
-hammer	60	20	transactions unknown
-hammer	109	36	unknown
-hammer	2932	977	updates and deletes
-hammer	543	181	updates and deletes in a transaction whose count of changes is compared with SQLite
-hammer	137	45	updates and deletes of their own whose count of changes is compared with SQLite
-hammer	260	86	updates and deletes that change no row, compared with SQLite
-hammer	351	117	updates and deletes that succeeded and changed rows
+hammer	6968	2322	succeeded
+hammer	1934	644	transactions committed
+hammer	82	27	transactions not committed
+hammer	716	238	transactions rolled back
+hammer	59	19	transactions unknown
+hammer	112	37	unknown
+hammer	2931	977	updates and deletes
+hammer	538	179	updates and deletes in a transaction whose count of changes is compared with SQLite
+hammer	138	46	updates and deletes of their own whose count of changes is compared with SQLite
+hammer	263	87	updates and deletes that change no row, compared with SQLite
+hammer	352	117	updates and deletes that succeeded and changed rows
 hammer	1244	414	updates and deletes with SQLite's error
 hammer	16	5	updates read by an index
-hammer	95	31	values of a default in the log
+hammer	94	31	values of a default in the log
 hammer/mixed	114	38	NULL values in the log
-hammer/mixed	2983	994	SQLite's error
-hammer/mixed	788	262	acknowledged writes
-hammer/mixed	575	191	commits
+hammer/mixed	2984	994	SQLite's error
+hammer/mixed	789	263	acknowledged writes
+hammer/mixed	576	192	commits
 hammer/mixed	101	33	commits of more than one statement
 hammer/mixed	161	53	commits with a parameter
 hammer/mixed	85	28	create index: 1/1: index … already exists
 hammer/mixed	20	6	create index: 1/1: no such column: …
-hammer/mixed	166	55	create index: 1/1: no such table: …
-hammer/mixed	114	38	create index: 1/1: there is already a table named …
+hammer/mixed	168	56	create index: 1/1: no such table: …
+hammer/mixed	110	36	create index: 1/1: there is already a table named …
 hammer/mixed	14	4	create index: 8/8: attempt to write a readonly database
 hammer/mixed	124	41	create index: ok
-hammer/mixed	68	22	create tables with a default in the log
+hammer/mixed	69	23	create tables with a default in the log
 hammer/mixed	78	26	drop index: 1/1: no such index: …
 hammer/mixed	8	2	drop index: 8/8: attempt to write a readonly database
 hammer/mixed	70	23	drop index: ok
 hammer/mixed	159	53	failed: no lease
-hammer/mixed	394	131	failed: timeout
-hammer/mixed	14	4	fault: conflict
+hammer/mixed	392	130	failed: timeout
+hammer/mixed	13	4	fault: conflict
 hammer/mixed	4	1	fault: cut-off
 hammer/mixed	29	9	fault: lost request
 hammer/mixed	30	10	fault: lost response
 hammer/mixed	24	8	fault: no answer
 hammer/mixed	4	1	fault: outage
-hammer/mixed	62	20	fault: slow way
-hammer/mixed	11	3	fault: write applied after its caller gave up
+hammer/mixed	61	20	fault: slow way
+hammer/mixed	10	3	fault: write applied after its caller gave up
 hammer/mixed	40	13	fault: write stuck in the network
 hammer/mixed	33	=	integrity checks after the replay
 hammer/mixed	33	=	integrity checks at the end
 hammer/mixed	154	51	query not read to its end
-hammer/mixed	234	78	read-only transactions
-hammer/mixed	146	48	refused for the type
+hammer/mixed	232	77	read-only transactions
+hammer/mixed	144	48	refused for the type
 hammer/mixed	12	4	replays of a log with an index
-hammer/mixed	219	73	rows of several columns
-hammer/mixed	11	3	selects read by an index
+hammer/mixed	217	72	rows of several columns
+hammer/mixed	9	3	selects read by an index
 hammer/mixed	4	1	selects with LIMIT and without ORDER BY that gave rows
 hammer/mixed	64	21	selects with LIMIT and without ORDER BY with SQLite's error
 hammer/mixed	85	28	selects with LIMIT that succeeded
 hammer/mixed	16	5	selects with ORDER BY that gave rows
-hammer/mixed	112	37	selects with ORDER BY with SQLite's error
-hammer/mixed	182	60	selects with WHERE in a transaction compared with SQLite
+hammer/mixed	113	37	selects with ORDER BY with SQLite's error
+hammer/mixed	181	60	selects with WHERE in a transaction compared with SQLite
 hammer/mixed	12	4	selects with WHERE in a transaction that give rows, compared with SQLite
-hammer/mixed	165	55	selects with WHERE of their own compared with SQLite
+hammer/mixed	166	55	selects with WHERE of their own compared with SQLite
 hammer/mixed	9	3	selects with WHERE of their own that give rows, compared with SQLite
-hammer/mixed	929	309	skipped
-hammer/mixed	3206	1068	statements in a transaction
-hammer/mixed	288	96	statements of IF NOT EXISTS or IF EXISTS that did nothing
+hammer/mixed	927	309	skipped
+hammer/mixed	3197	1065	statements in a transaction
+hammer/mixed	286	95	statements of IF NOT EXISTS or IF EXISTS that did nothing
 hammer/mixed	124	41	statements of IF NOT EXISTS or IF EXISTS that did their work
-hammer/mixed	147	49	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-hammer/mixed	152	50	statements that do nothing in a transaction, compared with SQLite
-hammer/mixed	136	45	statements that do nothing, compared with SQLite
+hammer/mixed	146	48	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+hammer/mixed	151	50	statements that do nothing in a transaction, compared with SQLite
+hammer/mixed	135	45	statements that do nothing, compared with SQLite
 hammer/mixed	521	173	statements with a value on the left
 hammer/mixed	137	45	statements with a value on the left read by a key or an index
 hammer/mixed	21	7	statements with a value on the left that found rows
 hammer/mixed	241	80	statements with a value on the left with SQLite's error
-hammer/mixed	1695	565	succeeded
-hammer/mixed	571	190	transactions committed
+hammer/mixed	1691	563	succeeded
+hammer/mixed	570	190	transactions committed
 hammer/mixed	17	5	transactions not committed
-hammer/mixed	202	67	transactions rolled back
+hammer/mixed	200	66	transactions rolled back
 hammer/mixed	14	4	transactions unknown
 hammer/mixed	26	8	unknown
 hammer/mixed	933	311	updates and deletes
@@ -1150,8 +1150,8 @@ hammer/mixed	124	41	updates and deletes in a transaction whose count of changes 
 hammer/mixed	41	13	updates and deletes of their own whose count of changes is compared with SQLite
 hammer/mixed	81	27	updates and deletes that change no row, compared with SQLite
 hammer/mixed	85	28	updates and deletes that succeeded and changed rows
-hammer/mixed	424	141	updates and deletes with SQLite's error
-hammer/mixed	70	23	values of a default in the log
+hammer/mixed	425	141	updates and deletes with SQLite's error
+hammer/mixed	69	23	values of a default in the log
 hammer/tables	10	3	NULL values in the log
 hammer/tables	767	255	SQLite's error
 hammer/tables	211	70	acknowledged writes
@@ -1534,63 +1534,61 @@ hammer/arguments	10	3	updates and deletes that change no row, compared with SQLi
 hammer/arguments	17	5	updates and deletes that succeeded and changed rows
 hammer/arguments	58	19	updates and deletes with SQLite's error
 hammer/order	33	11	NULL values in the log
-hammer/order	497	165	SQLite's error
-hammer/order	333	111	acknowledged writes
-hammer/order	235	78	commits
-hammer/order	51	17	commits of more than one statement
-hammer/order	108	36	commits with a parameter
+hammer/order	500	166	SQLite's error
+hammer/order	324	108	acknowledged writes
+hammer/order	228	76	commits
+hammer/order	46	15	commits of more than one statement
+hammer/order	111	37	commits with a parameter
 hammer/order	68	22	create index: 1/1: index … already exists
-hammer/order	4	1	create index: 1/1: no such column: …
-hammer/order	30	10	create index: 1/1: no such table: …
-hammer/order	16	5	create index: 1/1: there is already a table named …
-hammer/order	16	5	create index: 8/8: attempt to write a readonly database
+hammer/order	3	1	create index: 1/1: no such column: …
+hammer/order	33	11	create index: 1/1: no such table: …
+hammer/order	13	4	create index: 1/1: there is already a table named …
+hammer/order	20	6	create index: 8/8: attempt to write a readonly database
 hammer/order	52	17	create index: ok
-hammer/order	3	1	deletes read by an index
-hammer/order	25	8	drop index: 1/1: no such index: …
+hammer/order	23	7	drop index: 1/1: no such index: …
 hammer/order	5	1	drop index: 8/8: attempt to write a readonly database
-hammer/order	21	7	drop index: ok
-hammer/order	63	21	failed: no lease
-hammer/order	172	57	failed: timeout
+hammer/order	19	6	drop index: ok
+hammer/order	69	23	failed: no lease
+hammer/order	173	57	failed: timeout
 hammer/order	20	6	fault: conflict
-hammer/order	5	1	fault: cut-off
-hammer/order	10	3	fault: lost request
-hammer/order	17	5	fault: lost response
-hammer/order	23	7	fault: no answer
-hammer/order	3	1	fault: outage
-hammer/order	25	8	fault: slow way
-hammer/order	10	3	fault: write applied after its caller gave up
+hammer/order	6	2	fault: cut-off
+hammer/order	13	4	fault: lost request
+hammer/order	13	4	fault: lost response
+hammer/order	25	8	fault: no answer
+hammer/order	26	8	fault: slow way
+hammer/order	8	2	fault: write applied after its caller gave up
 hammer/order	45	15	fault: write stuck in the network
-hammer/order	14	4	indexes dropped while the rows of a query that read by them were open
+hammer/order	13	4	indexes dropped while the rows of a query that read by them were open
 hammer/order	8	=	integrity checks after the replay
 hammer/order	8	=	integrity checks at the end
-hammer/order	66	22	query not read to its end
+hammer/order	68	22	query not read to its end
 hammer/order	54	18	read-only transactions
-hammer/order	45	15	refused for the type
-hammer/order	4	1	replays of a log with an index
-hammer/order	245	81	rows of several columns
-hammer/order	41	13	selects read by an index
-hammer/order	9	3	selects with LIMIT and without ORDER BY that gave rows
-hammer/order	9	3	selects with LIMIT and without ORDER BY with SQLite's error
-hammer/order	127	42	selects with LIMIT that succeeded
-hammer/order	60	20	selects with ORDER BY that gave rows
-hammer/order	62	20	selects with ORDER BY with SQLite's error
-hammer/order	63	21	selects with WHERE in a transaction compared with SQLite
+hammer/order	51	17	refused for the type
+hammer/order	5	1	replays of a log with an index
+hammer/order	241	80	rows of several columns
+hammer/order	39	13	selects read by an index
+hammer/order	10	3	selects with LIMIT and without ORDER BY that gave rows
+hammer/order	10	3	selects with LIMIT and without ORDER BY with SQLite's error
+hammer/order	125	41	selects with LIMIT that succeeded
+hammer/order	56	18	selects with ORDER BY that gave rows
+hammer/order	60	20	selects with ORDER BY with SQLite's error
+hammer/order	65	21	selects with WHERE in a transaction compared with SQLite
 hammer/order	8	2	selects with WHERE in a transaction compared with SQLite, read by an index
-hammer/order	6	2	selects with WHERE in a transaction that give rows, compared with SQLite
-hammer/order	55	18	selects with WHERE of their own compared with SQLite
-hammer/order	8	2	selects with WHERE of their own compared with SQLite, read by an index
-hammer/order	11	3	selects with WHERE of their own that give rows, compared with SQLite
-hammer/order	45	15	skipped
-hammer/order	746	248	statements in a transaction
-hammer/order	690	230	succeeded
-hammer/order	118	39	transactions committed
-hammer/order	11	3	transactions not committed
-hammer/order	51	17	transactions rolled back
-hammer/order	8	2	transactions unknown
-hammer/order	9	3	unknown
-hammer/order	72	24	updates and deletes
-hammer/order	20	6	updates and deletes in a transaction whose count of changes is compared with SQLite
-hammer/order	10	3	updates and deletes of their own whose count of changes is compared with SQLite
-hammer/order	11	3	updates and deletes that change no row, compared with SQLite
-hammer/order	18	6	updates and deletes that succeeded and changed rows
-hammer/order	18	6	updates and deletes with SQLite's error
+hammer/order	7	2	selects with WHERE in a transaction that give rows, compared with SQLite
+hammer/order	49	16	selects with WHERE of their own compared with SQLite
+hammer/order	7	2	selects with WHERE of their own compared with SQLite, read by an index
+hammer/order	9	3	selects with WHERE of their own that give rows, compared with SQLite
+hammer/order	51	17	skipped
+hammer/order	747	249	statements in a transaction
+hammer/order	676	225	succeeded
+hammer/order	116	38	transactions committed
+hammer/order	10	3	transactions not committed
+hammer/order	52	17	transactions rolled back
+hammer/order	7	2	transactions unknown
+hammer/order	12	4	unknown
+hammer/order	71	23	updates and deletes
+hammer/order	15	5	updates and deletes in a transaction whose count of changes is compared with SQLite
+hammer/order	11	3	updates and deletes of their own whose count of changes is compared with SQLite
+hammer/order	14	4	updates and deletes that change no row, compared with SQLite
+hammer/order	19	6	updates and deletes that succeeded and changed rows
+hammer/order	17	5	updates and deletes with SQLite's error
