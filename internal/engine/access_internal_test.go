@@ -9,6 +9,7 @@ import (
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -269,7 +270,7 @@ func TestChooseAccess(t *testing.T) {
 			}
 			conditions := accessConditions(test.table, test.where)
 
-			a, err := chooseAccess(test.table, indexes, conditions, bugs{})
+			a, err := chooseAccess(test.table, indexes, conditions, orderBy{}, bugs{})
 			is.NotError(t, err)
 			is.Equal(t, test.want, accessText(a))
 
@@ -283,7 +284,7 @@ func TestChooseAccess(t *testing.T) {
 
 			// The first two rules do not depend on the indexes, which is why a statement that they decide
 			// reads none.
-			without, err := chooseAccess(test.table, nil, conditions, bugs{})
+			without, err := chooseAccess(test.table, nil, conditions, orderBy{}, bugs{})
 			is.NotError(t, err)
 			if a.none || a.point != nil || without.none || without.point != nil {
 				is.Equal(t, accessText(a), accessText(without))
@@ -307,11 +308,11 @@ func TestChooseAccess(t *testing.T) {
 			{position: 0, op: stmt.OpLess, value: s4qlpb.Value_builder{Text: new("a")}.Build()},
 		}
 
-		_, err := chooseAccess(one, nil, conditions, bugs{})
+		_, err := chooseAccess(one, nil, conditions, orderBy{}, bugs{})
 		is.True(t, errors.Is(err, ErrInternal))
 
 		conditions[0].position, conditions[1].position = 1, 1
-		_, err = chooseAccess(one, []*s4qlpb.CreateIndex{accessIndex(one, "i", "a")}, conditions, bugs{})
+		_, err = chooseAccess(one, []*s4qlpb.CreateIndex{accessIndex(one, "i", "a")}, conditions, orderBy{}, bugs{})
 		is.True(t, errors.Is(err, ErrInternal))
 	})
 }
@@ -343,7 +344,7 @@ func TestForcedAccess(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			a, ok, err := forcedAccess(one, indexes, accessConditions(one, test.where), test.path, bugs{})
+			a, ok, err := forcedAccess(one, indexes, accessConditions(one, test.where), orderBy{}, test.path, bugs{})
 			is.NotError(t, err)
 			is.Equal(t, !test.other, ok)
 			if ok {
@@ -362,7 +363,7 @@ func TestForcedAccess(t *testing.T) {
 			{position: 1, op: stmt.OpGreater, value: s4qlpb.Value_builder{Text: new("a")}.Build()},
 		}
 
-		a, ok, err := forcedAccess(one, indexes, conditions, path{kind: pathIndex, index: "i"}, bugs{})
+		a, ok, err := forcedAccess(one, indexes, conditions, orderBy{}, path{kind: pathIndex, index: "i"}, bugs{})
 		is.True(t, errors.Is(err, ErrInternal))
 		is.True(t, !ok)
 		is.True(t, a.index == "" && !a.ranged())
@@ -438,4 +439,263 @@ func TestEngine_reading(t *testing.T) {
 		is.Equal(t, 0, h.drawn)
 		is.Equal(t, pathRules, e.reading(true).path.kind)
 	})
+}
+
+// accessOrder of the ORDER BY by, such as "a desc, k", on the table: its columns, as the rules read
+// them.
+func accessOrder(ct *s4qlpb.CreateTable, by string) []core.KeyColumn {
+	var columns []core.KeyColumn
+	for term := range strings.SplitSeq(by, ", ") {
+		name, desc := strings.CutSuffix(term, " desc")
+		columns = append(columns, core.KeyColumn{Position: accessPosition(ct, name), Descending: desc})
+	}
+	return columns
+}
+
+// orderedText is [accessText] of the access a, and how its rows come in the order of an ORDER BY:
+// "delivered forward", "delivered backward", or "sorted", and nothing for an access without an
+// order.
+func orderedText(a access) string {
+	text := accessText(a)
+	switch a.order {
+	case delivered:
+		text += " delivered " + map[bool]string{false: "forward", true: "backward"}[a.backward]
+	case sorted:
+		text += " sorted"
+		if a.backward {
+			text += " backward"
+		}
+	}
+	if (a.order == sorted) != (a.by != nil) {
+		text += " with the wrong columns to sort by"
+	}
+	return text
+}
+
+func TestDelivers(t *testing.T) {
+	// The table one has the key k. The table two has the key k1, k2. The table goqite is goqite's.
+	one := accessTable([]uint32{0}, "k int", "a int", "b text?", "c real?", "d blob")
+	two := accessTable([]uint32{0, 1}, "k1 int", "k2 int", "a int", "b text?")
+	goqite := accessTable([]uint32{0}, "id text", "created text", "updated text", "queue text", "body blob", "timeout text", "received int", "priority int")
+	const receive = "queue = 'q' and timeout <= 'now' and received < 3"
+
+	tests := []struct {
+		name  string
+		table *s4qlpb.CreateTable
+		// index holds the columns of the index, and is nil for the primary key.
+		index []string
+		where string
+		by    string
+		// want is "forward", "backward", or "no".
+		want string
+	}{
+		{name: "the primary key in its order", table: one, by: "k", want: "forward"},
+		{name: "the primary key in its reverse", table: one, by: "k desc", want: "backward"},
+		{name: "a column that the primary key does not have", table: one, by: "a", want: "no"},
+		{name: "a column after the whole primary key, which orders nothing and is still not delivered", table: one, by: "k, a", want: "no"},
+		{name: "a pinned column alone", table: one, where: "a = 1", by: "a", want: "forward"},
+		{name: "a pinned column alone, descending, which has no direction", table: one, where: "a = 1", by: "a desc", want: "forward"},
+		{name: "a pinned column before the key", table: one, where: "a = 1", by: "a, k desc", want: "backward"},
+		{name: "a pinned column after the key", table: one, where: "a = 1", by: "k, a", want: "forward"},
+		{name: "a pinned column whose direction is the other than that of the key", table: one, where: "a = 1", by: "a desc, k", want: "forward"},
+		{name: "a bounded column, which is not pinned", table: one, where: "a > 1", by: "a", want: "no"},
+		{name: "a column that IS NOT NULL tests, which is not pinned", table: one, where: "b is not null", by: "b, k", want: "no"},
+		{name: "a column of a test for NULL that takes none, which is not pinned", table: one, where: "a is null", by: "a, k", want: "no"},
+		{name: "a column pinned to NULL", table: one, where: "b is null", by: "b, k", want: "forward"},
+
+		{name: "an index in its order", table: one, index: []string{"a"}, by: "a", want: "forward"},
+		{name: "an index in its reverse", table: one, index: []string{"a"}, by: "a desc", want: "backward"},
+		{name: "an index and the primary key at its end", table: one, index: []string{"a"}, by: "a, k", want: "forward"},
+		{name: "an index and the primary key at its end, both turned", table: one, index: []string{"a"}, by: "a desc, k desc", want: "backward"},
+		{name: "an index with the primary key turned alone", table: one, index: []string{"a"}, by: "a, k desc", want: "no"},
+		{name: "an index turned with the primary key not", table: one, index: []string{"a"}, by: "a desc, k", want: "no"},
+		{name: "the primary key by an index whose column is not pinned", table: one, index: []string{"a"}, by: "k", want: "no"},
+		{name: "the primary key by an index whose column is pinned", table: one, index: []string{"a"}, where: "a = 1", by: "k", want: "forward"},
+		{name: "the primary key in reverse by an index whose column is pinned", table: one, index: []string{"a"}, where: "a = 1", by: "k desc", want: "backward"},
+		{name: "the pinned column of an index, turned, and the primary key", table: one, index: []string{"a"}, where: "a = 1", by: "a desc, k", want: "forward"},
+		{name: "another column by an index whose column is pinned", table: one, index: []string{"a"}, where: "a = 1", by: "b", want: "no"},
+		{name: "an index whose column takes NULL, ascending", table: one, index: []string{"b"}, by: "b", want: "forward"},
+		{name: "an index whose column takes NULL, descending", table: one, index: []string{"b"}, by: "b desc", want: "backward"},
+		{name: "the primary key by an index whose column is pinned to NULL", table: one, index: []string{"b"}, where: "b is null", by: "k", want: "forward"},
+
+		{name: "an index with a descending column in its order", table: one, index: []string{"a", "b desc"}, by: "a, b desc", want: "forward"},
+		{name: "an index with a descending column in its reverse", table: one, index: []string{"a", "b desc"}, by: "a desc, b", want: "backward"},
+		{name: "both columns ascending by an index with a descending one", table: one, index: []string{"a", "b desc"}, by: "a, b", want: "no"},
+		{name: "both columns descending by an index with a descending one", table: one, index: []string{"a", "b desc"}, by: "a desc, b desc", want: "no"},
+		{name: "the whole key of an index", table: one, index: []string{"a", "b desc"}, by: "a, b desc, k", want: "forward"},
+		{name: "the whole key of an index in reverse", table: one, index: []string{"a", "b desc"}, by: "a desc, b, k desc", want: "backward"},
+		{name: "the whole key of an index with its last column turned", table: one, index: []string{"a", "b desc"}, by: "a, b desc, k desc", want: "no"},
+		{name: "the start of the key of an index", table: one, index: []string{"a", "b desc"}, by: "a", want: "forward"},
+		{name: "a later column of an index whose first is not pinned", table: one, index: []string{"a", "b desc"}, by: "b desc", want: "no"},
+		{name: "the next column after a pinned one, as the index holds it", table: one, index: []string{"a", "b desc"}, where: "a = 1", by: "b desc", want: "forward"},
+		{name: "the next column after a pinned one, turned", table: one, index: []string{"a", "b desc"}, where: "a = 1", by: "b", want: "backward"},
+		{name: "the next two columns after a pinned one, turned", table: one, index: []string{"a", "b desc"}, where: "a = 1", by: "b, k desc", want: "backward"},
+		{name: "the next two columns after a pinned one, one of them turned", table: one, index: []string{"a", "b desc"}, where: "a = 1", by: "b, k", want: "no"},
+		{name: "the primary key after two pinned columns", table: one, index: []string{"a", "b desc"}, where: "a = 1 and b = 'x'", by: "k", want: "forward"},
+		{name: "the columns around a pinned column in the middle of the key", table: one, index: []string{"a", "b desc"}, where: "b = 'x'", by: "a, k", want: "forward"},
+		{name: "the columns around a pinned column in the middle of the key, with it", table: one, index: []string{"a", "b desc"}, where: "b = 'x'", by: "a, b, k", want: "forward"},
+		{name: "the columns around a column pinned to NULL, one of them turned", table: one, index: []string{"a", "b desc"}, where: "b is null", by: "a, k desc", want: "no"},
+		{name: "the columns around a column pinned to NULL, both turned", table: one, index: []string{"a", "b desc"}, where: "b is null", by: "a desc, k desc", want: "backward"},
+		{name: "a column that the key has after one that is neither pinned nor named", table: one, index: []string{"a", "b desc"}, where: "a > 1", by: "b desc", want: "no"},
+		{name: "a descending column of an index, as the index holds it", table: one, index: []string{"c desc"}, by: "c desc", want: "forward"},
+		{name: "a descending column of an index, ascending", table: one, index: []string{"c desc"}, by: "c", want: "backward"},
+		{name: "a descending column of an index, ascending, and the primary key descending", table: one, index: []string{"c desc"}, by: "c, k desc", want: "backward"},
+		{name: "a descending column of an index, ascending, and the primary key ascending", table: one, index: []string{"c desc"}, by: "c, k", want: "no"},
+		{name: "an index that holds the primary key, which its key does not hold again", table: one, index: []string{"k desc", "a"}, by: "k desc, a", want: "forward"},
+		{name: "an index that holds the primary key, with the primary key named again after it", table: one, index: []string{"k desc", "a"}, by: "k desc, a, k", want: "no"},
+
+		{name: "a primary key of two columns", table: two, by: "k1, k2", want: "forward"},
+		{name: "a primary key of two columns in reverse", table: two, by: "k1 desc, k2 desc", want: "backward"},
+		{name: "the first column of a primary key of two", table: two, by: "k1", want: "forward"},
+		{name: "the second column of a primary key of two", table: two, by: "k2", want: "no"},
+		{name: "the second column of a primary key whose first is pinned", table: two, where: "k1 = 1", by: "k2 desc", want: "backward"},
+		{name: "the first column of a primary key whose second is pinned", table: two, where: "k2 = 1", by: "k1", want: "forward"},
+		{name: "a primary key of two columns at the end of an index whose column is pinned", table: two, index: []string{"a"}, where: "a = 1", by: "k1, k2", want: "forward"},
+		{name: "an index and the first column of a primary key of two", table: two, index: []string{"a"}, by: "a, k1", want: "forward"},
+		{name: "an index and the second column of a primary key of two", table: two, index: []string{"a"}, by: "a, k2", want: "no"},
+		{name: "an index that holds the second column of the primary key, and then the first", table: two, index: []string{"k2"}, by: "k2, k1", want: "forward"},
+
+		{name: "goqite's receive by goqite's index", table: goqite, index: []string{"queue", "priority desc", "created"}, where: receive, by: "priority desc, created", want: "forward"},
+		{name: "goqite's receive turned round by goqite's index", table: goqite, index: []string{"queue", "priority desc", "created"}, where: receive, by: "priority, created desc", want: "backward"},
+		{name: "goqite's receive with both columns descending", table: goqite, index: []string{"queue", "priority desc", "created"}, where: receive, by: "priority desc, created desc", want: "no"},
+		{name: "goqite's receive by the priority alone", table: goqite, index: []string{"queue", "priority desc", "created"}, where: receive, by: "priority desc", want: "forward"},
+		{name: "goqite's receive by the time alone", table: goqite, index: []string{"queue", "priority desc", "created"}, where: receive, by: "created", want: "no"},
+		{name: "goqite's receive with the id at the end", table: goqite, index: []string{"queue", "priority desc", "created"}, where: receive, by: "priority desc, created, id", want: "forward"},
+		{name: "goqite's receive with the queue first", table: goqite, index: []string{"queue", "priority desc", "created"}, where: receive, by: "queue, priority desc, created", want: "forward"},
+		{name: "goqite's receive of one priority", table: goqite, index: []string{"queue", "priority desc", "created"}, where: receive + " and priority = 1", by: "priority desc, created", want: "forward"},
+		{name: "goqite's receive of every queue", table: goqite, index: []string{"queue", "priority desc", "created"}, where: "received < 3", by: "priority desc, created", want: "no"},
+		{name: "goqite's receive by an index on the queue and the timeout", table: goqite, index: []string{"queue", "timeout"}, where: receive, by: "priority desc, created", want: "no"},
+		{name: "goqite's receive by the primary key", table: goqite, where: receive, by: "priority desc, created", want: "no"},
+		{name: "the timeout by an index on the queue and the timeout", table: goqite, index: []string{"queue", "timeout"}, where: receive, by: "timeout", want: "forward"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var ix *s4qlpb.CreateIndex
+			if test.index != nil {
+				ix = accessIndex(test.table, "i", test.index...)
+			}
+			var conditions []condition
+			if test.where != "" {
+				conditions = accessConditions(test.table, test.where)
+			}
+			ok, backward := delivers(test.table, core.IndexKey(test.table, ix), conditions, accessOrder(test.table, test.by))
+			got := "no"
+			switch {
+			case ok && backward:
+				got = "backward"
+			case ok:
+				got = "forward"
+			}
+			is.Equal(t, test.want, got)
+			if !ok {
+				is.True(t, !backward, "an order that is not delivered has no direction")
+			}
+		})
+	}
+}
+
+func TestChooseAccess_orderBy(t *testing.T) {
+	one := accessTable([]uint32{0}, "k int", "a int", "b text?", "c real?", "d blob")
+	tests := []struct {
+		name string
+		// indexes are the indexes of the table, each as its name, a colon, and its columns, in the order
+		// in which they were created.
+		indexes []string
+		where   string
+		by      string
+		// want is the access of the query without a LIMIT, and limited the access with one, if it is
+		// another.
+		want, limited string
+	}{
+		{name: "a sort of every row for a column without an index", by: "a", want: "full sorted"},
+		{name: "the primary key forward for its order", by: "k", want: "full delivered forward"},
+		{name: "the primary key backward for its reverse", by: "k desc", want: "full delivered backward"},
+		{name: "an index that delivers the order with nothing pinned, over every row and a sort", indexes: []string{"ia: a"}, by: "a", want: "ia delivered forward"},
+		{name: "an index backward", indexes: []string{"ia: a"}, by: "a desc", want: "ia delivered backward"},
+		{name: "the primary key over an index that delivers the order as well", indexes: []string{"ik: k desc"}, by: "k", want: "full delivered forward"},
+		{name: "the first index created of two that deliver the order", indexes: []string{"ia: a", "iab: a, b"}, by: "a", want: "ia delivered forward"},
+		{name: "the index that delivers the order of two with nothing pinned", indexes: []string{"ia: a", "iab: a, b desc"}, by: "a desc, b", want: "iab delivered backward"},
+		{name: "a sort where the directions are mixed against every index", indexes: []string{"ia: a", "iab: a, b desc"}, by: "a, b", want: "full sorted"},
+		{name: "a bound over the order without a LIMIT, and the order over a bound with one", indexes: []string{"ia: a"}, where: "k > 5", by: "a",
+			want: "primary > 5 sorted", limited: "ia delivered forward"},
+		{name: "a bound of an index over the order of the primary key without a LIMIT, and the order with one", indexes: []string{"ia: a"}, where: "a > 5", by: "k",
+			want: "ia > 5 sorted", limited: "full delivered forward"},
+		{name: "a bound and the order together", indexes: []string{"ia: a"}, where: "a > 5", by: "a", want: "ia > 5 delivered forward"},
+		{name: "more pins over the order", indexes: []string{"ia: a", "ib: b"}, where: "b = 'x'", by: "a", want: "ib = 'x' sorted"},
+		{name: "more pins over the order, and then the order", indexes: []string{"ia: a", "ib: b", "iba: b, a"}, where: "b = 'x'", by: "a",
+			want: "iba = 'x' delivered forward"},
+		{name: "the order over no order at the same pins", indexes: []string{"ia: a", "iac: a, c desc"}, where: "a = 1", by: "c desc", want: "iac = 1 delivered forward"},
+		{name: "a bound over the order at the same pins without a LIMIT, and the order over the bound with one", indexes: []string{"ia: a", "iac: a, c desc"},
+			where: "a = 1 and k > 3", by: "c", want: "ia = 1 > 3 sorted", limited: "iac = 1 delivered backward"},
+		{name: "a bound and the order over the order alone", indexes: []string{"iac: a, c desc", "ia: a"}, where: "a = 1 and k > 3", by: "k",
+			want: "ia = 1 > 3 delivered forward"},
+		{name: "an index that pins over the primary key that delivers", indexes: []string{"ia: a"}, where: "a = 1", by: "k", want: "ia = 1 delivered forward"},
+		{name: "an ORDER BY of a pinned column", indexes: []string{"ia: a"}, where: "a = 1", by: "a desc", want: "ia = 1 delivered forward"},
+		{name: "a pinned column in the middle of the key", indexes: []string{"iab: a, b desc"}, where: "b is null", by: "a desc, k desc", want: "iab delivered backward"},
+		{name: "no row, which delivers every order", indexes: []string{"ia: a"}, where: "a = null", by: "b", want: "none delivered forward"},
+		{name: "the row of a primary key, which delivers every order", indexes: []string{"ia: a"}, where: "k = 1", by: "b desc", want: "point 1 delivered forward"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var indexes []*s4qlpb.CreateIndex
+			for _, ix := range test.indexes {
+				name, columns, _ := strings.Cut(ix, ": ")
+				indexes = append(indexes, accessIndex(one, name, strings.Split(columns, ", ")...))
+			}
+			var conditions []condition
+			if test.where != "" {
+				conditions = accessConditions(one, test.where)
+			}
+			by := accessOrder(one, test.by)
+			a, err := chooseAccess(one, indexes, conditions, orderBy{columns: by}, bugs{})
+			is.NotError(t, err)
+			is.Equal(t, test.want, orderedText(a))
+			limited := test.limited
+			if limited == "" {
+				limited = test.want
+			}
+			a, err = chooseAccess(one, indexes, conditions, orderBy{columns: by, limited: true}, bugs{})
+			is.NotError(t, err)
+			is.Equal(t, limited, orderedText(a), "with a LIMIT")
+
+			// Without the ORDER BY, the access is the one of slice 9, with a LIMIT and without, and its
+			// rows have no order.
+			plain, err := chooseAccess(one, indexes, conditions, orderBy{}, bugs{})
+			is.NotError(t, err)
+			onlyLimited, err := chooseAccess(one, indexes, conditions, orderBy{limited: true}, bugs{})
+			is.NotError(t, err)
+			is.Equal(t, accessText(plain), orderedText(plain))
+			is.Equal(t, accessText(plain), orderedText(onlyLimited))
+		})
+	}
+}
+
+func TestForcedAccess_orderBy(t *testing.T) {
+	one := accessTable([]uint32{0}, "k int", "a int", "b text?", "c real?", "d blob")
+	indexes := []*s4qlpb.CreateIndex{accessIndex(one, "iab", "a", "b desc")}
+	tests := []struct {
+		name  string
+		path  path
+		where string
+		by    string
+		want  string
+	}{
+		{name: "an index that delivers the order", path: path{kind: pathIndex, index: "iab"}, where: "a = 1", by: "b", want: "iab = 1 delivered backward"},
+		{name: "an index that delivers the order, sorted", path: path{kind: pathIndex, index: "iab", sort: true}, where: "a = 1", by: "b", want: "iab = 1 sorted"},
+		{name: "an index that does not deliver the order", path: path{kind: pathIndex, index: "iab"}, where: "a = 1", by: "c", want: "iab = 1 sorted"},
+		{name: "an index that pins less than the conditions, which delivers the order all the same", path: path{kind: pathIndex, index: "iab", limited: true},
+			where: "a = 1", by: "b desc, k", want: "iab delivered forward"},
+		{name: "the primary key that delivers the order", path: path{kind: pathPrimary}, where: "a = 1", by: "k desc", want: "full delivered backward"},
+		{name: "the primary key, sorted", path: path{kind: pathPrimary, sort: true}, where: "k > 1", by: "k desc", want: "primary > 1 sorted"},
+		{name: "the primary key in place of a get, which sorts one row at most", path: path{kind: pathPrimary}, where: "k = 1", by: "b", want: "primary = 1 sorted"},
+		{name: "no row, also where the path sorts", path: path{kind: pathPrimary, sort: true}, where: "k is null", by: "b", want: "none delivered forward"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			a, ok, err := forcedAccess(one, indexes, accessConditions(one, test.where), orderBy{columns: accessOrder(one, test.by)}, test.path, bugs{})
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, test.want, orderedText(a))
+		})
+	}
 }

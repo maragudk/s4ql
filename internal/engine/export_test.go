@@ -37,8 +37,16 @@ type Path struct {
 	Limited bool
 	Pins    int
 	// Forward and Backward fix the direction of the scan, which is otherwise drawn for a query, and
-	// forward for an update and a delete.
+	// forward for an update and a delete. For a query whose rows are sorted, it is the direction of
+	// the rows that tie, and a query whose access delivers the order of its ORDER BY reads in the
+	// direction that delivers it, whatever these say.
 	Forward, Backward bool
+	// Sort makes the storage sort the rows of every query with ORDER BY, also where the key of its
+	// access delivers the order. Without it, the access that Full, Primary, or Index forces delivers
+	// the order where its key does, and is sorted otherwise: [Access.Delivered] of [PathAccessOf] says
+	// which. With none of the three, Sort gives the access that the rules choose for the statement
+	// without its ORDER BY.
+	Sort bool
 }
 
 func (p Path) path() path {
@@ -51,7 +59,7 @@ func (p Path) path() path {
 	case p.Index != "":
 		q.kind, q.index = pathIndex, p.Index
 	}
-	q.limited, q.pins = p.Limited, p.Pins
+	q.limited, q.pins, q.sort = p.Limited, p.Pins, p.Sort
 	switch {
 	case p.Forward:
 		q.direction = directionForward
@@ -129,8 +137,14 @@ type Access struct {
 	// bound itself out if open.
 	Lower, Upper         *s4qlpb.Value
 	LowerOpen, UpperOpen bool
-	// Backward reports whether the scan gives its rows in the reverse of the order of its key.
+	// Backward reports whether the scan gives its rows in the reverse of the order of its key, and,
+	// for an access that is Sorted, its rows that tie in the reverse of the order of the primary key.
 	Backward bool
+	// Delivered reports whether the statement has an ORDER BY whose order the key of the access
+	// delivers, in the direction of Backward, so that nothing sorts, and Sorted whether it has one
+	// whose rows the storage sorts, by the columns By. A statement without ORDER BY has neither.
+	Delivered, Sorted bool
+	By                []core.KeyColumn
 }
 
 // Pinned is the number of leading columns of its key that the access pins.
@@ -145,14 +159,21 @@ func (a Access) Pinned() int {
 // the primary key or by an index, with the number of columns that it pins, if any, and its bounds,
 // if any, such as "a scan of the index i with 2 pinned from a lower bound". A scan by the primary key
 // that pins nothing is "a scan from a lower bound", "a scan to an upper bound", or "a scan between
-// two bounds". The direction is not in it.
+// two bounds". A scan of a statement with ORDER BY has ", in order" after that if its key delivers
+// the order, and ", sorted" if its rows are sorted. The direction is not in it.
 func (a Access) String() string {
 	switch {
 	case a.None:
 		return "no row"
 	case a.Point != nil:
 		return "a get of one key"
-	case a.Full:
+	}
+	return a.scanString() + map[bool]string{true: ", in order"}[a.Delivered] + map[bool]string{true: ", sorted"}[a.Sorted]
+}
+
+// scanString is [Access.String] of a scan, without its order.
+func (a Access) scanString() string {
+	if a.Full {
 		return "a scan of every row"
 	}
 	s := "a scan"
@@ -177,12 +198,13 @@ func (a Access) String() string {
 // storage.
 func (a Access) Scan() core.IndexScan {
 	return core.IndexScan{Index: a.Index, Equal: a.Equal, Lower: core.Bound{Value: a.Lower, Open: a.LowerOpen},
-		Upper: core.Bound{Value: a.Upper, Open: a.UpperOpen}, Backward: a.Backward}
+		Upper: core.Bound{Value: a.Upper, Open: a.UpperOpen}, Backward: a.Backward, Order: a.By}
 }
 
 func exported(a access) Access {
 	return Access{None: a.none, Point: a.point, Full: a.full(), Index: a.index, Equal: a.equal,
-		Lower: a.lower.value, Upper: a.upper.value, LowerOpen: a.lower.open, UpperOpen: a.upper.open, Backward: a.backward}
+		Lower: a.lower.value, Upper: a.upper.value, LowerOpen: a.lower.open, UpperOpen: a.upper.open, Backward: a.backward,
+		Delivered: a.order == delivered, Sorted: a.order == sorted, By: a.by}
 }
 
 // ChooseAccess is [chooseAccess] for conditions on the columns at the positions, each with its
@@ -193,16 +215,41 @@ func ChooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, position
 	for i := range positions {
 		conditions[i] = condition{position: positions[i], op: ops[i], value: values[i]}
 	}
-	a, err := chooseAccess(t, indexes, conditions, bugs{})
+	a, err := chooseAccess(t, indexes, conditions, orderBy{}, bugs{})
 	return exported(a), err
+}
+
+// ChooseOrderedAccess is [ChooseAccess] for a query with an ORDER BY of the columns by, each the
+// position of a column of t and whether it is descending, and with a LIMIT if limited: the rules of
+// the choice of an access and of its ordering.
+func ChooseOrderedAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, positions []int, ops []stmt.Operator, values []*s4qlpb.Value, by []core.KeyColumn, limited bool) (Access, error) {
+	conditions := make([]condition, len(positions))
+	for i := range positions {
+		conditions[i] = condition{position: positions[i], op: ops[i], value: values[i]}
+	}
+	a, err := chooseAccess(t, indexes, conditions, orderBy{columns: by, limited: limited}, bugs{})
+	return exported(a), err
+}
+
+// Delivers is [delivers] for conditions as [ChooseAccess] takes them: whether a scan in the order of
+// the key of the index ix of t, or of its primary key if ix is nil, gives the rows that pass the
+// conditions in the order of the columns by, and whether backward.
+func Delivers(t *s4qlpb.CreateTable, ix *s4qlpb.CreateIndex, positions []int, ops []stmt.Operator, values []*s4qlpb.Value, by []core.KeyColumn) (ok, backward bool) {
+	conditions := make([]condition, len(positions))
+	for i := range positions {
+		conditions[i] = condition{position: positions[i], op: ops[i], value: values[i]}
+	}
+	return delivers(t, core.IndexKey(t, ix), conditions, by)
 }
 
 // AccessOf the select, the update, or the delete of src, with args for its parameters, on the table
 // ct with the indexes, in the order in which they were created: how the statement reads the rows of
-// ct, as [chooseAccess] gives it to its scan, without a direction. It reports false if src holds no
-// such statement with WHERE, or if the statement fails before it has an access, as it does for a
-// column that ct does not have and for a value of another type than its column. Each argument must
-// be a value that a column holds.
+// ct, as [chooseAccess] gives it to its scan, without a direction, but for an access that delivers
+// the order of an ORDER BY, which has the direction that delivers it. It reports false if src holds
+// no such statement with WHERE, and no select with ORDER BY, or if the statement fails before it has
+// an access, as it does for a column that ct does not have, for a value of another type than its
+// column, and for an argument of a LIMIT that is no integer from 0. Each argument must be a value
+// that a column holds.
 func AccessOf(src string, ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, args []*s4qlpb.Value) (Access, bool) {
 	return PathAccessOf(src, ct, indexes, args, Path{})
 }
@@ -219,7 +266,7 @@ func PathAccessOf(src string, ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIn
 	var built any
 	switch s := s.(type) {
 	case *stmt.Select:
-		if s.Where == nil {
+		if s.Where == nil && s.OrderBy == nil {
 			return Access{}, false
 		}
 		built, err = buildQuery(context.Background(), tableOf{ct, indexes}, NewPlan(s).(*Query), args, math.MaxInt, how)
@@ -320,6 +367,8 @@ const (
 	AttrRows         = attrRows
 	AttrAccess       = attrAccess
 	AttrIndex        = attrIndex
+	AttrDirection    = attrDirection
+	AttrOrder        = attrOrder
 	AttrRowsRead     = attrRowsRead
 	AttrPosition     = attrPosition
 	AttrParent       = attrParent

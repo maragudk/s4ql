@@ -848,7 +848,7 @@ func TestFilter(t *testing.T) {
 			is.True(t, errors.Is(err, ErrInternal), c.err)
 			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err))
 		}
-		_, err = chooseAccess(newTable().tables["t"].ct, nil, []condition{{position: 0, op: stmt.OpLess, value: integer(1)}, {position: 0, op: stmt.OpLess, value: text}}, bugs{})
+		_, err = chooseAccess(newTable().tables["t"].ct, nil, []condition{{position: 0, op: stmt.OpLess, value: integer(1)}, {position: 0, op: stmt.OpLess, value: text}}, orderBy{}, bugs{})
 		is.True(t, errors.Is(err, ErrInternal))
 	})
 
@@ -1536,7 +1536,7 @@ func TestBuild(t *testing.T) {
 		}{
 			{name: "a query of VALUES", plan: &Query{Root: &Values{Rows: one}}, err: "a query of a node of type *engine.Values"},
 			{name: "a projection of no columns", plan: &Query{Root: &Project{Source: &Scan{Table: stmt.Name{Value: "t"}}}}, err: "a projection of no columns"},
-			{name: "a projection of VALUES", plan: &Query{Root: &Project{Source: &Values{Rows: one}, Star: true}}, err: "a query of a node of type *engine.Values"},
+			{name: "a projection of VALUES", plan: &Query{Root: &Project{Source: &Values{Rows: one}, Star: true}}, err: "a projection of a node of type *engine.Values"},
 			{name: "an insert from a table", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Scan{Table: stmt.Name{Value: "u"}}}, err: "an insert from a node of type *engine.Scan"},
 			{name: "an insert of two rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Integer{Value: 1}}, {&Integer{Value: 2}}}}}, err: "an insert of 2 rows"},
 			{name: "an insert of no rows", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{}}, err: "an insert of 0 rows"},

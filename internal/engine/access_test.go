@@ -395,7 +395,9 @@ func TestEngine_order(t *testing.T) {
 // checkPlanOf the select src with args on the instance i, outside a transaction: the access that the
 // rules choose for it on the table and the indexes that the core holds, and SQLite's plan for the
 // statement that the cache runs for its scan, which must be the one row that [wantPlan] gives, so that
-// the rows that the cache reads cannot come from a scan of a whole index that SQLite filters.
+// the rows that the cache reads cannot come from a scan of a whole index that SQLite filters; and
+// after it, for an access whose rows are sorted, the one row of a sort of all the rows, and for
+// every other access no row more, so that the cache sorts exactly where the engine says so.
 func checkPlanOf(t *testing.T, i *instance, src string, args []any) {
 	t.Helper()
 	s, err := stmt.Check(src)
@@ -424,7 +426,11 @@ func checkPlanOf(t *testing.T, i *instance, src string, args []any) {
 		return
 	}
 	sql, plan := scanPlan(t, i, ct.GetTable(), a)
-	is.EqualSlice(t, []string{wantPlan(a, ct, cis)}, plan, src+", which the cache runs as "+sql)
+	want := []string{wantPlan(a, ct, cis)}
+	if a.Sorted {
+		want = append(want, "USE TEMP B-TREE FOR ORDER BY")
+	}
+	is.EqualSlice(t, want, plan, src+", which the cache runs as "+sql)
 }
 
 func TestEngine_rowsRead(t *testing.T) {

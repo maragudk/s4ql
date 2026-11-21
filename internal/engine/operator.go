@@ -60,7 +60,8 @@ type sink interface {
 
 // scan gives the rows of a table as its access reads them: every row in the order of the primary
 // key, or the rows that the access finds by the primary key or by an index, in the order of its key,
-// or in the reverse of either. It ends with the error of the context when the context ends.
+// or in the reverse of either, or, for an access whose rows are sorted, in the order of its ORDER
+// BY. It ends with the error of the context when the context ends.
 type scan struct {
 	r     reader
 	table *s4qlpb.CreateTable
@@ -287,6 +288,45 @@ func compare(a, b *s4qlpb.Value) (int, error) {
 		return bytes.Compare(a.GetBlob(), b.GetBlob()), nil
 	}
 	return 0, internalError("a comparison of values of kind %v", a.WhichKind())
+}
+
+// limit gives the first n rows of its source, in the order of the source, and ends the loop over the
+// source with the last of them, so the source reads no row after it. With an n of 0 it gives no row,
+// and does not start the source, which then reads nothing.
+type limit struct {
+	src source
+	n   int64
+}
+
+func (l *limit) columns() []Column {
+	return l.src.columns()
+}
+
+func (l *limit) scanned() *scan {
+	return l.src.scanned()
+}
+
+func (l *limit) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		if err := ctx.Err(); err != nil {
+			yield(nil, err)
+			return
+		}
+		if l.n <= 0 {
+			return
+		}
+		var given int64
+		for row, err := range l.src.rows(ctx) {
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			given++
+			if !yield(row, nil) || given == l.n {
+				return
+			}
+		}
+	}
 }
 
 // insert writes each row of its source into a table whose primary key is one column, as a new row,
@@ -630,10 +670,12 @@ func changeRows(ctx context.Context, w writer, name string, key int, src source,
 // buildQuery: the source of the rows of the plan q, in the transaction of r, with args for the
 // parameters of q, and with limit for the length of a text or a blob. It fails with SQLite's errors
 // in SQLite's order: for a table that does not exist, for a column of the select list that the table
-// does not have, for a column of a condition that it does not have, and for a value of a condition
-// that is longer than limit, as SQLite gives it when it binds an argument; and then with "not
-// supported" for the first value of a condition, in the order of the text, that is of another type
-// than its column. Its scan reads the rows as [build.access] says, by the reading how.
+// does not have, for a column of a condition that it does not have, for a column of the ORDER BY
+// that it does not have, and for a value of a condition, and then an argument of the LIMIT, that is
+// longer than limit, as SQLite gives it when it binds an argument; and then with "not supported" for
+// the first value of a condition, in the order of the text, that is of another type than its column,
+// and then for an argument of the LIMIT that is not an integer from 0, as [limitCount] says. Its
+// scan reads the rows as [build.access] says, by the reading how.
 func buildQuery(ctx context.Context, r reader, q *Query, args []*s4qlpb.Value, limit int, how reading) (source, error) {
 	return build{r: r, args: args, limit: limit, how: how}.node(ctx, q.Root)
 }
@@ -646,6 +688,9 @@ type build struct {
 	how   reading
 	// bugs planted in an update and a delete, for the tests of this package.
 	bugs bugs
+	// order is the ORDER BY and the LIMIT of the query whose rows are built, which its access is
+	// chosen for.
+	order orderBy
 }
 
 // node: the source of the rows of the node n of a query.
@@ -667,12 +712,23 @@ func (b build) node(ctx context.Context, n Node) (source, error) {
 		}
 		return b.filter(ctx, n, src)
 	case *Project:
-		// SQLite resolves the names of the select list before those of the WHERE, so the filter below
-		// the projection is built after it.
+		// SQLite resolves the names of the select list before those of the WHERE, and those before the
+		// names of the ORDER BY, so the nodes below the projection are built after it, in that order.
 		inner := n.Source
+		l, limited := inner.(*Limit)
+		if limited {
+			inner = l.Source
+		}
+		o, ordered := inner.(*Order)
+		if ordered {
+			inner = o.Source
+		}
 		f, filtered := inner.(*Filter)
 		if filtered {
 			inner = f.Source
+		}
+		if _, ok := inner.(*Scan); !ok {
+			return nil, internalError("a projection of a node of type %T", inner)
 		}
 		src, err := b.node(ctx, inner)
 		if err != nil {
@@ -702,15 +758,87 @@ func (b build) node(ctx context.Context, n Node) (source, error) {
 				p.positions = append(p.positions, position)
 			}
 		}
-		if filtered {
-			if src, err = b.filter(ctx, f, src); err != nil {
-				return nil, err
-			}
+		if p.src, err = b.ordered(ctx, src.(*scan), f, o, l); err != nil {
+			return nil, err
 		}
-		p.src = src
 		return p, nil
 	}
 	return nil, internalError("a query of a node of type %T", n)
+}
+
+// ordered rows of the scan s of a query, whose select list is resolved: the rows that pass the
+// filter f, in the order of o, and the first of them that l says; each of the three is nil for a
+// query without its clause. It makes the checks of [buildQuery] after those of the select list, in
+// their order: the names of the conditions and then of the ORDER BY, the lengths of the values of
+// the conditions and then of the argument of the LIMIT, and the types of the values of the
+// conditions and then the argument of the LIMIT. Last it gives the scan its access, for the
+// conditions, the ORDER BY, and the LIMIT.
+func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Limit) (source, error) {
+	var conditions []condition
+	if f != nil {
+		var err error
+		if _, conditions, err = b.conditions(f, s); err != nil {
+			return nil, err
+		}
+	}
+	if o != nil {
+		// SQLite looks the columns of the ORDER BY up in the order of the text.
+		var names []string
+		for _, c := range s.table.GetColumns() {
+			names = append(names, c.GetName())
+		}
+		of := positionsOf(names)
+		for _, c := range o.Columns {
+			position, ok := of[c.Column.Fold()]
+			if !ok {
+				return nil, noSuchResultColumn(c.Column)
+			}
+			b.order.columns = append(b.order.columns, core.KeyColumn{Position: position, Descending: c.Descending})
+		}
+	}
+	b.order.limited = l != nil
+
+	if f != nil {
+		if err := b.values(f, conditions); err != nil {
+			return nil, err
+		}
+	}
+	var count *s4qlpb.Value
+	if l != nil {
+		var err error
+		if count, err = eval(l.Count, b.args); err != nil {
+			return nil, err
+		}
+		if err := checkLength(count, b.limit); err != nil {
+			return nil, err
+		}
+	}
+	if f != nil {
+		if err := b.types(f, s, conditions); err != nil {
+			return nil, err
+		}
+	}
+	var n int64
+	if l != nil {
+		var err error
+		if n, err = limitCount(l.Count, count); err != nil {
+			return nil, err
+		}
+	}
+
+	var src source = s
+	if f != nil || o != nil {
+		if err := b.reach(ctx, s, conditions); err != nil {
+			return nil, err
+		}
+	}
+	if f != nil {
+		src = &filter{src: s, conditions: conditions}
+	}
+	if l != nil {
+		src = &limit{src: src, n: n}
+	}
+	return src, nil
 }
 
 // filter of the rows of src, a scan, by the conditions of f: the names of [build.conditions], and
@@ -776,55 +904,93 @@ func (b build) conditions(f *Filter, src source) (*scan, []condition, error) {
 
 // bind the values of the conditions of the filter f to conditions, which [build.conditions] gave for
 // the scan s, and give the filter of the rows of s. It evaluates each value, and gives SQLite's error
-// for one that is longer than the limit, and then "not supported" for the first value, in the order
-// of the text, that is of another type than its column. Last it gives the scan its access, as
-// [build.access] says, so the errors do not depend on the access.
+// for one that is longer than the limit, as [build.values] says, and then "not supported" for the
+// first value, in the order of the text, that is of another type than its column, as [build.types]
+// says. Last it gives the scan its access, as [build.reach] says, so the errors do not depend on the
+// access.
 func (b build) bind(ctx context.Context, f *Filter, s *scan, conditions []condition) (source, error) {
+	if err := b.values(f, conditions); err != nil {
+		return nil, err
+	}
+	if err := b.types(f, s, conditions); err != nil {
+		return nil, err
+	}
+	if err := b.reach(ctx, s, conditions); err != nil {
+		return nil, err
+	}
+	return &filter{src: s, conditions: conditions}, nil
+}
+
+// values of the conditions of the filter f, which it evaluates and puts in conditions: SQLite's error
+// for the first, in the order of the text, that is longer than the limit.
+func (b build) values(f *Filter, conditions []condition) error {
 	for i, c := range f.Conditions {
 		if c.Value == nil {
 			continue
 		}
 		v, err := eval(c.Value, b.args)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if err := checkLength(v, b.limit); err != nil {
-			return nil, err
+			return err
 		}
 		conditions[i].value = v
 	}
+	return nil
+}
+
+// types of the values of the conditions of the filter f of the scan s: "not supported" for the first
+// value, in the order of the text, that is of another type than its column.
+func (b build) types(f *Filter, s *scan, conditions []condition) error {
 	for i, c := range conditions {
 		if c.value == nil {
 			continue
 		}
 		if err := checkType(s.table, c.position, c.value, f.Conditions[i].Value, "compared with"); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	a, err := b.access(ctx, s.table, conditions)
-	if err != nil {
-		return nil, err
-	}
-	a.backward = b.how.backward
-	s.access = a
-	return &filter{src: s, conditions: conditions}, nil
+	return nil
 }
 
-// access to the rows of the table t for a filter of the conditions: the one that [chooseAccess]
-// gives, or the one of the path that the tests force, as [forcedAccess] gives it. It reads the
-// indexes of the table only if the access depends on them, so a statement that the rules give no
-// row, or the row of a primary key, reads none.
+// reach the rows of the scan s for a filter of the conditions and the ORDER BY of the build: give the
+// scan its access, as [build.access] says. An access that delivers the order of the ORDER BY reads in
+// the direction that delivers it, and every other in the direction of the reading: the scan of a
+// statement without ORDER BY backward or forward, and the rows that tie in a sort in the reverse of
+// the order of the primary key or in that order.
+func (b build) reach(ctx context.Context, s *scan, conditions []condition) error {
+	a, err := b.access(ctx, s.table, conditions)
+	if err != nil {
+		return err
+	}
+	if a.order != delivered {
+		a.backward = b.how.backward
+	}
+	s.access = a
+	return nil
+}
+
+// access to the rows of the table t for a filter of the conditions and the ORDER BY and the LIMIT of
+// the build: the one that [chooseAccess] gives, or the one of the path that the tests force, as
+// [forcedAccess] gives it. It reads the indexes of the table only if the access depends on them, so
+// a statement that the rules give no row, or the row of a primary key, reads none.
 func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []condition) (access, error) {
-	p := b.how.path
+	p, o := b.how.path, b.order
+	// rules is what the rules choose for: the statement without its ORDER BY, for a path that sorts.
+	rules := o
+	if p.sort {
+		rules = orderBy{}
+	}
 	switch p.kind {
 	case pathFull:
-		return access{}, nil
+		return p.place(o, t, core.IndexKey(t, nil), conditions, access{}), nil
 	case pathPrimary:
-		a, _, err := forcedAccess(t, nil, conditions, p, b.how.bugs)
+		a, _, err := forcedAccess(t, nil, conditions, o, p, b.how.bugs)
 		return a, err
 	case pathRules:
-		if a, err := chooseAccess(t, nil, conditions, b.how.bugs); err != nil || a.none || a.point != nil {
-			return a, err
+		if a, err := chooseAccess(t, nil, conditions, rules, b.how.bugs); err != nil || a.none || a.point != nil {
+			return o.sort(a), err
 		}
 	}
 	indexes, err := b.r.indexes(ctx, t.GetTable())
@@ -832,11 +998,15 @@ func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []c
 		return access{}, err
 	}
 	if p.kind == pathIndex {
-		if a, ok, err := forcedAccess(t, indexes, conditions, p, b.how.bugs); err != nil || ok {
+		if a, ok, err := forcedAccess(t, indexes, conditions, o, p, b.how.bugs); err != nil || ok {
 			return a, err
 		}
 	}
-	return chooseAccess(t, indexes, conditions, b.how.bugs)
+	a, err := chooseAccess(t, indexes, conditions, rules, b.how.bugs)
+	if err != nil || !p.sort {
+		return a, err
+	}
+	return o.sort(a), nil
 }
 
 // buildValues: the source of the rows of v, with args for their parameters, and the expressions of
