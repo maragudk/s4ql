@@ -1153,3 +1153,5 @@ internal/sqlite/sqlite.go Stmt.StepContext condition: s.stmt == nil => false
 	For a finalized statement, s4ql_step_interruptible gives SQLITE_MISUSE too: the build has SQLITE_ENABLE_API_ARMOR, under which sqlite3_db_handle of NULL is NULL and sqlite3_progress_handler of no connection does nothing, and sqlite3_step of NULL is SQLITE_MISUSE, which s.error gives through errorFromConn(nil), as this return does.
 internal/sqlite/sqlite.go Stmt.StepContext remove statement: return false, errorFromConn(nil, C.SQLITE_MISUSE) =>
 	For a finalized statement, s4ql_step_interruptible gives SQLITE_MISUSE too: the build has SQLITE_ENABLE_API_ARMOR, under which sqlite3_db_handle of NULL is NULL and sqlite3_progress_handler of no connection does nothing, and sqlite3_step of NULL is SQLITE_MISUSE, which s.error gives through errorFromConn(nil), as this return does.
+internal/sqlite/sqlite.go Stmt.StepContext condition: ctx.Done() == nil => false
+	A context without Done cannot end, so its Err is nil at every look of the progress handler, which never stops the step: it runs as Step runs it.
