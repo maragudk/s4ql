@@ -1162,7 +1162,9 @@ func (p *pair) step(c stmttest.Call) string {
 			p.y.excused(acceptedStartedTable)
 		case want.err == tooBig && got.err == "" && c.Query && p.sortTooBig(src, args, got):
 			p.y.excused(excusedSortTooBig)
-		case want.err == "" && got.err == tooBig && p.longCondition(src):
+		case got.err == tooBig && p.longCondition(src) && (want.err == "" || want.err == "20/20: datatype mismatch" && limitRefused(u, args)):
+			// SQLite turns a blob literal that is too long into NULL, and then gives its error of an
+			// argument of LIMIT that s4ql refuses after the length of the literal.
 			p.y.excused(excusedLongCondition)
 		case gap != "":
 			p.y.excused(gap + knownGapSuffix)
@@ -3065,6 +3067,13 @@ func limitRule(s *stmt.Select, args []any) string {
 		return ""
 	}
 	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", s.Limit.Parameter, which)
+}
+
+// limitRefused reports whether s is a select whose argument of LIMIT, of args, s4ql refuses, as
+// [limitRule] says.
+func limitRefused(s stmt.Statement, args []any) bool {
+	sel, ok := s.(*stmt.Select)
+	return ok && len(args) == sel.Parameters() && limitRule(sel, args) != ""
 }
 
 // readOnlyRule is [typeRule] in a read-only transaction, which refuses an insert, and the SET of an
