@@ -862,3 +862,19 @@ internal/core/index.go scanConditions swap arguments: fmt.Sprint(names[len(scan.
 	The condition differs only in its spaces, and a quoted name, an operator, and a parameter read the same without a space between them.
 internal/core/index.go scanConditions swap arguments: fmt.Sprint(names[len(scan.Equal)], " ", op, " ?", len(args)) => fmt.Sprint(" ", names[len(scan.Equal)], op, " ?", len(args))
 	The condition differs only in its spaces, and a quoted name, an operator, and a parameter read the same without a space between them.
+internal/core/index.go conn.scanIndex condition: err != nil => false #2
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #2
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: return => #2
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex condition: err != nil => false #3
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #3
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: return => #3
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex remove statement: _ = c.rest(sql, s) => #2
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
+internal/core/index.go conn.scanIndex swap arguments: c.rest(sql, s) => c.rest(s, sql) #2
+	The prepare and the bind come after the lookup of the table, which has read the schema that the prepare reads, and after table.checkScan, which accepted every value that the bind binds, so no file system of the tests makes either fail: they fail only for want of memory.
