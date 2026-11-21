@@ -51,3 +51,12 @@ The decisions and notes of the builders of [slice 13 of the roadmap](../roadmap.
   - **The driver** needed no change. `Prepare` takes a select with ORDER BY and LIMIT, and it runs. As the argument of `limit ?`: every integer kind of Go from 0 up to the largest int64, also through a `driver.Valuer`, runs; a float is `a real`, a string `text`, a `[]byte` that is not nil `a blob`, nil and a NULL of `database/sql` `NULL`, and a negative integer `a negative integer`, each refused by the engine with the message above, after the errors of the names; a bool, a `time.Time`, a `[]byte` that is nil, a uint64 above the largest int64, and what `database/sql` cannot convert are refused by the driver before the engine, as for every other parameter. `TestOrderBy` in `conn_test.go` pins each.
   - **The exceptions of the statement pass are gone:** `engine.orderLimitRefusal`, `orderedOrLimited` in the engine's differential test, the case of `checkNotSupported` in the driver check, and the refusal in the root package's tests, which use `group by` as their statement that is not supported. `Generator.OrderBy` stays off in `stmttest.Sequence` and in every generated test: the next builder turns it on.
   - **Left as it was:** a scan whose key has more than 63 columns that it does not pin is sorted by SQLite also where the engine says that the order is delivered, as slice 9 found for a scan without ORDER BY. The rows are in the right order, and the rows read and the plan of the cache are those of a sort.
+
+## Review of the engine step
+
+- **Confirmed by the lead:** an `order by` that names only pinned columns is read forward and does not vary, which the spec's sentence on delivered order allows.
+- **Three branches have no test yet, for the builder of the generated checks:**
+  - `stopped && ctx.Err() == nil` with an ended context, in `internal/core/index.go`.
+  - A failing count of unread rows, on the read path and on the write path (`tx.fail`).
+  - The length limit being put back after `conn.step` when the sort step itself fails.
+- **The difference from SQLite under a lowered length limit stays as a known difference, by the lead's decision.** SQLite refuses some sorted selects with `string or blob too big`, and s4ql gives the rows.

@@ -472,7 +472,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 13: `order by` and `limit` on `select`
 
-Status: agreed on 2026-11-20, not built.
+Status: agreed on 2026-11-20. The statement pass and the engine and driver are merged. The generated checks and the mutation testing are not done.
 
 ```sql
 select v1, v2 from t1 order by v2 desc, v1 limit 10;
