@@ -646,7 +646,7 @@ internal/format/check.go checkStoredValue condition: v.WhichKind() == s4qlpb.Val
 # The WHERE of slice 7 in the recognizer, internal/sql/stmt.
 stmt/recognize.go recognizer.conditions swap arguments: max(height, depth(ands[i].Y)) => max(depth(ands[i].Y), height)
 	max is commutative.
-stmt/recognize.go recognizer.leftColumn remove statement: r.accept(ref) =>
+stmt/recognize.go recognizer.conditionColumn remove statement: r.accept(ref) =>
 	A column reference without a table name has one token, its column, which is the next one: name rejects it at once or takes it, so describe never looks inside the node, and names it the same whether it was accepted or not.
 
 # The WHERE of slice 7 in the engine, internal/engine.

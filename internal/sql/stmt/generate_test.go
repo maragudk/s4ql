@@ -41,8 +41,9 @@ var positionTexts = stmttest.PositionTexts
 // slice 7, with a WHERE of up to four conditions in one select in two, those of slice 8, an update
 // or a delete in one statement in three, with a WHERE as a select has one, those of slice 9, a
 // create index or a drop index in one statement in four, with up to three columns, those of slice
-// 10, IF NOT EXISTS or IF EXISTS in one create or drop in three, and those of slice 11, a DEFAULT on
-// one column in three of a create table.
+// 10, IF NOT EXISTS or IF EXISTS in one create or drop in three, those of slice 11, a DEFAULT on
+// one column in three of a create table, and those of slice 12, the value on the left of one
+// comparison in three.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
@@ -53,6 +54,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.Indexes = 4
 	g.Exists = 3
 	g.Defaults = 3
+	g.ValueFirst = 3
 	return g
 }
 
@@ -129,7 +131,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 41, 154)
+	excused(t, c, 27, 150)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -195,6 +197,9 @@ func difference(a, b stmt.Statement) string {
 			if a[i].Operator != b[i].Operator {
 				diffs = append(diffs, "operator")
 				continue
+			}
+			if a[i].ValueFirst != b[i].ValueFirst {
+				diffs = append(diffs, "side of a column")
 			}
 			values([]stmt.Term{a[i].Value}, []stmt.Term{b[i].Value})
 		}
@@ -594,8 +599,26 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v union all select * from %[1]v",
 		"select * from %[1]v except select * from %[1]v",
 		"select * from %[1]v; select 1",
-		"select * from %[1]v where 1 = %[2]v",
-		"select * from %[1]v where ? = %[2]v",
+		"select * from %[1]v where 1 = 1",
+		"select * from %[1]v where ? = ?",
+		"select * from %[1]v where 1 = ?",
+		"select * from %[1]v where null is null",
+		"select * from %[1]v where ? is not null",
+		"select * from %[1]v where 1 is %[2]v",
+		"select * from %[1]v where 1 = %[2]v + 1",
+		"select * from %[1]v where (1) = %[2]v",
+		"select * from %[1]v where 1 = (%[2]v)",
+		"select * from %[1]v where +1 = %[2]v",
+		"select * from %[1]v where -? = %[2]v",
+		"select * from %[1]v where ?1 = %[2]v",
+		"select * from %[1]v where true = %[2]v",
+		"select * from %[1]v where 0x1 = %[2]v",
+		"select * from %[1]v where 1 = %[1]v.%[2]v",
+		"select * from %[1]v where 1 = %[2]v collate nocase",
+		"select * from %[1]v where 1 < %[2]v < 2",
+		"select * from %[1]v where 1 = %[2]v or 2 = %[2]v",
+		"select * from %[1]v where 1 = %[2]v and",
+		"select * from %[1]v where 1 =",
 		"select * from %[1]v where %[2]v = %[2]v",
 		"select * from %[1]v where %[1]v.%[2]v = 1",
 		"select * from %[1]v where %[2]v = 1 or %[2]v = 2",
@@ -681,7 +704,11 @@ var nearMisses = map[string][]string{
 		"update %[1]v set %[2]v = %[3]v where",
 		"update %[1]v set %[2]v = %[3]v where %[2]v",
 		"update %[1]v set %[2]v = %[3]v where 1",
-		"update %[1]v set %[2]v = %[3]v where 1 = %[2]v",
+		"update %[1]v set %[2]v = %[3]v where 1 = 1",
+		"update %[1]v set %[2]v = %[3]v where 1 is null",
+		"update %[1]v set %[2]v = %[3]v where (1) = %[2]v",
+		"update %[1]v set %[2]v = %[3]v where 1 = %[1]v.%[2]v",
+		"update %[1]v set %[2]v = %[3]v where 1 = %[2]v or 2 = %[2]v",
 		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 or %[2]v = 2",
 		"update %[1]v set %[2]v = %[3]v where not %[2]v = 1",
 		"update %[1]v set %[2]v = %[3]v where %[1]v.%[2]v = 1",
@@ -713,7 +740,11 @@ var nearMisses = map[string][]string{
 		"delete from %[1]v where",
 		"delete from %[1]v where %[2]v",
 		"delete from %[1]v where 1",
-		"delete from %[1]v where 1 = %[2]v",
+		"delete from %[1]v where 1 = 1",
+		"delete from %[1]v where %[3]v = ?",
+		"delete from %[1]v where ? is null",
+		"delete from %[1]v where %[3]v = -%[2]v",
+		"delete from %[1]v where %[3]v = %[2]v or %[3]v = %[2]v",
 		"delete from %[1]v where %[2]v = %[3]v or %[2]v = %[3]v",
 		"delete from %[1]v where not %[2]v = %[3]v",
 		"delete from %[1]v where (%[2]v = %[3]v)",
@@ -873,5 +904,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 2130)
+	excused(t, c, 0, 1979)
 }
