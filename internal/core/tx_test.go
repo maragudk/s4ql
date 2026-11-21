@@ -2466,6 +2466,37 @@ func TestTx_readFails(t *testing.T) {
 		is.NotError(t, vfs.Close())
 	})
 
+	t.Run("should end a scan by an index with SQLite's error, as a local failure, when SQLite cannot read the index", func(t *testing.T) {
+		vfs, _, d := setUp(t)
+		ctx := t.Context()
+		transact(t, d, func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.CreateIndex(t.Context(), indexOf("i", "t", 1)))
+		})
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		_, err = r.Table(ctx, "t")
+		is.NotError(t, err)
+		once := reads
+		once.Times = 1
+		vfs.Fail(once)
+		var rows int
+		err = nil
+		for _, e := range r.ScanIndex(ctx, "t", core.IndexScan{Index: "i"}) {
+			if e != nil {
+				err = e
+				break
+			}
+			rows++
+		}
+		is.True(t, vfs.Failures() > 0, "no read failed")
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, rows < 4000, fmt.Sprint(rows, " rows"))
+		vfs.Fail(faultvfs.Fault{})
+		_ = r.Close(ctx)
+		_ = d.Close(ctx)
+		is.NotError(t, vfs.Close())
+	})
+
 	t.Run("should fail the transaction for a create index and for a drop index when SQLite cannot read the rows or the index", func(t *testing.T) {
 		for _, drop := range []bool{false, true} {
 			vfs, _, d := setUp(t)
