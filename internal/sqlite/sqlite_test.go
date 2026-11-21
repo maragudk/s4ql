@@ -1242,6 +1242,9 @@ func TestStmt_Step(t *testing.T) {
 }
 
 func TestStmt_StepContext(t *testing.T) {
+	// period is the number of instructions of SQLite's virtual machine between two looks at the
+	// context, which StepContext promises.
+	const period = 10_000
 	// sorted fills the table t of c with n rows whose column v orders them otherwise than their key,
 	// and gives a statement that sorts them by v.
 	sorted := func(t *testing.T, c *sqlite.Conn, n int) *sqlite.Stmt {
@@ -1278,7 +1281,7 @@ func TestStmt_StepContext(t *testing.T) {
 		is.Equal(t, 19_999, count(t, s, 1))
 		// SQLite looked at the context every period of instructions while it sorted.
 		calls := ctx.Calls()
-		is.True(t, calls >= 5 && calls <= s.VMSteps()/sqlite.ProgressPeriod, fmt.Sprint(calls, " calls of Err in ", s.VMSteps(), " instructions"))
+		is.True(t, calls >= 5 && calls <= s.VMSteps()/period, fmt.Sprint(calls, " calls of Err in ", s.VMSteps(), " instructions"))
 	})
 
 	t.Run("should end a step that sorts with the context's error at the first period of instructions after the context ends, whatever the number of rows", func(t *testing.T) {
@@ -1296,7 +1299,7 @@ func TestStmt_StepContext(t *testing.T) {
 				// SQLite looks at the handler at the jumps of its program, which are a few instructions
 				// apart in the loop that fills the sorter, so it stops a few instructions after a period.
 				steps := s.VMSteps()
-				is.True(t, steps >= at*sqlite.ProgressPeriod && steps < at*sqlite.ProgressPeriod+100, fmt.Sprint(rows, " rows, ended at the call ", at, ": ", steps, " instructions"))
+				is.True(t, steps >= at*period && steps < at*period+100, fmt.Sprint(rows, " rows, ended at the call ", at, ": ", steps, " instructions"))
 
 				// The statement failed with SQLITE_INTERRUPT, which its reset gives once more, and it then
 				// runs again from the start, to its end.
@@ -1387,7 +1390,7 @@ func TestStmt_StepContext(t *testing.T) {
 		column := prepare(t, c, "select count(k) from t")
 		_, err = column.StepContext(ctxtest.EndAtErr(t.Context(), 1))
 		is.Error(t, context.Canceled, err)
-		is.True(t, column.VMSteps() < sqlite.ProgressPeriod+100, fmt.Sprint(column.VMSteps(), " instructions"))
+		is.True(t, column.VMSteps() < period+100, fmt.Sprint(column.VMSteps(), " instructions"))
 	})
 
 	t.Run("should fail with SQLITE_MISUSE on a finalized statement", func(t *testing.T) {
