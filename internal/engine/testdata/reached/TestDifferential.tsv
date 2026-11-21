@@ -1,0 +1,2327 @@
+# What each profile of TestDifferential of the engine reaches in its full run.
+# A row is a run, what the run reached when this file was written, the least number that is
+# required of it, a third, or = for a count that is pinned exactly, and the kind. The kinds are
+# those of testdata/reached/TestDifferential.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
+# Do not edit a number by hand.
+mixed	16	5	createtable duplicate column name
+mixed	1	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
+mixed	2	=	excused: a literal longer than the length limit, checked against s4ql's rule
+mixed	311	=	excused: a value of another type than its column, checked against s4ql's rule
+mixed	17	=	excused: already exists after the start of a table, accepted
+mixed	203	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	5	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+mixed	567	=	excused: the wrong number of arguments, checked against s4ql's rule
+mixed	41	13	insert  values for 
+mixed	111	37	insert NOT NULL constraint failed
+mixed	38	12	insert values were supplied
+mixed	95	31	insert with a parameter UNIQUE constraint failed
+mixed	171	57	insert with a parameter not supported
+mixed	342	114	insert with a parameter ok
+mixed	144	48	insert with a parameter wrong number of arguments
+mixed	74	24	insert wrong number of arguments
+mixed	12	4	reached: != on another column ok
+mixed	8	2	reached: != on the key a value of another type
+mixed	30	10	reached: != on the key ok
+mixed	6	2	reached: -0.0 argument into REAL UNIQUE constraint failed
+mixed	4	1	reached: -0.0 literal into REAL UNIQUE constraint failed
+mixed	13	4	reached: < on another column ok
+mixed	14	4	reached: < on the key a value of another type
+mixed	69	23	reached: < on the key ok
+mixed	17	5	reached: <= on another column ok
+mixed	21	7	reached: <= on the key a value of another type
+mixed	56	18	reached: <= on the key ok
+mixed	34	11	reached: = on another column ok
+mixed	14	4	reached: = on the key a value of another type
+mixed	64	21	reached: = on the key ok
+mixed	17	5	reached: > on another column ok
+mixed	18	6	reached: > on the key a value of another type
+mixed	62	20	reached: > on the key ok
+mixed	14	4	reached: >= on another column ok
+mixed	14	4	reached: >= on the key a value of another type
+mixed	57	19	reached: >= on the key ok
+mixed	3	1	reached: IS NOT NULL on another column ok
+mixed	14	4	reached: IS NOT NULL on the key ok
+mixed	11	3	reached: IS NULL on another column ok
+mixed	23	7	reached: IS NULL on the key ok
+mixed	8	2	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+mixed	4	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+mixed	18	6	reached: NULL argument into a column that takes NULL ok
+mixed	15	5	reached: NULL argument into the key NOT NULL constraint failed
+mixed	37	12	reached: NULL given for a column with a default, which does not take NULL NOT NULL constraint failed
+mixed	31	10	reached: NULL given for a column with a default, which takes NULL ok
+mixed	24	8	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+mixed	8	2	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+mixed	36	12	reached: NULL literal into a column that takes NULL ok
+mixed	47	15	reached: NULL literal into the key NOT NULL constraint failed
+mixed	27	9	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+mixed	17	5	reached: SET of NULL for a column that does not take it ok, no row found
+mixed	25	8	reached: SET of a column in double quotes that the table does not have no such column
+mixed	50	16	reached: SET of a column that the table does not have no such column
+mixed	26	8	reached: SET of every column ok, rows changed
+mixed	19	6	reached: SET of the key NOT NULL constraint failed
+mixed	27	9	reached: SET of the key UNIQUE constraint failed
+mixed	32	10	reached: SET of the key ok, rows changed
+mixed	43	14	reached: SET with a value of another type a value of another type
+mixed	14	4	reached: SET with argument []uint8 ok, no row found
+mixed	5	1	reached: SET with argument float64 ok, rows changed
+mixed	15	5	reached: SET with argument int64 ok, rows changed
+mixed	3	1	reached: SET with argument nil ok, rows changed
+mixed	4	1	reached: SET with argument string ok, rows changed
+mixed	7	2	reached: SET with literal blob ok, rows changed
+mixed	3	1	reached: SET with literal empty blob ok, rows changed
+mixed	32	10	reached: SET with literal integer ok, rows changed
+mixed	4	1	reached: SET with literal null ok, rows changed
+mixed	3	1	reached: SET with literal real -0.0 ok, rows changed
+mixed	8	2	reached: SET with literal real ok, rows changed
+mixed	10	3	reached: SET with literal text ok, rows changed
+mixed	199	66	reached: WHERE run by a sample of its paths
+mixed	679	226	reached: WHERE run by every path
+mixed	246	82	reached: WHERE run by every path on a table with an index
+mixed	19	6	reached: WHERE that gives every row of a table with rows
+mixed	95	31	reached: WHERE that gives no row of a table with rows
+mixed	26	8	reached: WHERE that gives some rows of a table
+mixed	54	18	reached: WHERE that reads a get of one key ok
+mixed	15	5	reached: WHERE that reads a scan between two bounds ok
+mixed	23	7	reached: WHERE that reads a scan between two bounds that hold no key ok
+mixed	30	10	reached: WHERE that reads a scan from a lower bound ok
+mixed	58	19	reached: WHERE that reads a scan of every row ok
+mixed	28	9	reached: WHERE that reads a scan to an upper bound ok
+mixed	36	12	reached: WHERE that reads no row ok
+mixed	124	41	reached: WHERE that tests a column more than once ok
+mixed	32	10	reached: WHERE with a column in double quotes that the table does not have no such column
+mixed	13	4	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+mixed	25	8	reached: WHERE with a column that the table does not have in a comparison, alone no such column
+mixed	23	7	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+mixed	3	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
+mixed	5	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
+mixed	6	2	reached: WHERE with a literal longer than the length limit
+mixed	55	18	reached: WHERE with a value of another type a value of another type
+mixed	288	96	reached: WHERE with a value on the left run by every path
+mixed	107	35	reached: WHERE with a value on the left run by every path on a table with an index
+mixed	15	5	reached: WHERE with an argument that no column holds not supported
+mixed	28	9	reached: WHERE with contradicting conditions ok
+mixed	27	9	reached: WHERE with the wrong number of arguments wrong number of arguments
+mixed	8	2	reached: argument NaN
+mixed	210	70	reached: argument []uint8
+mixed	4	1	reached: argument bool
+mixed	58	19	reached: argument empty []byte
+mixed	33	11	reached: argument empty string
+mixed	10	3	reached: argument float32
+mixed	7	2	reached: argument float32 that is not finite
+mixed	229	76	reached: argument float64
+mixed	37	12	reached: argument float64 -0.0
+mixed	9	3	reached: argument infinite float64
+mixed	12	4	reached: argument int
+mixed	8	2	reached: argument int32
+mixed	564	188	reached: argument int64
+mixed	66	22	reached: argument named
+mixed	124	41	reached: argument nil
+mixed	29	9	reached: argument nil []byte
+mixed	243	81	reached: argument string
+mixed	19	6	reached: argument string that is not valid UTF-8
+mixed	22	7	reached: argument string with NUL
+mixed	7	2	reached: argument time.Time
+mixed	15	5	reached: argument uint64
+mixed	8	2	reached: argument uint64 above int64
+mixed	1145	381	reached: changed both ways
+mixed	239	79	reached: chosen a get
+mixed	87	29	reached: chosen a get by a value on the left
+mixed	21	7	reached: chosen a get of a table of several indexes
+mixed	6	2	reached: chosen an index with 0 pinned and a range
+mixed	11	3	reached: chosen an index with 1 pinned
+mixed	5	1	reached: chosen an index with 1 pinned and a range
+mixed	4	1	reached: chosen an index with 1 pinned and a range by a value on the left
+mixed	5	1	reached: chosen an index with 1 pinned by a value on the left
+mixed	5	1	reached: chosen an index with 1 pinned of a table of several indexes
+mixed	80	26	reached: chosen every row
+mixed	71	23	reached: chosen no row
+mixed	211	70	reached: chosen the primary key with 0 pinned and a range
+mixed	82	27	reached: chosen the primary key with 0 pinned and a range by a value on the left
+mixed	21	7	reached: comparison with argument []uint8 ok
+mixed	4	1	reached: comparison with argument empty []byte ok
+mixed	3	1	reached: comparison with argument empty string ok
+mixed	24	8	reached: comparison with argument float64 ok
+mixed	52	17	reached: comparison with argument int64 ok
+mixed	5	1	reached: comparison with argument nil ok
+mixed	20	6	reached: comparison with argument string ok
+mixed	47	15	reached: comparison with literal blob ok
+mixed	8	2	reached: comparison with literal empty blob ok
+mixed	10	3	reached: comparison with literal empty text ok
+mixed	135	45	reached: comparison with literal integer ok
+mixed	14	4	reached: comparison with literal null ok
+mixed	5	1	reached: comparison with literal real -0.0 ok
+mixed	49	16	reached: comparison with literal real ok
+mixed	47	15	reached: comparison with literal text ok
+mixed	92	30	reached: create index already exists
+mixed	59	19	reached: create index if not exists did its work
+mixed	41	13	reached: create index if not exists did nothing: an index of the name exists
+mixed	4	1	reached: create index if not exists did nothing: an index of the name exists, and the table lacks a column of the statement
+mixed	12	4	reached: create index if not exists no such column
+mixed	111	37	reached: create index if not exists no such table
+mixed	40	13	reached: create index if not exists there is already a table named
+mixed	37	12	reached: create index no such column
+mixed	340	113	reached: create index no such table
+mixed	124	41	reached: create index of 1 columns ok
+mixed	51	17	reached: create index of 2 columns ok
+mixed	26	8	reached: create index of 3 columns ok
+mixed	53	17	reached: create index of a column of type BLOB ok
+mixed	53	17	reached: create index of a column of type INT ok
+mixed	73	24	reached: create index of a column of type INTEGER ok
+mixed	66	22	reached: create index of a column of type REAL ok
+mixed	59	19	reached: create index of a column of type TEXT ok
+mixed	69	23	reached: create index of a column that takes NULL ok
+mixed	98	32	reached: create index of a descending column ok
+mixed	201	67	reached: create index ok
+mixed	156	52	reached: create index that holds the primary key ok
+mixed	133	44	reached: create index there is already a table named
+mixed	155	51	reached: create table if not exists did its work
+mixed	196	65	reached: create table if not exists did nothing: a table of the name exists
+mixed	9	3	reached: create table if not exists there is already an index named
+mixed	150	50	reached: create table of 1 columns ok
+mixed	175	58	reached: create table of 2 columns ok
+mixed	156	52	reached: create table of 3 columns ok
+mixed	172	57	reached: create table of mixed types ok
+mixed	140	46	reached: create table of which every column outside the key takes NULL ok
+mixed	151	50	reached: create table of which no column takes NULL ok
+mixed	40	13	reached: create table of which some columns outside the key take NULL ok
+mixed	66	22	reached: create table with DEFAULT NULL on a column that does not take NULL ok
+mixed	18	6	reached: create table with DEFAULT NULL on a column that takes NULL ok
+mixed	63	21	reached: create table with a default of 250 bytes or more ok
+mixed	56	18	reached: create table with a default of blob ok
+mixed	117	39	reached: create table with a default of integer ok
+mixed	81	27	reached: create table with a default of real ok
+mixed	64	21	reached: create table with a default of text ok
+mixed	248	82	reached: create table with a default on the key ok
+mixed	302	100	reached: create table with the key at 0 ok
+mixed	130	43	reached: create table with the key at 1 ok
+mixed	49	16	reached: create table with the key at 2 ok
+mixed	235	78	reached: create table with two columns of a type ok
+mixed	31	10	reached: delete WHERE that reads a get of one key ok, rows changed
+mixed	8	2	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+mixed	4	1	reached: delete WHERE that reads a scan from a lower bound ok, rows changed
+mixed	7	2	reached: delete WHERE that reads a scan of every row ok, rows changed
+mixed	10	3	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+mixed	23	7	reached: delete WHERE that reads no row ok, no row found
+mixed	4	1	reached: delete WHERE that tests a column more than once ok, rows changed
+mixed	12	4	reached: delete WHERE with a column in double quotes that the table does not have no such column
+mixed	27	9	reached: delete WHERE with a value of another type a value of another type
+mixed	12	4	reached: delete WHERE with contradicting conditions ok, no row found
+mixed	62	20	reached: delete that changes every row of a table with rows
+mixed	60	20	reached: delete that changes no row of a table with rows
+mixed	33	11	reached: delete that changes some rows of a table
+mixed	23	7	reached: delete with WHERE no such column
+mixed	138	46	reached: delete with WHERE ok, no row found
+mixed	54	18	reached: delete with WHERE ok, rows changed
+mixed	53	17	reached: delete with a value on the left ok, no row found
+mixed	17	5	reached: delete with a value on the left ok, rows changed
+mixed	16	5	reached: delete with arguments that s4ql refuses not supported
+mixed	19	6	reached: delete with arguments that s4ql refuses wrong number of arguments
+mixed	39	13	reached: delete without WHERE ok, no row found
+mixed	41	13	reached: delete without WHERE ok, rows changed
+mixed	15	5	reached: drop index if exists did its work
+mixed	51	17	reached: drop index if exists did nothing: no index of the name exists
+mixed	16	5	reached: drop index if exists did nothing: no index of the name exists, and a table has it
+mixed	161	53	reached: drop index no such index
+mixed	42	14	reached: drop index ok
+mixed	60	20	reached: drop table if exists did its work
+mixed	57	19	reached: drop table if exists did nothing: no table of the name exists
+mixed	4	1	reached: drop table if exists did nothing: no table of the name exists, and an index has it
+mixed	39	13	reached: insert into BLOB UNIQUE constraint failed
+mixed	45	15	reached: insert into BLOB a value of another type
+mixed	121	40	reached: insert into BLOB ok
+mixed	11	3	reached: insert into BLOB string or blob too big
+mixed	41	13	reached: insert into INT UNIQUE constraint failed
+mixed	21	7	reached: insert into INT a value of another type
+mixed	159	53	reached: insert into INT ok
+mixed	49	16	reached: insert into INTEGER UNIQUE constraint failed
+mixed	22	7	reached: insert into INTEGER a value of another type
+mixed	168	56	reached: insert into INTEGER ok
+mixed	47	15	reached: insert into REAL UNIQUE constraint failed
+mixed	41	13	reached: insert into REAL a value of another type
+mixed	166	55	reached: insert into REAL ok
+mixed	25	8	reached: insert into TEXT UNIQUE constraint failed
+mixed	37	12	reached: insert into TEXT a value of another type
+mixed	143	47	reached: insert into TEXT ok
+mixed	8	2	reached: insert into TEXT string or blob too big
+mixed	7	2	reached: insert of NULL beside a value of another type NOT NULL constraint failed
+mixed	4	1	reached: insert of NULL beside a value of another type a value of another type
+mixed	25	8	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed
+mixed	11	3	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+mixed	13	4	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+mixed	7	2	reached: insert that leaves out a column that takes NULL a value of another type
+mixed	58	19	reached: insert that leaves out a column that takes NULL ok
+mixed	17	5	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok
+mixed	35	11	reached: insert that leaves out a column with a default of blob ok
+mixed	48	16	reached: insert that leaves out a column with a default of integer ok
+mixed	37	12	reached: insert that leaves out a column with a default of real ok
+mixed	32	10	reached: insert that leaves out a column with a default of text ok
+mixed	47	15	reached: insert that leaves out a column with a default that an index holds ok
+mixed	8	2	reached: insert that leaves out a column with a long default string or blob too big
+mixed	13	4	reached: insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed
+mixed	12	4	reached: insert that leaves out the key with a default UNIQUE constraint failed
+mixed	31	10	reached: insert that leaves out the key with a default ok
+mixed	23	7	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+mixed	28	9	reached: insert with NULL in the key: NOT NULL constraint failed
+mixed	40	13	reached: insert with a column that the table does not have: has no column named
+mixed	65	21	reached: insert with a column without a value: NOT NULL constraint failed
+mixed	19	6	reached: insert with a list in another order NOT NULL constraint failed
+mixed	22	7	reached: insert with a list in another order UNIQUE constraint failed
+mixed	13	4	reached: insert with a list in another order a value of another type
+mixed	70	23	reached: insert with a list in another order ok
+mixed	259	86	reached: insert with a list in the order of the table ok
+mixed	35	11	reached: insert with a value of another type in another column: a value of another type
+mixed	52	17	reached: insert with a value of another type in the key: a value of another type
+mixed	62	20	reached: insert with the wrong number of values:  values for 
+mixed	56	18	reached: insert with the wrong number of values: values were supplied
+mixed	31	10	reached: insert with two faults: NOT NULL constraint failed
+mixed	12	4	reached: insert with two faults: a value of another type
+mixed	3	1	reached: insert with two faults: has no column named
+mixed	166	55	reached: insert without a list ok
+mixed	466	155	reached: literal blob
+mixed	132	44	reached: literal empty blob
+mixed	90	30	reached: literal empty text
+mixed	1388	462	reached: literal integer
+mixed	332	110	reached: literal null
+mixed	593	197	reached: literal real
+mixed	96	32	reached: literal real -0.0
+mixed	513	171	reached: literal text
+mixed	122	40	reached: long value
+mixed	1304	434	reached: path backward
+mixed	1276	425	reached: path forward
+mixed	183	61	reached: path of an index of a descending column
+mixed	309	103	reached: path of an index that holds every column
+mixed	240	80	reached: path of an index with 0 pinned
+mixed	66	22	reached: path of an index with 0 pinned and a range
+mixed	28	9	reached: path of an index with 0 pinned and a range of a WHERE with a value on the left
+mixed	99	33	reached: path of an index with 1 pinned
+mixed	8	2	reached: path of an index with 1 pinned and a range
+mixed	6	2	reached: path of an index with 1 pinned and a range of a WHERE with a value on the left
+mixed	17	5	reached: path of an index with 2 pinned
+mixed	3	1	reached: path of an index with 2 pinned and a range
+mixed	3	1	reached: path of an index with 2 pinned and a range of a WHERE with a value on the left
+mixed	1181	393	reached: path of every row
+mixed	404	134	reached: path of the primary key with 0 pinned and a range
+mixed	183	61	reached: path of the primary key with 0 pinned and a range of a WHERE with a value on the left
+mixed	407	135	reached: path of the primary key with 1 pinned
+mixed	154	51	reached: path that reads no row
+mixed	12	4	reached: path with a pin of NULL
+mixed	18	6	reached: path with a range on a descending column
+mixed	710	236	reached: plan of the cache checked
+mixed	794	264	reached: read both ways
+mixed	56	18	reached: replay of indexes into an empty cache
+mixed	57	19	reached: restart with indexes in the cache
+mixed	107	35	reached: select * of 1 columns ok
+mixed	119	39	reached: select * of 2 columns ok
+mixed	121	40	reached: select * of 3 columns ok
+mixed	35	11	reached: select * with NULL ok
+mixed	25	8	reached: select of a name in double quotes that the table does not have no such column
+mixed	20	6	reached: select of a name that the table does not have no such column
+mixed	192	64	reached: select of a name twice ok
+mixed	71	23	reached: select of names in another order ok
+mixed	310	103	reached: select of names ok
+mixed	14	4	reached: select of names with NULL ok
+mixed	89	29	reached: select with a value on the left ok, no row found
+mixed	19	6	reached: select with a value on the left ok, rows found
+mixed	20	6	reached: update WHERE that reads a get of one key ok, rows changed
+mixed	9	3	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
+mixed	4	1	reached: update WHERE that reads a scan from a lower bound ok, rows changed
+mixed	9	3	reached: update WHERE that reads a scan of every row ok, rows changed
+mixed	10	3	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+mixed	16	5	reached: update WHERE that reads no row ok, no row found
+mixed	12	4	reached: update WHERE with a column in double quotes that the table does not have no such column
+mixed	33	11	reached: update WHERE with a value of another type a value of another type
+mixed	12	4	reached: update WHERE with contradicting conditions ok, no row found
+mixed	3	1	reached: update of a row whose record is too long
+mixed	52	17	reached: update that changes every row of a table with rows
+mixed	73	24	reached: update that changes no row of a table with rows
+mixed	30	10	reached: update that changes some rows of a table
+mixed	13	4	reached: update with WHERE NOT NULL constraint failed
+mixed	12	4	reached: update with WHERE UNIQUE constraint failed
+mixed	57	19	reached: update with WHERE no such column
+mixed	146	48	reached: update with WHERE ok, no row found
+mixed	44	14	reached: update with WHERE ok, rows changed
+mixed	8	2	reached: update with a literal longer than the length limit in SET
+mixed	55	18	reached: update with a value on the left ok, no row found
+mixed	16	5	reached: update with a value on the left ok, rows changed
+mixed	27	9	reached: update with arguments that s4ql refuses not supported
+mixed	40	13	reached: update with arguments that s4ql refuses wrong number of arguments
+mixed	14	4	reached: update without WHERE NOT NULL constraint failed
+mixed	15	5	reached: update without WHERE UNIQUE constraint failed
+mixed	41	13	reached: update without WHERE ok, no row found
+mixed	38	12	reached: update without WHERE ok, rows changed
+mixed	6	2	reached: value on the left NOT NULL constraint failed
+mixed	7	2	reached: value on the left UNIQUE constraint failed
+mixed	11	3	reached: value on the left compared with NULL finds no row
+mixed	14	4	reached: value on the left of != a value of another type
+mixed	18	6	reached: value on the left of != finds no row
+mixed	8	2	reached: value on the left of != finds rows
+mixed	15	5	reached: value on the left of != no such column
+mixed	4	1	reached: value on the left of != wrong number of arguments
+mixed	16	5	reached: value on the left of < a value of another type
+mixed	33	11	reached: value on the left of < finds no row
+mixed	4	1	reached: value on the left of < finds rows
+mixed	18	6	reached: value on the left of < no such column
+mixed	7	2	reached: value on the left of < not supported
+mixed	4	1	reached: value on the left of < wrong number of arguments
+mixed	14	4	reached: value on the left of <= a value of another type
+mixed	31	10	reached: value on the left of <= finds no row
+mixed	5	1	reached: value on the left of <= finds rows
+mixed	10	3	reached: value on the left of <= no such column
+mixed	7	2	reached: value on the left of <= not supported
+mixed	4	1	reached: value on the left of <= wrong number of arguments
+mixed	22	7	reached: value on the left of = a value of another type
+mixed	82	27	reached: value on the left of = finds no row
+mixed	23	7	reached: value on the left of = finds rows
+mixed	23	7	reached: value on the left of = no such column
+mixed	11	3	reached: value on the left of = not supported
+mixed	15	5	reached: value on the left of = wrong number of arguments
+mixed	23	7	reached: value on the left of > a value of another type
+mixed	40	13	reached: value on the left of > finds no row
+mixed	8	2	reached: value on the left of > finds rows
+mixed	15	5	reached: value on the left of > no such column
+mixed	5	1	reached: value on the left of > not supported
+mixed	7	2	reached: value on the left of > wrong number of arguments
+mixed	17	5	reached: value on the left of >= a value of another type
+mixed	37	12	reached: value on the left of >= finds no row
+mixed	6	2	reached: value on the left of >= finds rows
+mixed	19	6	reached: value on the left of >= no such column
+mixed	5	1	reached: value on the left of >= not supported
+mixed	8	2	reached: value on the left of >= wrong number of arguments
+mixed	144	48	reached: value on the left on a table that a create table if not exists found
+mixed	8	2	reached: value on the left string or blob too big
+mixed	66	22	select no such column
+mixed	62	20	select wrong number of arguments
+tables	7	2	createtable duplicate column name
+tables	171	=	excused: a value of another type than its column, checked against s4ql's rule
+tables	26	8	insert  values for 
+tables	51	17	insert NOT NULL constraint failed
+tables	15	5	insert values were supplied
+tables	82	27	insert with a parameter UNIQUE constraint failed
+tables	80	26	insert with a parameter not supported
+tables	177	59	insert with a parameter ok
+tables	4	1	reached: -0.0 literal into REAL UNIQUE constraint failed
+tables	5	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+tables	3	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+tables	20	6	reached: NULL argument into the key NOT NULL constraint failed
+tables	12	4	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+tables	8	2	reached: NULL literal into a column that takes NULL a value of another type
+tables	12	4	reached: NULL literal into a column that takes NULL ok
+tables	39	13	reached: NULL literal into the key NOT NULL constraint failed
+tables	67	22	reached: argument []uint8
+tables	17	5	reached: argument empty []byte
+tables	7	2	reached: argument empty string
+tables	127	42	reached: argument float64
+tables	10	3	reached: argument float64 -0.0
+tables	317	105	reached: argument int64
+tables	48	16	reached: argument nil
+tables	68	22	reached: argument string
+tables	59	19	reached: create table of 1 columns ok
+tables	43	14	reached: create table of 2 columns ok
+tables	35	11	reached: create table of 3 columns ok
+tables	37	12	reached: create table of mixed types ok
+tables	31	10	reached: create table of which every column outside the key takes NULL ok
+tables	45	15	reached: create table of which no column takes NULL ok
+tables	86	28	reached: create table with the key at 0 ok
+tables	35	11	reached: create table with the key at 1 ok
+tables	16	5	reached: create table with the key at 2 ok
+tables	57	19	reached: create table with two columns of a type ok
+tables	34	11	reached: insert into BLOB UNIQUE constraint failed
+tables	24	8	reached: insert into BLOB a value of another type
+tables	57	19	reached: insert into BLOB ok
+tables	5	1	reached: insert into BLOB string or blob too big
+tables	45	15	reached: insert into INT UNIQUE constraint failed
+tables	45	15	reached: insert into INT a value of another type
+tables	73	24	reached: insert into INT ok
+tables	68	22	reached: insert into INTEGER UNIQUE constraint failed
+tables	65	21	reached: insert into INTEGER a value of another type
+tables	135	45	reached: insert into INTEGER ok
+tables	15	5	reached: insert into REAL UNIQUE constraint failed
+tables	10	3	reached: insert into REAL a value of another type
+tables	61	20	reached: insert into REAL ok
+tables	22	7	reached: insert into TEXT UNIQUE constraint failed
+tables	27	9	reached: insert into TEXT a value of another type
+tables	44	14	reached: insert into TEXT ok
+tables	3	1	reached: insert of NULL beside a value of another type NOT NULL constraint failed
+tables	9	3	reached: insert of NULL beside a value of another type a value of another type
+tables	3	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+tables	6	2	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+tables	9	3	reached: insert that leaves out a column that takes NULL a value of another type
+tables	26	8	reached: insert that leaves out a column that takes NULL ok
+tables	13	4	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+tables	27	9	reached: insert with NULL in the key: NOT NULL constraint failed
+tables	33	11	reached: insert with a column that the table does not have: has no column named
+tables	32	10	reached: insert with a column without a value: NOT NULL constraint failed
+tables	9	3	reached: insert with a list in another order NOT NULL constraint failed
+tables	17	5	reached: insert with a list in another order UNIQUE constraint failed
+tables	25	8	reached: insert with a list in another order a value of another type
+tables	50	16	reached: insert with a list in another order ok
+tables	78	26	reached: insert with a list in the order of the table ok
+tables	40	13	reached: insert with a value of another type in another column: a value of another type
+tables	54	18	reached: insert with a value of another type in the key: a value of another type
+tables	37	12	reached: insert with the wrong number of values:  values for 
+tables	27	9	reached: insert with the wrong number of values: values were supplied
+tables	12	4	reached: insert with two faults: NOT NULL constraint failed
+tables	7	2	reached: insert with two faults: a value of another type
+tables	10	3	reached: insert with two faults: has no column named
+tables	76	25	reached: insert without a list ok
+tables	128	42	reached: literal blob
+tables	37	12	reached: literal empty blob
+tables	28	9	reached: literal empty text
+tables	587	195	reached: literal integer
+tables	96	32	reached: literal null
+tables	274	91	reached: literal real
+tables	11	3	reached: literal real -0.0
+tables	115	38	reached: literal text
+tables	28	9	reached: long value
+tables	86	28	reached: select * of 1 columns ok
+tables	73	24	reached: select * of 2 columns ok
+tables	56	18	reached: select * of 3 columns ok
+tables	9	3	reached: select * with NULL ok
+tables	15	5	reached: select of a name in double quotes that the table does not have no such column
+tables	10	3	reached: select of a name that the table does not have no such column
+tables	118	39	reached: select of a name twice ok
+tables	37	12	reached: select of names in another order ok
+tables	183	61	reached: select of names ok
+tables	6	2	reached: select of names with NULL ok
+tables	25	8	select no such column
+where	2	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
+where	1	=	excused: a literal longer than the length limit, checked against s4ql's rule
+where	131	=	excused: a value of another type than its column, checked against s4ql's rule
+where	14	4	insert NOT NULL constraint failed
+where	3	1	insert values were supplied
+where	91	30	insert with a parameter UNIQUE constraint failed
+where	28	9	insert with a parameter not supported
+where	182	60	insert with a parameter ok
+where	25	8	reached: != on another column ok
+where	22	7	reached: != on the key a value of another type
+where	74	24	reached: != on the key ok
+where	7	2	reached: -0.0 literal into REAL UNIQUE constraint failed
+where	22	7	reached: < on another column ok
+where	24	8	reached: < on the key a value of another type
+where	113	37	reached: < on the key ok
+where	27	9	reached: <= on another column ok
+where	29	9	reached: <= on the key a value of another type
+where	119	39	reached: <= on the key ok
+where	30	10	reached: = on another column ok
+where	17	5	reached: = on the key a value of another type
+where	70	23	reached: = on the key ok
+where	22	7	reached: > on another column ok
+where	23	7	reached: > on the key a value of another type
+where	111	37	reached: > on the key ok
+where	33	11	reached: >= on another column ok
+where	24	8	reached: >= on the key a value of another type
+where	137	45	reached: >= on the key ok
+where	13	4	reached: IS NOT NULL on another column ok
+where	63	21	reached: IS NOT NULL on the key ok
+where	14	4	reached: IS NULL on another column ok
+where	64	21	reached: IS NULL on the key ok
+where	9	3	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+where	12	4	reached: NULL argument into a column that takes NULL ok
+where	3	1	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+where	16	5	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+where	3	1	reached: NULL literal into a column that takes NULL a value of another type
+where	26	8	reached: NULL literal into a column that takes NULL ok
+where	8	2	reached: NULL literal into the key NOT NULL constraint failed
+where	442	147	reached: WHERE run by every path
+where	35	11	reached: WHERE that gives every row of a table with rows
+where	167	55	reached: WHERE that gives no row of a table with rows
+where	88	29	reached: WHERE that gives some rows of a table
+where	52	17	reached: WHERE that reads a get of one key ok
+where	47	15	reached: WHERE that reads a scan between two bounds ok
+where	49	16	reached: WHERE that reads a scan between two bounds that hold no key ok
+where	56	18	reached: WHERE that reads a scan from a lower bound ok
+where	99	33	reached: WHERE that reads a scan of every row ok
+where	47	15	reached: WHERE that reads a scan to an upper bound ok
+where	92	30	reached: WHERE that reads no row ok
+where	257	85	reached: WHERE that tests a column more than once ok
+where	64	21	reached: WHERE with a column in double quotes that the table does not have no such column
+where	40	13	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+where	12	4	reached: WHERE with a column that the table does not have in a comparison, alone no such column
+where	51	17	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+where	4	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
+where	3	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column
+where	20	6	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
+where	12	4	reached: WHERE with a literal longer than the length limit
+where	73	24	reached: WHERE with a value of another type a value of another type
+where	70	23	reached: WHERE with contradicting conditions ok
+where	32	10	reached: argument []uint8
+where	13	4	reached: argument empty []byte
+where	12	4	reached: argument empty string
+where	65	21	reached: argument float64
+where	6	2	reached: argument float64 -0.0
+where	173	57	reached: argument int64
+where	29	9	reached: argument nil
+where	80	26	reached: argument string
+where	52	17	reached: chosen a get
+where	99	33	reached: chosen every row
+where	92	30	reached: chosen no row
+where	199	66	reached: chosen the primary key with 0 pinned and a range
+where	29	9	reached: comparison with argument []uint8 ok
+where	3	1	reached: comparison with argument empty []byte ok
+where	14	4	reached: comparison with argument empty string ok
+where	3	1	reached: comparison with argument float64 -0.0 ok
+where	39	13	reached: comparison with argument float64 ok
+where	103	34	reached: comparison with argument int64 ok
+where	11	3	reached: comparison with argument nil ok
+where	44	14	reached: comparison with argument string ok
+where	56	18	reached: comparison with literal blob ok
+where	14	4	reached: comparison with literal empty blob ok
+where	17	5	reached: comparison with literal empty text ok
+where	224	74	reached: comparison with literal integer ok
+where	28	9	reached: comparison with literal null ok
+where	17	5	reached: comparison with literal real -0.0 ok
+where	101	33	reached: comparison with literal real ok
+where	80	26	reached: comparison with literal text ok
+where	60	20	reached: create table of 1 columns ok
+where	22	7	reached: create table of 2 columns ok
+where	39	13	reached: create table of 3 columns ok
+where	32	10	reached: create table of mixed types ok
+where	30	10	reached: create table of which every column outside the key takes NULL ok
+where	24	8	reached: create table of which no column takes NULL ok
+where	7	2	reached: create table of which some columns outside the key take NULL ok
+where	88	29	reached: create table with the key at 0 ok
+where	23	7	reached: create table with the key at 1 ok
+where	10	3	reached: create table with the key at 2 ok
+where	49	16	reached: create table with two columns of a type ok
+where	23	7	reached: insert into BLOB UNIQUE constraint failed
+where	6	2	reached: insert into BLOB a value of another type
+where	36	12	reached: insert into BLOB ok
+where	34	11	reached: insert into INT UNIQUE constraint failed
+where	13	4	reached: insert into INT a value of another type
+where	51	17	reached: insert into INT ok
+where	52	17	reached: insert into INTEGER UNIQUE constraint failed
+where	30	10	reached: insert into INTEGER a value of another type
+where	85	28	reached: insert into INTEGER ok
+where	44	14	reached: insert into REAL UNIQUE constraint failed
+where	7	2	reached: insert into REAL a value of another type
+where	83	27	reached: insert into REAL ok
+where	22	7	reached: insert into TEXT UNIQUE constraint failed
+where	94	31	reached: insert into TEXT ok
+where	8	2	reached: insert into TEXT string or blob too big
+where	5	1	reached: insert of NULL beside a value of another type a value of another type
+where	22	7	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+where	46	15	reached: insert that leaves out a column that takes NULL ok
+where	4	1	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+where	6	2	reached: insert with a column without a value: NOT NULL constraint failed
+where	5	1	reached: insert with a list in another order NOT NULL constraint failed
+where	23	7	reached: insert with a list in another order UNIQUE constraint failed
+where	5	1	reached: insert with a list in another order a value of another type
+where	37	12	reached: insert with a list in another order ok
+where	79	26	reached: insert with a list in the order of the table ok
+where	36	12	reached: insert with a value of another type in another column: a value of another type
+where	5	1	reached: insert with the wrong number of values:  values for 
+where	3	1	reached: insert with the wrong number of values: values were supplied
+where	71	23	reached: insert without a list ok
+where	83	27	reached: literal blob
+where	14	4	reached: literal empty blob
+where	35	11	reached: literal empty text
+where	325	108	reached: literal integer
+where	59	19	reached: literal null
+where	114	38	reached: literal real
+where	18	6	reached: literal real -0.0
+where	125	41	reached: literal text
+where	32	10	reached: long value
+where	785	261	reached: path backward
+where	785	261	reached: path forward
+where	884	294	reached: path of every row
+where	398	132	reached: path of the primary key with 0 pinned and a range
+where	104	34	reached: path of the primary key with 1 pinned
+where	184	61	reached: path that reads no row
+where	416	138	reached: plan of the cache checked
+where	698	232	reached: read both ways
+where	140	46	reached: select * of 1 columns ok
+where	81	27	reached: select * of 2 columns ok
+where	124	41	reached: select * of 3 columns ok
+where	40	13	reached: select * with NULL ok
+where	29	9	reached: select of a name in double quotes that the table does not have no such column
+where	19	6	reached: select of a name that the table does not have no such column
+where	202	67	reached: select of a name twice ok
+where	56	18	reached: select of names in another order ok
+where	298	99	reached: select of names ok
+where	20	6	reached: select of names with NULL ok
+where	76	25	select no such column
+changes	2	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
+changes	4	=	excused: a literal longer than the length limit, checked against s4ql's rule
+changes	292	=	excused: a value of another type than its column, checked against s4ql's rule
+changes	12	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+changes	10	3	insert  values for 
+changes	46	15	insert NOT NULL constraint failed
+changes	6	2	insert values were supplied
+changes	173	57	insert with a parameter UNIQUE constraint failed
+changes	63	21	insert with a parameter not supported
+changes	418	139	insert with a parameter ok
+changes	3	1	reached: != on another column ok
+changes	16	5	reached: != on the key ok
+changes	3	1	reached: -0.0 argument into REAL UNIQUE constraint failed
+changes	7	2	reached: -0.0 literal into REAL UNIQUE constraint failed
+changes	11	3	reached: < on another column ok
+changes	4	1	reached: < on the key a value of another type
+changes	42	14	reached: < on the key ok
+changes	14	4	reached: <= on another column ok
+changes	8	2	reached: <= on the key a value of another type
+changes	29	9	reached: <= on the key ok
+changes	7	2	reached: = on another column ok
+changes	5	1	reached: = on the key a value of another type
+changes	18	6	reached: = on the key ok
+changes	14	4	reached: > on another column ok
+changes	7	2	reached: > on the key a value of another type
+changes	53	17	reached: > on the key ok
+changes	14	4	reached: >= on another column ok
+changes	8	2	reached: >= on the key a value of another type
+changes	37	12	reached: >= on the key ok
+changes	4	1	reached: IS NOT NULL on another column ok
+changes	15	5	reached: IS NOT NULL on the key ok
+changes	5	1	reached: IS NULL on another column ok
+changes	10	3	reached: IS NULL on the key ok
+changes	7	2	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+changes	13	4	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+changes	3	1	reached: NULL argument into a column that takes NULL a value of another type
+changes	22	7	reached: NULL argument into a column that takes NULL ok
+changes	4	1	reached: NULL argument into the key NOT NULL constraint failed
+changes	8	2	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+changes	24	8	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+changes	7	2	reached: NULL literal into a column that takes NULL a value of another type
+changes	51	17	reached: NULL literal into a column that takes NULL ok
+changes	18	6	reached: NULL literal into the key NOT NULL constraint failed
+changes	54	18	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+changes	50	16	reached: SET of NULL for a column that does not take it ok, no row found
+changes	60	20	reached: SET of a column in double quotes that the table does not have no such column
+changes	99	33	reached: SET of a column that the table does not have no such column
+changes	64	21	reached: SET of every column ok, rows changed
+changes	45	15	reached: SET of the key NOT NULL constraint failed
+changes	105	35	reached: SET of the key UNIQUE constraint failed
+changes	89	29	reached: SET of the key ok, rows changed
+changes	89	29	reached: SET with a value of another type a value of another type
+changes	25	8	reached: SET with argument []uint8 ok, no row found
+changes	18	6	reached: SET with argument float64 ok, rows changed
+changes	43	14	reached: SET with argument int64 ok, rows changed
+changes	4	1	reached: SET with argument nil ok, rows changed
+changes	12	4	reached: SET with argument string ok, rows changed
+changes	23	7	reached: SET with literal blob ok, rows changed
+changes	6	2	reached: SET with literal empty blob ok, rows changed
+changes	3	1	reached: SET with literal empty text ok, rows changed
+changes	66	22	reached: SET with literal integer ok, rows changed
+changes	9	3	reached: SET with literal null ok, rows changed
+changes	12	4	reached: SET with literal real -0.0 ok, rows changed
+changes	38	12	reached: SET with literal real ok, rows changed
+changes	17	5	reached: SET with literal text ok, rows changed
+changes	1028	342	reached: WHERE run by every path
+changes	15	5	reached: WHERE that gives every row of a table with rows
+changes	57	19	reached: WHERE that gives no row of a table with rows
+changes	23	7	reached: WHERE that gives some rows of a table
+changes	14	4	reached: WHERE that reads a get of one key ok
+changes	25	8	reached: WHERE that reads a scan between two bounds ok
+changes	12	4	reached: WHERE that reads a scan between two bounds that hold no key ok
+changes	27	9	reached: WHERE that reads a scan from a lower bound ok
+changes	36	12	reached: WHERE that reads a scan of every row ok
+changes	13	4	reached: WHERE that reads a scan to an upper bound ok
+changes	13	4	reached: WHERE that reads no row ok
+changes	77	25	reached: WHERE that tests a column more than once ok
+changes	8	2	reached: WHERE with a column in double quotes that the table does not have no such column
+changes	5	1	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+changes	3	1	reached: WHERE with a column that the table does not have in a comparison, alone no such column
+changes	9	3	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+changes	18	6	reached: WHERE with a value of another type a value of another type
+changes	7	2	reached: WHERE with contradicting conditions ok
+changes	115	38	reached: argument []uint8
+changes	49	16	reached: argument empty []byte
+changes	36	12	reached: argument empty string
+changes	158	52	reached: argument float64
+changes	21	7	reached: argument float64 -0.0
+changes	382	127	reached: argument int64
+changes	59	19	reached: argument nil
+changes	156	52	reached: argument string
+changes	1147	382	reached: changed both ways
+changes	419	139	reached: chosen a get
+changes	109	36	reached: chosen every row
+changes	82	27	reached: chosen no row
+changes	350	116	reached: chosen the primary key with 0 pinned and a range
+changes	15	5	reached: comparison with argument []uint8 ok
+changes	4	1	reached: comparison with argument empty []byte ok
+changes	9	3	reached: comparison with argument empty string ok
+changes	17	5	reached: comparison with argument float64 ok
+changes	35	11	reached: comparison with argument int64 ok
+changes	12	4	reached: comparison with argument string ok
+changes	29	9	reached: comparison with literal blob ok
+changes	9	3	reached: comparison with literal empty blob ok
+changes	4	1	reached: comparison with literal empty text ok
+changes	71	23	reached: comparison with literal integer ok
+changes	3	1	reached: comparison with literal real -0.0 ok
+changes	21	7	reached: comparison with literal real ok
+changes	24	8	reached: comparison with literal text ok
+changes	68	22	reached: create table of 1 columns ok
+changes	64	21	reached: create table of 2 columns ok
+changes	79	26	reached: create table of 3 columns ok
+changes	83	27	reached: create table of mixed types ok
+changes	63	21	reached: create table of which every column outside the key takes NULL ok
+changes	57	19	reached: create table of which no column takes NULL ok
+changes	23	7	reached: create table of which some columns outside the key take NULL ok
+changes	142	47	reached: create table with the key at 0 ok
+changes	43	14	reached: create table with the key at 1 ok
+changes	26	8	reached: create table with the key at 2 ok
+changes	101	33	reached: create table with two columns of a type ok
+changes	51	17	reached: delete WHERE that reads a get of one key ok, rows changed
+changes	6	2	reached: delete WHERE that reads a scan between two bounds ok, rows changed
+changes	14	4	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+changes	12	4	reached: delete WHERE that reads a scan from a lower bound ok, rows changed
+changes	5	1	reached: delete WHERE that reads a scan of every row ok, rows changed
+changes	21	7	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+changes	22	7	reached: delete WHERE that reads no row ok, no row found
+changes	12	4	reached: delete WHERE that tests a column more than once ok, rows changed
+changes	17	5	reached: delete WHERE with a column in double quotes that the table does not have no such column
+changes	29	9	reached: delete WHERE with a value of another type a value of another type
+changes	14	4	reached: delete WHERE with contradicting conditions ok, no row found
+changes	80	26	reached: delete that changes every row of a table with rows
+changes	82	27	reached: delete that changes no row of a table with rows
+changes	69	23	reached: delete that changes some rows of a table
+changes	30	10	reached: delete with WHERE no such column
+changes	133	44	reached: delete with WHERE ok, no row found
+changes	95	31	reached: delete with WHERE ok, rows changed
+changes	11	3	reached: delete without WHERE ok, no row found
+changes	54	18	reached: delete without WHERE ok, rows changed
+changes	77	25	reached: insert into BLOB UNIQUE constraint failed
+changes	54	18	reached: insert into BLOB a value of another type
+changes	142	47	reached: insert into BLOB ok
+changes	4	1	reached: insert into BLOB string or blob too big
+changes	60	20	reached: insert into INT UNIQUE constraint failed
+changes	29	9	reached: insert into INT a value of another type
+changes	160	53	reached: insert into INT ok
+changes	65	21	reached: insert into INTEGER UNIQUE constraint failed
+changes	7	2	reached: insert into INTEGER a value of another type
+changes	175	58	reached: insert into INTEGER ok
+changes	68	22	reached: insert into REAL UNIQUE constraint failed
+changes	16	5	reached: insert into REAL a value of another type
+changes	159	53	reached: insert into REAL ok
+changes	64	21	reached: insert into TEXT UNIQUE constraint failed
+changes	17	5	reached: insert into TEXT a value of another type
+changes	179	59	reached: insert into TEXT ok
+changes	10	3	reached: insert into TEXT string or blob too big
+changes	10	3	reached: insert of NULL beside a value of another type a value of another type
+changes	4	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+changes	36	12	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+changes	15	5	reached: insert that leaves out a column that takes NULL a value of another type
+changes	84	28	reached: insert that leaves out a column that takes NULL ok
+changes	14	4	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+changes	9	3	reached: insert with NULL in the key: NOT NULL constraint failed
+changes	6	2	reached: insert with a column that the table does not have: has no column named
+changes	27	9	reached: insert with a column without a value: NOT NULL constraint failed
+changes	8	2	reached: insert with a list in another order NOT NULL constraint failed
+changes	53	17	reached: insert with a list in another order UNIQUE constraint failed
+changes	25	8	reached: insert with a list in another order a value of another type
+changes	118	39	reached: insert with a list in another order ok
+changes	247	82	reached: insert with a list in the order of the table ok
+changes	58	19	reached: insert with a value of another type in another column: a value of another type
+changes	20	6	reached: insert with a value of another type in the key: a value of another type
+changes	24	8	reached: insert with the wrong number of values:  values for 
+changes	12	4	reached: insert with the wrong number of values: values were supplied
+changes	11	3	reached: insert with two faults: NOT NULL constraint failed
+changes	215	71	reached: insert without a list ok
+changes	272	90	reached: literal blob
+changes	81	27	reached: literal empty blob
+changes	60	20	reached: literal empty text
+changes	747	249	reached: literal integer
+changes	121	40	reached: literal null
+changes	314	104	reached: literal real
+changes	46	15	reached: literal real -0.0
+changes	320	106	reached: literal text
+changes	61	20	reached: long value
+changes	1939	646	reached: path backward
+changes	1939	646	reached: path forward
+changes	2056	685	reached: path of every row
+changes	746	248	reached: path of the primary key with 0 pinned and a range
+changes	904	301	reached: path of the primary key with 1 pinned
+changes	172	57	reached: path that reads no row
+changes	1024	341	reached: plan of the cache checked
+changes	185	61	reached: read both ways
+changes	30	10	reached: select * of 1 columns ok
+changes	58	19	reached: select * of 2 columns ok
+changes	49	16	reached: select * of 3 columns ok
+changes	16	5	reached: select * with NULL ok
+changes	7	2	reached: select of a name in double quotes that the table does not have no such column
+changes	5	1	reached: select of a name that the table does not have no such column
+changes	102	34	reached: select of a name twice ok
+changes	32	10	reached: select of names in another order ok
+changes	150	50	reached: select of names ok
+changes	10	3	reached: select of names with NULL ok
+changes	89	29	reached: update WHERE that reads a get of one key ok, rows changed
+changes	8	2	reached: update WHERE that reads a scan between two bounds ok, rows changed
+changes	24	8	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
+changes	11	3	reached: update WHERE that reads a scan from a lower bound ok, rows changed
+changes	18	6	reached: update WHERE that reads a scan of every row ok, rows changed
+changes	19	6	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+changes	41	13	reached: update WHERE that reads no row ok, no row found
+changes	15	5	reached: update WHERE that tests a column more than once ok, rows changed
+changes	36	12	reached: update WHERE with a column in double quotes that the table does not have no such column
+changes	62	20	reached: update WHERE with a value of another type a value of another type
+changes	36	12	reached: update WHERE with contradicting conditions ok, no row found
+changes	9	3	reached: update of a row whose record is too long
+changes	126	42	reached: update that changes every row of a table with rows
+changes	231	77	reached: update that changes no row of a table with rows
+changes	96	32	reached: update that changes some rows of a table
+changes	27	9	reached: update with WHERE NOT NULL constraint failed
+changes	43	14	reached: update with WHERE UNIQUE constraint failed
+changes	132	44	reached: update with WHERE no such column
+changes	338	112	reached: update with WHERE ok, no row found
+changes	145	48	reached: update with WHERE ok, rows changed
+changes	14	4	reached: update with a literal longer than the length limit in SET
+changes	27	9	reached: update without WHERE NOT NULL constraint failed
+changes	62	20	reached: update without WHERE UNIQUE constraint failed
+changes	52	17	reached: update without WHERE ok, no row found
+changes	77	25	reached: update without WHERE ok, rows changed
+changes	12	4	select no such column
+indexes	9	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
+indexes	1	=	excused: a literal longer than the length limit, checked against s4ql's rule
+indexes	197	=	excused: a value of another type than its column, checked against s4ql's rule
+indexes	8	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+indexes	5	1	insert  values for 
+indexes	26	8	insert NOT NULL constraint failed
+indexes	7	2	insert values were supplied
+indexes	104	34	insert with a parameter UNIQUE constraint failed
+indexes	63	21	insert with a parameter not supported
+indexes	337	112	insert with a parameter ok
+indexes	18	6	reached: != on another column ok
+indexes	4	1	reached: != on the key a value of another type
+indexes	51	17	reached: != on the key ok
+indexes	4	1	reached: -0.0 argument into REAL UNIQUE constraint failed
+indexes	6	2	reached: -0.0 literal into REAL UNIQUE constraint failed
+indexes	33	11	reached: < on another column ok
+indexes	16	5	reached: < on the key a value of another type
+indexes	112	37	reached: < on the key ok
+indexes	34	11	reached: <= on another column ok
+indexes	14	4	reached: <= on the key a value of another type
+indexes	105	35	reached: <= on the key ok
+indexes	175	58	reached: = on another column ok
+indexes	24	8	reached: = on the key a value of another type
+indexes	104	34	reached: = on the key ok
+indexes	40	13	reached: > on another column ok
+indexes	7	2	reached: > on the key a value of another type
+indexes	108	36	reached: > on the key ok
+indexes	50	16	reached: >= on another column ok
+indexes	14	4	reached: >= on the key a value of another type
+indexes	93	31	reached: >= on the key ok
+indexes	21	7	reached: IS NOT NULL on another column ok
+indexes	23	7	reached: IS NOT NULL on the key ok
+indexes	61	20	reached: IS NULL on another column ok
+indexes	42	14	reached: IS NULL on the key ok
+indexes	6	2	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+indexes	8	2	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+indexes	3	1	reached: NULL argument into a column that takes NULL a value of another type
+indexes	27	9	reached: NULL argument into a column that takes NULL ok
+indexes	5	1	reached: NULL argument into the key NOT NULL constraint failed
+indexes	11	3	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+indexes	18	6	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+indexes	3	1	reached: NULL literal into a column that takes NULL a value of another type
+indexes	56	18	reached: NULL literal into a column that takes NULL ok
+indexes	6	2	reached: NULL literal into the key NOT NULL constraint failed
+indexes	13	4	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+indexes	13	4	reached: SET of NULL for a column that does not take it ok, no row found
+indexes	6	2	reached: SET of a column in double quotes that the table does not have no such column
+indexes	15	5	reached: SET of a column that the table does not have no such column
+indexes	10	3	reached: SET of every column ok, rows changed
+indexes	6	2	reached: SET of the key NOT NULL constraint failed
+indexes	27	9	reached: SET of the key UNIQUE constraint failed
+indexes	22	7	reached: SET of the key ok, rows changed
+indexes	19	6	reached: SET with a value of another type a value of another type
+indexes	10	3	reached: SET with argument []uint8 ok, no row found
+indexes	3	1	reached: SET with argument float64 ok, rows changed
+indexes	18	6	reached: SET with argument int64 ok, rows changed
+indexes	6	2	reached: SET with argument string ok, rows changed
+indexes	8	2	reached: SET with literal blob ok, rows changed
+indexes	4	1	reached: SET with literal empty blob ok, rows changed
+indexes	4	1	reached: SET with literal empty text ok, rows changed
+indexes	23	7	reached: SET with literal integer ok, rows changed
+indexes	4	1	reached: SET with literal null ok, rows changed
+indexes	3	1	reached: SET with literal real -0.0 ok, rows changed
+indexes	16	5	reached: SET with literal real ok, rows changed
+indexes	17	5	reached: SET with literal text ok, rows changed
+indexes	408	136	reached: WHERE run by a sample of its paths
+indexes	914	304	reached: WHERE run by every path
+indexes	500	166	reached: WHERE run by every path on a table with an index
+indexes	32	10	reached: WHERE that gives every row of a table with rows
+indexes	220	73	reached: WHERE that gives no row of a table with rows
+indexes	49	16	reached: WHERE that gives some rows of a table
+indexes	89	29	reached: WHERE that reads a get of one key ok
+indexes	35	11	reached: WHERE that reads a scan between two bounds ok
+indexes	44	14	reached: WHERE that reads a scan between two bounds that hold no key ok
+indexes	58	19	reached: WHERE that reads a scan from a lower bound ok
+indexes	143	47	reached: WHERE that reads a scan of every row ok
+indexes	58	19	reached: WHERE that reads a scan to an upper bound ok
+indexes	68	22	reached: WHERE that reads no row ok
+indexes	224	74	reached: WHERE that tests a column more than once ok
+indexes	12	4	reached: WHERE with a column in double quotes that the table does not have no such column
+indexes	16	5	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+indexes	4	1	reached: WHERE with a column that the table does not have in a comparison, alone no such column
+indexes	15	5	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+indexes	3	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
+indexes	17	5	reached: WHERE with a literal longer than the length limit
+indexes	62	20	reached: WHERE with a value of another type a value of another type
+indexes	29	9	reached: WHERE with contradicting conditions ok
+indexes	113	37	reached: argument []uint8
+indexes	31	10	reached: argument empty []byte
+indexes	32	10	reached: argument empty string
+indexes	101	33	reached: argument float64
+indexes	21	7	reached: argument float64 -0.0
+indexes	241	80	reached: argument int64
+indexes	55	18	reached: argument nil
+indexes	160	53	reached: argument string
+indexes	505	168	reached: changed both ways
+indexes	218	72	reached: chosen a get
+indexes	75	25	reached: chosen a get of a table of several indexes
+indexes	22	7	reached: chosen an index with 0 pinned and a range
+indexes	33	11	reached: chosen an index with 1 pinned
+indexes	23	7	reached: chosen an index with 1 pinned and a range
+indexes	20	6	reached: chosen an index with 1 pinned of a table of several indexes
+indexes	7	2	reached: chosen an index with 2 pinned
+indexes	6	2	reached: chosen an index with 2 pinned and a range
+indexes	94	31	reached: chosen every row
+indexes	6	2	reached: chosen every row of a table of several indexes
+indexes	69	23	reached: chosen no row
+indexes	224	74	reached: chosen the primary key with 0 pinned and a range
+indexes	55	18	reached: comparison with argument []uint8 ok
+indexes	13	4	reached: comparison with argument empty []byte ok
+indexes	13	4	reached: comparison with argument empty string ok
+indexes	4	1	reached: comparison with argument float64 -0.0 ok
+indexes	28	9	reached: comparison with argument float64 ok
+indexes	130	43	reached: comparison with argument int64 ok
+indexes	5	1	reached: comparison with argument nil ok
+indexes	48	16	reached: comparison with argument string ok
+indexes	101	33	reached: comparison with literal blob ok
+indexes	36	12	reached: comparison with literal empty blob ok
+indexes	18	6	reached: comparison with literal empty text ok
+indexes	245	81	reached: comparison with literal integer ok
+indexes	22	7	reached: comparison with literal null ok
+indexes	12	4	reached: comparison with literal real -0.0 ok
+indexes	91	30	reached: comparison with literal real ok
+indexes	102	34	reached: comparison with literal text ok
+indexes	153	51	reached: create index already exists
+indexes	45	15	reached: create index no such column
+indexes	25	8	reached: create index no such table
+indexes	145	48	reached: create index of 1 columns ok
+indexes	117	39	reached: create index of 2 columns ok
+indexes	12	4	reached: create index of 3 columns ok
+indexes	92	30	reached: create index of a column of type BLOB ok
+indexes	86	28	reached: create index of a column of type INT ok
+indexes	80	26	reached: create index of a column of type INTEGER ok
+indexes	52	17	reached: create index of a column of type REAL ok
+indexes	105	35	reached: create index of a column of type TEXT ok
+indexes	178	59	reached: create index of a column that takes NULL ok
+indexes	146	48	reached: create index of a descending column ok
+indexes	274	91	reached: create index ok
+indexes	58	19	reached: create index that holds the primary key ok
+indexes	39	13	reached: create index there is already a table named
+indexes	118	39	reached: create table of 2 columns ok
+indexes	79	26	reached: create table of 3 columns ok
+indexes	91	30	reached: create table of mixed types ok
+indexes	95	31	reached: create table of which every column outside the key takes NULL ok
+indexes	89	29	reached: create table of which no column takes NULL ok
+indexes	13	4	reached: create table of which some columns outside the key take NULL ok
+indexes	80	26	reached: create table with the key at 0 ok
+indexes	87	29	reached: create table with the key at 1 ok
+indexes	31	10	reached: create table with the key at 2 ok
+indexes	148	49	reached: create table with two columns of a type ok
+indexes	35	11	reached: delete WHERE that reads a get of one key ok, rows changed
+indexes	4	1	reached: delete WHERE that reads a scan between two bounds ok, rows changed
+indexes	9	3	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+indexes	14	4	reached: delete WHERE that reads a scan of every row ok, rows changed
+indexes	9	3	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+indexes	6	2	reached: delete WHERE that reads no row ok, no row found
+indexes	6	2	reached: delete WHERE that tests a column more than once ok, rows changed
+indexes	17	5	reached: delete WHERE with a value of another type a value of another type
+indexes	6	2	reached: delete WHERE with contradicting conditions ok, no row found
+indexes	43	14	reached: delete that changes every row of a table with rows
+indexes	69	23	reached: delete that changes no row of a table with rows
+indexes	48	16	reached: delete that changes some rows of a table
+indexes	3	1	reached: delete with WHERE no such column
+indexes	126	42	reached: delete with WHERE ok, no row found
+indexes	64	21	reached: delete with WHERE ok, rows changed
+indexes	16	5	reached: delete without WHERE ok, no row found
+indexes	27	9	reached: delete without WHERE ok, rows changed
+indexes	108	36	reached: drop index no such index
+indexes	128	42	reached: drop index ok
+indexes	45	15	reached: insert into BLOB UNIQUE constraint failed
+indexes	20	6	reached: insert into BLOB a value of another type
+indexes	122	40	reached: insert into BLOB ok
+indexes	8	2	reached: insert into BLOB string or blob too big
+indexes	59	19	reached: insert into INT UNIQUE constraint failed
+indexes	24	8	reached: insert into INT a value of another type
+indexes	148	49	reached: insert into INT ok
+indexes	10	3	reached: insert into INTEGER UNIQUE constraint failed
+indexes	16	5	reached: insert into INTEGER a value of another type
+indexes	61	20	reached: insert into INTEGER ok
+indexes	38	12	reached: insert into REAL UNIQUE constraint failed
+indexes	28	9	reached: insert into REAL a value of another type
+indexes	100	33	reached: insert into REAL ok
+indexes	33	11	reached: insert into TEXT UNIQUE constraint failed
+indexes	127	42	reached: insert into TEXT ok
+indexes	9	3	reached: insert into TEXT string or blob too big
+indexes	6	2	reached: insert of NULL beside a value of another type a value of another type
+indexes	5	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+indexes	23	7	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+indexes	15	5	reached: insert that leaves out a column that takes NULL a value of another type
+indexes	79	26	reached: insert that leaves out a column that takes NULL ok
+indexes	16	5	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+indexes	10	3	reached: insert with NULL in the key: NOT NULL constraint failed
+indexes	5	1	reached: insert with a column that the table does not have: has no column named
+indexes	21	7	reached: insert with a column without a value: NOT NULL constraint failed
+indexes	10	3	reached: insert with a list in another order NOT NULL constraint failed
+indexes	49	16	reached: insert with a list in another order UNIQUE constraint failed
+indexes	19	6	reached: insert with a list in another order a value of another type
+indexes	127	42	reached: insert with a list in another order ok
+indexes	239	79	reached: insert with a list in the order of the table ok
+indexes	24	8	reached: insert with a value of another type in another column: a value of another type
+indexes	63	21	reached: insert with a value of another type in the key: a value of another type
+indexes	14	4	reached: insert with the wrong number of values:  values for 
+indexes	11	3	reached: insert with the wrong number of values: values were supplied
+indexes	3	1	reached: insert with two faults: a value of another type
+indexes	192	64	reached: insert without a list ok
+indexes	239	79	reached: literal blob
+indexes	75	25	reached: literal empty blob
+indexes	43	14	reached: literal empty text
+indexes	444	148	reached: literal integer
+indexes	109	36	reached: literal null
+indexes	206	68	reached: literal real
+indexes	38	12	reached: literal real -0.0
+indexes	289	96	reached: literal text
+indexes	75	25	reached: long value
+indexes	1733	577	reached: path backward
+indexes	1753	584	reached: path forward
+indexes	367	122	reached: path of an index of a descending column
+indexes	895	298	reached: path of an index that holds every column
+indexes	506	168	reached: path of an index with 0 pinned
+indexes	129	43	reached: path of an index with 0 pinned and a range
+indexes	185	61	reached: path of an index with 1 pinned
+indexes	53	17	reached: path of an index with 1 pinned and a range
+indexes	69	23	reached: path of an index with 2 pinned
+indexes	13	4	reached: path of an index with 2 pinned and a range
+indexes	11	3	reached: path of an index with 3 pinned
+indexes	1428	476	reached: path of every row
+indexes	506	168	reached: path of the primary key with 0 pinned and a range
+indexes	400	133	reached: path of the primary key with 1 pinned
+indexes	186	62	reached: path that reads no row
+indexes	55	18	reached: path with a pin of NULL
+indexes	39	13	reached: path with a range on a descending column
+indexes	945	315	reached: plan of the cache checked
+indexes	650	216	reached: read both ways
+indexes	48	16	reached: replay of indexes into an empty cache
+indexes	57	19	reached: restart with indexes in the cache
+indexes	220	73	reached: select * of 2 columns ok
+indexes	147	49	reached: select * of 3 columns ok
+indexes	44	14	reached: select * with NULL ok
+indexes	3	1	reached: select of a name in double quotes that the table does not have no such column
+indexes	4	1	reached: select of a name that the table does not have no such column
+indexes	235	78	reached: select of a name twice ok
+indexes	126	42	reached: select of names in another order ok
+indexes	366	122	reached: select of names ok
+indexes	18	6	reached: select of names with NULL ok
+indexes	40	13	reached: update WHERE that reads a get of one key ok, rows changed
+indexes	3	1	reached: update WHERE that reads a scan between two bounds ok, rows changed
+indexes	3	1	reached: update WHERE that reads a scan from a lower bound ok, rows changed
+indexes	6	2	reached: update WHERE that reads a scan of every row ok, rows changed
+indexes	6	2	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+indexes	19	6	reached: update WHERE that reads no row ok, no row found
+indexes	3	1	reached: update WHERE that tests a column more than once ok, rows changed
+indexes	15	5	reached: update WHERE with a value of another type a value of another type
+indexes	3	1	reached: update of a row whose record is too long
+indexes	59	19	reached: update that changes every row of a table with rows
+indexes	93	31	reached: update that changes no row of a table with rows
+indexes	38	12	reached: update that changes some rows of a table
+indexes	6	2	reached: update with WHERE NOT NULL constraint failed
+indexes	11	3	reached: update with WHERE UNIQUE constraint failed
+indexes	14	4	reached: update with WHERE no such column
+indexes	134	44	reached: update with WHERE ok, no row found
+indexes	58	19	reached: update with WHERE ok, rows changed
+indexes	5	1	reached: update with a literal longer than the length limit in SET
+indexes	7	2	reached: update without WHERE NOT NULL constraint failed
+indexes	16	5	reached: update without WHERE UNIQUE constraint failed
+indexes	28	9	reached: update without WHERE ok, no row found
+indexes	39	13	reached: update without WHERE ok, rows changed
+indexes	16	5	select no such column
+exists	12	4	createtable duplicate column name
+exists	4	=	excused: a literal longer than the length limit, checked against s4ql's rule
+exists	49	=	excused: a value of another type than its column, checked against s4ql's rule
+exists	1	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+exists	3	1	insert  values for 
+exists	12	4	insert NOT NULL constraint failed
+exists	3	1	insert values were supplied
+exists	22	7	insert with a parameter UNIQUE constraint failed
+exists	13	4	insert with a parameter not supported
+exists	199	66	insert with a parameter ok
+exists	8	2	reached: != on another column ok
+exists	17	5	reached: != on the key ok
+exists	3	1	reached: < on another column ok
+exists	18	6	reached: < on the key ok
+exists	4	1	reached: <= on another column ok
+exists	3	1	reached: <= on the key a value of another type
+exists	24	8	reached: <= on the key ok
+exists	9	3	reached: = on another column ok
+exists	4	1	reached: = on the key a value of another type
+exists	28	9	reached: = on the key ok
+exists	7	2	reached: > on another column ok
+exists	23	7	reached: > on the key ok
+exists	3	1	reached: >= on another column ok
+exists	18	6	reached: >= on the key ok
+exists	3	1	reached: IS NOT NULL on another column ok
+exists	16	5	reached: IS NOT NULL on the key ok
+exists	5	1	reached: IS NULL on another column ok
+exists	6	2	reached: IS NULL on the key ok
+exists	11	3	reached: NULL argument into a column that takes NULL ok
+exists	4	1	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+exists	25	8	reached: NULL literal into a column that takes NULL ok
+exists	4	1	reached: NULL literal into the key NOT NULL constraint failed
+exists	10	3	reached: SET of NULL for a column that does not take it ok, no row found
+exists	5	1	reached: SET of a column in double quotes that the table does not have no such column
+exists	8	2	reached: SET of a column that the table does not have no such column
+exists	7	2	reached: SET of every column ok, rows changed
+exists	3	1	reached: SET of the key UNIQUE constraint failed
+exists	10	3	reached: SET of the key ok, rows changed
+exists	3	1	reached: SET with a value of another type a value of another type
+exists	6	2	reached: SET with argument int64 ok, rows changed
+exists	4	1	reached: SET with literal blob ok, rows changed
+exists	5	1	reached: SET with literal integer ok, rows changed
+exists	3	1	reached: SET with literal real ok, rows changed
+exists	71	23	reached: WHERE run by a sample of its paths
+exists	228	76	reached: WHERE run by every path
+exists	84	28	reached: WHERE run by every path on a table with an index
+exists	10	3	reached: WHERE that gives every row of a table with rows
+exists	32	10	reached: WHERE that gives no row of a table with rows
+exists	25	8	reached: WHERE that reads a get of one key ok
+exists	6	2	reached: WHERE that reads a scan between two bounds ok
+exists	3	1	reached: WHERE that reads a scan between two bounds that hold no key ok
+exists	15	5	reached: WHERE that reads a scan from a lower bound ok
+exists	25	8	reached: WHERE that reads a scan of every row ok
+exists	11	3	reached: WHERE that reads a scan to an upper bound ok
+exists	10	3	reached: WHERE that reads no row ok
+exists	47	15	reached: WHERE that tests a column more than once ok
+exists	7	2	reached: WHERE with a value of another type a value of another type
+exists	5	1	reached: WHERE with contradicting conditions ok
+exists	61	20	reached: argument []uint8
+exists	21	7	reached: argument empty []byte
+exists	10	3	reached: argument empty string
+exists	70	23	reached: argument float64
+exists	10	3	reached: argument float64 -0.0
+exists	123	41	reached: argument int64
+exists	19	6	reached: argument nil
+exists	48	16	reached: argument string
+exists	181	60	reached: changed both ways
+exists	92	30	reached: chosen a get
+exists	9	3	reached: chosen a get of a table of several indexes
+exists	4	1	reached: chosen an index with 0 pinned and a range
+exists	30	10	reached: chosen every row
+exists	20	6	reached: chosen no row
+exists	63	21	reached: chosen the primary key with 0 pinned and a range
+exists	6	2	reached: comparison with argument []uint8 ok
+exists	5	1	reached: comparison with argument empty []byte ok
+exists	11	3	reached: comparison with argument float64 ok
+exists	18	6	reached: comparison with argument int64 ok
+exists	13	4	reached: comparison with argument string ok
+exists	15	5	reached: comparison with literal blob ok
+exists	5	1	reached: comparison with literal empty blob ok
+exists	39	13	reached: comparison with literal integer ok
+exists	3	1	reached: comparison with literal null ok
+exists	25	8	reached: comparison with literal real ok
+exists	18	6	reached: comparison with literal text ok
+exists	121	40	reached: create index already exists
+exists	136	45	reached: create index if not exists did its work
+exists	103	34	reached: create index if not exists did nothing: an index of the name exists
+exists	8	2	reached: create index if not exists did nothing: an index of the name exists, and the table lacks a column of the statement
+exists	26	8	reached: create index if not exists no such column
+exists	57	19	reached: create index if not exists no such table
+exists	100	33	reached: create index if not exists there is already a table named
+exists	54	18	reached: create index no such column
+exists	126	42	reached: create index no such table
+exists	158	52	reached: create index of 1 columns ok
+exists	74	24	reached: create index of 2 columns ok
+exists	26	8	reached: create index of 3 columns ok
+exists	99	33	reached: create index of a column of type BLOB ok
+exists	80	26	reached: create index of a column of type INT ok
+exists	65	21	reached: create index of a column of type INTEGER ok
+exists	67	22	reached: create index of a column of type REAL ok
+exists	73	24	reached: create index of a column of type TEXT ok
+exists	83	27	reached: create index of a column that takes NULL ok
+exists	129	43	reached: create index of a descending column ok
+exists	258	86	reached: create index ok
+exists	212	70	reached: create index that holds the primary key ok
+exists	209	69	reached: create index there is already a table named
+exists	198	66	reached: create table if not exists did its work
+exists	249	83	reached: create table if not exists did nothing: a table of the name exists
+exists	4	1	reached: create table if not exists duplicate column name
+exists	10	3	reached: create table if not exists there is already an index named
+exists	160	53	reached: create table of 1 columns ok
+exists	161	53	reached: create table of 2 columns ok
+exists	107	35	reached: create table of 3 columns ok
+exists	137	45	reached: create table of mixed types ok
+exists	112	37	reached: create table of which every column outside the key takes NULL ok
+exists	124	41	reached: create table of which no column takes NULL ok
+exists	32	10	reached: create table of which some columns outside the key take NULL ok
+exists	280	93	reached: create table with the key at 0 ok
+exists	119	39	reached: create table with the key at 1 ok
+exists	29	9	reached: create table with the key at 2 ok
+exists	185	61	reached: create table with two columns of a type ok
+exists	23	7	reached: delete WHERE that reads a get of one key ok, rows changed
+exists	3	1	reached: delete WHERE that reads a scan of every row ok, rows changed
+exists	4	1	reached: delete WHERE that reads no row ok, no row found
+exists	5	1	reached: delete WHERE with a column in double quotes that the table does not have no such column
+exists	5	1	reached: delete WHERE with a value of another type a value of another type
+exists	3	1	reached: delete WHERE with contradicting conditions ok, no row found
+exists	23	7	reached: delete that changes every row of a table with rows
+exists	22	7	reached: delete that changes no row of a table with rows
+exists	18	6	reached: delete that changes some rows of a table
+exists	5	1	reached: delete with WHERE no such column
+exists	47	15	reached: delete with WHERE ok, no row found
+exists	29	9	reached: delete with WHERE ok, rows changed
+exists	11	3	reached: delete without WHERE ok, no row found
+exists	12	4	reached: delete without WHERE ok, rows changed
+exists	55	18	reached: drop index if exists did its work
+exists	96	32	reached: drop index if exists did nothing: no index of the name exists
+exists	48	16	reached: drop index if exists did nothing: no index of the name exists, and a table has it
+exists	135	45	reached: drop index no such index
+exists	129	43	reached: drop index ok
+exists	154	51	reached: drop table if exists did its work
+exists	44	14	reached: drop table if exists did nothing: no table of the name exists
+exists	14	4	reached: drop table if exists did nothing: no table of the name exists, and an index has it
+exists	9	3	reached: insert into BLOB UNIQUE constraint failed
+exists	3	1	reached: insert into BLOB a value of another type
+exists	107	35	reached: insert into BLOB ok
+exists	12	4	reached: insert into BLOB string or blob too big
+exists	15	5	reached: insert into INT UNIQUE constraint failed
+exists	75	25	reached: insert into INT ok
+exists	6	2	reached: insert into INTEGER UNIQUE constraint failed
+exists	8	2	reached: insert into INTEGER a value of another type
+exists	84	28	reached: insert into INTEGER ok
+exists	8	2	reached: insert into REAL UNIQUE constraint failed
+exists	11	3	reached: insert into REAL a value of another type
+exists	68	22	reached: insert into REAL ok
+exists	12	4	reached: insert into TEXT UNIQUE constraint failed
+exists	9	3	reached: insert into TEXT a value of another type
+exists	73	24	reached: insert into TEXT ok
+exists	3	1	reached: insert into TEXT string or blob too big
+exists	5	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+exists	5	1	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+exists	44	14	reached: insert that leaves out a column that takes NULL ok
+exists	6	2	reached: insert with NULL in the key: NOT NULL constraint failed
+exists	6	2	reached: insert with a column that the table does not have: has no column named
+exists	8	2	reached: insert with a column without a value: NOT NULL constraint failed
+exists	3	1	reached: insert with a list in another order NOT NULL constraint failed
+exists	7	2	reached: insert with a list in another order UNIQUE constraint failed
+exists	3	1	reached: insert with a list in another order a value of another type
+exists	57	19	reached: insert with a list in another order ok
+exists	108	36	reached: insert with a list in the order of the table ok
+exists	7	2	reached: insert with a value of another type in another column: a value of another type
+exists	7	2	reached: insert with a value of another type in the key: a value of another type
+exists	6	2	reached: insert with the wrong number of values:  values for 
+exists	11	3	reached: insert with the wrong number of values: values were supplied
+exists	3	1	reached: insert with two faults: NOT NULL constraint failed
+exists	91	30	reached: insert without a list ok
+exists	158	52	reached: literal blob
+exists	44	14	reached: literal empty blob
+exists	20	6	reached: literal empty text
+exists	296	98	reached: literal integer
+exists	47	15	reached: literal null
+exists	123	41	reached: literal real
+exists	17	5	reached: literal real -0.0
+exists	108	36	reached: literal text
+exists	38	12	reached: long value
+exists	423	141	reached: path backward
+exists	433	144	reached: path forward
+exists	51	17	reached: path of an index of a descending column
+exists	99	33	reached: path of an index that holds every column
+exists	68	22	reached: path of an index with 0 pinned
+exists	28	9	reached: path of an index with 0 pinned and a range
+exists	41	13	reached: path of an index with 1 pinned
+exists	3	1	reached: path of an index with 1 pinned and a range
+exists	395	131	reached: path of every row
+exists	117	39	reached: path of the primary key with 0 pinned and a range
+exists	160	53	reached: path of the primary key with 1 pinned
+exists	44	14	reached: path that reads no row
+exists	6	2	reached: path with a range on a descending column
+exists	239	79	reached: plan of the cache checked
+exists	128	42	reached: read both ways
+exists	25	8	reached: replay of indexes into an empty cache
+exists	33	11	reached: restart with indexes in the cache
+exists	38	12	reached: select * of 1 columns ok
+exists	35	11	reached: select * of 2 columns ok
+exists	24	8	reached: select * of 3 columns ok
+exists	3	1	reached: select * with NULL ok
+exists	4	1	reached: select of a name in double quotes that the table does not have no such column
+exists	64	21	reached: select of a name twice ok
+exists	15	5	reached: select of names in another order ok
+exists	89	29	reached: select of names ok
+exists	4	1	reached: select of names with NULL ok
+exists	8	2	reached: update WHERE that reads a get of one key ok, rows changed
+exists	3	1	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
+exists	8	2	reached: update WHERE that reads no row ok, no row found
+exists	3	1	reached: update WHERE with a value of another type a value of another type
+exists	12	4	reached: update that changes every row of a table with rows
+exists	20	6	reached: update that changes no row of a table with rows
+exists	6	2	reached: update that changes some rows of a table
+exists	8	2	reached: update with WHERE no such column
+exists	41	13	reached: update with WHERE ok, no row found
+exists	11	3	reached: update with WHERE ok, rows changed
+exists	15	5	reached: update without WHERE ok, no row found
+exists	7	2	reached: update without WHERE ok, rows changed
+exists	7	2	select no such column
+defaults	1	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
+defaults	3	=	excused: a literal longer than the length limit, checked against s4ql's rule
+defaults	86	=	excused: a value of another type than its column, checked against s4ql's rule
+defaults	6	2	insert  values for 
+defaults	37	12	insert NOT NULL constraint failed
+defaults	145	48	insert with a parameter UNIQUE constraint failed
+defaults	35	11	insert with a parameter not supported
+defaults	232	77	insert with a parameter ok
+defaults	4	1	reached: != on another column ok
+defaults	18	6	reached: != on the key ok
+defaults	5	1	reached: -0.0 argument into REAL UNIQUE constraint failed
+defaults	13	4	reached: -0.0 literal into REAL UNIQUE constraint failed
+defaults	10	3	reached: < on another column ok
+defaults	16	5	reached: < on the key ok
+defaults	5	1	reached: <= on another column ok
+defaults	3	1	reached: <= on the key a value of another type
+defaults	20	6	reached: <= on the key ok
+defaults	5	1	reached: = on another column ok
+defaults	17	5	reached: = on the key ok
+defaults	5	1	reached: > on the key a value of another type
+defaults	17	5	reached: > on the key ok
+defaults	6	2	reached: >= on another column ok
+defaults	24	8	reached: >= on the key ok
+defaults	5	1	reached: IS NOT NULL on another column ok
+defaults	16	5	reached: IS NOT NULL on the key ok
+defaults	3	1	reached: IS NULL on another column ok
+defaults	8	2	reached: IS NULL on the key ok
+defaults	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+defaults	10	3	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+defaults	14	4	reached: NULL argument into a column that takes NULL ok
+defaults	4	1	reached: NULL argument into the key NOT NULL constraint failed
+defaults	14	4	reached: NULL given for a column with a default, which does not take NULL NOT NULL constraint failed
+defaults	26	8	reached: NULL given for a column with a default, which takes NULL ok
+defaults	7	2	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+defaults	16	5	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+defaults	18	6	reached: NULL literal into a column that takes NULL ok
+defaults	6	2	reached: NULL literal into the key NOT NULL constraint failed
+defaults	3	1	reached: SET of every column ok, rows changed
+defaults	17	5	reached: SET of the key UNIQUE constraint failed
+defaults	5	1	reached: SET of the key ok, rows changed
+defaults	4	1	reached: SET with a value of another type a value of another type
+defaults	4	1	reached: SET with argument int64 ok, rows changed
+defaults	5	1	reached: SET with literal integer ok, rows changed
+defaults	118	39	reached: WHERE run by every path
+defaults	8	2	reached: WHERE that gives every row of a table with rows
+defaults	25	8	reached: WHERE that gives no row of a table with rows
+defaults	30	10	reached: WHERE that gives some rows of a table
+defaults	17	5	reached: WHERE that reads a get of one key ok
+defaults	9	3	reached: WHERE that reads a scan between two bounds ok
+defaults	4	1	reached: WHERE that reads a scan between two bounds that hold no key ok
+defaults	14	4	reached: WHERE that reads a scan from a lower bound ok
+defaults	16	5	reached: WHERE that reads a scan of every row ok
+defaults	11	3	reached: WHERE that reads a scan to an upper bound ok
+defaults	9	3	reached: WHERE that reads no row ok
+defaults	43	14	reached: WHERE that tests a column more than once ok
+defaults	4	1	reached: WHERE with a column in double quotes that the table does not have no such column
+defaults	4	1	reached: WHERE with a literal longer than the length limit
+defaults	9	3	reached: WHERE with a value of another type a value of another type
+defaults	4	1	reached: WHERE with contradicting conditions ok
+defaults	54	18	reached: argument []uint8
+defaults	16	5	reached: argument empty []byte
+defaults	22	7	reached: argument empty string
+defaults	80	26	reached: argument float64
+defaults	13	4	reached: argument float64 -0.0
+defaults	264	88	reached: argument int64
+defaults	33	11	reached: argument nil
+defaults	86	28	reached: argument string
+defaults	44	14	reached: changed both ways
+defaults	27	9	reached: chosen a get
+defaults	20	6	reached: chosen every row
+defaults	12	4	reached: chosen no row
+defaults	58	19	reached: chosen the primary key with 0 pinned and a range
+defaults	9	3	reached: comparison with argument []uint8 ok
+defaults	15	5	reached: comparison with argument float64 ok
+defaults	17	5	reached: comparison with argument int64 ok
+defaults	9	3	reached: comparison with argument string ok
+defaults	7	2	reached: comparison with literal blob ok
+defaults	5	1	reached: comparison with literal empty blob ok
+defaults	6	2	reached: comparison with literal empty text ok
+defaults	25	8	reached: comparison with literal integer ok
+defaults	24	8	reached: comparison with literal real ok
+defaults	21	7	reached: comparison with literal text ok
+defaults	41	13	reached: create table of 1 columns ok
+defaults	39	13	reached: create table of 2 columns ok
+defaults	39	13	reached: create table of 3 columns ok
+defaults	32	10	reached: create table of mixed types ok
+defaults	30	10	reached: create table of which every column outside the key takes NULL ok
+defaults	42	14	reached: create table of which no column takes NULL ok
+defaults	6	2	reached: create table of which some columns outside the key take NULL ok
+defaults	19	6	reached: create table with DEFAULT NULL on a column that does not take NULL ok
+defaults	5	1	reached: create table with DEFAULT NULL on a column that takes NULL ok
+defaults	15	5	reached: create table with a default of 250 bytes or more ok
+defaults	20	6	reached: create table with a default of blob ok
+defaults	48	16	reached: create table with a default of integer ok
+defaults	18	6	reached: create table with a default of real ok
+defaults	16	5	reached: create table with a default of text ok
+defaults	88	29	reached: create table with a default on the key ok
+defaults	66	22	reached: create table with the key at 0 ok
+defaults	44	14	reached: create table with the key at 1 ok
+defaults	9	3	reached: create table with the key at 2 ok
+defaults	66	22	reached: create table with two columns of a type ok
+defaults	35	11	reached: insert into BLOB UNIQUE constraint failed
+defaults	10	3	reached: insert into BLOB a value of another type
+defaults	59	19	reached: insert into BLOB ok
+defaults	6	2	reached: insert into BLOB string or blob too big
+defaults	66	22	reached: insert into INT UNIQUE constraint failed
+defaults	28	9	reached: insert into INT a value of another type
+defaults	110	36	reached: insert into INT ok
+defaults	89	29	reached: insert into INTEGER UNIQUE constraint failed
+defaults	10	3	reached: insert into INTEGER a value of another type
+defaults	91	30	reached: insert into INTEGER ok
+defaults	74	24	reached: insert into REAL UNIQUE constraint failed
+defaults	23	7	reached: insert into REAL a value of another type
+defaults	106	35	reached: insert into REAL ok
+defaults	80	26	reached: insert into TEXT UNIQUE constraint failed
+defaults	113	37	reached: insert into TEXT ok
+defaults	10	3	reached: insert into TEXT string or blob too big
+defaults	3	1	reached: insert of NULL beside a value of another type a value of another type
+defaults	20	6	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed
+defaults	9	3	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+defaults	3	1	reached: insert that leaves out a column that takes NULL a value of another type
+defaults	25	8	reached: insert that leaves out a column that takes NULL ok
+defaults	8	2	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok
+defaults	36	12	reached: insert that leaves out a column with a default of blob ok
+defaults	48	16	reached: insert that leaves out a column with a default of integer ok
+defaults	34	11	reached: insert that leaves out a column with a default of real ok
+defaults	9	3	reached: insert that leaves out a column with a default of text ok
+defaults	9	3	reached: insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed
+defaults	18	6	reached: insert that leaves out the key with a default UNIQUE constraint failed
+defaults	15	5	reached: insert that leaves out the key with a default ok
+defaults	11	3	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+defaults	3	1	reached: insert with NULL in the key: NOT NULL constraint failed
+defaults	3	1	reached: insert with a column that the table does not have: has no column named
+defaults	37	12	reached: insert with a column without a value: NOT NULL constraint failed
+defaults	3	1	reached: insert with a list in another order NOT NULL constraint failed
+defaults	30	10	reached: insert with a list in another order UNIQUE constraint failed
+defaults	10	3	reached: insert with a list in another order a value of another type
+defaults	40	13	reached: insert with a list in another order ok
+defaults	163	54	reached: insert with a list in the order of the table ok
+defaults	25	8	reached: insert with a value of another type in another column: a value of another type
+defaults	15	5	reached: insert with a value of another type in the key: a value of another type
+defaults	14	4	reached: insert with the wrong number of values:  values for 
+defaults	4	1	reached: insert with the wrong number of values: values were supplied
+defaults	7	2	reached: insert with two faults: NOT NULL constraint failed
+defaults	98	32	reached: insert without a list ok
+defaults	132	44	reached: literal blob
+defaults	32	10	reached: literal empty blob
+defaults	34	11	reached: literal empty text
+defaults	461	153	reached: literal integer
+defaults	57	19	reached: literal null
+defaults	170	56	reached: literal real
+defaults	30	10	reached: literal real -0.0
+defaults	192	64	reached: literal text
+defaults	40	13	reached: long value
+defaults	216	72	reached: path backward
+defaults	216	72	reached: path forward
+defaults	236	78	reached: path of every row
+defaults	118	39	reached: path of the primary key with 0 pinned and a range
+defaults	54	18	reached: path of the primary key with 1 pinned
+defaults	24	8	reached: path that reads no row
+defaults	132	44	reached: plan of the cache checked
+defaults	97	32	reached: read both ways
+defaults	52	17	reached: select * of 1 columns ok
+defaults	51	17	reached: select * of 2 columns ok
+defaults	75	25	reached: select * of 3 columns ok
+defaults	27	9	reached: select * with NULL ok
+defaults	106	35	reached: select of a name twice ok
+defaults	38	12	reached: select of names in another order ok
+defaults	163	54	reached: select of names ok
+defaults	16	5	reached: select of names with NULL ok
+defaults	7	2	reached: update WHERE that reads a get of one key ok, rows changed
+defaults	3	1	reached: update WHERE that reads no row ok, no row found
+defaults	3	1	reached: update WHERE with a value of another type a value of another type
+defaults	7	2	reached: update that changes every row of a table with rows
+defaults	10	3	reached: update that changes no row of a table with rows
+defaults	9	3	reached: update that changes some rows of a table
+defaults	10	3	reached: update with WHERE UNIQUE constraint failed
+defaults	15	5	reached: update with WHERE ok, no row found
+defaults	11	3	reached: update with WHERE ok, rows changed
+defaults	7	2	reached: update without WHERE UNIQUE constraint failed
+defaults	5	1	reached: update without WHERE ok, rows changed
+defaults	5	1	select no such column
+valuefirst	2	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
+valuefirst	2	=	excused: a literal longer than the length limit, checked against s4ql's rule
+valuefirst	181	=	excused: a value of another type than its column, checked against s4ql's rule
+valuefirst	153	=	excused: an argument that no column holds, checked against s4ql's rule
+valuefirst	7	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+valuefirst	373	=	excused: the wrong number of arguments, checked against s4ql's rule
+valuefirst	3	1	insert  values for 
+valuefirst	18	6	insert NOT NULL constraint failed
+valuefirst	4	1	insert values were supplied
+valuefirst	63	21	insert with a parameter UNIQUE constraint failed
+valuefirst	56	18	insert with a parameter not supported
+valuefirst	239	79	insert with a parameter ok
+valuefirst	70	23	insert with a parameter wrong number of arguments
+valuefirst	29	9	insert wrong number of arguments
+valuefirst	21	7	reached: != on another column ok
+valuefirst	10	3	reached: != on the key a value of another type
+valuefirst	34	11	reached: != on the key ok
+valuefirst	5	1	reached: -0.0 literal into REAL UNIQUE constraint failed
+valuefirst	31	10	reached: < on another column ok
+valuefirst	21	7	reached: < on the key a value of another type
+valuefirst	90	30	reached: < on the key ok
+valuefirst	36	12	reached: <= on another column ok
+valuefirst	19	6	reached: <= on the key a value of another type
+valuefirst	90	30	reached: <= on the key ok
+valuefirst	187	62	reached: = on another column ok
+valuefirst	18	6	reached: = on the key a value of another type
+valuefirst	113	37	reached: = on the key ok
+valuefirst	39	13	reached: > on another column ok
+valuefirst	19	6	reached: > on the key a value of another type
+valuefirst	94	31	reached: > on the key ok
+valuefirst	35	11	reached: >= on another column ok
+valuefirst	24	8	reached: >= on the key a value of another type
+valuefirst	80	26	reached: >= on the key ok
+valuefirst	18	6	reached: IS NOT NULL on another column ok
+valuefirst	25	8	reached: IS NOT NULL on the key ok
+valuefirst	73	24	reached: IS NULL on another column ok
+valuefirst	30	10	reached: IS NULL on the key ok
+valuefirst	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+valuefirst	4	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+valuefirst	21	7	reached: NULL argument into a column that takes NULL ok
+valuefirst	5	1	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+valuefirst	8	2	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+valuefirst	55	18	reached: NULL literal into a column that takes NULL ok
+valuefirst	3	1	reached: NULL literal into the key NOT NULL constraint failed
+valuefirst	28	9	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+valuefirst	29	9	reached: SET of NULL for a column that does not take it ok, no row found
+valuefirst	31	10	reached: SET of a column in double quotes that the table does not have no such column
+valuefirst	52	17	reached: SET of a column that the table does not have no such column
+valuefirst	19	6	reached: SET of every column ok, rows changed
+valuefirst	18	6	reached: SET of the key NOT NULL constraint failed
+valuefirst	18	6	reached: SET of the key UNIQUE constraint failed
+valuefirst	33	11	reached: SET of the key ok, rows changed
+valuefirst	55	18	reached: SET with a value of another type a value of another type
+valuefirst	13	4	reached: SET with argument []uint8 ok, no row found
+valuefirst	10	3	reached: SET with argument float64 ok, rows changed
+valuefirst	20	6	reached: SET with argument int64 ok, rows changed
+valuefirst	4	1	reached: SET with argument nil ok, rows changed
+valuefirst	6	2	reached: SET with argument string ok, rows changed
+valuefirst	12	4	reached: SET with literal blob ok, rows changed
+valuefirst	5	1	reached: SET with literal empty blob ok, rows changed
+valuefirst	47	15	reached: SET with literal integer ok, rows changed
+valuefirst	11	3	reached: SET with literal null ok, rows changed
+valuefirst	18	6	reached: SET with literal real ok, rows changed
+valuefirst	10	3	reached: SET with literal text ok, rows changed
+valuefirst	511	170	reached: WHERE run by a sample of its paths
+valuefirst	1027	342	reached: WHERE run by every path
+valuefirst	589	196	reached: WHERE run by every path on a table with an index
+valuefirst	39	13	reached: WHERE that gives every row of a table with rows
+valuefirst	235	78	reached: WHERE that gives no row of a table with rows
+valuefirst	43	14	reached: WHERE that gives some rows of a table
+valuefirst	103	34	reached: WHERE that reads a get of one key ok
+valuefirst	28	9	reached: WHERE that reads a scan between two bounds ok
+valuefirst	36	12	reached: WHERE that reads a scan between two bounds that hold no key ok
+valuefirst	51	17	reached: WHERE that reads a scan from a lower bound ok
+valuefirst	178	59	reached: WHERE that reads a scan of every row ok
+valuefirst	58	19	reached: WHERE that reads a scan to an upper bound ok
+valuefirst	44	14	reached: WHERE that reads no row ok
+valuefirst	198	66	reached: WHERE that tests a column more than once ok
+valuefirst	42	14	reached: WHERE with a column in double quotes that the table does not have no such column
+valuefirst	21	7	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+valuefirst	11	3	reached: WHERE with a column that the table does not have in a comparison, alone no such column
+valuefirst	23	7	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+valuefirst	7	2	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
+valuefirst	4	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column
+valuefirst	10	3	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
+valuefirst	5	1	reached: WHERE with a literal longer than the length limit
+valuefirst	65	21	reached: WHERE with a value of another type a value of another type
+valuefirst	596	198	reached: WHERE with a value on the left run by every path
+valuefirst	343	114	reached: WHERE with a value on the left run by every path on a table with an index
+valuefirst	30	10	reached: WHERE with an argument that no column holds not supported
+valuefirst	47	15	reached: WHERE with contradicting conditions ok
+valuefirst	76	25	reached: WHERE with the wrong number of arguments wrong number of arguments
+valuefirst	3	1	reached: argument NaN
+valuefirst	58	19	reached: argument []uint8
+valuefirst	22	7	reached: argument empty []byte
+valuefirst	21	7	reached: argument empty string
+valuefirst	6	2	reached: argument float32
+valuefirst	87	29	reached: argument float64
+valuefirst	12	4	reached: argument float64 -0.0
+valuefirst	4	1	reached: argument infinite float64
+valuefirst	4	1	reached: argument int
+valuefirst	7	2	reached: argument int32
+valuefirst	197	65	reached: argument int64
+valuefirst	43	14	reached: argument named
+valuefirst	40	13	reached: argument nil
+valuefirst	6	2	reached: argument nil []byte
+valuefirst	78	26	reached: argument string
+valuefirst	5	1	reached: argument string that is not valid UTF-8
+valuefirst	8	2	reached: argument string with NUL
+valuefirst	4	1	reached: argument uint64
+valuefirst	4	1	reached: argument uint64 above int64
+valuefirst	898	299	reached: changed both ways
+valuefirst	283	94	reached: chosen a get
+valuefirst	155	51	reached: chosen a get by a value on the left
+valuefirst	95	31	reached: chosen a get of a table of several indexes
+valuefirst	25	8	reached: chosen an index with 0 pinned and a range
+valuefirst	10	3	reached: chosen an index with 0 pinned and a range by a value on the left
+valuefirst	44	14	reached: chosen an index with 1 pinned
+valuefirst	35	11	reached: chosen an index with 1 pinned and a range
+valuefirst	26	8	reached: chosen an index with 1 pinned and a range by a value on the left
+valuefirst	19	6	reached: chosen an index with 1 pinned by a value on the left
+valuefirst	30	10	reached: chosen an index with 1 pinned of a table of several indexes
+valuefirst	8	2	reached: chosen an index with 2 pinned
+valuefirst	5	1	reached: chosen an index with 2 pinned and a range
+valuefirst	3	1	reached: chosen an index with 2 pinned and a range by a value on the left
+valuefirst	124	41	reached: chosen every row
+valuefirst	4	1	reached: chosen every row of a table of several indexes
+valuefirst	55	18	reached: chosen no row
+valuefirst	196	65	reached: chosen the primary key with 0 pinned and a range
+valuefirst	119	39	reached: chosen the primary key with 0 pinned and a range by a value on the left
+valuefirst	32	10	reached: comparison with argument []uint8 ok
+valuefirst	9	3	reached: comparison with argument empty []byte ok
+valuefirst	9	3	reached: comparison with argument empty string ok
+valuefirst	5	1	reached: comparison with argument float64 -0.0 ok
+valuefirst	48	16	reached: comparison with argument float64 ok
+valuefirst	97	32	reached: comparison with argument int64 ok
+valuefirst	6	2	reached: comparison with argument nil ok
+valuefirst	35	11	reached: comparison with argument string ok
+valuefirst	93	31	reached: comparison with literal blob ok
+valuefirst	20	6	reached: comparison with literal empty blob ok
+valuefirst	29	9	reached: comparison with literal empty text ok
+valuefirst	246	82	reached: comparison with literal integer ok
+valuefirst	17	5	reached: comparison with literal null ok
+valuefirst	20	6	reached: comparison with literal real -0.0 ok
+valuefirst	100	33	reached: comparison with literal real ok
+valuefirst	84	28	reached: comparison with literal text ok
+valuefirst	85	28	reached: create index already exists
+valuefirst	7	2	reached: create index no such column
+valuefirst	33	11	reached: create index no such table
+valuefirst	127	42	reached: create index of 1 columns ok
+valuefirst	56	18	reached: create index of 2 columns ok
+valuefirst	6	2	reached: create index of 3 columns ok
+valuefirst	37	12	reached: create index of a column of type BLOB ok
+valuefirst	46	15	reached: create index of a column of type INT ok
+valuefirst	54	18	reached: create index of a column of type INTEGER ok
+valuefirst	53	17	reached: create index of a column of type REAL ok
+valuefirst	67	22	reached: create index of a column of type TEXT ok
+valuefirst	112	37	reached: create index of a column that takes NULL ok
+valuefirst	78	26	reached: create index of a descending column ok
+valuefirst	189	63	reached: create index ok
+valuefirst	36	12	reached: create index that holds the primary key ok
+valuefirst	23	7	reached: create index there is already a table named
+valuefirst	132	44	reached: create table of 2 columns ok
+valuefirst	61	20	reached: create table of 3 columns ok
+valuefirst	82	27	reached: create table of mixed types ok
+valuefirst	99	33	reached: create table of which every column outside the key takes NULL ok
+valuefirst	85	28	reached: create table of which no column takes NULL ok
+valuefirst	9	3	reached: create table of which some columns outside the key take NULL ok
+valuefirst	89	29	reached: create table with the key at 0 ok
+valuefirst	81	27	reached: create table with the key at 1 ok
+valuefirst	25	8	reached: create table with the key at 2 ok
+valuefirst	140	46	reached: create table with two columns of a type ok
+valuefirst	44	14	reached: delete WHERE that reads a get of one key ok, rows changed
+valuefirst	8	2	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+valuefirst	5	1	reached: delete WHERE that reads a scan from a lower bound ok, rows changed
+valuefirst	10	3	reached: delete WHERE that reads a scan of every row ok, rows changed
+valuefirst	7	2	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+valuefirst	11	3	reached: delete WHERE that reads no row ok, no row found
+valuefirst	4	1	reached: delete WHERE that tests a column more than once ok, rows changed
+valuefirst	9	3	reached: delete WHERE with a column in double quotes that the table does not have no such column
+valuefirst	13	4	reached: delete WHERE with a value of another type a value of another type
+valuefirst	6	2	reached: delete WHERE with contradicting conditions ok, no row found
+valuefirst	62	20	reached: delete that changes every row of a table with rows
+valuefirst	86	28	reached: delete that changes no row of a table with rows
+valuefirst	44	14	reached: delete that changes some rows of a table
+valuefirst	11	3	reached: delete with WHERE no such column
+valuefirst	124	41	reached: delete with WHERE ok, no row found
+valuefirst	67	22	reached: delete with WHERE ok, rows changed
+valuefirst	69	23	reached: delete with a value on the left ok, no row found
+valuefirst	35	11	reached: delete with a value on the left ok, rows changed
+valuefirst	16	5	reached: delete with arguments that s4ql refuses not supported
+valuefirst	31	10	reached: delete with arguments that s4ql refuses wrong number of arguments
+valuefirst	18	6	reached: delete without WHERE ok, no row found
+valuefirst	39	13	reached: delete without WHERE ok, rows changed
+valuefirst	59	19	reached: drop index no such index
+valuefirst	55	18	reached: drop index ok
+valuefirst	23	7	reached: insert into BLOB UNIQUE constraint failed
+valuefirst	5	1	reached: insert into BLOB a value of another type
+valuefirst	82	27	reached: insert into BLOB ok
+valuefirst	4	1	reached: insert into BLOB string or blob too big
+valuefirst	21	7	reached: insert into INT UNIQUE constraint failed
+valuefirst	8	2	reached: insert into INT a value of another type
+valuefirst	85	28	reached: insert into INT ok
+valuefirst	32	10	reached: insert into INTEGER UNIQUE constraint failed
+valuefirst	108	36	reached: insert into INTEGER ok
+valuefirst	26	8	reached: insert into REAL UNIQUE constraint failed
+valuefirst	6	2	reached: insert into REAL a value of another type
+valuefirst	99	33	reached: insert into REAL ok
+valuefirst	12	4	reached: insert into TEXT UNIQUE constraint failed
+valuefirst	11	3	reached: insert into TEXT a value of another type
+valuefirst	71	23	reached: insert into TEXT ok
+valuefirst	3	1	reached: insert into TEXT string or blob too big
+valuefirst	5	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+valuefirst	13	4	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+valuefirst	78	26	reached: insert that leaves out a column that takes NULL ok
+valuefirst	9	3	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+valuefirst	4	1	reached: insert with NULL in the key: NOT NULL constraint failed
+valuefirst	4	1	reached: insert with a column that the table does not have: has no column named
+valuefirst	17	5	reached: insert with a column without a value: NOT NULL constraint failed
+valuefirst	3	1	reached: insert with a list in another order NOT NULL constraint failed
+valuefirst	39	13	reached: insert with a list in another order UNIQUE constraint failed
+valuefirst	9	3	reached: insert with a list in another order a value of another type
+valuefirst	113	37	reached: insert with a list in another order ok
+valuefirst	203	67	reached: insert with a list in the order of the table ok
+valuefirst	18	6	reached: insert with a value of another type in another column: a value of another type
+valuefirst	12	4	reached: insert with a value of another type in the key: a value of another type
+valuefirst	5	1	reached: insert with the wrong number of values:  values for 
+valuefirst	8	2	reached: insert with the wrong number of values: values were supplied
+valuefirst	3	1	reached: insert with two faults: NOT NULL constraint failed
+valuefirst	129	43	reached: insert without a list ok
+valuefirst	137	45	reached: literal blob
+valuefirst	33	11	reached: literal empty blob
+valuefirst	44	14	reached: literal empty text
+valuefirst	479	159	reached: literal integer
+valuefirst	91	30	reached: literal null
+valuefirst	209	69	reached: literal real
+valuefirst	28	9	reached: literal real -0.0
+valuefirst	210	70	reached: literal text
+valuefirst	39	13	reached: long value
+valuefirst	1942	647	reached: path backward
+valuefirst	1960	653	reached: path forward
+valuefirst	406	135	reached: path of an index of a descending column
+valuefirst	1097	365	reached: path of an index that holds every column
+valuefirst	679	226	reached: path of an index with 0 pinned
+valuefirst	143	47	reached: path of an index with 0 pinned and a range
+valuefirst	87	29	reached: path of an index with 0 pinned and a range of a WHERE with a value on the left
+valuefirst	267	89	reached: path of an index with 1 pinned
+valuefirst	75	25	reached: path of an index with 1 pinned and a range
+valuefirst	62	20	reached: path of an index with 1 pinned and a range of a WHERE with a value on the left
+valuefirst	62	20	reached: path of an index with 2 pinned
+valuefirst	10	3	reached: path of an index with 2 pinned and a range
+valuefirst	8	2	reached: path of an index with 2 pinned and a range of a WHERE with a value on the left
+valuefirst	1526	508	reached: path of every row
+valuefirst	464	154	reached: path of the primary key with 0 pinned and a range
+valuefirst	328	109	reached: path of the primary key with 0 pinned and a range of a WHERE with a value on the left
+valuefirst	540	180	reached: path of the primary key with 1 pinned
+valuefirst	134	44	reached: path that reads no row
+valuefirst	79	26	reached: path with a pin of NULL
+valuefirst	57	19	reached: path with a range on a descending column
+valuefirst	1073	357	reached: plan of the cache checked
+valuefirst	865	288	reached: read both ways
+valuefirst	54	18	reached: replay of indexes into an empty cache
+valuefirst	48	16	reached: restart with indexes in the cache
+valuefirst	202	67	reached: select * of 2 columns ok
+valuefirst	57	19	reached: select * of 3 columns ok
+valuefirst	10	3	reached: select * with NULL ok
+valuefirst	15	5	reached: select of a name in double quotes that the table does not have no such column
+valuefirst	15	5	reached: select of a name that the table does not have no such column
+valuefirst	148	49	reached: select of a name twice ok
+valuefirst	62	20	reached: select of names in another order ok
+valuefirst	239	79	reached: select of names ok
+valuefirst	6	2	reached: select of names with NULL ok
+valuefirst	229	76	reached: select with a value on the left ok, no row found
+valuefirst	46	15	reached: select with a value on the left ok, rows found
+valuefirst	44	14	reached: update WHERE that reads a get of one key ok, rows changed
+valuefirst	6	2	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
+valuefirst	4	1	reached: update WHERE that reads a scan from a lower bound ok, rows changed
+valuefirst	6	2	reached: update WHERE that reads a scan of every row ok, rows changed
+valuefirst	13	4	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+valuefirst	11	3	reached: update WHERE that reads no row ok, no row found
+valuefirst	9	3	reached: update WHERE with a column in double quotes that the table does not have no such column
+valuefirst	32	10	reached: update WHERE with a value of another type a value of another type
+valuefirst	9	3	reached: update WHERE with contradicting conditions ok, no row found
+valuefirst	74	24	reached: update that changes every row of a table with rows
+valuefirst	115	38	reached: update that changes no row of a table with rows
+valuefirst	47	15	reached: update that changes some rows of a table
+valuefirst	20	6	reached: update with WHERE NOT NULL constraint failed
+valuefirst	6	2	reached: update with WHERE UNIQUE constraint failed
+valuefirst	53	17	reached: update with WHERE no such column
+valuefirst	202	67	reached: update with WHERE ok, no row found
+valuefirst	68	22	reached: update with WHERE ok, rows changed
+valuefirst	9	3	reached: update with a literal longer than the length limit in SET
+valuefirst	113	37	reached: update with a value on the left ok, no row found
+valuefirst	37	12	reached: update with a value on the left ok, rows changed
+valuefirst	58	19	reached: update with arguments that s4ql refuses not supported
+valuefirst	78	26	reached: update with arguments that s4ql refuses wrong number of arguments
+valuefirst	8	2	reached: update without WHERE NOT NULL constraint failed
+valuefirst	12	4	reached: update without WHERE UNIQUE constraint failed
+valuefirst	37	12	reached: update without WHERE ok, no row found
+valuefirst	53	17	reached: update without WHERE ok, rows changed
+valuefirst	12	4	reached: value on the left NOT NULL constraint failed
+valuefirst	3	1	reached: value on the left UNIQUE constraint failed
+valuefirst	13	4	reached: value on the left compared with NULL finds no row
+valuefirst	14	4	reached: value on the left of != a value of another type
+valuefirst	27	9	reached: value on the left of != finds no row
+valuefirst	3	1	reached: value on the left of != finds rows
+valuefirst	19	6	reached: value on the left of != no such column
+valuefirst	7	2	reached: value on the left of != not supported
+valuefirst	11	3	reached: value on the left of != wrong number of arguments
+valuefirst	18	6	reached: value on the left of < a value of another type
+valuefirst	78	26	reached: value on the left of < finds no row
+valuefirst	13	4	reached: value on the left of < finds rows
+valuefirst	32	10	reached: value on the left of < no such column
+valuefirst	7	2	reached: value on the left of < not supported
+valuefirst	29	9	reached: value on the left of < wrong number of arguments
+valuefirst	22	7	reached: value on the left of <= a value of another type
+valuefirst	51	17	reached: value on the left of <= finds no row
+valuefirst	17	5	reached: value on the left of <= finds rows
+valuefirst	31	10	reached: value on the left of <= no such column
+valuefirst	16	5	reached: value on the left of <= not supported
+valuefirst	14	4	reached: value on the left of <= wrong number of arguments
+valuefirst	48	16	reached: value on the left of = a value of another type
+valuefirst	236	78	reached: value on the left of = finds no row
+valuefirst	65	21	reached: value on the left of = finds rows
+valuefirst	33	11	reached: value on the left of = no such column
+valuefirst	24	8	reached: value on the left of = not supported
+valuefirst	45	15	reached: value on the left of = wrong number of arguments
+valuefirst	24	8	reached: value on the left of > a value of another type
+valuefirst	84	28	reached: value on the left of > finds no row
+valuefirst	13	4	reached: value on the left of > finds rows
+valuefirst	27	9	reached: value on the left of > no such column
+valuefirst	9	3	reached: value on the left of > not supported
+valuefirst	23	7	reached: value on the left of > wrong number of arguments
+valuefirst	27	9	reached: value on the left of >= a value of another type
+valuefirst	72	24	reached: value on the left of >= finds no row
+valuefirst	18	6	reached: value on the left of >= finds rows
+valuefirst	35	11	reached: value on the left of >= no such column
+valuefirst	9	3	reached: value on the left of >= not supported
+valuefirst	23	7	reached: value on the left of >= wrong number of arguments
+valuefirst	13	4	reached: value on the left string or blob too big
+valuefirst	48	16	select no such column
+valuefirst	28	9	select wrong number of arguments
+transactions	3	1	createtable duplicate column name
+transactions	83	=	excused: a value of another type than its column, checked against s4ql's rule
+transactions	2	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+transactions	3	1	insert  values for 
+transactions	9	3	insert NOT NULL constraint failed
+transactions	4	1	insert values were supplied
+transactions	53	17	insert with a parameter UNIQUE constraint failed
+transactions	30	10	insert with a parameter not supported
+transactions	187	62	insert with a parameter ok
+transactions	6	2	reached: != on another column ok
+transactions	3	1	reached: != on the key a value of another type
+transactions	31	10	reached: != on the key ok
+transactions	3	1	reached: -0.0 literal into REAL UNIQUE constraint failed
+transactions	6	2	reached: < on another column ok
+transactions	9	3	reached: < on the key a value of another type
+transactions	52	17	reached: < on the key ok
+transactions	8	2	reached: <= on another column ok
+transactions	7	2	reached: <= on the key a value of another type
+transactions	42	14	reached: <= on the key ok
+transactions	16	5	reached: = on another column ok
+transactions	8	2	reached: = on the key a value of another type
+transactions	42	14	reached: = on the key ok
+transactions	6	2	reached: > on another column ok
+transactions	5	1	reached: > on the key a value of another type
+transactions	53	17	reached: > on the key ok
+transactions	10	3	reached: >= on another column ok
+transactions	7	2	reached: >= on the key a value of another type
+transactions	49	16	reached: >= on the key ok
+transactions	8	2	reached: IS NOT NULL on another column ok
+transactions	20	6	reached: IS NOT NULL on the key ok
+transactions	8	2	reached: IS NULL on another column ok
+transactions	12	4	reached: IS NULL on the key ok
+transactions	9	3	reached: NULL argument into a column that takes NULL ok
+transactions	4	1	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+transactions	7	2	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+transactions	14	4	reached: NULL literal into a column that takes NULL ok
+transactions	3	1	reached: NULL literal into the key NOT NULL constraint failed
+transactions	13	4	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+transactions	12	4	reached: SET of NULL for a column that does not take it ok, no row found
+transactions	6	2	reached: SET of a column in double quotes that the table does not have no such column
+transactions	11	3	reached: SET of a column that the table does not have no such column
+transactions	27	9	reached: SET of every column ok, rows changed
+transactions	8	2	reached: SET of the key NOT NULL constraint failed
+transactions	23	7	reached: SET of the key UNIQUE constraint failed
+transactions	30	10	reached: SET of the key ok, rows changed
+transactions	9	3	reached: SET with a value of another type a value of another type
+transactions	5	1	reached: SET with argument []uint8 ok, no row found
+transactions	9	3	reached: SET with argument float64 ok, rows changed
+transactions	7	2	reached: SET with argument int64 ok, rows changed
+transactions	6	2	reached: SET with argument string ok, rows changed
+transactions	4	1	reached: SET with literal blob ok, rows changed
+transactions	3	1	reached: SET with literal empty blob ok, rows changed
+transactions	19	6	reached: SET with literal integer ok, rows changed
+transactions	5	1	reached: SET with literal null ok, rows changed
+transactions	7	2	reached: SET with literal real ok, rows changed
+transactions	5	1	reached: SET with literal text ok, rows changed
+transactions	71	23	reached: WHERE run by a sample of its paths
+transactions	432	144	reached: WHERE run by every path
+transactions	81	27	reached: WHERE run by every path on a table with an index
+transactions	10	3	reached: WHERE that gives every row of a table with rows
+transactions	55	18	reached: WHERE that gives no row of a table with rows
+transactions	30	10	reached: WHERE that gives some rows of a table
+transactions	39	13	reached: WHERE that reads a get of one key ok
+transactions	19	6	reached: WHERE that reads a scan between two bounds ok
+transactions	19	6	reached: WHERE that reads a scan between two bounds that hold no key ok
+transactions	25	8	reached: WHERE that reads a scan from a lower bound ok
+transactions	34	11	reached: WHERE that reads a scan of every row ok
+transactions	16	5	reached: WHERE that reads a scan to an upper bound ok
+transactions	13	4	reached: WHERE that reads no row ok
+transactions	96	32	reached: WHERE that tests a column more than once ok
+transactions	5	1	reached: WHERE with a column in double quotes that the table does not have no such column
+transactions	3	1	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+transactions	13	4	reached: WHERE with a value of another type a value of another type
+transactions	13	4	reached: WHERE with contradicting conditions ok
+transactions	28	9	reached: argument []uint8
+transactions	12	4	reached: argument empty []byte
+transactions	11	3	reached: argument empty string
+transactions	62	20	reached: argument float64
+transactions	9	3	reached: argument float64 -0.0
+transactions	166	55	reached: argument int64
+transactions	18	6	reached: argument nil
+transactions	83	27	reached: argument string
+transactions	330	110	reached: changed both ways
+transactions	150	50	reached: chosen a get
+transactions	3	1	reached: chosen an index with 1 pinned
+transactions	4	1	reached: chosen an index with 1 pinned and a range
+transactions	57	19	reached: chosen every row
+transactions	31	10	reached: chosen no row
+transactions	181	60	reached: chosen the primary key with 0 pinned and a range
+transactions	17	5	reached: comparison with argument []uint8 ok
+transactions	8	2	reached: comparison with argument empty []byte ok
+transactions	5	1	reached: comparison with argument empty string ok
+transactions	19	6	reached: comparison with argument float64 ok
+transactions	36	12	reached: comparison with argument int64 ok
+transactions	27	9	reached: comparison with argument string ok
+transactions	21	7	reached: comparison with literal blob ok
+transactions	6	2	reached: comparison with literal empty blob ok
+transactions	9	3	reached: comparison with literal empty text ok
+transactions	86	28	reached: comparison with literal integer ok
+transactions	9	3	reached: comparison with literal real -0.0 ok
+transactions	30	10	reached: comparison with literal real ok
+transactions	46	15	reached: comparison with literal text ok
+transactions	13	4	reached: create index already exists
+transactions	24	8	reached: create index of 1 columns ok
+transactions	9	3	reached: create index of 2 columns ok
+transactions	3	1	reached: create index of 3 columns ok
+transactions	5	1	reached: create index of a column of type BLOB ok
+transactions	12	4	reached: create index of a column of type INT ok
+transactions	17	5	reached: create index of a column of type INTEGER ok
+transactions	7	2	reached: create index of a column of type REAL ok
+transactions	10	3	reached: create index of a column of type TEXT ok
+transactions	12	4	reached: create index of a column that takes NULL ok
+transactions	16	5	reached: create index of a descending column ok
+transactions	36	12	reached: create index ok
+transactions	28	9	reached: create index that holds the primary key ok
+transactions	6	2	reached: create index there is already a table named
+transactions	47	15	reached: create table of 1 columns ok
+transactions	40	13	reached: create table of 2 columns ok
+transactions	36	12	reached: create table of 3 columns ok
+transactions	32	10	reached: create table of mixed types ok
+transactions	32	10	reached: create table of which every column outside the key takes NULL ok
+transactions	32	10	reached: create table of which no column takes NULL ok
+transactions	12	4	reached: create table of which some columns outside the key take NULL ok
+transactions	77	25	reached: create table with the key at 0 ok
+transactions	32	10	reached: create table with the key at 1 ok
+transactions	14	4	reached: create table with the key at 2 ok
+transactions	58	19	reached: create table with two columns of a type ok
+transactions	24	8	reached: delete WHERE that reads a get of one key ok, rows changed
+transactions	7	2	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+transactions	7	2	reached: delete WHERE that reads a scan from a lower bound ok, rows changed
+transactions	3	1	reached: delete WHERE that reads a scan of every row ok, rows changed
+transactions	13	4	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+transactions	10	3	reached: delete WHERE that reads no row ok, no row found
+transactions	3	1	reached: delete WHERE that tests a column more than once ok, rows changed
+transactions	7	2	reached: delete WHERE with a column in double quotes that the table does not have no such column
+transactions	6	2	reached: delete WHERE with a value of another type a value of another type
+transactions	4	1	reached: delete WHERE with contradicting conditions ok, no row found
+transactions	46	15	reached: delete that changes every row of a table with rows
+transactions	31	10	reached: delete that changes no row of a table with rows
+transactions	34	11	reached: delete that changes some rows of a table
+transactions	6	2	reached: delete with WHERE no such column
+transactions	74	24	reached: delete with WHERE ok, no row found
+transactions	47	15	reached: delete with WHERE ok, rows changed
+transactions	13	4	reached: delete without WHERE ok, no row found
+transactions	33	11	reached: delete without WHERE ok, rows changed
+transactions	48	16	reached: drop index no such index
+transactions	13	4	reached: drop index ok
+transactions	15	5	reached: insert into BLOB UNIQUE constraint failed
+transactions	54	18	reached: insert into BLOB ok
+transactions	10	3	reached: insert into BLOB string or blob too big
+transactions	26	8	reached: insert into INT UNIQUE constraint failed
+transactions	29	9	reached: insert into INT a value of another type
+transactions	82	27	reached: insert into INT ok
+transactions	18	6	reached: insert into INTEGER UNIQUE constraint failed
+transactions	4	1	reached: insert into INTEGER a value of another type
+transactions	71	23	reached: insert into INTEGER ok
+transactions	22	7	reached: insert into REAL UNIQUE constraint failed
+transactions	6	2	reached: insert into REAL a value of another type
+transactions	89	29	reached: insert into REAL ok
+transactions	34	11	reached: insert into TEXT UNIQUE constraint failed
+transactions	6	2	reached: insert into TEXT a value of another type
+transactions	107	35	reached: insert into TEXT ok
+transactions	4	1	reached: insert into TEXT string or blob too big
+transactions	6	2	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+transactions	28	9	reached: insert that leaves out a column that takes NULL ok
+transactions	5	1	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+transactions	6	2	reached: insert with a column without a value: NOT NULL constraint failed
+transactions	24	8	reached: insert with a list in another order UNIQUE constraint failed
+transactions	8	2	reached: insert with a list in another order a value of another type
+transactions	56	18	reached: insert with a list in another order ok
+transactions	96	32	reached: insert with a list in the order of the table ok
+transactions	16	5	reached: insert with a value of another type in another column: a value of another type
+transactions	18	6	reached: insert with a value of another type in the key: a value of another type
+transactions	7	2	reached: insert with the wrong number of values:  values for 
+transactions	12	4	reached: insert with the wrong number of values: values were supplied
+transactions	7	2	reached: insert with two faults: has no column named
+transactions	91	30	reached: insert without a list ok
+transactions	98	32	reached: literal blob
+transactions	21	7	reached: literal empty blob
+transactions	26	8	reached: literal empty text
+transactions	339	113	reached: literal integer
+transactions	36	12	reached: literal null
+transactions	152	50	reached: literal real
+transactions	26	8	reached: literal real -0.0
+transactions	158	52	reached: literal text
+transactions	37	12	reached: long value
+transactions	811	270	reached: path backward
+transactions	815	271	reached: path forward
+transactions	36	12	reached: path of an index of a descending column
+transactions	89	29	reached: path of an index that holds every column
+transactions	67	22	reached: path of an index with 0 pinned
+transactions	29	9	reached: path of an index with 0 pinned and a range
+transactions	39	13	reached: path of an index with 1 pinned
+transactions	7	2	reached: path of an index with 1 pinned and a range
+transactions	807	269	reached: path of every row
+transactions	351	117	reached: path of the primary key with 0 pinned and a range
+transactions	262	87	reached: path of the primary key with 1 pinned
+transactions	64	21	reached: path that reads no row
+transactions	3	1	reached: path with a pin of NULL
+transactions	7	2	reached: path with a range on a descending column
+transactions	449	149	reached: plan of the cache checked
+transactions	202	67	reached: read both ways
+transactions	9	3	reached: replay of indexes into an empty cache
+transactions	7	2	reached: restart with indexes in the cache
+transactions	71	23	reached: select * of 1 columns ok
+transactions	55	18	reached: select * of 2 columns ok
+transactions	58	19	reached: select * of 3 columns ok
+transactions	10	3	reached: select * with NULL ok
+transactions	3	1	reached: select of a name in double quotes that the table does not have no such column
+transactions	4	1	reached: select of a name that the table does not have no such column
+transactions	100	33	reached: select of a name twice ok
+transactions	26	8	reached: select of names in another order ok
+transactions	166	55	reached: select of names ok
+transactions	10	3	reached: select of names with NULL ok
+transactions	19	6	reached: update WHERE that reads a get of one key ok, rows changed
+transactions	6	2	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
+transactions	9	3	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+transactions	7	2	reached: update WHERE that reads no row ok, no row found
+transactions	3	1	reached: update WHERE that tests a column more than once ok, rows changed
+transactions	12	4	reached: update WHERE with a value of another type a value of another type
+transactions	4	1	reached: update WHERE with contradicting conditions ok, no row found
+transactions	36	12	reached: update that changes every row of a table with rows
+transactions	48	16	reached: update that changes no row of a table with rows
+transactions	20	6	reached: update that changes some rows of a table
+transactions	5	1	reached: update with WHERE NOT NULL constraint failed
+transactions	14	4	reached: update with WHERE UNIQUE constraint failed
+transactions	12	4	reached: update with WHERE no such column
+transactions	87	29	reached: update with WHERE ok, no row found
+transactions	32	10	reached: update with WHERE ok, rows changed
+transactions	8	2	reached: update without WHERE NOT NULL constraint failed
+transactions	9	3	reached: update without WHERE UNIQUE constraint failed
+transactions	17	5	reached: update without WHERE ok, no row found
+transactions	24	8	reached: update without WHERE ok, rows changed
+transactions	6	2	select no such column
+arguments	3	1	createtable duplicate column name
+arguments	59	=	excused: a value of another type than its column, checked against s4ql's rule
+arguments	8	=	excused: already exists after the start of a table, accepted
+arguments	166	=	excused: an argument that no column holds, checked against s4ql's rule
+arguments	276	=	excused: the wrong number of arguments, checked against s4ql's rule
+arguments	3	1	insert NOT NULL constraint failed
+arguments	7	2	insert values were supplied
+arguments	28	9	insert with a parameter UNIQUE constraint failed
+arguments	101	33	insert with a parameter not supported
+arguments	130	43	insert with a parameter ok
+arguments	119	39	insert with a parameter wrong number of arguments
+arguments	4	1	reached: != on another column ok
+arguments	4	1	reached: != on the key a value of another type
+arguments	12	4	reached: != on the key ok
+arguments	3	1	reached: < on another column ok
+arguments	5	1	reached: < on the key a value of another type
+arguments	16	5	reached: < on the key ok
+arguments	3	1	reached: <= on another column ok
+arguments	5	1	reached: <= on the key a value of another type
+arguments	20	6	reached: <= on the key ok
+arguments	3	1	reached: = on another column ok
+arguments	5	1	reached: = on the key a value of another type
+arguments	13	4	reached: = on the key ok
+arguments	3	1	reached: > on another column ok
+arguments	6	2	reached: > on the key a value of another type
+arguments	24	8	reached: > on the key ok
+arguments	4	1	reached: >= on another column ok
+arguments	6	2	reached: >= on the key a value of another type
+arguments	20	6	reached: >= on the key ok
+arguments	11	3	reached: IS NOT NULL on the key ok
+arguments	3	1	reached: IS NULL on another column ok
+arguments	13	4	reached: IS NULL on the key ok
+arguments	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+arguments	4	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+arguments	16	5	reached: NULL argument into a column that takes NULL ok
+arguments	12	4	reached: NULL argument into the key NOT NULL constraint failed
+arguments	4	1	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+arguments	5	1	reached: SET of NULL for a column that does not take it ok, no row found
+arguments	6	2	reached: SET of a column in double quotes that the table does not have no such column
+arguments	13	4	reached: SET of a column that the table does not have no such column
+arguments	9	3	reached: SET of every column ok, rows changed
+arguments	3	1	reached: SET of the key NOT NULL constraint failed
+arguments	5	1	reached: SET of the key UNIQUE constraint failed
+arguments	14	4	reached: SET of the key ok, rows changed
+arguments	11	3	reached: SET with a value of another type a value of another type
+arguments	5	1	reached: SET with argument []uint8 ok, no row found
+arguments	7	2	reached: SET with argument float64 ok, rows changed
+arguments	11	3	reached: SET with argument int64 ok, rows changed
+arguments	7	2	reached: SET with argument string ok, rows changed
+arguments	144	48	reached: WHERE run by every path
+arguments	4	1	reached: WHERE that gives every row of a table with rows
+arguments	24	8	reached: WHERE that gives no row of a table with rows
+arguments	7	2	reached: WHERE that gives some rows of a table
+arguments	10	3	reached: WHERE that reads a get of one key ok
+arguments	9	3	reached: WHERE that reads a scan between two bounds ok
+arguments	10	3	reached: WHERE that reads a scan between two bounds that hold no key ok
+arguments	12	4	reached: WHERE that reads a scan from a lower bound ok
+arguments	18	6	reached: WHERE that reads a scan of every row ok
+arguments	5	1	reached: WHERE that reads a scan to an upper bound ok
+arguments	15	5	reached: WHERE that reads no row ok
+arguments	41	13	reached: WHERE that tests a column more than once ok
+arguments	23	7	reached: WHERE with a column in double quotes that the table does not have no such column
+arguments	10	3	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+arguments	9	3	reached: WHERE with a column that the table does not have in a comparison, alone no such column
+arguments	15	5	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+arguments	17	5	reached: WHERE with a value of another type a value of another type
+arguments	29	9	reached: WHERE with an argument that no column holds not supported
+arguments	11	3	reached: WHERE with contradicting conditions ok
+arguments	31	10	reached: WHERE with the wrong number of arguments wrong number of arguments
+arguments	8	2	reached: argument NaN
+arguments	143	47	reached: argument []uint8
+arguments	3	1	reached: argument bool
+arguments	41	13	reached: argument empty []byte
+arguments	34	11	reached: argument empty string
+arguments	5	1	reached: argument float32
+arguments	148	49	reached: argument float64
+arguments	23	7	reached: argument float64 -0.0
+arguments	13	4	reached: argument infinite float64
+arguments	6	2	reached: argument int
+arguments	5	1	reached: argument int32
+arguments	234	78	reached: argument int64
+arguments	57	19	reached: argument named
+arguments	82	27	reached: argument nil
+arguments	24	8	reached: argument nil []byte
+arguments	170	56	reached: argument string
+arguments	8	2	reached: argument string that is not valid UTF-8
+arguments	14	4	reached: argument string with NUL
+arguments	6	2	reached: argument time.Time
+arguments	7	2	reached: argument uint64
+arguments	5	1	reached: argument uint64 above int64
+arguments	235	78	reached: changed both ways
+arguments	42	14	reached: chosen a get
+arguments	24	8	reached: chosen every row
+arguments	23	7	reached: chosen no row
+arguments	69	23	reached: chosen the primary key with 0 pinned and a range
+arguments	11	3	reached: comparison with argument []uint8 ok
+arguments	5	1	reached: comparison with argument empty []byte ok
+arguments	3	1	reached: comparison with argument empty string ok
+arguments	12	4	reached: comparison with argument float64 -0.0 ok
+arguments	15	5	reached: comparison with argument float64 ok
+arguments	35	11	reached: comparison with argument int64 ok
+arguments	3	1	reached: comparison with argument nil ok
+arguments	39	13	reached: comparison with argument string ok
+arguments	5	1	reached: create table if not exists did its work
+arguments	11	3	reached: create table if not exists did nothing: a table of the name exists
+arguments	35	11	reached: create table of 1 columns ok
+arguments	29	9	reached: create table of 2 columns ok
+arguments	21	7	reached: create table of 3 columns ok
+arguments	22	7	reached: create table of mixed types ok
+arguments	21	7	reached: create table of which every column outside the key takes NULL ok
+arguments	24	8	reached: create table of which no column takes NULL ok
+arguments	5	1	reached: create table of which some columns outside the key take NULL ok
+arguments	54	18	reached: create table with the key at 0 ok
+arguments	26	8	reached: create table with the key at 1 ok
+arguments	5	1	reached: create table with the key at 2 ok
+arguments	36	12	reached: create table with two columns of a type ok
+arguments	6	2	reached: delete WHERE that reads a get of one key ok, rows changed
+arguments	3	1	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+arguments	3	1	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+arguments	4	1	reached: delete WHERE that reads no row ok, no row found
+arguments	3	1	reached: delete WHERE with a column in double quotes that the table does not have no such column
+arguments	7	2	reached: delete WHERE with a value of another type a value of another type
+arguments	3	1	reached: delete WHERE with contradicting conditions ok, no row found
+arguments	8	2	reached: delete that changes every row of a table with rows
+arguments	11	3	reached: delete that changes no row of a table with rows
+arguments	8	2	reached: delete that changes some rows of a table
+arguments	5	1	reached: delete with WHERE no such column
+arguments	27	9	reached: delete with WHERE ok, no row found
+arguments	10	3	reached: delete with WHERE ok, rows changed
+arguments	9	3	reached: delete with arguments that s4ql refuses not supported
+arguments	19	6	reached: delete with arguments that s4ql refuses wrong number of arguments
+arguments	9	3	reached: delete without WHERE ok, no row found
+arguments	6	2	reached: delete without WHERE ok, rows changed
+arguments	3	1	reached: drop table if exists did its work
+arguments	3	1	reached: drop table if exists did nothing: no table of the name exists
+arguments	6	2	reached: insert into BLOB UNIQUE constraint failed
+arguments	6	2	reached: insert into BLOB a value of another type
+arguments	28	9	reached: insert into BLOB ok
+arguments	9	3	reached: insert into INT UNIQUE constraint failed
+arguments	3	1	reached: insert into INT a value of another type
+arguments	28	9	reached: insert into INT ok
+arguments	5	1	reached: insert into INTEGER UNIQUE constraint failed
+arguments	19	6	reached: insert into INTEGER ok
+arguments	5	1	reached: insert into REAL UNIQUE constraint failed
+arguments	6	2	reached: insert into REAL a value of another type
+arguments	28	9	reached: insert into REAL ok
+arguments	3	1	reached: insert into TEXT UNIQUE constraint failed
+arguments	3	1	reached: insert into TEXT a value of another type
+arguments	28	9	reached: insert into TEXT ok
+arguments	4	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+arguments	17	5	reached: insert that leaves out a column that takes NULL ok
+arguments	4	1	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+arguments	4	1	reached: insert with NULL in the key: NOT NULL constraint failed
+arguments	10	3	reached: insert with a column that the table does not have: has no column named
+arguments	5	1	reached: insert with a column without a value: NOT NULL constraint failed
+arguments	4	1	reached: insert with a list in another order NOT NULL constraint failed
+arguments	3	1	reached: insert with a list in another order UNIQUE constraint failed
+arguments	4	1	reached: insert with a list in another order a value of another type
+arguments	15	5	reached: insert with a list in another order ok
+arguments	35	11	reached: insert with a list in the order of the table ok
+arguments	5	1	reached: insert with a value of another type in another column: a value of another type
+arguments	6	2	reached: insert with a value of another type in the key: a value of another type
+arguments	6	2	reached: insert with the wrong number of values:  values for 
+arguments	16	5	reached: insert with the wrong number of values: values were supplied
+arguments	5	1	reached: insert with two faults: NOT NULL constraint failed
+arguments	3	1	reached: insert with two faults: has no column named
+arguments	31	10	reached: insert without a list ok
+arguments	14	4	reached: literal integer
+arguments	18	6	reached: literal null
+arguments	19	6	reached: long value
+arguments	265	88	reached: path backward
+arguments	265	88	reached: path forward
+arguments	288	96	reached: path of every row
+arguments	120	40	reached: path of the primary key with 0 pinned and a range
+arguments	84	28	reached: path of the primary key with 1 pinned
+arguments	38	12	reached: path that reads no row
+arguments	154	51	reached: plan of the cache checked
+arguments	250	83	reached: read both ways
+arguments	28	9	reached: select * of 1 columns ok
+arguments	37	12	reached: select * of 2 columns ok
+arguments	17	5	reached: select * of 3 columns ok
+arguments	10	3	reached: select * with NULL ok
+arguments	10	3	reached: select of a name in double quotes that the table does not have no such column
+arguments	12	4	reached: select of a name that the table does not have no such column
+arguments	34	11	reached: select of a name twice ok
+arguments	9	3	reached: select of names in another order ok
+arguments	59	19	reached: select of names ok
+arguments	4	1	reached: update WHERE that reads a get of one key ok, rows changed
+arguments	3	1	reached: update WHERE that reads a scan between two bounds ok, rows changed
+arguments	3	1	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
+arguments	3	1	reached: update WHERE that reads a scan of every row ok, rows changed
+arguments	3	1	reached: update WHERE that reads no row ok, no row found
+arguments	3	1	reached: update WHERE that tests a column more than once ok, rows changed
+arguments	6	2	reached: update WHERE with a value of another type a value of another type
+arguments	11	3	reached: update that changes every row of a table with rows
+arguments	16	5	reached: update that changes no row of a table with rows
+arguments	9	3	reached: update that changes some rows of a table
+arguments	10	3	reached: update with WHERE no such column
+arguments	23	7	reached: update with WHERE ok, no row found
+arguments	12	4	reached: update with WHERE ok, rows changed
+arguments	27	9	reached: update with arguments that s4ql refuses not supported
+arguments	27	9	reached: update with arguments that s4ql refuses wrong number of arguments
+arguments	4	1	reached: update without WHERE UNIQUE constraint failed
+arguments	7	2	reached: update without WHERE ok, no row found
+arguments	8	2	reached: update without WHERE ok, rows changed
+arguments	12	4	select no such column
+arguments	13	4	select wrong number of arguments

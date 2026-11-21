@@ -17,8 +17,6 @@ import (
 
 func TestSequence_neighbour(t *testing.T) {
 	t.Run("should give a value of the same type next to the value, which a column of the type holds", func(t *testing.T) {
-		q, err := NewSequence(rand.New(rand.NewPCG(1, 2)))
-		is.NotError(t, err)
 		r := rand.New(rand.NewPCG(3, 4))
 		for range 5000 {
 			for _, typ := range Types {
@@ -26,7 +24,7 @@ func TestSequence_neighbour(t *testing.T) {
 				if r.IntN(4) == 0 {
 					v = edgeOf(r, typ)
 				}
-				n := q.neighbour(v)
+				n := neighbour(r, v)
 				switch v := v.(type) {
 				case stmt.Integer:
 					d := int64(n.(stmt.Integer)) - int64(v)
@@ -52,7 +50,7 @@ func TestSequence_neighbour(t *testing.T) {
 
 func TestSequence_where(t *testing.T) {
 	t.Run("should give conditions on the columns of the shape and on others, with values of the inserts, and the forms of slice 7", func(t *testing.T) {
-		q, err := NewSequence(rand.New(rand.NewPCG(5, 6)))
+		q, err := newSequence(5, Mixed)
 		is.NotError(t, err)
 		table := stmt.Name{Raw: "t", Value: "t"}
 		shape := q.shapeOf(table)
@@ -113,7 +111,7 @@ func TestSequence_where(t *testing.T) {
 
 func TestSequence_update(t *testing.T) {
 	t.Run("should give assignments to the columns of the shape and to others, with values of the inserts and NULL, and a WHERE three times in four", func(t *testing.T) {
-		q, err := NewSequence(rand.New(rand.NewPCG(7, 8)))
+		q, err := newSequence(7, Mixed)
 		is.NotError(t, err)
 		// A table of three columns, which every seed of the shape's random numbers does not give.
 		var table stmt.Name
@@ -179,7 +177,7 @@ func TestSequence_update(t *testing.T) {
 
 func TestSequence_delete(t *testing.T) {
 	t.Run("should give a WHERE four times in five", func(t *testing.T) {
-		q, err := NewSequence(rand.New(rand.NewPCG(9, 10)))
+		q, err := newSequence(9, Mixed)
 		is.NotError(t, err)
 		table := stmt.Name{Raw: "t", Value: "t"}
 		for range 50 {
@@ -194,8 +192,8 @@ func TestSequence_delete(t *testing.T) {
 		is.True(t, none > 650 && none < 950, "one delete in five without WHERE")
 	})
 
-	t.Run("should give, of a WHERE, one time in three the key equal to a value of an insert, or bounded on one side by every third of those values", func(t *testing.T) {
-		q, err := NewSequence(rand.New(rand.NewPCG(13, 14)))
+	t.Run("should give, of a WHERE, one time in two the key equal to a value of an insert, or bounded on one side by every third of those values", func(t *testing.T) {
+		q, err := newSequence(13, Mixed)
 		is.NotError(t, err)
 		table := stmt.Name{Raw: "t", Value: "t"}
 		shape := q.shapeOf(table)
@@ -216,18 +214,18 @@ func TestSequence_delete(t *testing.T) {
 			counts[where[0].Operator]++
 		}
 		t.Log(counts)
-		is.True(t, counts[stmt.OpEqual] > 800, "the key equal to a value of an insert two times in nine")
+		is.True(t, counts[stmt.OpEqual] > 1200, "the key equal to a value of an insert one time in three")
 		bounded := 0
 		for _, op := range bounds {
 			is.True(t, counts[op] > 80, fmt.Sprint("the key bounded by ", op))
 			bounded += counts[op]
 		}
-		is.True(t, bounded > 400 && bounded < 800, "the key bounded on one side one time in nine, and by the conditions of a select now and then")
+		is.True(t, bounded > 550 && bounded < 1000, "the key bounded on one side one time in six, and by the conditions of a select now and then")
 	})
 }
 
 func TestSequence_insert(t *testing.T) {
-	t.Run("should give an integer of a column of INT or INTEGER as the real of its value one insert in eight after Mistyped", func(t *testing.T) {
+	t.Run("should give an integer of a column of INT or INTEGER as the real of its value one insert in eight with Mistyped of 8", func(t *testing.T) {
 		// wholeReals counts the inserts into table of the sequence q that give a column of INT or
 		// INTEGER a real that is a whole number.
 		wholeReals := func(q *Sequence, table stmt.Name) int {
@@ -251,7 +249,7 @@ func TestSequence_insert(t *testing.T) {
 			}
 			return n
 		}
-		q, err := NewSequence(rand.New(rand.NewPCG(15, 16)))
+		q, err := newSequence(15, Mixed)
 		is.NotError(t, err)
 		// A table with a column of INT or INTEGER, which every seed of the shape's random numbers does
 		// not give.
@@ -263,8 +261,11 @@ func TestSequence_insert(t *testing.T) {
 			}
 		}
 		without := wholeReals(q, table)
-		q.Mistyped()
-		with := wholeReals(q, table)
+		// The profile of the tables has Mistyped, and the same shapes for the same seed.
+		is.Equal(t, 8, Tables.Mistyped)
+		mistyped, err := newSequence(15, Tables)
+		is.NotError(t, err)
+		with := wholeReals(mistyped, table)
 		t.Log(without, with)
 		is.True(t, without < 150, "few whole reals of a value of any type")
 		is.True(t, with > without+150, "one insert in eight more, of those that give the column an integer")
@@ -273,7 +274,7 @@ func TestSequence_insert(t *testing.T) {
 
 func TestSequence_createIndex(t *testing.T) {
 	t.Run("should give columns of the shape, each once, and now and then one that it does not have", func(t *testing.T) {
-		q, err := NewSequence(rand.New(rand.NewPCG(11, 12)))
+		q, err := newSequence(11, Mixed)
 		is.NotError(t, err)
 		table := stmt.Name{Raw: "t", Value: "t"}
 		shape := q.shapeOf(table)
@@ -296,22 +297,39 @@ func TestSequence_createIndex(t *testing.T) {
 		}
 		is.True(t, missing > 100 && missing < 300, fmt.Sprint("one create index in twelve with a column that the shape does not have: ", missing))
 		is.True(t, descending > 400, fmt.Sprint("a column in three descending: ", descending))
-		is.Equal(t, storedIndexes, len(q.indexed["t"]))
+		is.Equal(t, 0, len(q.indexed["t"]), "no index is kept of a table that the sequence has not created")
 	})
 
-	t.Run("should pin leading columns of a create index of the table in a WHERE, and more of them with Indexed", func(t *testing.T) {
-		count := func(indexed bool) int {
-			q, err := NewSequence(rand.New(rand.NewPCG(13, 14)))
-			is.NotError(t, err)
-			if indexed {
-				q.Indexed()
+	t.Run("should keep the indexes of a table that the sequence created, each name once, the last of them, until a drop", func(t *testing.T) {
+		q, err := newSequence(11, Mixed)
+		is.NotError(t, err)
+		table := stmt.Name{Raw: "t", Value: "t"}
+		q.live["t"] = true
+		for i := range storedIndexes + 2 {
+			name := fmt.Sprint("i", i)
+			for len(q.indexed["t"]) == min(i, storedIndexes) && !q.liveIndex(name) {
+				// A create index with a column that the shape does not have is not kept.
+				q.createIndex(stmt.Name{Raw: name, Value: name}, table)
 			}
+			q.createIndex(stmt.Name{Raw: name, Value: name}, table)
+			is.Equal(t, min(i+1, storedIndexes), len(q.indexed["t"]))
+		}
+		is.True(t, !q.liveIndex("i0") && q.liveIndex(fmt.Sprint("i", storedIndexes+1)))
+	})
+
+	t.Run("should pin leading columns of a create index of the table in a WHERE, and more of them with Indexes of 2", func(t *testing.T) {
+		count := func(p *Profile) int {
+			q, err := newSequence(13, p)
+			is.NotError(t, err)
 			table := stmt.Name{Raw: "t", Value: "t"}
 			is.True(t, q.indexConditions(table) == nil, "no WHERE of an index before a create index")
+			q.live["t"] = true
 			for range 20 {
 				q.insert(table)
 			}
-			q.createIndex(stmt.Name{Raw: "i", Value: "i"}, table)
+			for !q.liveIndex("i") {
+				q.createIndex(stmt.Name{Raw: "i", Value: "i"}, table)
+			}
 			pins := 0
 			for range 2000 {
 				for _, c := range q.where(table) {
@@ -322,7 +340,8 @@ func TestSequence_createIndex(t *testing.T) {
 			}
 			return pins
 		}
-		plain, indexed := count(false), count(true)
+		is.Equal(t, 2, Indexes.Indexes)
+		plain, indexed := count(Mixed), count(Indexes)
 		is.True(t, plain > 0 && indexed > plain, fmt.Sprint(plain, " ", indexed))
 	})
 }

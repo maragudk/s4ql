@@ -36,24 +36,14 @@ import (
 )
 
 var (
-	seed      = flag.Uint64("seed", 0, "first seed of the sequences of statements")
-	sequences = flag.Int("sequences", 300, "sequences of statements of TestDifferential")
+	seed      = flag.Uint64("seed", 0, "first seed of the sequences of statements of TestDifferential, each with the profile of its seed, in place of the seeds of each profile")
+	sequences = flag.Int("sequences", 40, "sequences of statements of each profile of TestDifferential, and twice as many of some: see sequencesOf")
 	length    = flag.Int("length", 48, "statements in each sequence of TestDifferential")
 	scanAll   = flag.Bool("scanall", false, "read every row of its table in each query of TestDifferential and FuzzDifferential_core, and not the rows by the key")
 	// directions replays a failure that depends on the directions in which the queries read: a test
 	// that fails logs the seed of each of its instances.
 	directions = flag.Uint64("directions", 0, "seed of the directions of the scans of the queries of every instance of the tests, or 0 for a seed that each instance draws")
 )
-
-// pinned fails the test unless got, a number of texts that a full run counts, is want. Such a number
-// is pinned when it tells how much of a test escapes the comparison with SQLite, so that a change that
-// lets more escape cannot pass unseen.
-func pinned(t *testing.T, what string, want, got int) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%v: %v, but the test pins %v. Change the pinned number only on purpose, and say why in the commit", what, got, want)
-	}
-}
 
 // atDefault reports whether each flag of names has its default value, for which the pinned numbers
 // hold.
@@ -707,16 +697,16 @@ func (i *instance) state() string {
 // sequence of random statements of slice 1, as [stmttest.Sequence] gives them.
 type sequence = stmttest.Sequence
 
-func newSequence(t testing.TB, r stmttest.Rand) *sequence {
+func newSequence(t testing.TB, seed uint64) *sequence {
 	t.Helper()
-	q, err := stmttest.NewSequence(r)
+	q, err := stmttest.NewSequence(seed)
 	is.NotError(t, err)
 	return q
 }
 
-// newSequenceFrom r, after [newSequence] has succeeded once.
-func newSequenceFrom(r stmttest.Rand) *sequence {
-	q, err := stmttest.NewSequence(r)
+// newSequenceFrom the seed, after [newSequence] has succeeded once.
+func newSequenceFrom(seed uint64) *sequence {
+	q, err := stmttest.NewSequence(seed)
 	if err != nil {
 		panic(err)
 	}
@@ -753,6 +743,17 @@ func (y tally) add(src string, a answer) {
 func (y tally) excused(kind string) {
 	if y != nil {
 		y["excused: "+kind]++
+	}
+}
+
+// comparedWithSQLite is the kind under which a tally counts the calls that ran in SQLite, whose
+// answers [pair.step] compared with the engine's.
+const comparedWithSQLite = "compared with SQLite"
+
+// compared counts a call that runs in SQLite, under [comparedWithSQLite].
+func (y tally) compared() {
+	if y != nil {
+		y[comparedWithSQLite]++
 	}
 }
 
@@ -881,13 +882,9 @@ func differentialOn(t testing.TB, seed uint64, n int, restarts bool, y tally, i 
 // from SQLite, with the statements before it, or "".
 func differentialFind(t testing.TB, seed uint64, n int, restarts bool, y tally, i *instance, options engine.Options) (failure string) {
 	t.Helper()
-	r := rand.New(rand.NewPCG(seed, 0xe1e))
-	q := newSequence(t, r)
-	if seed%3 == 2 {
-		// A third of the sequences write more of slice 9, so that more WHERE meet an index, of more
-		// columns, which its paths pin.
-		q.Indexed()
-	}
+	q := newSequence(t, seed)
+	// The restarts draw from a stream of their own, so that they move no statement.
+	r := q.Stream("restarts")
 	p := newPairWith(t, i, y, options)
 	p.rnd = rand.New(rand.NewPCG(seed, 0x9a7))
 	// The other instance closes at the end of the sequence too, as [differential] closes i.
@@ -956,7 +953,10 @@ type pair struct {
 	// allPaths is set for a pair whose [pair.everyPath] runs each WHERE by every candidate, and not by
 	// [pathSample] of them.
 	allPaths bool
-	y        tally
+	// found holds the tables, folded, that a create table if not exists of the sequence found, and
+	// that no drop table dropped since, for [pair.reach].
+	found map[string]bool
+	y     tally
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -969,7 +969,7 @@ func newPair(t testing.TB, i *instance, y tally) *pair {
 // newPairWith is [newPair] with the options of the other instance on the core, options.
 func newPairWith(t testing.TB, i *instance, y tally, options engine.Options) *pair {
 	t.Helper()
-	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), y: y, rnd: rand.New(rand.NewPCG(0, 0x9a7))}
+	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), found: map[string]bool{}, y: y, rnd: rand.New(rand.NewPCG(0, 0x9a7))}
 	if i.memory != nil {
 		p.other = newMemoryInstance(t)
 	} else {
@@ -1062,6 +1062,7 @@ func (p *pair) step(c stmttest.Call) string {
 	if mayslip {
 		is.Equal(t, "", o.run(t, "savepoint s4ql_record").err)
 	}
+	p.y.compared()
 	want := o.run(t, src, args...)
 	if mayslip {
 		is.Equal(t, "", o.run(t, "rollback to s4ql_record").err)
@@ -1768,8 +1769,10 @@ func (p *pair) count(kind string) {
 func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
 	if p.y != nil {
+		found := false
 		reach(p.t, p.o, c, got, p.i.changes, func(what string) {
 			p.y["reached: "+what]++
+			found = found || what == "create table if not exists did nothing: a table of the name exists"
 			// The statements of slice 10 count again by the transaction that they ran in.
 			if p.inTx && slices.ContainsFunc([]string{"create table if not exists ", "drop table if exists ", "create index if not exists ", "drop index if exists "}, func(k string) bool { return strings.HasPrefix(what, k) }) {
 				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
@@ -1790,7 +1793,36 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 		if _, ok := s.(*stmt.Update); ok && kind == "" && got.err == tooBig && !slices.ContainsFunc(c.Args, func(a any) bool { return byteLength(a) > p.i.limit }) {
 			p.y["reached: update of a row whose record is too long"]++
 		}
+		// A value on the left, of slice 12, on a table that a create table if not exists, of slice 10,
+		// found: a meeting of two areas that only the mixed profile has on.
+		switch s := s.(type) {
+		case *stmt.CreateTable:
+			if found {
+				p.found[s.Table.Fold()] = true
+			}
+		case *stmt.DropTable:
+			if got.err == "" {
+				delete(p.found, s.Table.Fold())
+			}
+		case *stmt.Select, *stmt.Update, *stmt.Delete:
+			if table, where := tableWhere(s); p.found[table.Fold()] && slices.ContainsFunc(where, func(c stmt.Condition) bool { return c.ValueFirst }) {
+				p.y["reached: value on the left on a table that a create table if not exists found"]++
+			}
+		}
 	}
+}
+
+// tableWhere gives the table and the WHERE of the select, the update, or the delete s.
+func tableWhere(s stmt.Statement) (stmt.Name, []stmt.Condition) {
+	switch s := s.(type) {
+	case *stmt.Select:
+		return s.Table, s.Where
+	case *stmt.Update:
+		return s.Table, s.Where
+	case *stmt.Delete:
+		return s.Table, s.Where
+	}
+	return stmt.Name{}, nil
 }
 
 // reach counts with count what the call c, whose answer of the engine is got, reaches on the
@@ -2328,7 +2360,7 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 	if long {
 		count("long value")
 	}
-	_, columns := o.columns(t, s.Table.Value)
+	table, columns := o.columns(t, s.Table.Value)
 	if columns == nil {
 		return
 	}
@@ -2359,6 +2391,11 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 		}
 		for _, what := range stmttest.DefaultCases(columns, s, args) {
 			count(what + " " + outcome)
+		}
+		// A default, of slice 11, that an index, of slice 9, holds: a meeting of two areas that only
+		// the mixed profile has on.
+		if _, indexes := o.tableIndexes(t, table, columns); stmttest.LeavesOutIndexed(columns, indexes, s) {
+			count("insert that leaves out a column with a default that an index holds " + outcome)
 		}
 	}
 	if len(columns) < 2 || refused {
@@ -2824,417 +2861,206 @@ func syntaxOfNotSupported(t testing.TB, empty *oracle, src string) string {
 	return ""
 }
 
-// TestDifferential runs random sequences of statements on the engine and on SQLite, and requires
-// the same answers, the same count of changes, and the same tables and rows, half of them with
-// restarts of the instance, with an empty cache and with its own, and half of them with the length
-// limit lowered to [stmttest.LengthLimit].
+// variantOf the seed of a sequence of [TestDifferential]: whether its instance restarts, and the
+// length limit of its cache and of SQLite, [stmttest.LengthLimit] or 0 for SQLite's default. Both
+// come from the number of the seed among the seeds of its profile, so that each profile runs with
+// every pair of them.
+func variantOf(seed uint64) (restarts bool, limit int) {
+	k := seed / stmttest.Slots
+	return k%2 == 1, map[bool]int{true: stmttest.LengthLimit}[k%4 >= 2]
+}
+
+// sequencesOf the profile p in a test that runs n sequences of each profile: n, twice as many of
+// the profiles of the updates and deletes, the indexes, the clauses of slice 10, and the values on
+// the left, whose kinds of outcome are the most and the rarest, and five times as many of the mixed
+// profile. The mixed profile is the only one in which every area meets the others, such as a default
+// with an index or a clause of slice 10 with a value on the left, and no tally of a focused profile
+// counts what only such a meeting reaches. With the default n, it runs 200 sequences, two thirds of
+// the 300 of the one sequence of all areas before the profiles.
+func sequencesOf(p *stmttest.Profile, n int) uint64 {
+	switch p {
+	case stmttest.Mixed:
+		n *= 5
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst:
+		n *= 2
+	}
+	return uint64(n)
+}
+
+// checkReached checks what the runs of the test reached, by the name of each, against the file of
+// the test in testdata/reached, or writes the file with S4QL_RECOUNT=1, as [stmttest.Reached]
+// says, for the kinds of the file of the test with the ending .kinds there. With least, it checks
+// the least numbers alone, as [stmttest.Reached.Least] does, for runs of more sequences than those
+// of the file. The kinds whose name begins with "excused: " are pinned exactly, since they tell how
+// much of a test escapes the comparison with SQLite, but for [excusedRecordSlip], whose count
+// depends on the allocator of the platform and which is left out.
+func checkReached(t *testing.T, doc string, names []string, runs map[string]tally, least bool) {
+	t.Helper()
+	counts := map[string]map[string]int{}
+	for name, y := range runs {
+		counts[name] = maps.Clone(y)
+		delete(counts[name], "excused: "+excusedRecordSlip)
+	}
+	path := filepath.Join("testdata", "reached", t.Name())
+	reached := stmttest.Reached{Kinds: path + ".kinds", Counts: path + ".tsv", Doc: doc, Exact: func(kind string) bool { return strings.HasPrefix(kind, "excused: ") }}
+	check := reached.Check
+	if least {
+		noRecount(t)
+		check = reached.Least
+	}
+	failures, err := check(names, counts)
+	is.NotError(t, err)
+	for _, failure := range failures {
+		t.Error(failure)
+	}
+}
+
+// noRecount fails the test if S4QL_RECOUNT=1 asks for a count that the run cannot give, since it is
+// not the full run with the default flags that the counts are of.
+func noRecount(t *testing.T) {
+	t.Helper()
+	if stmttest.Recounting() {
+		t.Errorf("%v=1 needs the full run of the test: without -short, the race detector, and the address sanitizer, with the default flags and seeds, and with every subtest", stmttest.RecountVariable)
+	}
+}
+
+// flagSet reports whether the flag of the name was given to the test binary, whatever its value.
+func flagSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
+}
+
+// TestDifferential runs random sequences of statements of each profile of [stmttest.Profiles] on
+// the engine and on SQLite, and requires the same answers, the same count of changes, and the same
+// tables and rows, half of them with restarts of the instance, with an empty cache and with its
+// own, and half of them with the length limit lowered to [stmttest.LengthLimit].
+//
+// What the full run of each profile must reach is in testdata/reached/TestDifferential.tsv: every
+// kind that [pair.reach] and the tally count three times or more in the profile, at least a third as
+// often, and the texts that the run excuses from the comparison with SQLite, by kind, exactly. Of
+// the calls that are excused because s4ql refuses their arguments by its rule, each is checked
+// against the rule instead. After a change of the generator, S4QL_RECOUNT=1 writes the file again.
+// The profiles together must reach each kind at least as often as the number before it in
+// testdata/reached/TestDifferential.kinds, which is written by hand, so that a recount cannot lower
+// a floor.
+//
+// With the flag -seed, also -seed 0, the test runs -sequences sequences from that seed, each with
+// the profile of its seed, and checks no count. With more -sequences than the default, it runs that
+// many of each profile, those of the full run among them, and checks the least numbers alone.
 func TestDifferential(t *testing.T) {
+	replayed := flagSet("seed")
 	n := *sequences
-	if slow() {
+	if slow() && !replayed {
 		n /= 10
 	}
-	y := tally{}
-	for s := range uint64(n) {
-		differential(t, *seed+s, *length, s%2 == 1, map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2], y)
+	total := tally{}
+	runs := map[string]tally{}
+	var names []string
+	run := func(s uint64) {
+		p := stmttest.ProfileOf(s)
+		if runs[p.Name] == nil {
+			runs[p.Name] = tally{}
+			names = append(names, p.Name)
+		}
+		restarts, limit := variantOf(s)
+		differential(t, s, *length, restarts, limit, runs[p.Name])
 	}
-	t.Logf("%v sequences of %v statements: %v", n, *length, y)
-	if !slow() && atDefault("seed", "sequences", "length") {
-		// What the full run must reach, at least: each type as a key, with an insert that succeeds,
-		// meets a key that exists, and has a value of another type, also -0.0 after 0.0; each kind of
-		// literal and of argument, also those that no column holds; and a text or a blob that is too
-		// long, as a literal and as an argument; and the forms and the faults of slices 5 and 6. Each
-		// least number is about a third of what the run gave on 2026-11-20, so that a generator that
-		// stops reaching a case fails the test.
-		for kind, least := range reachedDifferential {
-			if y["reached: "+kind] < least {
-				t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
+	if replayed {
+		for s := range uint64(n) {
+			run(*seed + s)
+		}
+	} else {
+		for _, p := range stmttest.Profiles {
+			for k := range sequencesOf(p, n) {
+				run(p.Seed(k))
 			}
 		}
-		if y["excused: "+excusedLong] == 0 {
+	}
+	if len(names) == 0 {
+		t.Fatal("no sequence ran: -sequences is 0, or below 10 under -short, the race detector, or the address sanitizer")
+	}
+	for _, name := range names {
+		t.Logf("%v, %v statements in each sequence: %v", name, *length, runs[name])
+		for kind, count := range runs[name] {
+			total[kind] += count
+		}
+	}
+	t.Logf("%v calls ran in SQLite, and were compared with it", total[comparedWithSQLite])
+	const doc = "What each profile of TestDifferential of the engine reaches in its full run."
+	switch full := !slow() && !replayed && atDefault("length"); {
+	case full && atDefault("sequences"):
+		checkReached(t, doc, names, runs, false)
+		// A floor under the calls that run in SQLite: the 12,108 of the run of 2026-11-20.
+		is.True(t, total[comparedWithSQLite] >= 12108, "the calls that run in SQLite")
+		if total["excused: "+excusedLong] == 0 {
 			t.Errorf("no literal is longer than the length limit")
 		}
+	case full && n > flagDefault("sequences"):
+		// More sequences of each profile, those of the full run among them.
+		checkReached(t, doc, names, runs, true)
+	default:
+		noRecount(t)
 	}
-	// The outcomes of a parameter that the run must reach: an insert through a parameter that
-	// succeeds, that meets a key that exists, and that the rule for arguments refuses, and an argument
-	// for a statement without a parameter.
-	for _, kind := range []string{
-		"insert with a parameter ok", "insert with a parameter UNIQUE constraint failed", "insert with a parameter wrong number of arguments",
-		"insert with a parameter not supported", "insert wrong number of arguments", "select wrong number of arguments",
-		// The errors of the names of slice 5.
-		"createtable duplicate column name", "select no such column", "insert NOT NULL constraint failed", "insert values were supplied", "insert  values for ",
-	} {
-		// The tenth of the sequences of a slow run, under the race detector or the address sanitizer, has
-		// no create table with a column named twice since the sequence writes updates and deletes; the
-		// full run has 15.
-		if y[kind] == 0 && (kind != "createtable duplicate column name" || !slow()) {
-			t.Errorf("no statement has the outcome %q", kind)
-		}
-	}
-	// The texts that the full run excuses from the comparison with SQLite, by kind. Every other kind,
-	// such as each known gap, is pinned at 0. Of the calls that are excused because s4ql refuses
-	// their arguments by its rule, each is checked against the rule instead.
-	if !slow() && atDefault("seed", "sequences", "length") {
-		// Before the sequence wrote tables of several columns, the counts were 21, 644, 140, 371, and
-		// 5. Its inserts have up to four values, and so more parameters and more arguments around
-		// them, which took the second and the third up; one insert in ten has a value of any type,
-		// where one value in ten had, which took the fourth down; and the sequence draws other random
-		// numbers, which moved the first and the last. The engine of slice 6 took the third from 197 to
-		// 184: a nil argument is NULL, which the engine takes, and the 13 calls with one run in SQLite
-		// now. The generator drew as before then. When the sequence wrote NULL, they went from 17, 718,
-		// 184, 336, and 3 to 18, 703, 220, 339, and 8: the sequence draws other random numbers, which
-		// moves each of them, and of its own a call around a NULL argument has a nil []byte in its
-		// place, which took the third up: the arguments that are a nil []byte went from 26 to 54. Nil is
-		// no longer among [stmttest.Unsupported]. The engine of slice 7 took the fourth from 339 to 350:
-		// it runs the two selects with WHERE of [stmttest.Others], which compare a column with a small
-		// integer or with an argument of any type, and 11 of them compare one of another type than its
-		// column, which s4ql's rule refuses. The generator drew as before then. When the sequence wrote
-		// WHERE, they went from 18, 703, 220, 350, and 8 to 19, 718, 248, 478, and 4: the sequence
-		// draws other random numbers, which moves each of them, and of its own one select in two has a
-		// WHERE, which compares a value of another type than its column in 112 selects of the sequence,
-		// which took the fourth up, and has parameters, whose arguments [stmttest.Sequence.Next] makes
-		// wrong in number or of no column now and then, which took the second and the third up. The
-		// selects with a literal in a condition longer than the length limit, of which the run has 2,
-		// give `string or blob too big` in SQLite too, so [excusedLongCondition] is 0. The engine of
-		// slice 8 took the fourth from 478 to 483: it runs the update of [stmttest.Others], which sets
-		// a column to a small integer, and 5 of them give it to a column of another type, which s4ql's
-		// rule refuses. The generator drew as before then. When the sequence wrote updates and deletes,
-		// they went from 19, 718, 248, 483, and 4 to 14, 707, 300, 576, and 2, and [excusedLongChange]
-		// is 4: the sequence draws other random numbers, which moves each of them, and writes fewer
-		// inserts, which took the last down; of its own an update or a delete has parameters, whose
-		// arguments [stmttest.Sequence.Next] makes wrong in number or of no column now and then, which
-		// took the third up, and an update gives a column a value of another type, or compares one in
-		// its WHERE, now and then, which took the fourth up. The 4 are updates and deletes with a literal
-		// longer than the length limit, in SET or in WHERE. When the sequence wrote create indexes and
-		// drop indexes, a third of the sequences more of them, and the sequences grew from 40 statements
-		// to 48, so that the statements of the earlier slices are about as many as before, they went
-		// from 14, 707, 300, 576, 2, and 4 to 14, 822, 326, 477, 1, and 2: the sequence draws other
-		// random numbers, which moves each of them, and its longer sequences took the second and the
-		// third up; the create indexes and drop indexes, which have no values, take turns of the
-		// inserts, the updates, and the deletes, which took the fourth down, and a third of the
-		// sequences write more of them. When one create and drop in three of the sequence said IF NOT
-		// EXISTS or IF EXISTS, they went from 14, 822, 326, 477, 1, and 2 to 16, 836, 326, 528, 1, and
-		// 3, and [excusedLongCondition] went from 0 to 1: the generator draws a number for each create
-		// and drop, which moves the statements after it, and none of these kinds is of a statement of
-		// the clauses. The one select with a literal in a condition longer than the length limit for
-		// which SQLite gives rows is excused by its rule. When the sequence pinned a column of an index
-		// that takes NULL by IS NULL one time in three, where it was one time in eight, they went from 16,
-		// 836, 326, 528, 1, and 3 to 15, 862, 324, 524, 1, and 2: the generator draws other random numbers
-		// after the first such pin, which moves each of them, and none of these kinds is of the pin.
-		// When the sequence wrote the defaults of slice 11, they went from 15, 862, 324, 524, 1, 2, and
-		// 1 to 13, 816, 278, 530, 4, 4, and 0: an insert leaves out a column with a default one time in
-		// two, and so has fewer values, fewer parameters, and fewer arguments around them, which took
-		// the second and the third down; and the sequence draws other random numbers for the defaults
-		// of its shapes and the text of each DEFAULT, which moves each of them. [excusedCacheLimit] is
-		// 0: no create table of the sequence comes near the limit by its statement in the cache, which
-		// TestPair_tooLongForCache and TestEngine_defaults pin by hand. When one comparison in three of
-		// the sequence had its value on the left, of slice 12, they went from 13, 816, 278, 530, 4, 4,
-		// 0, and 0 to 26, 817, 263, 540, 2, 2, 2, and 0: the generator draws a number for each
-		// comparison, which moves the statements after it, and so each of these kinds. The 2 of
-		// [excusedLongCondition] are selects with a long literal on the left of its column, for which
-		// SQLite gives rows as for a long literal on the right, and which the rule decides alone.
-		want := map[string]int{acceptedStartedTable: 26, excusedArguments: 817, excusedArgument: 263, excusedType: 540, excusedLong: 2, excusedLongChange: 2, excusedLongCondition: 2, excusedCacheLimit: 0}
-		kinds := slices.Collect(maps.Keys(want))
-		for name := range y {
-			// The count of [excusedRecordSlip] depends on the allocator of the platform.
-			if kind, ok := strings.CutPrefix(name, "excused: "); ok && !slices.Contains(kinds, kind) && kind != excusedRecordSlip {
-				kinds = append(kinds, kind)
+	// The outcomes of a parameter that every run must reach, also the tenth of the sequences of a slow
+	// run: an insert through a parameter that succeeds, that meets a key that exists, and that the
+	// rule for arguments refuses, and an argument for a statement without a parameter; and the errors
+	// of the names of slice 5.
+	if !replayed {
+		for _, kind := range []string{
+			"insert with a parameter ok", "insert with a parameter UNIQUE constraint failed", "insert with a parameter wrong number of arguments",
+			"insert with a parameter not supported", "insert wrong number of arguments", "select wrong number of arguments",
+			"createtable duplicate column name", "select no such column", "insert NOT NULL constraint failed", "insert values were supplied", "insert  values for ",
+		} {
+			if total[kind] == 0 {
+				t.Errorf("no statement has the outcome %q", kind)
 			}
 		}
-		slices.Sort(kinds)
-		for _, kind := range kinds {
-			pinned(t, "texts excused from the comparison with SQLite as "+kind, want[kind], y["excused: "+kind])
-		}
 	}
 }
 
-// reachedDifferential is the least number of each kind of what [pair.reach] counts that the full run
-// of [TestDifferential] must reach.
-var reachedDifferential = map[string]int{
-	"insert into INT ok": 130, "insert into INTEGER ok": 70, "insert into REAL ok": 100, "insert into TEXT ok": 110, "insert into BLOB ok": 100,
-	"insert into INT UNIQUE constraint failed": 14, "insert into INTEGER UNIQUE constraint failed": 26, "insert into REAL UNIQUE constraint failed": 34,
-	"insert into TEXT UNIQUE constraint failed": 26, "insert into BLOB UNIQUE constraint failed": 42,
-	"-0.0 literal into REAL UNIQUE constraint failed": 2, "-0.0 argument into REAL UNIQUE constraint failed": 2,
-	"insert into INT a value of another type": 20, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 7,
-	"insert into TEXT a value of another type": 24, "insert into BLOB a value of another type": 24,
-	"insert into TEXT string or blob too big": 7, "insert into BLOB string or blob too big": 5, "long value": 90,
-	"literal integer": 950, "literal real": 390, "literal real -0.0": 68, "literal text": 400, "literal empty text": 76, "literal blob": 390, "literal empty blob": 100,
-	"argument int64": 440, "argument int": 7, "argument int32": 4, "argument uint64": 7, "argument float64": 200, "argument float64 -0.0": 26,
-	"argument float32": 9, "argument string": 170, "argument empty string": 34, "argument []uint8": 170, "argument empty []byte": 45,
-	"argument NaN": 4, "argument infinite float64": 7, "argument float32 that is not finite": 5, "argument string that is not valid UTF-8": 12,
-	"argument string with NUL": 14, "argument nil": 88, "argument nil []byte": 18, "argument bool": 3, "argument time.Time": 4,
-	"argument uint64 above int64": 4, "argument named": 40,
-
-	// Slice 5: tables of one to three columns, of mixed types and with two columns of a type, with
-	// the key at each position; inserts without a list and with a list in the order of the table and
-	// in another, and with each fault and two; selects of *, of names in another order, of a name
-	// twice, and of a name that the table does not have, also in double quotes.
-	"create table of 1 columns ok": 70, "create table of 2 columns ok": 90, "create table of 3 columns ok": 70,
-	"create table of mixed types ok": 76, "create table with two columns of a type ok": 120,
-	"create table with the key at 0 ok": 140, "create table with the key at 1 ok": 68, "create table with the key at 2 ok": 26,
-	"insert without a list ok": 130, "insert with a list in the order of the table ok": 120, "insert with a list in another order ok": 86,
-	"insert with a list in another order UNIQUE constraint failed": 7, "insert with a list in another order a value of another type": 17,
-	"insert with a list in another order NOT NULL constraint failed":         8,
-	"insert with a column that the table does not have: has no column named": 29, "insert with a column without a value: NOT NULL constraint failed": 43,
-	"insert with the wrong number of values: values were supplied": 37, "insert with the wrong number of values:  values for ": 44,
-	"insert with a value of another type in the key: a value of another type": 31, "insert with a value of another type in another column: a value of another type": 33,
-	"insert with two faults: NOT NULL constraint failed": 8, "insert with two faults: a value of another type": 8, "insert with two faults: has no column named": 5,
-	"select * of 1 columns ok": 86, "select * of 2 columns ok": 100, "select * of 3 columns ok": 90, "select of names ok": 250,
-	"select of names in another order ok": 55, "select of a name twice ok": 170,
-	"select of a name that the table does not have no such column": 17, "select of a name in double quotes that the table does not have no such column": 24,
-
-	// Slice 6, a third of what the run gave on 2026-11-20 when the sequence wrote NULL: tables of
-	// which no column, every column, and some columns outside the key take NULL; NULL as a literal
-	// and as an argument in a column that takes it, also beside a key that exists and a value of
-	// another type, and in the key and in a column that does not take it; a column that takes NULL
-	// left out of a list; NULL beside a value of another type in another column, which gets NOT NULL
-	// or the refusal of the type by where the NULL is; and a select of * and of names with NULL among
-	// its values.
-	"create table of which no column takes NULL ok": 70, "create table of which every column outside the key takes NULL ok": 70,
-	"create table of which some columns outside the key take NULL ok": 16, "literal null": 220,
-	"NULL literal into a column that takes NULL ok": 34, "NULL argument into a column that takes NULL ok": 16,
-	"NULL literal into a column that takes NULL UNIQUE constraint failed": 11, "NULL argument into a column that takes NULL UNIQUE constraint failed": 5,
-	"NULL literal into a column that takes NULL a value of another type": 5, "NULL argument into a column that takes NULL a value of another type": 2,
-	"NULL literal into the key NOT NULL constraint failed": 35, "NULL argument into the key NOT NULL constraint failed": 14,
-	"NULL literal into a column that does not take NULL NOT NULL constraint failed": 10, "NULL argument into a column that does not take NULL NOT NULL constraint failed": 4,
-	"insert that leaves out a column that takes NULL ok": 60, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 16,
-	"insert that leaves out a column that takes NULL a value of another type": 2, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 13,
-	"insert with NULL in the key: NOT NULL constraint failed": 17, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 11,
-	"insert of NULL beside a value of another type NOT NULL constraint failed": 4, "insert of NULL beside a value of another type a value of another type": 6,
-	"select * with NULL ok": 12, "select of names with NULL ok": 7,
-
-	// Slice 7, a third of what the run gave on 2026-11-20 when the sequence wrote WHERE: each operator
-	// on the key and on another column, and with a value of another type on the key; each way that the
-	// plan reads rows, also two bounds that hold no key; a select that gives no row, some rows, and
-	// every row of a table with rows; each kind of value, by literal and by argument, NULL by both;
-	// and the faults: a column that the table does not have, in a comparison and under IS NULL or IS
-	// NOT NULL, alone, before, and after other conditions, and in double quotes; a value of another
-	// type; an argument that no column holds; the wrong number of arguments; a column tested twice;
-	// contradicting conditions; and a literal longer than the length limit. Every select with WHERE is
-	// read both ways.
-	"= on the key ok": 22, "!= on the key ok": 27, "< on the key ok": 47, "<= on the key ok": 39, "> on the key ok": 39, ">= on the key ok": 42,
-	"IS NULL on the key ok": 19, "IS NOT NULL on the key ok": 16,
-	"= on another column ok": 10, "!= on another column ok": 8, "< on another column ok": 9, "<= on another column ok": 6, "> on another column ok": 11,
-	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 2,
-	// When the sequence wrote the values on the left of slice 12, it drew other random numbers, which
-	// took "!= on the key a value of another type" from 15 to 6 and "> on the key a value of another
-	// type" from 26 to 11, whose least numbers are a third now.
-	"= on the key a value of another type": 11, "!= on the key a value of another type": 2, "< on the key a value of another type": 14,
-	"<= on the key a value of another type": 11, "> on the key a value of another type": 3, ">= on the key a value of another type": 11,
-	"WHERE that reads no row ok": 29, "WHERE that reads a get of one key ok": 18, "WHERE that reads a scan from a lower bound ok": 15,
-	"WHERE that reads a scan to an upper bound ok": 16, "WHERE that reads a scan between two bounds ok": 19,
-	"WHERE that reads a scan between two bounds that hold no key ok": 18, "WHERE that reads a scan of every row ok": 38,
-	"WHERE that gives no row of a table with rows": 58, "WHERE that gives some rows of a table": 20, "WHERE that gives every row of a table with rows": 13,
-	"comparison with literal integer ok": 79, "comparison with literal real ok": 28, "comparison with literal real -0.0 ok": 2, "comparison with literal text ok": 28,
-	"comparison with literal empty text ok": 7, "comparison with literal blob ok": 28, "comparison with literal empty blob ok": 6, "comparison with literal null ok": 7,
-	"comparison with argument int64 ok": 34, "comparison with argument float64 ok": 9, "comparison with argument float64 -0.0 ok": 2,
-	"comparison with argument string ok": 11, "comparison with argument empty string ok": 3, "comparison with argument []uint8 ok": 11,
-	"comparison with argument empty []byte ok": 6, "comparison with argument nil ok": 5,
-	"WHERE with a column that the table does not have in a comparison, alone no such column":                                13,
-	"WHERE with a column that the table does not have in a comparison, before other conditions no such column":              26,
-	"WHERE with a column that the table does not have in a comparison, after other conditions no such column":               14,
-	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column": 4,
-	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column":  3,
-	"WHERE with a column in double quotes that the table does not have no such column":                                      32,
-	"WHERE with a value of another type a value of another type":                                                            37, "WHERE with an argument that no column holds not supported": 12,
-	"WHERE with the wrong number of arguments wrong number of arguments": 19, "WHERE that tests a column more than once ok": 87,
-	"WHERE with contradicting conditions ok": 21, "WHERE with a literal longer than the length limit": 1, "read both ways": 444,
-
-	// Slice 8, a third of what the run gave on 2026-11-20 when the sequence wrote updates and deletes:
-	// each with and without WHERE, that changes rows and that finds none, of a table with rows that it
-	// changes every row, some rows, and none of; a change of the key that succeeds, meets a key that
-	// exists, and gets NULL; NULL for a column that does not take it, with a row found and without; a
-	// column of SET that the table does not have, also in double quotes; a value of another type in SET
-	// and in WHERE; each kind of value of SET, by literal and by argument; a column of WHERE that the
-	// table does not have; NOT NULL and UNIQUE with and without WHERE; a record that is too long; a
-	// literal of SET longer than the length limit; arguments that s4ql refuses; each way that the scan
-	// reads the rows; and every update and delete with WHERE changed both ways. The sequence writes
-	// fewer inserts and selects since then, so the least numbers of "-0.0 literal into REAL UNIQUE
-	// constraint failed" and "select of names with NULL ok" are a third of what the run gives now, 2
-	// and 7, where they were 6 and 25. A column that the table does not have under IS NULL or IS NOT
-	// NULL alone is required of a select or of a delete, whichever the run reaches, since the WHERE of
-	// both is read by the same conditions: of a select since 2026-11-20, when the sequence wrote the
-	// clauses of slice 10 and drew other random numbers. They also took "update of a row whose record
-	// is too long" from 1 to 0, which [TestPair_recordSlips] pins by hand, and "delete WHERE with
-	// contradicting conditions ok, no row found", "insert into REAL a value of another type", "insert
-	// that leaves out a column that takes NULL a value of another type", and "path with a pin of NULL"
-	// to 9, 23, 7, and 2, of which the least numbers are a third, or 1. When the sequence pinned a
-	// column of an index that takes NULL by IS NULL one time in three, where it was one time in eight,
-	// "path with a pin of NULL" went from 2 to 11, and its least number is 3, and the other random
-	// numbers that the generator drew after such a pin took "delete WHERE that reads a scan between two
-	// bounds that hold no key ok, no row found" from 9 to 8, of which the least number is now a third.
-	// Since an update and a delete bound the key on one side by a value of an insert, where they had
-	// the key equal to it, for every third of the values that the sequence keeps, on 2026-11-21, the
-	// run reaches "update WHERE that reads a scan to an upper bound ok, rows changed" 11 times, which
-	// the sequences of create indexes and drop indexes had reached 0 to 3 times, and requires it again,
-	// and "update WHERE that reads a scan from a lower bound ok, rows changed" 3 times. The generator
-	// draws the same random numbers as without the bound, so the pins above did not move.
-	"update with WHERE ok, rows changed": 17, "update with WHERE ok, no row found": 76, "update without WHERE ok, rows changed": 20, "update without WHERE ok, no row found": 17,
-	"delete with WHERE ok, rows changed": 32, "delete with WHERE ok, no row found": 77, "delete without WHERE ok, rows changed": 23, "delete without WHERE ok, no row found": 12,
-	"update that changes every row of a table with rows": 27, "update that changes some rows of a table": 10, "update that changes no row of a table with rows": 42,
-	"delete that changes every row of a table with rows": 35, "delete that changes some rows of a table": 20, "delete that changes no row of a table with rows": 42,
-	"SET of the key ok, rows changed": 19, "SET of the key UNIQUE constraint failed": 18, "SET of the key NOT NULL constraint failed": 9, "SET of every column ok, rows changed": 13,
-	"SET of NULL for a column that does not take it NOT NULL constraint failed": 10, "SET of NULL for a column that does not take it ok, no row found": 13,
-	"SET of a column that the table does not have no such column": 30, "SET of a column in double quotes that the table does not have no such column": 12,
-	"SET with a value of another type a value of another type": 29, "SET with literal integer ok, rows changed": 15, "SET with literal real ok, rows changed": 5,
-	"SET with literal real -0.0 ok, rows changed": 1, "SET with literal text ok, rows changed": 5, "SET with literal empty text ok, rows changed": 1,
-	"SET with literal blob ok, rows changed": 4, "SET with literal empty blob ok, rows changed": 1, "SET with literal null ok, rows changed": 2,
-	"SET with argument int64 ok, rows changed": 4, "SET with argument float64 ok, rows changed": 2, "SET with argument string ok, rows changed": 1,
-	"SET with argument []uint8 ok, no row found": 5, "SET with argument nil ok, rows changed": 1,
-	"update with WHERE no such column": 34, "update WHERE with a column in double quotes that the table does not have no such column": 11,
-	"update WHERE with a value of another type a value of another type": 24, "update with WHERE NOT NULL constraint failed": 4, "update without WHERE NOT NULL constraint failed": 5,
-	"update with WHERE UNIQUE constraint failed": 6, "update without WHERE UNIQUE constraint failed": 12,
-	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
-	"update with a literal longer than the length limit in SET": 1,
-	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
-	"update WHERE that reads a scan between two bounds ok, rows changed": 1, "update WHERE that reads a scan to an upper bound ok, rows changed": 3,
-	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 3,
-	"update WHERE that tests a column more than once ok, rows changed": 3, "update WHERE with contradicting conditions ok, no row found": 11,
-	"delete with WHERE no such column": 18, "delete WHERE with a column in double quotes that the table does not have no such column": 13,
-	"delete WHERE with a value of another type a value of another type": 18, "delete with arguments that s4ql refuses not supported": 7,
-	"delete with arguments that s4ql refuses wrong number of arguments": 11, "delete WHERE that reads no row ok, no row found": 12,
-	"delete WHERE that reads a get of one key ok, rows changed": 15, "delete WHERE that reads a scan from a lower bound ok, rows changed": 3,
-	// When the sequence wrote the values on the left of slice 12, it drew other random numbers, which
-	// took "delete WHERE that tests a column more than once ok, rows changed" from 12 to 5, whose
-	// least number is a third now, and "delete WHERE that reads a scan between two bounds ok, rows
-	// changed" from 5 to 1, which is left out: the WHERE of a delete is read by the conditions that
-	// read that of a select and an update, and "WHERE that reads a scan between two bounds ok" and
-	// "update WHERE that reads a scan between two bounds ok, rows changed" are still required here,
-	// and TestEngine_paths runs deletes between two bounds of the key by every path.
-	"delete WHERE that reads a scan to an upper bound ok, rows changed":                   2,
-	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 2, "delete WHERE that reads a scan of every row ok, rows changed": 2,
-	"delete WHERE that tests a column more than once ok, rows changed": 1, "delete WHERE with contradicting conditions ok, no row found": 3,
-	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 2, "changed both ways": 576,
-	// The create indexes and drop indexes of slice 9, by outcome and by their columns, as [reachIndex]
-	// counts them; the choices of the rules, as [checkChoice] counts them; the paths that
-	// [pair.everyPath] runs, by their kinds, as [pathKinds] gives them, and the plans of the cache
-	// that it checks; and the restarts of a database with indexes. Each least number is a third of
-	// what the run gave on 2026-11-20, or 1.
-	"create index ok": 114, "create index already exists": 123, "create index no such column": 27, "create index no such table": 213,
-	"create index there is already a table named": 102, "drop index ok": 29, "drop index no such index": 117,
-	"create index of 1 columns ok": 71, "create index of 2 columns ok": 33, "create index of 3 columns ok": 9,
-	"create index of a column of type BLOB ok": 27, "create index of a column of type INT ok": 34, "create index of a column of type INTEGER ok": 36,
-	"create index of a column of type REAL ok": 34, "create index of a column of type TEXT ok": 34, "create index of a column that takes NULL ok": 43,
-	"create index of a descending column ok": 56, "create index that holds the primary key ok": 79,
-	"chosen no row": 53, "chosen a get": 155, "chosen every row": 47, "chosen the primary key with 0 pinned and a range": 75,
-	"chosen an index with 0 pinned and a range": 3, "chosen an index with 1 pinned": 6, "chosen an index with 1 pinned and a range": 4,
-	"chosen an index with 2 pinned": 1, "chosen an index with 2 pinned and a range": 1, "chosen an index with 1 pinned of a table of several indexes": 2,
-	"chosen a get of a table of several indexes": 9, "chosen every row of a table of several indexes": 2,
-	"WHERE run by every path": 379, "WHERE run by every path on a table with an index": 147, "WHERE run by a sample of its paths": 116,
-	"path forward": 717, "path backward": 721, "path that reads no row": 112, "path of every row": 652,
-	"path of the primary key with 1 pinned": 275, "path of the primary key with 0 pinned and a range": 151,
-	"path of an index with 0 pinned": 135, "path of an index with 0 pinned and a range": 26, "path of an index with 1 pinned": 69,
-	"path of an index with 1 pinned and a range": 6, "path of an index with 2 pinned": 7, "path of an index with 2 pinned and a range": 1,
-	"path of an index with 3 pinned": 1, "path of an index of a descending column": 111, "path with a range on a descending column": 12,
-	"path with a pin of NULL": 3, "path of an index that holds every column": 204, "plan of the cache checked": 380,
-	"replay of indexes into an empty cache": 33, "restart with indexes in the cache": 33,
-
-	// Slice 10, a third of what the run gave on 2026-11-20 when one create and drop in three of the
-	// sequence said IF NOT EXISTS or IF EXISTS: each of the four statements that does its work, that
-	// does nothing for each reason of [stmttest.ExistsRule], and that gives each error that SQLite gives
-	// it before or after it looks for its object, as [reachExists] counts them.
-	"create table if not exists did its work": 80, "create table if not exists did nothing: a table of the name exists": 93,
-	"create table if not exists there is already an index named": 6, "create table if not exists duplicate column name": 4,
-	"drop table if exists did its work": 32, "drop table if exists did nothing: no table of the name exists": 23,
-	"drop table if exists did nothing: no table of the name exists, and an index has it": 2,
-	"create index if not exists did its work":                                            32, "create index if not exists did nothing: an index of the name exists": 29,
-	"create index if not exists did nothing: an index of the name exists, and the table lacks a column of the statement": 5,
-	"create index if not exists no such table": 67, "create index if not exists there is already a table named": 31,
-	"create index if not exists no such column": 7,
-	"drop index if exists did its work":         9, "drop index if exists did nothing: no index of the name exists": 28,
-	"drop index if exists did nothing: no index of the name exists, and a table has it": 11,
-
-	// Slice 11, a third of what the run gave on 2026-11-21 when the sequence wrote defaults, or 1:
-	// create tables with a default of each type, of a long one, on the key, and DEFAULT NULL on a
-	// column that takes NULL and on one that does not; inserts that leave out a column and store its
-	// default of each type, also of the key, and DEFAULT NULL in a column that takes NULL; NOT NULL
-	// from a DEFAULT NULL in a column that does not take NULL and in the key; UNIQUE from a default
-	// of the key; a record that a long default makes too long; and an explicit NULL for a column with
-	// a default, kept as NULL in a column that takes NULL and refused by NOT NULL in one that does
-	// not. The sequence drew other random numbers then, which took "insert with a list in another
-	// order UNIQUE constraint failed" from 29 to 22 and "delete WHERE that reads a scan of every row
-	// ok, rows changed" from 13 to 5, whose least numbers are a third now, and "update WHERE that
-	// reads a scan from a lower bound ok, rows changed" from 3 to 0, which is left out:
-	// TestEngine_update pins an update by a lower bound of the key that changes rows, and the delete
-	// by a lower bound is still required here.
-	"create table with a default of integer ok": 59, "create table with a default of real ok": 25, "create table with a default of text ok": 27,
-	"create table with a default of blob ok": 24, "create table with a default of 250 bytes or more ok": 21, "create table with a default on the key ok": 104,
-	"create table with DEFAULT NULL on a column that takes NULL ok": 7, "create table with DEFAULT NULL on a column that does not take NULL ok": 20,
-	"insert that leaves out a column with a default of integer ok": 32, "insert that leaves out a column with a default of real ok": 9,
-	"insert that leaves out a column with a default of text ok": 10, "insert that leaves out a column with a default of blob ok": 7,
-	"insert that leaves out the key with a default ok": 12, "insert that leaves out a column that takes NULL with DEFAULT NULL ok": 7,
-	"insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed": 10,
-	"insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed":                          4,
-	"insert that leaves out the key with a default UNIQUE constraint failed":                               6,
-	"insert that leaves out a column with a long default string or blob too big":                           1,
-	"NULL given for a column with a default, which takes NULL ok":                                          10,
-	"NULL given for a column with a default, which does not take NULL NOT NULL constraint failed":          19,
-
-	// Slice 12, a third of what the run gave on 2026-11-21 when one comparison in three of the
-	// sequence had its value on the left, or 1, as [reachValueFirst] counts them: each operator as
-	// the text writes it, by whether its statement finds rows or none, and by each refusal that a
-	// comparison of it meets, of a value of another type, of a column that the table does not have,
-	// of the number of the arguments, and of an argument that no column holds; NULL on the left, a
-	// value on the left that is too long, NOT NULL and UNIQUE of an update with one; a select, an
-	// update, and a delete with one that find rows and none; the choices of the access that a value
-	// on the left decides, as [checkChoice] counts them; and the WHERE with one that run by every
-	// path, and its paths that a range bounds, as [pair.everyPath] counts them.
-	"value on the left of = finds rows": 17, "value on the left of != finds rows": 2, "value on the left of < finds rows": 1,
-	"value on the left of <= finds rows": 2, "value on the left of > finds rows": 2, "value on the left of >= finds rows": 4,
-	"value on the left of = finds no row": 65, "value on the left of != finds no row": 8, "value on the left of < finds no row": 16,
-	"value on the left of <= finds no row": 15, "value on the left of > finds no row": 20, "value on the left of >= finds no row": 20,
-	"value on the left of = a value of another type": 22, "value on the left of != a value of another type": 3, "value on the left of < a value of another type": 5,
-	"value on the left of <= a value of another type": 6, "value on the left of > a value of another type": 6, "value on the left of >= a value of another type": 4,
-	"value on the left of = no such column": 19, "value on the left of != no such column": 6, "value on the left of < no such column": 6,
-	"value on the left of <= no such column": 6, "value on the left of > no such column": 7, "value on the left of >= no such column": 8,
-	"value on the left of = wrong number of arguments": 12, "value on the left of != wrong number of arguments": 1, "value on the left of < wrong number of arguments": 3,
-	"value on the left of <= wrong number of arguments": 4, "value on the left of > wrong number of arguments": 5, "value on the left of >= wrong number of arguments": 4,
-	"value on the left of = not supported": 4, "value on the left of != not supported": 1, "value on the left of < not supported": 2,
-	"value on the left of <= not supported": 2, "value on the left of > not supported": 3, "value on the left of >= not supported": 1,
-	"value on the left compared with NULL finds no row": 6, "value on the left string or blob too big": 1,
-	"value on the left NOT NULL constraint failed": 1, "value on the left UNIQUE constraint failed": 1,
-	"select with a value on the left ok, rows found": 10, "select with a value on the left ok, no row found": 56,
-	"update with a value on the left ok, rows changed": 9, "update with a value on the left ok, no row found": 38,
-	"delete with a value on the left ok, rows changed": 7, "delete with a value on the left ok, no row found": 27,
-	"chosen a get by a value on the left": 56, "chosen the primary key with 0 pinned and a range by a value on the left": 32,
-	"chosen an index with 0 pinned and a range by a value on the left": 1, "chosen an index with 1 pinned by a value on the left": 2,
-	"chosen an index with 1 pinned and a range by a value on the left": 3, "chosen an index with 2 pinned and a range by a value on the left": 1,
-	"WHERE with a value on the left run by every path": 165, "WHERE with a value on the left run by every path on a table with an index": 65,
-	"path of the primary key with 0 pinned and a range of a WHERE with a value on the left": 82,
-	"path of an index with 0 pinned and a range of a WHERE with a value on the left":        12,
-	"path of an index with 1 pinned and a range of a WHERE with a value on the left":        6,
-	"path of an index with 2 pinned and a range of a WHERE with a value on the left":        2,
+// flagDefault is the default value of the flag of the name, which is a number.
+func flagDefault(name string) int {
+	n, err := strconv.Atoi(flag.Lookup(name).DefValue)
+	if err != nil {
+		panic(err)
+	}
+	return n
 }
 
-// TestDifferential_plantedBugs runs the first sequences of [TestDifferential] with each planted bug
-// of the choice of an access in the engines of both instances of the pair, and requires that at
-// least a pinned number of them find the bug, by a difference from SQLite, also on a path that
-// [pair.everyPath] forces. Each sequence that finds the bug runs again without it and must find
-// nothing, as every sequence of [TestDifferential] does.
+// TestDifferential_plantedBugs runs the first sequences of a profile of [TestDifferential] with each
+// planted bug of the choice of an access in the engines of both instances of the pair, and requires
+// that at least a pinned number of them find the bug, by a difference from SQLite, also on a path
+// that [pair.everyPath] forces. The profile of a bug is the one that weighs what the bug breaks.
+// Each sequence that finds the bug runs again without it and must find nothing, as every sequence of
+// [TestDifferential] does.
 func TestDifferential_plantedBugs(t *testing.T) {
-	n := 60
+	n := 30
 	if slow() {
-		n = 6
+		n = 3
 	}
 	for _, b := range []struct {
-		name string
-		// least is the number of the n sequences that must find the bug, about half of what they found
-		// on 2026-11-20, and for unturnedBound on 2026-11-21, when 3 found it, each by the rows of a
-		// select of its WHERE that the rules give, which differ from SQLite's.
+		name    string
+		profile *stmttest.Profile
+		// least is the number of the n sequences that must find the bug, a third of what they found
+		// on 2026-11-21, 21 and 15 of 30, each by the rows of a select or by the count of an update or
+		// a delete that differ from SQLite's.
 		least int
 	}{
-		{"pinByPlace", 3},
-		{"unturnedBound", 1},
+		{"pinByPlace", stmttest.Indexes, 7},
+		{"unturnedBound", stmttest.ValueFirst, 5},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			found := 0
 			first := ""
-			for s := range uint64(n) {
+			for k := range uint64(n) {
+				s := b.profile.Seed(k)
+				restarts, limit := variantOf(s)
 				var options engine.Options
 				options.Plant(b.name)
-				i := newInstanceLimited(t, options, nil, map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2])
+				i := newInstanceLimited(t, options, nil, limit)
 				i.planted = true
-				limit := map[bool]int{true: stmttest.LengthLimit}[s%4 >= 2]
-				failure := differentialFind(t, *seed+s, *length, s%2 == 1, nil, i, options)
+				failure := differentialFind(t, s, *length, restarts, nil, i, options)
 				i.close()
 				if failure == "" {
 					continue
@@ -3244,13 +3070,13 @@ func TestDifferential_plantedBugs(t *testing.T) {
 					first = failure[:min(len(failure), 2000)]
 				}
 				clean := newInstanceLimited(t, generatedOptions(), nil, limit)
-				if failure := differentialFind(t, *seed+s, *length, s%2 == 1, nil, clean, generatedOptions()); failure != "" {
-					t.Errorf("seed %v finds something without the bug: %v", *seed+s, failure)
+				if failure := differentialFind(t, s, *length, restarts, nil, clean, generatedOptions()); failure != "" {
+					t.Errorf("seed %v finds something without the bug: %v", s, failure)
 				}
 				clean.close()
 			}
-			t.Logf("%v of %v sequences find the bug; the first finds: %v", found, n, first)
-			if !slow() && atDefault("seed", "length") {
+			t.Logf("%v of %v sequences of the profile %v find the bug; the first finds: %v", found, n, b.profile.Name, first)
+			if !slow() && atDefault("length") {
 				is.True(t, found >= b.least, fmt.Sprint("the bug is found too rarely: ", found))
 			}
 		})
@@ -3531,10 +3357,10 @@ func FuzzSQL_core(f *testing.F) {
 	fuzzSQL(f, func(t testing.TB) *instance { return newInstance(t, engine.Options{}) })
 }
 
-// fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of the sequence of
-// [TestDifferential], the texts of [stmttest.Others] and [fuzzSetUp], and every 500th text of the corpus.
+// fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of a sequence of
+// the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], and every 500th text of the corpus.
 func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
-	q := newSequence(f, rand.New(rand.NewPCG(1, 2)))
+	q := newSequence(f, stmttest.Mixed.Seed(1))
 	for range 40 {
 		c := q.Next()
 		f.Add(c.Src, !c.Query)

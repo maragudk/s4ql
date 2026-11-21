@@ -30,3 +30,4 @@ The list is in the directory [todo](todo), one file per area and one per slice:
 - [slice-11.md](todo/slice-11.md): slice 11 of the roadmap, `default` with a literal.
 - [slice-12.md](todo/slice-12.md): slice 12 of the roadmap, a value on the left of a comparison.
 - [slice-13.md](todo/slice-13.md): slice 13 of the roadmap, `order by` and `limit` on `select`.
+- [generated-workload.md](todo/generated-workload.md): the profiles and the random streams of the generated checks.

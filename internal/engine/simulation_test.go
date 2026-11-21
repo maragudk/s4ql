@@ -38,8 +38,9 @@ import (
 	"maragu.dev/s4ql/internal/testshard"
 )
 
-// hostRand is the [stmttest.Rand] of a host, so that the statements of a simulation come from its
-// seed.
+// hostRand is the [stmttest.Rand] of a host, for what the callers of a simulation draw for
+// themselves: their waits, their transactions, and how they read the rows of a query. The statements
+// come from the sequence of the seed, whatever the scheduler does.
 type hostRand struct {
 	h host.Host
 }
@@ -48,7 +49,12 @@ func (r hostRand) IntN(n int) int { return int(r.h.Uint64() % uint64(n)) }
 func (r hostRand) Uint64() uint64 { return r.h.Uint64() }
 
 // workload of engine statements that callers run against instances of one database, under the
-// scheduler, while the store fails, hangs, and loses requests.
+// scheduler, while the store fails, hangs, and loses requests: the environment of a simulation. Its
+// statements are those of the sequence of the seed, with the profile of the seed, as
+// [stmttest.ProfileOf] gives it, so a simulation is an environment and a profile, and a test runs an
+// environment on the seeds of the profiles that it names. One turn of a caller in
+// [stmttest.Profile.Transactions] is a transaction that spans statements instead of a statement of
+// its own: see [run.transaction].
 type workload struct {
 	// instances that run at the start, each with its own cache and its callers.
 	instances int
@@ -68,23 +74,15 @@ type workload struct {
 	closes int
 	// bugs planted in the engine.
 	bugs []string
-	// txs makes one turn of a caller in txs a transaction that spans statements instead of a
-	// statement of its own, if it is more than 0: see [run.transaction].
-	txs int
 	// idlers is the number of callers of each instance that hold a write transaction open and idle
 	// across a cut-off of their instance from the store, for up to idle, and leave the last one open
 	// after the end of the workload: see [run.idler].
 	idlers int
 	idle   time.Duration
-	// mistyped makes the sequence give more inserts a value of another type than its column, as
-	// [stmttest.Sequence.Mistyped] says.
-	mistyped bool
 }
 
 // hammerWorkload has one instance whose callers hardly wait between their statements, so that two
-// statements of one instance often run at once. Its sequence gives more inserts a value of another
-// type than its column, among them whole reals for a column of INT or INTEGER, which SQLite converts
-// and s4ql refuses.
+// statements of one instance often run at once.
 var hammerWorkload = workload{
 	instances: 1,
 	callers:   4,
@@ -93,8 +91,6 @@ var hammerWorkload = workload{
 	timeout:   5 * time.Second,
 	durations: []time.Duration{30 * time.Second},
 	faults:    simstore.AllFaults(),
-	txs:       4,
-	mistyped:  true,
 }
 
 // defaultWorkload has two instances that compete for the lease, two callers on each, a crash and a
@@ -109,7 +105,6 @@ var defaultWorkload = workload{
 	faults:    simstore.AllFaults(),
 	crashes:   1,
 	closes:    1,
-	txs:       4,
 }
 
 // idleWorkload is the default workload with an idler on each instance, whose write transactions sit
@@ -510,7 +505,8 @@ func (r *run) open(ctx context.Context, n *node) error {
 	draw = (draw ^ draw>>27) * 0x94d049bb133111eb
 	draw ^= draw >> 31
 	way := "rules"
-	if names := r.q.IndexNames(); other && draw%2 == 0 {
+	// A sequence of a profile without indexes has no name of an index to force a path of.
+	if names := r.q.IndexNames(); other && (draw%2 == 0 || len(names) == 0) {
 		way = "every row"
 		options.ScanAll()
 	} else if other {
@@ -1008,7 +1004,7 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				conn := c.conn(ctx, r, e)
 				gen := n.generation(e)
 				var reason string
-				if r.w.txs > 0 && rnd.IntN(r.w.txs) == 0 {
+				if txs := r.q.Profile().Transactions; txs > 0 && rnd.IntN(txs) == 0 {
 					reason = r.transaction(ctx, n, conn, gen, rnd)
 				} else {
 					sctx, cancel := inst.WithTimeout(ctx, time.Duration(1+rnd.IntN(int(r.w.timeout/time.Millisecond)))*time.Millisecond)
@@ -1268,15 +1264,7 @@ func integrityCheck(path string) (faults []string, err error) {
 // do the workload, and check what happened: see [run.verify].
 func (w workload) do(ctx context.Context, world *sim.Scheduler, seed uint64, dir string, t testing.TB) *run {
 	r := &run{t: t, w: w, world: world, seed: seed, dir: dir, attempts: map[uint64]*attempt{}, events: map[string]int{}, endedForLease: map[string][]uint64{}, ways: map[string]string{},
-		store: simstore.New(world, simstore.Options{Latency: 50 * time.Millisecond, Faults: w.faults}), q: newSequenceFrom(hostRand{world})}
-	if seed%2 == 1 {
-		// The sequence of every second seed writes more create indexes, and more WHERE that an index
-		// serves, as [stmttest.Sequence.Indexed] says.
-		r.q.Indexed()
-	}
-	if w.mistyped {
-		r.q.Mistyped()
-	}
+		store: simstore.New(world, simstore.Options{Latency: 50 * time.Millisecond, Faults: w.faults}), q: newSequenceFrom(seed)}
 	var tasks []host.Task
 	for i := range w.instances {
 		name := string(rune('a' + i))
@@ -2235,13 +2223,15 @@ func (s simulation) violations() []string {
 	return v
 }
 
-// simSeeds is n, or the number in the environment variable S4QL_ENGINE_SIM_SEEDS.
+// simSeeds is n, or the number in the environment variable S4QL_ENGINE_SIM_SEEDS, which is 1 at
+// least.
 func simSeeds(t *testing.T, n int) uint64 {
 	t.Helper()
 	if v := os.Getenv("S4QL_ENGINE_SIM_SEEDS"); v != "" {
 		var err error
 		n, err = strconv.Atoi(v)
 		is.NotError(t, err)
+		is.True(t, n >= 1, "S4QL_ENGINE_SIM_SEEDS is a number of seeds, 1 at least")
 	}
 	return uint64(n)
 }
@@ -2440,225 +2430,139 @@ func (r *run) droppedUnder() int {
 	return n
 }
 
-// TestSimulation runs the default workload, the idle workload, and the hammer workload for many seeds each, and twice
-// for some, whose traces must be the same. In a run of at least 50 seeds, every kind of outcome, of
-// fault of the store, and of event must occur at least as often as reached says, for each seed:
-// about a quarter of what the first 1,000 seeds give, so that the test fails when a kind stops
-// happening, and not by chance. And at most the share noLease of the statements may be refused
-// for want of the lease, about twice what the first 1,000 seeds give, so that the test fails when
-// most statements no longer reach a transaction. The seeds are the same in every run, so the counts
-// are too. With the flag -replay, it replays that one seed instead: see [replaySeed].
+// simCell is a number of seeds of a profile that [TestSimulation] runs in an environment.
+type simCell struct {
+	profile *stmttest.Profile
+	seeds   int
+}
+
+// simEnvironment is an environment of [TestSimulation]: see [simEnvironments].
+type simEnvironment struct {
+	name    string
+	w       workload
+	first   uint64
+	cells   []simCell
+	noLease float64
+}
+
+// simEnvironments are the environments of [TestSimulation], each with the number of the first seed
+// of each profile that it runs, so that no two environments, and neither [TestDifferential] nor the
+// planted bugs, run the same sequences; its cells, each a profile and the number of its seeds; and
+// the largest share of its statements that may be refused for want of the lease, about twice what
+// its seeds gave on 2026-11-21, 0.034, 0.106, and 0.032. Each profile runs in the default and in the
+// hammer environment, and the idle one, whose kinds are those of the lease, runs five. The cells of
+// the mixed profile, the only one in which every area meets the others, hold 100 seeds, two thirds
+// of the 150 of the one sequence of all areas before the profiles. A cell that is added to an
+// environment adds to what the environment reaches, and takes nothing from another cell.
+var simEnvironments = []simEnvironment{
+	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 34}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.07},
+	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
+	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.06},
+}
+
+// TestSimulation runs each environment of [simEnvironments], the default, the idle, and the hammer
+// workload, on seeds of the profiles of its cells, and the first seed of each cell twice, whose
+// traces must be the same. What must be reached is in testdata/reached/TestSimulation.tsv, as
+// [stmttest.Reached] says: by the seeds of each cell, and by those of each environment together,
+// every kind of outcome, of fault of the store, and of event of
+// testdata/reached/TestSimulation.kinds, which [tallyOf] counts, at least a third as often as when
+// the file was written, so that the test fails when a kind stops happening; and the integrity checks
+// of the caches exactly, since every seed runs each. S4QL_RECOUNT=1 writes the file again. The
+// environments together must reach each kind at least as often as the number before it in
+// TestSimulation.kinds, which is written by hand, so that a recount cannot lower a floor. And at
+// most the share noLease of the statements of an environment may be refused for want of the lease,
+// so that the test fails when most statements no longer reach a transaction. The seeds are the same
+// in every run, so the counts are too.
+//
+// With S4QL_ENGINE_SIM_SEEDS, each cell runs that many seeds in place of its own, for breadth, and
+// the test checks the least numbers alone, if each cell runs as many seeds as its own at least, and
+// so those of the file among them. Under -short, the race detector, or the address sanitizer, a cell
+// runs a tenth of its seeds, one at least, the first seed of three cells of each environment runs
+// twice, and the test checks no count. With the flag -replay, it replays that one seed instead: see
+// [replaySeed].
 func TestSimulation(t *testing.T) {
 	if *replay != "" {
 		replaySeed(t)
 		return
 	}
-	n := simSeeds(t, 50)
-	if slow() {
-		n = max(n/10, 2)
+	for _, p := range stmttest.Profiles {
+		if !slices.ContainsFunc(simEnvironments, func(e simEnvironment) bool {
+			return slices.ContainsFunc(e.cells, func(c simCell) bool { return c.profile == p })
+		}) {
+			t.Fatalf("no environment runs the profile %v", p.Name)
+		}
 	}
-	for _, c := range []struct {
-		name string
-		w    workload
-		// reached is the least number of each kind for each seed.
-		reached map[string]float64
-		// noLease is the largest share of the statements that may be refused for want of the lease.
-		noLease float64
-	}{
-		// Each least number is a quarter of what the first 1,000 seeds gave on 2026-11-20, rounded down
-		// to two digits, or one in fifty seeds for a kind of which they gave 60 to 80; and every seed
-		// checks the integrity of each cache. The numbers moved that day, since the sequence writes
-		// create indexes and drop indexes, which take turns of the other statements, the sequence of
-		// every second seed is indexed, a quarter of the engines of a node force an index path, where a
-		// quarter read every row and a half by the rules, and a query that reads by an index has the
-		// index dropped while its rows are open. [run.countWhere] and [tallyOf] count them.
-		{"default", defaultWorkload, map[string]float64{
-			"succeeded": 5.4, "SQLite's error": 12, "unknown": 0.1, "pending": 0.18, "skipped": 3.8, "failed: no lease": 0.85,
-			"failed: stopped": 0.034, "failed: timeout": 0.2, "query not read to its end": 0.44, "acknowledged writes": 3.2,
-			"commits": 2.3, "commits with a parameter": 0.61, "crash, then an empty cache": 0.12,
-			"crash, then a copy of the cache": 0.12, "close and open": 0.32,
-			"fault: lost request": 0.4, "fault: lost response": 0.38, "fault: no answer": 0.35, "fault: conflict": 0.072,
-			"fault: slow way": 0.84, "fault: broken read": 0.25, "fault: cut-off": 0.12, "fault: outage": 0.048,
-			"fault: write applied after its caller gave up": 0.081, "fault: write stuck in the network": 0.22,
-			"fault: write applied after a crash": 0.034,
-			"statements in a transaction":        12, "read-only transactions": 0.87, "transactions committed": 2.2,
-			"transactions rolled back": 0.79, "transactions not committed": 0.063, "transactions unknown": 0.052,
-			"commits of more than one statement": 0.35, "refused for the type": 0.77, "rows of several columns": 0.81,
-			"NULL values in the log": 0.27,
-			// The selects with WHERE that the checks compare with SQLite, of their own and in a transaction: those
-			// on an engine that reads every row, on one that forces an index path, and those read by an index,
-			// and those that give rows. The selects of their own read by an index have no least number here,
-			// since a quarter of what the first 1,000 seeds give is less than one in 50 seeds; the hammer
-			// workload requires them.
-			"selects with WHERE of their own compared with SQLite":                                             0.6,
-			"selects with WHERE of their own compared with SQLite, on an engine that reads every row":          0.094,
-			"selects with WHERE of their own compared with SQLite, on an engine that forces an index path":     0.1,
-			"selects with WHERE of their own that give rows, compared with SQLite":                             0.037,
-			"selects with WHERE in a transaction compared with SQLite":                                         0.88,
-			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row":      0.15,
-			"selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path": 0.15,
-			"selects with WHERE in a transaction compared with SQLite, read by an index":                       0.034,
-			"selects with WHERE in a transaction that give rows, compared with SQLite":                         0.052,
-			// The updates and deletes: those that succeeded and changed rows, those with SQLite's error, those of
-			// their own that changed no row and that the checks run in SQLite, and those whose count of changes
-			// the checks compare with SQLite's.
-			"updates and deletes": 3.5, "updates and deletes that succeeded and changed rows": 0.27,
-			"updates and deletes with SQLite's error": 1.6, "updates and deletes that change no row, compared with SQLite": 0.35,
-			"updates and deletes of their own whose count of changes is compared with SQLite":     0.11,
-			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.51,
-			// The create indexes and drop indexes, by outcome; the selects, updates, and deletes that read by an
-			// index; the statements on an engine that forces an index path, and those that read by its index;
-			// the replays of a log with an index; and the queries whose index was dropped while their rows were
-			// open.
-			"create index: ok": 0.43, "create index: 1/1: index … already exists": 0.65,
-			"create index: 1/1: no such column: …": 0.11, "create index: 1/1: no such table: …": 1.1,
-			"create index: 1/1: there is already a table named …":     0.56,
-			"create index: 8/8: attempt to write a readonly database": 0.079, "drop index: ok": 0.14,
-			"drop index: 1/1: no such index: …": 0.45, "drop index: 8/8: attempt to write a readonly database": 0.022,
-			"selects read by an index": 0.073, "updates read by an index": 0.035, "deletes read by an index": 0.034,
-			"statements on an engine that forces an index path":     3.1,
-			"statements read by the index that their engine forces": 0.07,
-			"crash, then an empty cache, of a log with an index":    0.034, "replays of a log with an index": 0.12,
-			"indexes dropped while the rows of a query that read by them were open": 0.02,
-			// Every seed checks the integrity of the cache of each crash, of the replay, and of each live node
-			// at the end.
-			"integrity checks after a crash": 1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
-			// The statements of slice 10, which one create and drop in three of the sequence is since
-			// 2026-11-20: those that did nothing, did their work, and failed with SQLite's error, and those
-			// that did nothing and that the checks run in SQLite, of their own and in a transaction.
-			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.98, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.54,
-			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.76, "statements that do nothing, compared with SQLite": 0.41,
-			"statements that do nothing in a transaction, compared with SQLite": 0.57,
-			// The defaults of slice 11, which the shapes of the sequence have since 2026-11-21: the create
-			// tables of the log with a default, and the values of its rows that are the default of their
-			// column, NULL apart, which [run.verifyRows] counts.
-			"create tables with a default in the log": 0.34, "values of a default in the log": 0.3,
-			// The selects, updates, and deletes with a value on the left of slice 12, which one
-			// comparison in three of the sequence has since 2026-11-21, a quarter of what the first 1,000
-			// seeds gave that day: all of them, those that found rows, those with SQLite's error, and
-			// those read by the primary key or an index, which [tallyOf] counts.
-			"statements with a value on the left": 2.1, "statements with a value on the left that found rows": 0.086,
-			"statements with a value on the left with SQLite's error": 0.91, "statements with a value on the left read by a key or an index": 0.46,
-		}, 0.15},
-		// The ends of transactions for the lease, which only this workload reaches.
-		{"idle", idleWorkload, map[string]float64{
-			"succeeded": 1.6, "SQLite's error": 6.8, "pending": 0.17, "skipped": 2.3, "failed: no lease": 1.6,
-			"failed: stopped": 0.73, "failed: timeout": 3, "query not read to its end": 0.12, "acknowledged writes": 0.58,
-			"commits": 0.42, "commits with a parameter": 0.088, "crash, then an empty cache": 0.12,
-			"crash, then a copy of the cache": 0.12, "close and open": 0.33,
-			"fault: lost request": 0.32, "fault: lost response": 0.31, "fault: no answer": 2.7, "fault: conflict": 0.14,
-			"fault: slow way": 0.93, "fault: broken read": 0.24, "fault: cut-off": 0.14, "fault: outage": 0.066,
-			"fault: write applied after its caller gave up": 0.11, "fault: write stuck in the network": 4.2,
-			"statements in a transaction": 7.6, "read-only transactions": 0.74, "transactions committed": 0.75,
-			"transactions rolled back": 0.78, "transactions not committed": 0.039, "commits of more than one statement": 0.065,
-			"transactions ended for the lease": 0.34, "kept transactions ended for the lease": 0.33,
-			"refused for the type": 0.17, "rows of several columns": 0.13, "NULL values in the log": 0.045,
-			"selects with WHERE of their own compared with SQLite":                                             0.51,
-			"selects with WHERE of their own compared with SQLite, on an engine that reads every row":          0.086,
-			"selects with WHERE of their own compared with SQLite, on an engine that forces an index path":     0.081,
-			"selects with WHERE in a transaction compared with SQLite":                                         0.57,
-			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row":      0.095,
-			"selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path": 0.085,
-			"updates and deletes": 2.4, "updates and deletes that succeeded and changed rows": 0.043,
-			"updates and deletes with SQLite's error":                                             0.93,
-			"updates and deletes that change no row, compared with SQLite":                        0.052,
-			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.14,
-			"create index: ok": 0.14, "create index: 1/1: index … already exists": 0.089,
-			"create index: 1/1: no such column: …": 0.039, "create index: 1/1: no such table: …": 0.87,
-			"create index: 1/1: there is already a table named …":     0.091,
-			"create index: 8/8: attempt to write a readonly database": 0.036, "drop index: ok": 0.02,
-			"drop index: 1/1: no such index: …":                 0.23,
-			"statements on an engine that forces an index path": 1.4,
-			"replays of a log with an index":                    0.038,
-			"integrity checks after a crash":                    1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
-			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.31, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.25,
-			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.43, "statements that do nothing, compared with SQLite": 0.068,
-			"statements that do nothing in a transaction, compared with SQLite": 0.24,
-			"create tables with a default in the log":                           0.1, "values of a default in the log": 0.055,
-			// The statements with a value on the left that found rows have no least number here: the
-			// first 1,000 seeds gave 34 on 2026-11-21, a quarter of which is less than one in 50 seeds.
-			// The default and hammer workloads require them.
-			"statements with a value on the left": 1.5, "statements with a value on the left with SQLite's error": 0.72,
-			"statements with a value on the left read by a key or an index": 0.097,
-		}, 0.15},
-		// The least number of the selects with WHERE in a transaction read by an index is a quarter of
-		// the 186 that the first 1,000 seeds gave on 2026-11-20, where it was 0.06, since the sequence
-		// writes the clauses of slice 10 and draws other random numbers.
-		{"hammer", hammerWorkload, map[string]float64{
-			"succeeded": 10, "SQLite's error": 23, "unknown": 0.2, "skipped": 7.8, "failed: no lease": 1.2,
-			"failed: timeout": 2.9, "query not read to its end": 0.96, "acknowledged writes": 5.9, "commits": 4.2,
-			"commits with a parameter": 1.2,
-			"fault: lost request":      0.23, "fault: lost response": 0.21, "fault: no answer": 0.25, "fault: conflict": 0.14,
-			// The broken reads have no least number here: the first 1,000 seeds gave 81 on 2026-11-21, a
-			// quarter of which is less than one in 50 seeds, and the first 50 give none, since the sequence
-			// writes defaults and draws other random numbers. The default and idle workloads require 12
-			// each.
-			"fault: slow way": 0.45, "fault: cut-off": 0.058, "fault: outage": 0.026,
-			"fault: write applied after its caller gave up": 0.079, "fault: write stuck in the network": 0.41,
-			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4.2,
-			"transactions rolled back": 1.5, "transactions not committed": 0.15, "transactions unknown": 0.1,
-			"commits of more than one statement": 0.64, "refused for the type": 1.5, "rows of several columns": 1.7,
-			"NULL values in the log":                                                     0.56,
-			"selects with WHERE of their own compared with SQLite":                       1.3,
-			"selects with WHERE of their own compared with SQLite, read by an index":     0.027,
-			"selects with WHERE of their own that give rows, compared with SQLite":       0.089,
-			"selects with WHERE in a transaction compared with SQLite":                   1.6,
-			"selects with WHERE in a transaction compared with SQLite, read by an index": 0.046,
-			"selects with WHERE in a transaction that give rows, compared with SQLite":   0.11,
-			"updates and deletes": 7, "updates and deletes that succeeded and changed rows": 0.6,
-			"updates and deletes with SQLite's error": 2.9, "updates and deletes that change no row, compared with SQLite": 0.69,
-			"updates and deletes of their own whose count of changes is compared with SQLite":     0.27,
-			"updates and deletes in a transaction whose count of changes is compared with SQLite": 1,
-			"create index: ok": 0.7, "create index: 1/1: index … already exists": 1.3,
-			"create index: 1/1: no such column: …": 0.18, "create index: 1/1: no such table: …": 1.8,
-			"create index: 1/1: there is already a table named …":     1.4,
-			"create index: 8/8: attempt to write a readonly database": 0.16, "drop index: ok": 0.26,
-			"drop index: 1/1: no such index: …": 0.85, "drop index: 8/8: attempt to write a readonly database": 0.042,
-			"selects read by an index": 0.14, "updates read by an index": 0.063, "deletes read by an index": 0.051,
-			"replays of a log with an index":                                        0.11,
-			"indexes dropped while the rows of a query that read by them were open": 0.03,
-			"integrity checks after the replay":                                     1, "integrity checks at the end": 1,
-			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 1.9, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.92,
-			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 1.4, "statements that do nothing, compared with SQLite": 0.81,
-			"statements that do nothing in a transaction, compared with SQLite": 1.1,
-			"create tables with a default in the log":                           0.49, "values of a default in the log": 0.6,
-			"statements with a value on the left": 4.3, "statements with a value on the left that found rows": 0.18,
-			"statements with a value on the left with SQLite's error": 1.7, "statements with a value on the left read by a key or an index": 1.2,
-		}, 0.12},
-	} {
+	runs := map[string]map[string]int{}
+	var names []string
+	// ran is the number of environments whose subtest ran, and more reports whether each cell ran as
+	// many seeds as its own at least.
+	ran, more := 0, true
+	for _, c := range simEnvironments {
+		counts := map[string]int{}
+		runs[c.name], names = counts, append(names, c.name)
+		for _, cell := range c.cells {
+			name := c.name + "/" + cell.profile.Name
+			runs[name], names = map[string]int{}, append(names, name)
+		}
 		t.Run(c.name, func(t *testing.T) {
-			counts := map[string]int{}
-			for seed := range n {
-				s := simulate(t, seed, c.w)
-				if v := s.violations(); len(v) > 0 {
-					t.Fatalf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "\n"), replayCommand(seed, "-workload", c.name))
+			ran++
+			seeds := 0
+			for i, cell := range c.cells {
+				of := runs[c.name+"/"+cell.profile.Name]
+				n := simSeeds(t, cell.seeds)
+				if slow() {
+					n = max(n/10, 1)
 				}
-				for k, v := range tallyOf(s) {
-					counts[k] += v
-				}
-				counts["trace lines"] += len(s.lines)
-				if seed < 3 {
-					again := simulate(t, seed, c.w)
-					is.True(t, slices.Equal(s.lines, again.lines), fmt.Sprint("seed ", seed, " gives two traces; replay it with: ", replayCommand(seed, "-workload", c.name)))
+				more = more && n >= uint64(cell.seeds)
+				for k := range n {
+					seed := cell.profile.Seed(c.first + k)
+					seeds++
+					s := simulate(t, seed, c.w)
+					if v := s.violations(); len(v) > 0 {
+						t.Fatalf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "\n"), replayCommand(seed, "-workload", c.name))
+					}
+					for kind, v := range tallyOf(s) {
+						counts[kind] += v
+						of[kind] += v
+					}
+					if k == 0 && (i < 3 || !slow()) {
+						again := simulate(t, seed, c.w)
+						is.True(t, slices.Equal(s.lines, again.lines), fmt.Sprint("seed ", seed, " gives two traces; replay it with: ", replayCommand(seed, "-workload", c.name)))
+					}
 				}
 			}
-			t.Logf("%v seeds: %v", n, counts)
-			if n < 50 {
+			t.Logf("%v seeds: %v", seeds, counts)
+			if slow() {
 				return
 			}
-			for kind, least := range c.reached {
-				want := int(least * float64(n))
-				if least > 0 && want == 0 {
-					t.Errorf("%v seeds require none of %q at its least number %v, so it checks nothing: raise it or drop it, and say where the kind is still required", n, kind, least)
-				}
-				if counts[kind] < want {
-					t.Errorf("%v seeds give %v of %q, and at least %v were expected: something that the workload did stopped happening", n, counts[kind], kind, want)
-				}
-			}
 			if share := float64(counts["failed: no lease"]) / float64(counts["statements"]); share > c.noLease {
-				t.Errorf("%v seeds refuse %v of %v statements for want of the lease, %.2f of them, and at most %v were expected: most statements must reach a transaction", n, counts["failed: no lease"], counts["statements"], share, c.noLease)
+				t.Errorf("%v seeds refuse %v of %v statements for want of the lease, %.2f of them, and at most %v were expected: most statements must reach a transaction", seeds, counts["failed: no lease"], counts["statements"], share, c.noLease)
 			}
 		})
+	}
+	path := filepath.Join("testdata", "reached", "TestSimulation")
+	reached := stmttest.Reached{Kinds: path + ".kinds", Counts: path + ".tsv", Doc: "What the seeds of each environment of TestSimulation of the engine, and of each of its cells, reach.",
+		Exact: func(kind string) bool { return strings.HasPrefix(kind, "integrity checks ") },
+		// The counts of an environment are the sums of those of its cells.
+		Totaled: func(run string) bool { return !strings.Contains(run, "/") }}
+	check := reached.Check
+	switch {
+	case t.Failed():
+		return
+	case slow() || ran < len(simEnvironments) || !more:
+		t.Logf("NOT CHECKED: what the seeds reach, in a run of a part of the seeds")
+		noRecount(t)
+		return
+	case os.Getenv("S4QL_ENGINE_SIM_SEEDS") != "":
+		noRecount(t)
+		check = reached.Least
+	}
+	failures, err := check(names, runs)
+	is.NotError(t, err)
+	for _, failure := range failures {
+		t.Error(failure)
 	}
 }
 
@@ -2669,8 +2573,9 @@ var (
 	replayBug      = flag.String("bug", "", "planted bug of the replay")
 )
 
-// replaySeed runs the seed of the flag -replay, of the workload of the flag -workload, with the bug
-// of the flag -bug, and logs its trace. [replayCommand] gives the command.
+// replaySeed runs the seed of the flag -replay, with the profile of the seed, of the workload of
+// the flag -workload, with the bug of the flag -bug, and logs its trace. [replayCommand] gives the
+// command.
 func replaySeed(t *testing.T) {
 	t.Helper()
 	seed, err := strconv.ParseUint(*replay, 10, 64)
@@ -2711,131 +2616,161 @@ func replayCommand(seed uint64, flags ...string) string {
 	return "go test " + mode + "-run '^TestSimulation$' -v ./internal/engine/ -replay " + fmt.Sprint(seed) + " " + strings.Join(flags, " ")
 }
 
-// TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
-// violation in two seeds, and the same seeds without the bug, which find nothing. With
-// S4QL_TEST_SHARD set, it runs the bugs of that shard only: see [testshard].
+// TestSimulation_plantedBugs runs each planted bug in its environment, on the seeds of its profile,
+// until two seeds have found the bug by its own violation, and each seed that finds the bug again
+// without it, which must find nothing. With S4QL_ENGINE_SIM_SEEDS, it runs that many seeds of the
+// profile of each bug, and logs how many find it. With S4QL_TEST_SHARD set, it runs the bugs of that
+// shard only: see [testshard].
 func TestSimulation_plantedBugs(t *testing.T) {
 	limit := simSeeds(t, 100)
-	// The workload of each bug, and the violation that finds it: the check of an insert in a read
-	// transaction of its own needs two inserts of one key on one instance at once.
+	// The environment and the profile of each bug, and the violations that find it. The comment of a
+	// bug says why its profile exercises what the bug breaks, and how many of the first 200 seeds of
+	// the profile found the bug on 2026-11-21, with S4QL_ENGINE_SIM_SEEDS=200. Count them again when
+	// the generator of the profile changes.
 	bugs := []struct {
 		name string
 		w    workload
 		// replay is the name of the workload for the flag -workload.
 		replay string
+		// profile of the seeds that the bug runs on: the one that weighs what the bug breaks.
+		profile *stmttest.Profile
 		// finds holds a part of each violation that the bug causes, its own violation first, which the
 		// bug must cause in two seeds at least.
 		finds []string
 	}{
-		// An insert of a write transaction that replaces a row succeeds, where SQLite fails.
-		{"skipUnique", defaultWorkload, "default", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed", "(write), which began at commit"}},
-		{"ackUnknown", defaultWorkload, "default", []string{"is not in the log"}},
-		{"checkOutside", hammerWorkload, "hammer", []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		// An insert that replaces a row makes a commit of the log fail in SQLite, and an insert of a
+		// write transaction that replaces a row succeeds, where SQLite fails. The profile of the
+		// tables weighs the inserts, whose keys repeat: 180 of 200 seeds find the bug, 178 of them by
+		// its own violation.
+		{"skipUnique", defaultWorkload, "default", stmttest.Tables, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed", "(write), which began at commit"}},
+		// A statement that succeeds while its commit did not land is acknowledged, and is not in the
+		// log. The profile of the tables weighs the inserts, and so the commits: 48 of 200 seeds find
+		// the bug, each by its own violation, where 39 do on the mixed profile.
+		{"ackUnknown", defaultWorkload, "default", stmttest.Tables, []string{"is not in the log"}},
+		// The check of an insert in a read transaction of its own lets two inserts of one key both
+		// commit, and the second commit fails in SQLite. That needs two inserts of one key on one
+		// instance at once, which the hammer environment gives, and the profile of the tables weighs
+		// the inserts: 79 of 200 seeds find the bug, each by its own violation.
+		{"checkOutside", hammerWorkload, "hammer", stmttest.Tables, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A write transaction left open keeps the instance from a write, and from a close that
-		// releases the lease, so the next instance never runs the queries of its connections.
-		{"keepOpen", defaultWorkload, "default", []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
+		// releases the lease, so the next instance never runs the queries of its connections. Any
+		// write that fails leaves one open, and about half of the statements of the mixed profile meet
+		// no table: 196 of 200 seeds find the bug, each by its own violation.
+		{"keepOpen", defaultWorkload, "default", stmttest.Mixed, []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
 		// A read transaction left open fails every later query of its connection, and the check of
 		// the connections after the workload.
 		// In a transaction, the rows of the query stay open, which refuses every later statement of the
-		// connection.
-		{"keepRead", defaultWorkload, "default", []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open", "the rows of an earlier query of the connection are open"}},
+		// connection. The profile of the selects with WHERE weighs the queries, some of which a caller
+		// closes unread: 149 of 200 seeds find the bug, 78 of them by its own violation.
+		{"keepRead", defaultWorkload, "default", stmttest.Where, []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open", "the rows of an earlier query of the connection are open"}},
 		// An annotation with the wrong parameters gives a log that, replayed, inserts other rows than
-		// the callers did, and maybe one that a later insert of the log meets.
-		{"annotateNext", defaultWorkload, "default", []string{"and its caller gave the arguments", "the replay of the log holds", "fails in SQLite: 19/1555: UNIQUE constraint failed"}},
+		// the callers did, and maybe one that a later insert of the log meets. Every value of the
+		// profile of the arguments is a parameter: 154 of 200 seeds find the bug, each by its own
+		// violation.
+		{"annotateNext", defaultWorkload, "default", stmttest.Arguments, []string{"and its caller gave the arguments", "the replay of the log holds", "fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A failed statement that is kept is in the commit object of its transaction, whose replay in
 		// SQLite then fails. What it changed before it failed is kept too: an update that changes the key
 		// of a row that the transaction inserted, and fails with UNIQUE after the delete of the old key,
 		// leaves the insert and the delete, whose net effect is nothing, so the commit object holds
-		// neither, and the insert that its caller was told of is not in the log.
-		{"keepFailed", defaultWorkload, "default", []string{"whose statements that succeeded and write are", "fails in SQLite", "is not in the log"}},
+		// neither, and the insert that its caller was told of is not in the log. In the profile of the
+		// transactions, one turn of a caller in two is a transaction: 198 of 200 seeds find the bug,
+		// each by its own violation.
+		{"keepFailed", defaultWorkload, "default", stmttest.Transactions, []string{"whose statements that succeeded and write are", "fails in SQLite", "is not in the log"}},
 		// A read-only transaction that moves on to the newest state reads rows that were committed after
 		// its beginning, and its later statements report the newer state. When its read of the newest
-		// state fails, the transaction keeps the read that the bug ended, whose end then fails.
-		{"readNewest", hammerWorkload, "hammer", []string{"(read-only), which began at commit", "the statements of the read-only transaction", "the transaction has ended"}},
-		{"rollbackKeeps", defaultWorkload, "default", []string{"and its caller rolled it back"}},
+		// state fails, the transaction keeps the read that the bug ended, whose end then fails. The bug
+		// needs commits between two statements of one transaction, which the callers of the hammer
+		// environment give, on the profile of the transactions: 194 of 200 seeds find the bug, 173 of
+		// them by its own violation.
+		{"readNewest", hammerWorkload, "hammer", stmttest.Transactions, []string{"(read-only), which began at commit", "the statements of the read-only transaction", "the transaction has ended"}},
+		// A roll back that commits leaves in the log a transaction that its caller rolled back. On the
+		// profile of the transactions, 109 of 200 seeds find the bug, each by its own violation.
+		{"rollbackKeeps", defaultWorkload, "default", stmttest.Transactions, []string{"and its caller rolled it back"}},
 		// SQLite converts the real of the log as the bug did, so the replay of the log agrees with the
 		// engine, and only the check of the type of each value of the log finds it. In a table of
 		// several columns, the real that the bug converts can be the first value of another type than
 		// its column, and the engine then refuses a later one, where the rule refuses the real. The bug
-		// needs an insert of a whole real into an INT or INTEGER column that otherwise succeeds, which
-		// a sequence gives rarely; the hammer workload runs more statements than the default one, on
-		// one instance that no other instance takes the lease from. Of the first 200 seeds, with WHERE
-		// in the sequence, 14 found the bug by its own violation there and 12 in the default workload;
-		// with updates and deletes in it, 18 there; and on 2026-11-20, with indexes in it, which take
-		// turns of the inserts, 8 there, and the second of them is seed 59. Since the sequence of the
-		// hammer workload gives whole reals for INT and INTEGER columns, [stmttest.Sequence.Mistyped],
-		// 81 there, and with the clauses of slice 10 and slices 11 and 12 too, 60.
-		{"convertReal", hammerWorkload, "hammer", []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
+		// needs an insert of a whole real into an INT or INTEGER column that otherwise succeeds. The
+		// hammer environment runs more statements than the default one, on one instance that no other
+		// instance takes the lease from, and one insert in eight of the profile of the tables gives an
+		// integer of such a column as a real, [stmttest.Profile.Mistyped]: 119 of 200 seeds find the
+		// bug, 114 of them by its own violation.
+		{"convertReal", hammerWorkload, "hammer", stmttest.Tables, []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
 		// A row that holds its values in other columns than its statement names: the replay of the log
 		// into an empty cache, which writes the rows, differs from SQLite, which runs the statements; a
 		// row whose key is another value makes a later insert of the log fail in SQLite, and a query
 		// give other rows than in SQLite; and a value in a column of another type is refused where the
 		// rule refuses nothing. The log holds no such value, since the check of the type sees the values
-		// in the columns where the bug puts them.
-		{"listOrder", defaultWorkload, "default", []string{"the replay of the log holds", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit"}},
+		// in the columns where the bug puts them. The profile of the tables weighs the inserts and
+		// their lists of columns: 127 of 200 seeds find the bug, 35 of them by its own violation.
+		{"listOrder", defaultWorkload, "default", stmttest.Tables, []string{"the replay of the log holds", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit"}},
 		// A column left out of a list that holds the zero value of its type where SQLite has NULL: a
 		// query of the row gives other rows than in SQLite, which runs the statements of the log, and
 		// so does the replay of the log into an empty cache, which writes its rows. No check of a value
 		// that is not NULL finds it: the zero value has the type of its column, and no column that
 		// takes NULL is the key. An update or a delete whose WHERE meets the zero value changes another
-		// number of rows than in SQLite, and then the statements after it can differ. Since the shapes
-		// of the sequence have defaults, on 2026-11-21, the bug meets only a column without one, and
-		// the default workload found it in 6 of the first 200 seeds, where it found it in 39; the hammer
-		// workload, which runs more statements, finds it in 18, 15 of them by its own violation.
-		{"zeroLeftOut", hammerWorkload, "hammer", []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
+		// number of rows than in SQLite, and then the statements after it can differ. The bug meets
+		// only a column without a default, and no shape of the profile of the tables has one; the
+		// hammer environment runs more statements than the default one: 64 of 200 seeds find the bug,
+		// 60 of them by its own violation.
+		{"zeroLeftOut", hammerWorkload, "hammer", stmttest.Tables, []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as some engines
-		// of a node do (see [run.open]), does not have the bug. The bug needs a select whose bound of the key is
-		// the key of a row, which the updates and deletes of the sequence made rarer: they take turns of
-		// the selects, and delete rows. The hammer workload runs more statements than the default one,
-		// on one engine that reads by the key. Of the first 200 seeds, with updates and deletes in the
-		// sequence, 32 found the bug there and 8 in the default workload; on 2026-11-20, with indexes
-		// in it, 27 there; and with the bounds of the key of updates and deletes, and the whole reals of
-		// [stmttest.Sequence.Mistyped], 24, and with the clauses of slice 10 and the defaults of slice
-		// 11 and the values on the left of slice 12 too, 11.
-		{"openBound", hammerWorkload, "hammer", []string{", and in SQLite", "which began at commit"}},
+		// of a node do (see [run.open]), does not have the bug. The bug needs a select whose bound of the
+		// key is the key of a row, on an engine that reads by the key. The one engine of the hammer
+		// environment reads as the rules choose, and the profile of the selects with WHERE weighs
+		// such selects, and writes no update or delete that takes their rows: 134 of 200 seeds find the
+		// bug, each by its own violation.
+		{"openBound", hammerWorkload, "hammer", stmttest.Where, []string{", and in SQLite", "which began at commit"}},
 		// A scan that pins a column of the key of an index, or of the primary key, to the value of a
 		// condition on another column. Where the value is of another type than the column, or NULL in
 		// the primary key, the storage core refuses the scan, which the engine had checked, as an
 		// internal error. Otherwise a select gives other rows than in SQLite, and an update or a delete
-		// changes other rows, after which the statements can differ. Of the first 200 seeds, on
-		// 2026-11-20, with the sequence of every second seed indexed, 19 found the bug, each by the
-		// refusal of the core, and the second of them is seed 23; with the bounds of the key of updates
-		// and deletes, 22, and with the clauses of slice 10 and slices 11 and 12 too, 15.
-		{"pinByPlace", defaultWorkload, "default", []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
+		// changes other rows, after which the statements can differ. The profile of the indexes weighs
+		// the WHERE that pin the columns of an index, and the hammer environment runs more of them
+		// than the default one: 81 of 200 seeds find the bug, 66 of them by its own violation, where 43
+		// and 38 do in the default environment.
+		{"pinByPlace", hammerWorkload, "hammer", stmttest.Indexes, []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
-		// another count; and the rows that it should have changed make later statements differ.
-		{"changeNothing", defaultWorkload, "default", []string{"is in no commit, and changes", "rows in SQLite, and its caller was told", ", and in SQLite", "which began at commit", "the replay of the log holds", "fails in SQLite"}},
+		// another count; and the rows that it should have changed make later statements differ. The
+		// profile of the updates and deletes weighs them, and aims most of them at a table that is
+		// there: 192 of 200 seeds find the bug, 178 of them by its own violation.
+		{"changeNothing", defaultWorkload, "default", stmttest.Changes, []string{"is in no commit, and changes", "rows in SQLite, and its caller was told", ", and in SQLite", "which began at commit", "the replay of the log holds", "fails in SQLite"}},
 		// An update that changes the key and leaves the old row: the commit object holds the new row and
 		// no delete of the old key, so the replay of the log into an empty cache, which writes its rows,
 		// differs from SQLite, which runs the statements; and the row that stays makes later statements
 		// differ, among them a write whose net effect on the rows that the bug left is nothing, which is
-		// then in no commit object, and not in the log that its caller was told of.
-		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "is not in the log"}},
+		// then in no commit object, and not in the log that its caller was told of. The profile of the
+		// updates and deletes weighs the updates, some of which change the key of a row: 90 of 200
+		// seeds find the bug, 38 of them by its own violation.
+		{"keepOldKey", defaultWorkload, "default", stmttest.Changes, []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "is not in the log"}},
 		// A create table with IF NOT EXISTS of a table that exists, which replaces the table with the
 		// one of the statement, empty, where SQLite does nothing: the commit object holds the drop and
 		// the create, so the replay of the log into an empty cache, which writes them, differs from
 		// SQLite, which runs the statement and does nothing; and the rows that the table lost make later
-		// statements differ.
-		{"replaceExisting", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
+		// statements differ. One create in two of the profile of the clauses of slice 10 says IF NOT
+		// EXISTS, of tables that are there and that are not: 183 of 200 seeds find the bug, 106 of them
+		// by its own violation.
+		{"replaceExisting", defaultWorkload, "default", stmttest.Exists, []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 		// An insert that leaves out a column with a default and stores NULL there: a query of the row
 		// gives other rows than in SQLite, which runs the statements of the log, and so does the replay
 		// of the log into an empty cache, which writes its rows; where the column does not take NULL, the
-		// engine gives NOT NULL where SQLite stores the default, so a later statement can differ. Of the
-		// first 200 seeds, on 2026-11-21, 56 found the bug, 53 of them by its own violation. A write in a
-		// transaction plants it too.
-		{"nullDefault", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
+		// engine gives NOT NULL where SQLite stores the default, so a later statement can differ. A
+		// write in a transaction plants it too. Every shape of the profile of the defaults has a
+		// default, and the list of an insert leaves a column with a default out one time in two: 137
+		// of 200 seeds find the bug, each by its own violation.
+		{"nullDefault", defaultWorkload, "default", stmttest.Defaults, []string{", and in SQLite", "the replay of the log holds", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 		// A scan whose bound from a condition with its value on the left, of slice 12, is the operator as
 		// the text writes it, so that `5 < k` reads the keys below 5: a select with WHERE gives fewer
 		// rows than in SQLite, since the filter above the scan drops the rows that the scan read wrongly
 		// and cannot give those that it did not read; an update or a delete changes fewer rows, after
-		// which the statements can differ. An engine that reads every row does not have the bug. Of the
-		// first 200 seeds, on 2026-11-21, 33 found the bug in the hammer workload, 26 of them by its
-		// own violation, and 11 in the default workload, 6 of them by it; the default run finds it the
-		// second time by it at seed 24.
-		{"unturnedBound", hammerWorkload, "hammer", []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
+		// which the statements can differ. An engine that reads every row does not have the bug, and
+		// the one engine of the hammer environment reads as the rules choose. One comparison in two of
+		// the profile of the values on the left has its value there: 130 of 200 seeds find the bug, 92
+		// of them by its own violation.
+		{"unturnedBound", hammerWorkload, "hammer", stmttest.ValueFirst, []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {
@@ -2848,7 +2783,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 			w.bugs = []string{bug}
 			// own is the number of seeds that find the bug by its own violation.
 			found, own, seeds := 0, 0, uint64(0)
-			for seed := uint64(0); seed < limit && (own < 2 || os.Getenv("S4QL_ENGINE_SIM_SEEDS") != ""); seed++ {
+			for k := uint64(0); k < limit && (own < 2 || os.Getenv("S4QL_ENGINE_SIM_SEEDS") != ""); k++ {
+				seed := b.profile.Seed(k)
 				seeds++
 				if v := simulate(t, seed, w).violations(); len(v) > 0 {
 					if !slices.ContainsFunc(v, func(v string) bool {
@@ -2868,7 +2804,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 					}
 				}
 			}
-			t.Logf("%v of %v seeds find the bug, %v of them by %q", found, seeds, own, b.finds[0])
+			t.Logf("%v of %v seeds of the profile %v find the bug, %v of them by %q", found, seeds, b.profile.Name, own, b.finds[0])
 			is.True(t, own >= 2, fmt.Sprintf("the bug is found by %q too rarely", b.finds[0]))
 		})
 	}

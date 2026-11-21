@@ -1,0 +1,89 @@
+# What the seeds of the environments of TestSimulation of the engine must reach: see stmttest.Reached.
+# A line is the least number of the total of a kind over all environments, a tab, and the kind.
+# The numbers are written by hand, and a recount does not change them. They start from the
+# least numbers of main on 2026-11-21, and for a kind that main did not require from a third of
+# its total then. A total below its number fails the test, and so does a kind that no run
+# reaches three times. The number of a kind of main is the sum of its least numbers in the three
+# environments, of 50 seeds each, where each was a number for each seed.
+43	NULL values in the log
+2090	SQLite's error
+483	acknowledged writes
+32	close and open
+345	commits
+52	commits of more than one statement
+94	commits with a parameter
+12	crash, then a copy of the cache
+12	crash, then an empty cache
+1	crash, then an empty cache, of a log with an index
+101	create index: 1/1: index … already exists
+15	create index: 1/1: no such column: …
+188	create index: 1/1: no such table: …
+102	create index: 1/1: there is already a table named …
+12	create index: 8/8: attempt to write a readonly database
+63	create index: ok
+46	create tables with a default in the log
+3	deletes read by an index
+75	drop index: 1/1: no such index: …
+3	drop index: 8/8: attempt to write a readonly database
+21	drop index: ok
+182	failed: no lease
+37	failed: stopped
+305	failed: timeout
+24	fault: broken read
+17	fault: conflict
+15	fault: cut-off
+47	fault: lost request
+44	fault: lost response
+164	fault: no answer
+6	fault: outage
+110	fault: slow way
+1	fault: write applied after a crash
+12	fault: write applied after its caller gave up
+241	fault: write stuck in the network
+2	indexes dropped while the rows of a query that read by them were open
+16	kept transactions ended for the lease
+17	pending
+76	query not read to its end
+170	read-only transactions
+121	refused for the type
+12	replays of a log with an index
+131	rows of several columns
+10	selects read by an index
+152	selects with WHERE in a transaction compared with SQLite
+11	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+11	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+3	selects with WHERE in a transaction compared with SQLite, read by an index
+7	selects with WHERE in a transaction that give rows, compared with SQLite
+120	selects with WHERE of their own compared with SQLite
+9	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+8	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+1	selects with WHERE of their own compared with SQLite, read by an index
+5	selects with WHERE of their own that give rows, compared with SQLite
+694	skipped
+2180	statements in a transaction
+159	statements of IF NOT EXISTS or IF EXISTS that did nothing
+85	statements of IF NOT EXISTS or IF EXISTS that did their work
+129	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+225	statements on an engine that forces an index path
+3	statements read by the index that their engine forces
+95	statements that do nothing in a transaction, compared with SQLite
+63	statements that do nothing, compared with SQLite
+395	statements with a value on the left
+87	statements with a value on the left read by a key or an index
+13	statements with a value on the left that found rows
+166	statements with a value on the left with SQLite's error
+850	succeeded
+357	transactions committed
+17	transactions ended for the lease
+11	transactions not committed
+153	transactions rolled back
+7	transactions unknown
+15	unknown
+645	updates and deletes
+82	updates and deletes in a transaction whose count of changes is compared with SQLite
+18	updates and deletes of their own whose count of changes is compared with SQLite
+53	updates and deletes that change no row, compared with SQLite
+45	updates and deletes that succeeded and changed rows
+271	updates and deletes with SQLite's error
+4	updates read by an index
+47	values of a default in the log

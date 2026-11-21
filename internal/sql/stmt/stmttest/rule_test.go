@@ -165,6 +165,43 @@ func TestDefaultCases(t *testing.T) {
 	})
 }
 
+func TestLeavesOutIndexed(t *testing.T) {
+	// The table t (k int primary key, a text default 'x', b real, c blob default null), as SQLite has
+	// it, with the indexes i on (b, a) and j on (c).
+	columns := []stmttest.TableColumn{
+		{Name: "k", Type: "INT", PrimaryKey: true},
+		{Name: "a", Type: "TEXT", Nullable: true, Default: "'x'"},
+		{Name: "b", Type: "REAL", Nullable: true},
+		{Name: "c", Type: "BLOB", Nullable: true, Default: "null"},
+	}
+	i := stmttest.TableIndex{Name: "i", Columns: []stmttest.IndexKeyColumn{{Position: 2}, {Position: 1, Descending: true}}}
+	j := stmttest.TableIndex{Name: "j", Columns: []stmttest.IndexKeyColumn{{Position: 3}}}
+	tests := []struct {
+		name    string
+		src     string
+		indexes []stmttest.TableIndex
+		want    bool
+	}{
+		{name: "should report a column with a default that the insert leaves out and an index holds", src: "insert into t (k, b) values (1, 2.5)", indexes: []stmttest.TableIndex{i}, want: true},
+		{name: "should report DEFAULT NULL as a default", src: "insert into t (k, a) values (1, 'y')", indexes: []stmttest.TableIndex{i, j}, want: true},
+		{name: "should not report a column with a default that the insert gives", src: "insert into t (k, a) values (1, 'y')", indexes: []stmttest.TableIndex{i}},
+		{name: "should not report a column with a default that no index holds", src: "insert into t (k, b, c) values (1, 2.5, x'00')", indexes: []stmttest.TableIndex{j}},
+		{name: "should not report a column without a default that an index holds", src: "insert into t (k, a, c) values (1, 'y', x'00')", indexes: []stmttest.TableIndex{i, j}},
+		{name: "should not report a table without indexes", src: "insert into t (k) values (1)"},
+		{name: "should not report a position of an index that is no column", src: "insert into t (k) values (1)",
+			indexes: []stmttest.TableIndex{{Name: "x", Columns: []stmttest.IndexKeyColumn{{Position: -1}, {Position: -2}, {Position: 4}}}}},
+		{name: "should not report an insert without a list, which leaves out nothing", src: "insert into t values (1, 'y', 2.5, x'00')", indexes: []stmttest.TableIndex{i, j}},
+		{name: "should not report an insert that SQLite refuses for its names", src: "insert into t (k, z) values (1, 2)", indexes: []stmttest.TableIndex{i, j}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s, err := stmt.Check(test.src)
+			is.NotError(t, err)
+			is.Equal(t, test.want, stmttest.LeavesOutIndexed(columns, test.indexes, s.(*stmt.Insert)))
+		})
+	}
+}
+
 func TestConditionRule(t *testing.T) {
 	// The table t (a text, k int primary key, b real not null, c blob), as SQLite has it.
 	columns := []stmttest.TableColumn{

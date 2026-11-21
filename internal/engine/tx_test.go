@@ -21,6 +21,7 @@ import (
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
@@ -463,91 +464,53 @@ func TestConn_netEffect(t *testing.T) {
 	})
 }
 
-// TestConn_differential runs random sequences of statements in transactions that span statements,
-// on the engine and in SQLite, as [TestDifferential] runs them one by one: some in write
-// transactions, some in read-only ones, and some on their own, each transaction ended by a commit or
-// by a roll back. It compares the answers and the counts of changes after each statement, the tables
-// after the end of each transaction, and the tables after a replay of the log into an empty cache.
+// TestConn_differential runs random sequences of statements of each profile of [stmttest.Profiles]
+// in transactions that span statements, on the engine and in SQLite, as [TestDifferential] runs them
+// one by one: some in write transactions, some in read-only ones, and some on their own, each
+// transaction ended by a commit or by a roll back. It compares the answers and the counts of changes
+// after each statement, the tables after the end of each transaction, and the tables after a replay
+// of the log into an empty cache.
+//
+// What the full run of each profile must reach is in testdata/reached/TestConn_differential.tsv,
+// and what the profiles must reach together in testdata/reached/TestConn_differential.kinds, as
+// [TestDifferential] says of its files: among it the selects with WHERE that [pair.bothWays] reads
+// both ways and the updates and deletes that it changes both ways, also in a read-only transaction,
+// which refuses a change; the commits and the roll backs of a write transaction whose update or
+// delete changed rows, and of one with a create index or a drop index; and the statements of slices
+// 10, 11, and 12, which [pair.reach] counts again by the kind of the transaction.
 func TestConn_differential(t *testing.T) {
-	n := 60
+	// So many sequences of each profile, and twice as many of the mixed profile and of the profiles
+	// of the clauses of slice 10, the defaults, and the values on the left, whose statements this
+	// test counts by the kind of their transaction.
+	n := uint64(20)
 	if slow() {
-		n = 6
+		n = 1
 	}
-	y := tally{}
-	for s := range uint64(n) {
-		txDifferential(t, 9_000_000+s, 60, y)
-	}
-	t.Logf("%v sequences in transactions: %v", n, y)
-	// The selects with WHERE that [pair.bothWays] reads both ways, of which the run gave 438, 96 of
-	// them in a read-only transaction, on 2026-11-20: a third of each. When the sequence wrote updates
-	// and deletes, it gave 270 and 64, which these least numbers still hold; and 543 updates and deletes
-	// with WHERE that [pair.bothWays] changes both ways, 115 of them in a read-only transaction, which
-	// refuses them, and 21 commits and 8 roll backs of a write transaction whose update or delete
-	// changed rows: a third of each.
-	if !slow() {
-		for kind, least := range map[string]int{
-			"read both ways": 146, "read both ways in a read-only transaction": 32, "changed both ways": 181, "changed both ways in a read-only transaction": 38,
-			"commit of a transaction whose update or delete changed rows": 7, "roll back of a transaction whose update or delete changed rows": 2,
-			// The create indexes and drop indexes of slice 9 in transactions, of which the run gave 29
-			// commits and 13 roll backs of a write transaction with one, 20 create indexes and 5 drop
-			// indexes in a read-only transaction, which refuses them, and 91 WHERE on a table with an
-			// index that [pair.everyPath] ran by its paths, on 2026-11-20: a third of each.
-			"commit of a transaction with a create index or a drop index": 9, "roll back of a transaction with a create index or a drop index": 4,
-			"create index attempt to write a readonly database": 6, "drop index attempt to write a readonly database": 1,
-			"WHERE run by every path on a table with an index": 30,
-			// The statements of slice 10 in transactions, as [reachExists] counts them, a third of what the
-			// run gave on 2026-11-20, or 1: in a write transaction, each that did its work and each that
-			// did nothing; in a read-only one, each that did nothing, which it allows, and each that would
-			// write, which it refuses. The run gave no drop index that would write in a read-only
-			// transaction, which the hand tests cover.
-			"create table if not exists did its work in a write transaction": 6, "create table if not exists did nothing: a table of the name exists in a write transaction": 12,
-			"drop table if exists did its work in a write transaction": 3, "drop table if exists did nothing: no table of the name exists in a write transaction": 2,
-			"create index if not exists did its work in a write transaction": 4, "create index if not exists did nothing: an index of the name exists in a write transaction": 2,
-			"drop index if exists did its work in a write transaction": 1, "drop index if exists did nothing: no index of the name exists in a write transaction": 3,
-			"create table if not exists did nothing: a table of the name exists in a read-only transaction":  6,
-			"create table if not exists attempt to write a readonly database in a read-only transaction":     5,
-			"drop table if exists did nothing: no table of the name exists in a read-only transaction":       2,
-			"drop table if exists attempt to write a readonly database in a read-only transaction":           1,
-			"create index if not exists did nothing: an index of the name exists in a read-only transaction": 1,
-			"create index if not exists attempt to write a readonly database in a read-only transaction":     2,
-			"drop index if exists did nothing: no index of the name exists in a read-only transaction":       1,
-			// The defaults of slice 11 in transactions, which [pair.reach] counts again by the kind of
-			// the transaction, a third of what the run gave on 2026-11-21, or 1: in a write transaction,
-			// a create table with a default, an insert that stores a default, of the key too, and an
-			// explicit NULL, UNIQUE from the default of the key, and NOT NULL from a DEFAULT NULL; in a
-			// read-only one, the refusal of a create table with a default and of an insert that would
-			// store one.
-			"create table with a default on the key ok in a write transaction":                                                            11,
-			"insert that leaves out a column with a default of integer ok in a write transaction":                                         2,
-			"insert that leaves out the key with a default ok in a write transaction":                                                     2,
-			"insert that leaves out a column that takes NULL with DEFAULT NULL ok in a write transaction":                                 1,
-			"NULL given for a column with a default, which takes NULL ok in a write transaction":                                          2,
-			"insert that leaves out the key with a default UNIQUE constraint failed in a write transaction":                               1,
-			"insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed in a write transaction": 1,
-			"create table with a default on the key attempt to write a readonly database in a read-only transaction":                      11,
-			"insert that leaves out a column with a default of integer attempt to write a readonly database in a read-only transaction":   3,
-			// The statements with a value on the left of slice 12 in transactions, which [pair.reach]
-			// counts again by the kind of the transaction, a third of what the run gave on 2026-11-21,
-			// or 1: in a write transaction, a select that finds rows and one that finds none, an update
-			// and a delete that change rows, and an update refused for a value of another type; in a
-			// read-only one, a select that finds rows and one that finds none, and the refusal of an
-			// update and a delete.
-			"select with a value on the left ok, rows found in a write transaction":                           1,
-			"select with a value on the left ok, no row found in a write transaction":                         3,
-			"update with a value on the left ok, rows changed in a write transaction":                         1,
-			"delete with a value on the left ok, rows changed in a write transaction":                         1,
-			"update with a value on the left a value of another type in a write transaction":                  3,
-			"select with a value on the left ok, rows found in a read-only transaction":                       1,
-			"select with a value on the left ok, no row found in a read-only transaction":                     1,
-			"update with a value on the left attempt to write a readonly database in a read-only transaction": 2,
-			"delete with a value on the left attempt to write a readonly database in a read-only transaction": 2,
-		} {
-			if y["reached: "+kind] < least {
-				t.Errorf("the run reaches %q %v times, and at least %v were expected", kind, y["reached: "+kind], least)
-			}
+	total := tally{}
+	runs := map[string]tally{}
+	var names []string
+	for _, p := range stmttest.Profiles {
+		y := tally{}
+		runs[p.Name], names = y, append(names, p.Name)
+		twice := p == stmttest.Mixed || p == stmttest.Exists || p == stmttest.Defaults || p == stmttest.ValueFirst
+		for k := range n * map[bool]uint64{true: 2, false: 1}[twice] {
+			// Other seeds of each profile than those of [TestDifferential].
+			txDifferential(t, p.Seed(2_000_000+k), 60, y)
 		}
+		t.Logf("%v, in transactions: %v", p.Name, y)
+		for kind, count := range y {
+			total[kind] += count
+		}
+	}
+	t.Logf("%v calls ran in SQLite, and were compared with it", total[comparedWithSQLite])
+	if slow() {
+		noRecount(t)
+	} else {
+		checkReached(t, "What each profile of TestConn_differential of the engine reaches in its full run.", names, runs, false)
+		// A floor under the calls that run in SQLite: the 2,998 of the run of 2026-11-20.
+		is.True(t, total[comparedWithSQLite] >= 2998, "the calls that run in SQLite")
 		for _, kind := range []string{"update attempt to write a readonly database", "update with a parameter attempt to write a readonly database", "delete attempt to write a readonly database"} {
-			if y[kind] == 0 {
+			if total[kind] == 0 {
 				t.Errorf("no statement has the outcome %q", kind)
 			}
 		}
@@ -560,11 +523,9 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	t.Helper()
 	i := newInstance(t, engine.Options{})
 	defer i.close()
-	r := rand.New(rand.NewPCG(seed, 0x7e))
-	q := newSequence(t, r)
-	if seed%3 == 2 {
-		q.Indexed()
-	}
+	q := newSequence(t, seed)
+	// The transactions draw from a stream of their own, so that they move no statement.
+	r := q.Stream("transactions")
 	p := newPair(t, i, y)
 	p.rnd = rand.New(rand.NewPCG(seed, 0x9a7))
 	defer p.other.close()
@@ -608,9 +569,9 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	}
 	for range n {
 		switch {
-		case open == "" && r.IntN(4) == 0:
+		case open == "" && r.IntN(q.Profile().Transactions) == 0:
 			open = "write"
-			if r.IntN(3) == 0 {
+			if r.IntN(5) < 2 {
 				open = "read only"
 				is.NotError(t, i.c.BeginReadOnly(t.Context()))
 				is.NotError(t, p.other.c.BeginReadOnly(t.Context()))
