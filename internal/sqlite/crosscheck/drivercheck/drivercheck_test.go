@@ -1687,9 +1687,10 @@ func (p *pair) orderedDiffers(sel *stmt.Select, args []any, got, want []string, 
 		if !ok {
 			tb.Fatalf("%q does not start with select *", text)
 		}
-		ranked := run(tb, o, callQuery, "select dense_rank() over ("+strings.TrimPrefix(orderBy, " ")+")"+rest, [][]any{bound}, mattnText)
+		rankSrc := "select dense_rank() over (" + strings.TrimPrefix(orderBy, " ") + ")" + rest
+		ranked := run(tb, o, callQuery, rankSrc, [][]any{bound}, mattnText)
 		if ranked.failed != "" || len(ranked.rows) != len(rows) {
-			tb.Fatalf("%q: SQLite gives %v, for %v rows", rest, ranked, len(rows))
+			tb.Fatalf("%q: SQLite gives %v, for %v rows", rankSrc, ranked, len(rows))
 		}
 		ranks = ranked.rows
 	}
@@ -1939,7 +1940,7 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 		}
 		table = s.Table
 	case *stmt.Select:
-		if s.Where == nil {
+		if s.Where == nil && s.Limit.Parameter == 0 {
 			return ""
 		}
 		table = s.Table
@@ -1966,7 +1967,10 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 	}
 	switch s := s.(type) {
 	case *stmt.Select:
-		return stmttest.ConditionRule(name, columns, s, bound)
+		if rule := stmttest.ConditionRule(name, columns, s, bound); rule != "" {
+			return rule
+		}
+		return limitRefusal(columns, s, bound)
 	case *stmt.Delete:
 		return stmttest.DeleteRule(name, columns, s, bound)
 	case *stmt.Update:
@@ -1987,6 +1991,41 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any) string {
 		})
 	}
 	return stmttest.TypeRule(name, columns, s.(*stmt.Insert), bound)
+}
+
+// limitRefusal of the select s of the table with the columns, in the order of the table, with the
+// arguments args, each as SQLite binds it: the engine's "not supported" of the argument of its
+// LIMIT, if that is a parameter whose argument is no integer from 0, which the engine gives after
+// SQLite's errors of the names, also those of ORDER BY, or "". SQLite would convert a real or text
+// that holds an integer, refuse the others with `datatype mismatch`, and read a negative integer as
+// no limit.
+func limitRefusal(columns []stmttest.TableColumn, s *stmt.Select, args []any) string {
+	if s.Limit.Parameter == 0 || len(args) != s.Parameters() {
+		return ""
+	}
+	if _, missing := stmttest.MissingColumn(columns, s); missing ||
+		slices.ContainsFunc(s.OrderBy, func(c stmt.OrderColumn) bool { return stmttest.ColumnOf(columns, c.Name) < 0 }) {
+		return ""
+	}
+	var which string
+	switch v := args[s.Limit.Parameter-1].(type) {
+	case int64:
+		if v >= 0 {
+			return ""
+		}
+		which = "a negative integer"
+	case nil:
+		which = "NULL"
+	case float64:
+		which = "a real"
+	case string:
+		which = "text"
+	case []byte:
+		which = "a blob"
+	default:
+		return ""
+	}
+	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", s.Limit.Parameter, which)
 }
 
 // columns of the table with the name, as SQLite compares names, in SQLite where a call runs, in the
@@ -3142,6 +3181,45 @@ func TestPair(t *testing.T) {
 		_, err = c.ExecContext(t.Context(), "insert into t1 (v1) values (1)")
 		is.Equal(t, "5/5: database is locked", mattnText(t, err))
 		p.close()
+	})
+
+	t.Run("should take the engine's refusal of an argument of LIMIT that is no integer from 0 by the rule, after the errors of the names, and run one that is", func(t *testing.T) {
+		w := newWorld(t)
+		for _, pinned := range []bool{true, false} {
+			p := newPair(t, w, pinned, nil)
+			for _, src := range []string{t4, "insert into t4 values (1, 'a', 1.5, null)", "insert into t4 values (2, null, 0.5, 3)", "insert into t4 values (3, 'a', 0.5, 3)"} {
+				_, failure := p.step(src, callExec, false)
+				is.Equal(t, "", failure)
+			}
+			for _, c := range []struct {
+				src  string
+				args []any
+				want string
+			}{
+				{src: "select v1 from t4 order by v2 limit ?", args: []any{nil}, want: "NULL"},
+				{src: "select * from t4 limit ?", args: []any{2.0}, want: "a real"},
+				{src: "select v1 from t4 order by v3 desc limit ?", args: []any{"2"}, want: "text"},
+				{src: "select v1 from t4 order by v3 desc limit ?", args: []any{[]byte("2")}, want: "a blob"},
+				{src: "select v1 from t4 where v1 > ? order by v4 limit ?", args: []any{int64(0), int64(-1)}, want: "a negative integer"},
+				{src: "select v1 from t4 where v1 > ? order by v4 limit ?", args: []any{int64(0), int(-2)}, want: "a negative integer"},
+				// The errors of the names and the type of a condition come first.
+				{src: "select v1 from t4 order by x limit ?", args: []any{nil}},
+				{src: "select x from t4 order by v1 limit ?", args: []any{2.0}},
+				{src: "select v1 from t4 where v1 > ? limit ?", args: []any{"a", nil}},
+				// An integer from 0 runs.
+				{src: "select v1 from t4 order by v3, v1 desc limit ?", args: []any{int64(2)}},
+				{src: "select v1 from t4 where v1 > ? order by v2 desc limit ?", args: []any{int64(1), uint8(0)}},
+			} {
+				got, failure := p.stepRuns(c.src, callQuery, false, [][]any{c.args})
+				is.Equal(t, "", failure, c.src)
+				if c.want != "" {
+					is.Equal(t, fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", len(c.args), c.want), got.err, c.src)
+				} else {
+					is.True(t, !strings.Contains(got.err, "for LIMIT"), c.src, got.err)
+				}
+			}
+			p.close()
+		}
 	})
 }
 
