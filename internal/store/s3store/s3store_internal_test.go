@@ -94,10 +94,12 @@ func serverClient(t *testing.T, h http.HandlerFunc) (*Client, *dialer) {
 // dialer of a transport in a test, which keeps every connection that it dials.
 type dialer struct {
 	mu    sync.Mutex
-	conns []net.Conn
+	conns []*conn
 	// hold, if it is not nil, is waited for by a dial, after the dial has been counted in dialing.
 	hold    chan struct{}
 	dialing sync.WaitGroup
+	// dialed, if it is not nil, gets each connection when its dial has ended.
+	dialed chan *conn
 }
 
 func (d *dialer) dial(ctx context.Context, network, address string) (net.Conn, error) {
@@ -113,42 +115,64 @@ func (d *dialer) dial(ctx context.Context, network, address string) (net.Conn, e
 	if err != nil {
 		return nil, err
 	}
+	cn := &conn{Conn: nc, closed: make(chan struct{})}
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.conns = append(d.conns, nc)
-	return nc, nil
-}
-
-// open connections of d now.
-func (d *dialer) open() []net.Conn {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	var open []net.Conn
-	for _, nc := range d.conns {
-		if !isClosed(nc) {
-			open = append(open, nc)
-		}
+	d.conns = append(d.conns, cn)
+	dialed := d.dialed
+	d.mu.Unlock()
+	if dialed != nil {
+		dialed <- cn
 	}
-	return open
+	return cn, nil
 }
 
-// isClosed reports whether the socket nc is closed. It does not block: a deadline is set on a
-// socket that is open, and refused on one that is closed.
-func isClosed(nc net.Conn) bool {
-	return errors.Is(nc.SetReadDeadline(time.Time{}), net.ErrClosed)
+// all connections that d has dialed, closed or not.
+func (d *dialer) all() []*conn {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.conns)
 }
 
-// waitClosed until nc is closed, which net/http does in a goroutine of its own for some connections,
-// or fail the test. The bound is far above the time that the close takes on a slow machine, and far
-// below the idle timeout of the transport, after which a leaked connection would be closed too.
-func waitClosed(t *testing.T, nc net.Conn) {
+// conn that a [dialer] dialed, which tells when it has been closed.
+type conn struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+// Close the connection, and then signal closed.
+func (c *conn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { close(c.closed) })
+	return err
+}
+
+// isClosed reports whether cn has been closed. It does not block.
+func isClosed(cn *conn) bool {
+	select {
+	case <-cn.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+// waitClosed until each of conns is closed, or fail the test. net/http closes a connection in a
+// goroutine of its own when it does not put the connection back in the pool, or puts it back after
+// [http.Transport.CloseIdleConnections]: after an answer without content, which it hands to the call
+// first, after content that is closed before its end, and after a dial that ends when its request is
+// gone. So a connection may still be open when its call or the close of its content returns. The
+// bound is far above the time that such a close takes on a slow machine, and far below the idle
+// timeout of the transport, after which a leaked connection would be closed too.
+func waitClosed(t *testing.T, conns ...*conn) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for !isClosed(nc) {
-		if time.Now().After(deadline) {
-			t.Fatal("the connection is still open after 30 seconds")
+	limit := time.After(30 * time.Second)
+	for _, cn := range conns {
+		select {
+		case <-cn.closed:
+		case <-limit:
+			t.Fatal("a connection is still open after 30 seconds")
 		}
-		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -172,17 +196,13 @@ func TestClient_Close(t *testing.T) {
 			})
 		}
 		wg.Wait()
-		conns := d.open()
+		conns := d.all()
 		is.Equal(t, 2, len(conns))
-		for _, cn := range conns {
-			is.True(t, !isClosed(cn))
-		}
 
+		// The connections are idle in the pool, unless net/http kept one out of it, which it then
+		// closes itself.
 		is.NotError(t, c.Close())
-		for _, cn := range conns {
-			is.True(t, isClosed(cn))
-		}
-		is.Equal(t, 0, len(d.open()))
+		waitClosed(t, conns...)
 		is.NotError(t, c.Close())
 	})
 
@@ -205,15 +225,17 @@ func TestClient_Close(t *testing.T) {
 		}()
 		<-arrived
 		is.NotError(t, c.Close())
-		conns := d.open()
+		conns := d.all()
 		is.Equal(t, 1, len(conns))
 		is.True(t, !isClosed(conns[0]))
 
 		close(release)
 		is.NotError(t, <-done)
 		is.Equal(t, store.Version(`"v"`), version)
-		is.True(t, isClosed(conns[0]))
-		is.Equal(t, 0, len(d.open()))
+		// net/http does not put the connection back in the pool after the close, and closes it after
+		// it has handed the answer to the call, so it may still be open when the call returns.
+		waitClosed(t, conns...)
+		is.Equal(t, 1, len(d.all()))
 	})
 
 	t.Run("should close the connection of a read whose content is open when the content is closed", func(t *testing.T) {
@@ -225,18 +247,16 @@ func TestClient_Close(t *testing.T) {
 		body, _, err := c.Get(t.Context(), "k")
 		is.NotError(t, err)
 		is.NotError(t, c.Close())
-		conns := d.open()
+		conns := d.all()
 		is.Equal(t, 1, len(conns))
 		is.True(t, !isClosed(conns[0]))
 
 		data, err := io.ReadAll(body)
 		is.NotError(t, err)
 		is.Equal(t, "data", string(data))
-		// net/http may hand the connection back in a goroutine of its own after the body is closed,
-		// and then closes it, so it may still be open when the close of the content returns.
 		is.NotError(t, body.Close())
-		waitClosed(t, conns[0])
-		is.Equal(t, 0, len(d.open()))
+		waitClosed(t, conns...)
+		is.Equal(t, 1, len(d.all()))
 	})
 
 	t.Run("should close the idle connections at once while the content of a read is open", func(t *testing.T) {
@@ -261,21 +281,37 @@ func TestClient_Close(t *testing.T) {
 			})
 		}
 		wg.Wait()
-		conns := d.open()
-		is.Equal(t, 2, len(conns))
+		is.Equal(t, 2, len(d.all()))
 
-		// The read takes one of the two connections, and the other stays idle.
-		body, _, err := c.Get(t.Context(), "k")
+		// The read takes one of the two connections, and the other stays idle, unless net/http kept
+		// one out of the pool, which it then closes itself, and the read dials one of its own.
+		var read atomic.Pointer[conn]
+		ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) {
+				cn, ok := info.Conn.(*conn)
+				is.True(t, ok)
+				read.Store(cn)
+			},
+		})
+		body, _, err := c.Get(ctx, "k")
 		is.NotError(t, err)
+		readConn := read.Load()
+		is.True(t, readConn != nil)
 		is.NotError(t, c.Close())
-		open := d.open()
-		is.Equal(t, 1, len(open))
+		var others []*conn
+		for _, cn := range d.all() {
+			if cn != readConn {
+				others = append(others, cn)
+			}
+		}
+		is.True(t, len(others) > 0)
+		waitClosed(t, others...)
+		is.True(t, !isClosed(readConn))
 
-		// The content is closed before its end, so net/http does not reuse the connection, and
-		// closes it in a goroutine of its own.
+		// The content is closed before its end, so net/http does not reuse the connection, or puts it
+		// back in the pool after the close, and closes it in a goroutine of its own.
 		is.NotError(t, body.Close())
-		waitClosed(t, open[0])
-		is.Equal(t, 0, len(d.open()))
+		waitClosed(t, readConn)
 	})
 
 	t.Run("should send a call after the close, and close its connection when it has ended", func(t *testing.T) {
@@ -291,7 +327,9 @@ func TestClient_Close(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, store.Version(`"v"`), version)
 		is.Equal(t, int32(1), requests.Load())
-		is.Equal(t, 0, len(d.open()))
+		conns := d.all()
+		is.Equal(t, 1, len(conns))
+		waitClosed(t, conns...)
 	})
 
 	t.Run("should keep no connection whose dial ends after the close and after the call that it was for", func(t *testing.T) {
@@ -301,6 +339,7 @@ func TestClient_Close(t *testing.T) {
 		hold := make(chan struct{})
 		d.hold = hold
 		d.dialing.Add(1)
+		d.dialed = make(chan *conn, 1)
 		is.NotError(t, c.Close())
 
 		// The call ends while its dial is held, and net/http finishes the dial after it, and would
@@ -317,19 +356,14 @@ func TestClient_Close(t *testing.T) {
 		close(hold)
 
 		// The dial ends in a goroutine of net/http, so the connection shows up some time after.
-		deadline := time.Now().Add(30 * time.Second)
-		var conns []net.Conn
-		for len(conns) == 0 {
-			if time.Now().After(deadline) {
-				t.Fatal("the dial has not ended after 30 seconds")
-			}
-			time.Sleep(time.Millisecond)
-			d.mu.Lock()
-			conns = slices.Clone(d.conns)
-			d.mu.Unlock()
+		var cn *conn
+		select {
+		case cn = <-d.dialed:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the dial has not ended after 30 seconds")
 		}
-		is.Equal(t, 1, len(conns))
-		waitClosed(t, conns[0])
+		waitClosed(t, cn)
+		is.Equal(t, 1, len(d.all()))
 	})
 
 	t.Run("should not break calls that run at once after the close", func(t *testing.T) {
