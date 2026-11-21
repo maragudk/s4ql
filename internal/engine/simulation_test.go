@@ -504,7 +504,8 @@ func (r *run) open(ctx context.Context, n *node) error {
 	draw = (draw ^ draw>>27) * 0x94d049bb133111eb
 	draw ^= draw >> 31
 	way := "rules"
-	if names := r.q.IndexNames(); other && draw%2 == 0 {
+	// A sequence of a profile without indexes has no name of an index to force a path of.
+	if names := r.q.IndexNames(); other && (draw%2 == 0 || len(names) == 0) {
 		way = "every row"
 		options.ScanAll()
 	} else if other {
