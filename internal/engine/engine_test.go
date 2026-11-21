@@ -2632,7 +2632,7 @@ func TestEngine_update(t *testing.T) {
 		is.Equal(t, "", w.run("update t set k = 3, b = ? where k = 1", []byte("z")).err)
 		is.Equal(t, "", w.run("delete from t where v = ?", half).err)
 		// A literal that is too long is too big for s4ql also when the update finds no row, where SQLite
-		// steps no value: the known difference of docs/todo.md.
+		// steps no value: the known difference of docs/todo/sql-front-end.md.
 		w.own("18/18: string or blob too big", "string or blob too big", "update t set v = '"+long+"' where k = 9")
 	})
 

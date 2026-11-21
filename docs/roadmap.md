@@ -142,7 +142,7 @@ Included:
 - Exact types. A value must have the type of its column: an integer for `int` and `integer`, a real for `real`, text for `text`, a blob for `blob`. A value of another type is rejected as not supported. This holds also where SQLite converts the value, such as the integer `1` for a `real` column, the text `'1'` for an `int` column, and the real `1.5` for a `text` column, and where SQLite gives an error of its own, such as text for a `blob` column. Markus on 2026-11-19: "Let's stay strict and maybe loosen later".
 - Keys are compared as SQLite compares them: text and blobs byte by byte, reals by their number. `select *` returns rows in that order. `0.0` and `-0.0` are the same key, and `-0.0` is stored as `0.0`, as in SQLite.
 - The error of a key that exists, matching SQLite's, for every type.
-- A text or a blob of up to 1,000,000,000 bytes, SQLite's limit. A longer argument gets SQLite's error. A literal that long gets `string or blob too big` from s4ql, where SQLite gives `statement too long`, which [todo.md](todo.md) records as an open difference.
+- A text or a blob of up to 1,000,000,000 bytes, SQLite's limit. A longer argument gets SQLite's error. A literal that long gets `string or blob too big` from s4ql, where SQLite gives `statement too long`, which [todo/sql-front-end.md](todo/sql-front-end.md) records as an open difference.
 - The commit object names the type of a column as it was declared, so `int` and `integer` stay apart, and replay declares the column in the same way.
 - Everything of slices 1 to 3 with these types: arguments, prepared statements, transactions, and a restart with an empty cache.
 
@@ -360,7 +360,7 @@ Included:
   - When nothing fits, the engine scans the whole table.
   - The rules for `order by` with `limit` come with slice 13.
 - The rule on row order of [the spec](spec.md) is built in this slice. From here on the order of rows without `order by` depends on the index used, so each query runs its scan forward or backward, chosen at random. Tests and the simulation give the engine a seed, so a failure can be replayed. The checks against SQLite compare such rows as a set. Any order of such rows is one SQLite could give too.
-- A column named twice in an index, the name of an index that is the name of a table, what `drop table` does to the indexes of the table, and `create index` in a transaction that rolls back are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo.md).
+- A column named twice in an index, the name of an index that is the name of a table, what `drop table` does to the indexes of the table, and `create index` in a transaction that rolls back are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo/slice-09.md).
 - Everything of slices 1 to 8 with indexes: arguments, prepared statements, transactions, and a restart with an empty cache.
 - The reason: glue has two indexes, goqite's on `(queue, priority desc, created)` and the sessions table's on `(expiry)`, and this slice covers both.
 
@@ -404,7 +404,7 @@ Included:
 - `drop table if exists t1`: when no table `t1` exists, nothing happens and there is no error. When it exists, it does what `drop table` does.
 - The two forms also hold for indexes: `create index if not exists i on t1 (...)` and `drop index if exists i`.
 - A statement that does nothing writes nothing to the log.
-- An error that the declaration would give is still given by SQLite's rules when the table exists, for example a syntax error in the column list. What SQLite does with a declaration that is valid in syntax but not supported by s4ql, when the table exists, is decided when the slice is built, by SQLite's behaviour and the rule of the statement pass, and recorded in [the todo](todo.md).
+- An error that the declaration would give is still given by SQLite's rules when the table exists, for example a syntax error in the column list. What SQLite does with a declaration that is valid in syntax but not supported by s4ql, when the table exists, is decided when the slice is built, by SQLite's behaviour and the rule of the statement pass, and recorded in [the todo](todo/slice-10.md).
 - The commit format does not change.
 - Everything of slices 1 to 9 with the two forms: transactions, prepared statements, and a restart with an empty cache.
 - The reason: the migration tool of glue creates its migrations table with `create table if not exists`.
@@ -432,7 +432,7 @@ Included:
 - A column declaration may carry `default <literal>`, where the literal is one of the literals that `insert` takes, or `null`.
 - An `insert` with a column list that leaves the column out stores the default. Until now such a column gets `null` if it takes null, and the statement is refused if it is `not null`.
 - The commit format changes: a column carries its default. The cache's layout version rises to 4, and an older cache is refused, with no upgrade, because nothing uses s4ql yet.
-- A default whose type is not the column's type, a default on the primary key column, `not null default null`, signed numbers, and `true` and `false` are decided when the slice is built, by SQLite's behaviour and the rule of exact types, and recorded in [the todo](todo.md).
+- A default whose type is not the column's type, a default on the primary key column, `not null default null`, signed numbers, and `true` and `false` are decided when the slice is built, by SQLite's behaviour and the rule of exact types, and recorded in [the todo](todo/slice-11.md).
 - Everything of slices 1 to 10 with a default: transactions, prepared statements, and a restart with an empty cache.
 - The reason: the schema of goqite, the queue that glue uses, declares two columns with `default 0`.
 
