@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"math"
+	"math/big"
 	"reflect"
 	"slices"
 	"strings"
@@ -619,14 +621,7 @@ func WhereCases(columns []TableColumn, s *stmt.Select, args []any) []string {
 				continue
 			}
 			a, b := termValue(c.Value, args), termValue(d.Value, args)
-			// An integer and a real, which a column of INT takes both, compare by their value.
-			if x, ok := a.(int64); ok && reflect.TypeOf(b) == reflect.TypeFor[float64]() {
-				a = float64(x)
-			}
-			if x, ok := b.(int64); ok && reflect.TypeOf(a) == reflect.TypeFor[float64]() {
-				b = float64(x)
-			}
-			if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || a != nil && b != nil && reflect.TypeOf(a) == reflect.TypeOf(b) && compareValues(a, b) == 0 {
+			if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || a != nil && b != nil && sameValue(a, b) {
 				contradicts = true
 			}
 		}
@@ -841,6 +836,25 @@ func termValue(term stmt.Term, args []any) any {
 		return []byte(v)
 	}
 	return nil
+}
+
+// sameValue reports whether a and b, values of [termValue] and not NULL, are the same value as SQLite
+// compares them: an integer and a real, which a column of INT takes both, by their exact value, and
+// values of two other kinds never.
+func sameValue(a, b any) bool {
+	x, isInt := a.(int64)
+	f, isReal := b.(float64)
+	if !isInt || !isReal {
+		x, isInt = b.(int64)
+		f, isReal = a.(float64)
+	}
+	switch {
+	case isInt && isReal:
+		return !math.IsNaN(f) && new(big.Float).SetInt64(x).Cmp(big.NewFloat(f)) == 0
+	case reflect.TypeOf(a) != reflect.TypeOf(b):
+		return false
+	}
+	return compareValues(a, b) == 0
 }
 
 // compareValues a and b, of one kind of [termValue] and not NULL, as SQLite compares them: numbers by

@@ -353,6 +353,7 @@ func TestWhereCases(t *testing.T) {
 		// SQLite's error of a column of ORDER BY that the table does not have comes before the rule of
 		// the type of a value, and a real and an integer of the key compare by their value.
 		{src: "select * from t where k > 1.0 and ? >= k order by x", args: []any{int64(1)}, want: "[> on the key comparison with literal real <= on the key comparison with argument int64 WHERE that tests a column more than once WHERE with contradicting conditions WHERE that reads ]"},
+		{src: "select * from t where k < 9007199254740993 and k >= 9007199254740992.0 order by x", want: "[< on the key comparison with literal integer >= on the key comparison with literal real WHERE that tests a column more than once WHERE that reads ]"},
 		{src: "select * from t where b != 1.5 and k is not null", want: "[!= on another column comparison with literal real IS NOT NULL on the key WHERE that reads a scan of every row]", access: "a scan of every row"},
 		// A comparison with NULL, and IS NULL of the key, are never true.
 		{src: "select * from t where k > 1 and a = ?", args: []any{nil}, want: "[> on the key comparison with literal integer = on another column comparison with argument nil WHERE that reads no row]", access: "no row"},

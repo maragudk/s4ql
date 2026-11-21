@@ -246,7 +246,7 @@ mixed	286	95	reached: literal text
 mixed	38	12	reached: select * of 1 columns ok
 mixed	45	15	reached: select * of 2 columns ok
 mixed	50	16	reached: select * of 3 columns ok
-mixed	10	3	reached: select * with NULL ok
+mixed	11	3	reached: select * with NULL ok
 mixed	31	10	reached: select of a name that the table does not have no such column
 mixed	109	36	reached: select of names ok
 mixed	4	1	reached: select of names with NULL ok

@@ -397,16 +397,19 @@ LINKSCAWK = '$$1 == "cgo" { c[$$2] = 1 } $$1 ~ /\.test$$/ { n++; t[n] = $$0 } \
 # ASANSKIPPKGS leaves these out, by import path; a name that is not a package that links C fails, so
 # that a name gone stale cannot run nothing. ASANSHARD=i/n runs the i-th of n shards of the tests of
 # ASANPKGS: the tests named in ASANSHARDED, which give their subtests to the shards with
-# internal/testshard, run with S4QL_TEST_SHARD=i/n, and every other test runs in the first shard,
-# without S4QL_TEST_SHARD, so whole. A shard fails if a package of ASANPKGS has no test in
-# ASANSHARDED, as go test then runs nothing, and internal/testshard fails a test whose shard holds
-# none of its subtests. The n shards together run every test, and every
-# subtest of a test in ASANSHARDED once: see internal/testshard.
+# internal/testshard, run with S4QL_TEST_SHARD=i/n. The tests named in ASANLAST run whole in the last
+# shard, and every other test runs whole in the first, both without S4QL_TEST_SHARD; ASANLAST takes
+# from the first shard tests of a package whose other tests would keep it the longest by far. A name
+# of ASANLAST that a package does not have runs nothing there and leaves nothing out of the first
+# shard. A shard fails if a package of ASANPKGS has no test in ASANSHARDED, as go test then runs
+# nothing, and internal/testshard fails a test whose shard holds none of its subtests. The n shards
+# together run every test, and every subtest of a test in ASANSHARDED once: see internal/testshard.
 ASANTIMEOUT ?= 10m
 ASANPKGS ?=
 ASANSKIPPKGS ?=
 ASANSHARD ?=
 ASANSHARDED ?= TestSimulation_plantedBugs|FuzzTypes|FuzzTypes_core|FuzzSQL_core
+ASANLAST ?= TestEngine_paths|TestEngine_update|TestDifferential|TestEngine_namesOfTheCore|FuzzChanges_core|TestEngine_indexes
 .PHONY: asan-test
 asan-test:
 	shard='$(ASANSHARD)'; \
@@ -442,8 +445,12 @@ asan-test:
 			continue; \
 		fi; \
 		if [ "$${shard%/*}" = 1 ]; then \
-			echo "asan-test: shard $$shard: every test but $(ASANSHARDED), whole"; \
-			(cd $$dir && $$test -skip '^($(ASANSHARDED))$$' $$pkgs) || exit 1; \
+			echo "asan-test: shard $$shard: every test but $(ASANSHARDED) and $(ASANLAST), whole"; \
+			(cd $$dir && $$test -skip '^($(ASANSHARDED)|$(ASANLAST))$$' $$pkgs) || exit 1; \
+		fi; \
+		if [ "$${shard%/*}" = "$${shard#*/}" ]; then \
+			echo "asan-test: shard $$shard: $(ASANLAST), whole"; \
+			(cd $$dir && $$test -run '^($(ASANLAST))$$' $$pkgs) || exit 1; \
 		fi; \
 		echo "asan-test: shard $$shard: $(ASANSHARDED), with S4QL_TEST_SHARD=$$shard"; \
 		out=$$(mktemp) || exit 1; \

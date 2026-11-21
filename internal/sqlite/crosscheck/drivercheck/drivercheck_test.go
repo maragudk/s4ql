@@ -3432,14 +3432,15 @@ func pickLevel(r stmttest.Rand) string {
 // again are the arguments args of a call of q for another run of its prepared statement: each value
 // replaced by another value of q of the same Go type, as [stmttest.Sequence.Like] gives it, so that
 // the run has the same number and the same types of arguments. An argument of the LIMIT of the select
-// src that is a negative integer stays, so that s4ql refuses every run alike, as [pair.checkRefused]
-// requires: another integer could be one from 0, which s4ql takes, where every value of another type
-// that s4ql refuses for LIMIT is refused again.
+// src that is an integer stays, so that s4ql takes or refuses every run alike, as [pair.checkRefused]
+// and the comparison with SQLite require: another integer could be negative where the first is one
+// from 0, or the other way round, where every value of another type that s4ql refuses for LIMIT is
+// refused again.
 func again(q *stmttest.Sequence, src string, args []any) []any {
 	keep := -1
 	if s, err := stmt.Check(src); err == nil {
 		if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 && sel.Limit.Parameter <= len(args) {
-			if v, ok := args[sel.Limit.Parameter-1].(int64); ok && v < 0 {
+			if _, ok := args[sel.Limit.Parameter-1].(int64); ok {
 				keep = sel.Limit.Parameter - 1
 			}
 		}
