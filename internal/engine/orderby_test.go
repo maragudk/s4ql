@@ -3,20 +3,17 @@ package engine_test
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
-
-// orderedOrLimited reports whether s is a select with ORDER BY or LIMIT, of slice 13.
-func orderedOrLimited(s stmt.Statement) bool {
-	sel, ok := s.(*stmt.Select)
-	return ok && (sel.OrderBy != nil || sel.Limited())
-}
 
 // ordered is a select with ORDER BY or LIMIT, in its parts, so that a test can ask SQLite for the
 // rows of the same select without its LIMIT, each with its rank under the ORDER BY, and compare the
@@ -30,6 +27,88 @@ type ordered struct {
 	limit string
 	// args of the parameters of where, and then of limit.
 	args []any
+}
+
+// orderedOf the select s, with the arguments args of its parameters as SQLite binds them: its select
+// list, its table, its conditions as [stmttest.SelectText] writes them, with a ? for each value, its
+// ORDER BY, and its LIMIT, as a literal or a ?, and the arguments of the parameters of that text.
+// args must have as many arguments as s has parameters.
+func orderedOf(s *stmt.Select, args []any) ordered {
+	q := ordered{columns: "*", table: stmttest.Quote(s.Table.Value)}
+	if s.Columns != nil {
+		var names []string
+		for _, c := range s.Columns {
+			names = append(names, stmttest.Quote(c.Value))
+		}
+		q.columns = strings.Join(names, ", ")
+	}
+	whole, bound := stmttest.SelectText(&stmt.Select{Table: s.Table, Where: s.Where}, args, "")
+	q.where = strings.TrimPrefix(strings.TrimPrefix(whole, "select * from "+q.table), " where ")
+	q.args = bound
+	q.by = strings.Join(orderTerms(s.OrderBy), ", ")
+	switch {
+	case s.Limit.Parameter > 0:
+		q.limit = "?"
+		q.args = append(q.args, args[s.Limit.Parameter-1])
+	case s.Limited():
+		q.limit = fmt.Sprint(int64(s.Limit.Value.(stmt.Integer)))
+	}
+	return q
+}
+
+// orderTerms of the columns of an ORDER BY: each name in double quotes, with " desc" if descending.
+func orderTerms(columns []stmt.OrderColumn) []string {
+	var terms []string
+	for _, c := range columns {
+		term := stmttest.Quote(c.Name.Value)
+		if c.Descending {
+			term += " desc"
+		}
+		terms = append(terms, term)
+	}
+	return terms
+}
+
+// unlimited is the select of q without its LIMIT.
+func (q ordered) unlimited() ordered {
+	if q.limit == "?" {
+		q.args = slices.Clip(q.args[:len(q.args)-1])
+	}
+	q.limit = ""
+	return q
+}
+
+// plain reports whether the select has neither ORDER BY nor LIMIT, so that its rows are compared as a
+// multiset, as [answer.String] gives them.
+func (q ordered) plain() bool {
+	return q.by == "" && q.limit == ""
+}
+
+// inOrderOf the access a, whose key is key, of the table ct, which reads the rows of the select s, of
+// which q holds the parts: q with an ORDER BY of the order in which a gives the rows, which orders
+// every two rows, so that SQLite gives the rows that a must give, in its order, and as many as the
+// LIMIT of q keeps. Where a delivers the order of the ORDER BY of s, or s has none, it is the order
+// of key, or its reverse if a is backward. Where a sorts the rows, it is the ORDER BY of s, and among
+// rows that tie in it the order of the primary key, or its reverse if a is backward.
+func (q ordered) inOrderOf(s *stmt.Select, a engine.Access, key []keyColumn, ct *s4qlpb.CreateTable) ordered {
+	if !a.Sorted {
+		q.by = strings.TrimPrefix(orderOf(key, a.Backward), " order by ")
+		return q
+	}
+	terms := orderTerms(s.OrderBy)
+	for _, position := range ct.GetPrimaryKey() {
+		name := ct.GetColumns()[position].GetName()
+		if slices.ContainsFunc(s.OrderBy, func(c stmt.OrderColumn) bool { return c.Name.Fold() == fold(name) }) {
+			continue
+		}
+		term := stmttest.Quote(name)
+		if a.Backward {
+			term += " desc"
+		}
+		terms = append(terms, term)
+	}
+	q.by = strings.Join(terms, ", ")
+	return q
 }
 
 // src is the text of the select.
@@ -61,7 +140,13 @@ func (q ordered) src() string {
 //     them.
 func (q ordered) differs(t testing.TB, o *oracle, got answer) string {
 	t.Helper()
-	want := o.run(t, q.src(), q.args...)
+	return q.compare(t, o, got, o.run(t, q.src(), q.args...))
+}
+
+// compare the answer got of the engine to the select with want, SQLite's answer on the database of o
+// to the text of q or to another text of the same select, as [ordered.differs] says.
+func (q ordered) compare(t testing.TB, o *oracle, got, want answer) string {
+	t.Helper()
 	if want.err != "" || got.err != "" {
 		if want.err != got.err {
 			return fmt.Sprintf("the engine gives the error %q (%v), and SQLite %q", got.err, got.message, want.err)
@@ -74,10 +159,7 @@ func (q ordered) differs(t testing.TB, o *oracle, got answer) string {
 	if len(got.rows) != len(want.rows) {
 		return fmt.Sprintf("the engine gives %v rows, %q, and SQLite %v, %q", len(got.rows), got.rows, len(want.rows), want.rows)
 	}
-	args := q.args
-	if q.limit == "?" {
-		args = args[:len(args)-1]
-	}
+	args := q.unlimited().args
 	all := "select " + q.columns
 	if q.by != "" {
 		all += ", dense_rank() over (order by " + q.by + ")"
@@ -352,5 +434,272 @@ func TestEngine_orderBy(t *testing.T) {
 			is.Equal(t, "", q.differs(t, o, got), fmt.Sprint(q.src(), " with ", n))
 			is.Equal(t, int(min(n, 12)), len(got.rows))
 		}
+	})
+}
+
+// pathsSetUp is the table of [TestEngine_orderBy_paths]: a column of each of the five types beside
+// the key, NULL in each that takes it, rows that tie in each column but the key, 0.0 and -0.0, and
+// five indexes, of which two hold a column descending and one holds three columns.
+var pathsSetUp = []string{
+	"create table u (k int primary key, i int, n integer not null, r real, s text, b blob) strict, without rowid",
+	"insert into u values (1, 1, 2, 1.5, 'm', x'01')",
+	"insert into u values (2, null, 1, null, 'a', x'00')",
+	"insert into u values (3, 2, 2, -0.0, null, x'')",
+	"insert into u values (4, 1, 0, 0.0, 'z', null)",
+	"insert into u values (5, 0, 1, 2.5, 'm', x'ff')",
+	"insert into u values (6, null, 2, 1.5, 'b', x'0100')",
+	"insert into u values (7, 2, 0, null, null, x'01')",
+	"insert into u values (8, 1, 1, -1.5, 'a', null)",
+	"insert into u values (9, 0, 2, 2.5, 'É', x'7f')",
+	"insert into u values (10, 2, 1, 0.5, 'm', x'80')",
+	"insert into u values (11, -5, 0, 1.5, '', x'00')",
+	"insert into u values (12, 1, 2, 3.5, 'b', x'01')",
+	"insert into u values (13, null, 1, -0.0, 'z', x'')",
+	"insert into u values (14, 9223372036854775807, 0, 1e300, 'é', x'02')",
+	"insert into u values (-3, 0, 1, 0.5, 'm', null)",
+	"create index ui on u (i)",
+	"create index uns on u (n, s desc)",
+	"create index ur on u (r desc)",
+	"create index ub on u (b, i)",
+	"create index uirs on u (i, r, s desc)",
+}
+
+// pathsWrites are the changes of the table of [pathsSetUp] that a transaction of
+// [TestEngine_orderBy_paths] makes before it reads: a row that ties with another in every column but
+// the key, a row of NULL, and changes of rows that the indexes hold.
+var pathsWrites = []string{
+	"insert into u values (20, 1, 2, 1.5, 'm', x'01')",
+	"insert into u values (-7, null, 0, null, null, null)",
+	"update u set i = 2, s = 'b' where n = 1",
+	"delete from u where k = 3",
+	"insert into u values (21, 0, 1, -0.0, 'a', x'')",
+}
+
+// pathsQueries of [TestEngine_orderBy_paths]: for each of its shapes, a WHERE or none and an ORDER BY
+// or none, the select of k, of several columns, or of *, without LIMIT if it has an ORDER BY, and
+// with a LIMIT of 0, 1, some, more than the rows, or a ? with such an argument, in turn, and for one
+// shape in three a second time with a LIMIT of a ?.
+func pathsQueries() []ordered {
+	shapes := []struct {
+		where, by string
+		args      []any
+	}{
+		// Each type ascending and descending, with NULL and ties.
+		{by: "k"}, {by: "k desc"}, {by: "i"}, {by: "i desc"}, {by: "n"}, {by: "n desc"}, {by: "r"}, {by: "r desc"},
+		{by: "s"}, {by: "s desc"}, {by: "b"}, {by: "b desc"},
+		// Several columns, in the directions of an index, against them, and of no index.
+		{by: "n, s desc"}, {by: "n desc, s"}, {by: "n, s"}, {by: "i, r, s desc"}, {by: "i desc, r desc, s"}, {by: "b, i"},
+		{by: "b desc, i"}, {by: "r desc, k"}, {by: "s, b desc, i"},
+		// Pins and then the order.
+		{where: "i = 1", by: "r"}, {where: "i = 1", by: "r desc, s"}, {where: "i = ?", by: "r, s desc", args: []any{int64(1)}},
+		{where: "n = 2", by: "s desc"}, {where: "n = 1", by: "s"}, {where: "n = ?", by: "s, k desc", args: []any{int64(0)}},
+		{where: "s is null", by: "r"}, {where: "i is null", by: "n desc"}, {where: "i is not null", by: "i"},
+		{where: "n = 0 and i = 2", by: "r"}, {where: "b = x'01'", by: "i desc"}, {where: "k = 5", by: "s"}, {where: "i = null", by: "s"},
+		// A range and the order.
+		{where: "n > 0", by: "n desc"}, {where: "r >= 0.5", by: "r"}, {where: "r >= ?", by: "b", args: []any{0.5}},
+		{where: "s < 'm'", by: "s desc, k"}, {where: "i > 0 and i < 3", by: "i desc, r"}, {where: "k > 3", by: "k desc"},
+		{where: "b > x'00'", by: "b"}, {where: "n = 2 and s > 'a'", by: "s"},
+		// A LIMIT without ORDER BY.
+		{where: "i = 1"}, {where: "r > 0.0"}, {where: "n >= 1 and s is not null"},
+		// Pins of every column of the key of an index, which holds the primary key.
+		{where: "i = 1 and k = 4", by: "s"}, {where: "b = x'01' and i = 1 and k = 12", by: "r desc"},
+	}
+	limits := []string{"0", "1", "3", "100", "?"}
+	limitArgs := []any{int64(0), int64(2), int64(5), int64(1000)}
+	var qs []ordered
+	for j, shape := range shapes {
+		q := ordered{columns: []string{"k", "k, i, n, r, s, b", "*"}[j%3], table: "u", where: shape.where, by: shape.by, args: shape.args}
+		if q.by != "" {
+			qs = append(qs, q)
+		}
+		with := func(limit string) {
+			l := q
+			l.limit, l.args = limit, slices.Clone(q.args)
+			if limit == "?" {
+				l.args = append(l.args, limitArgs[(j/5)%len(limitArgs)])
+			}
+			qs = append(qs, l)
+		}
+		with(limits[j%len(limits)])
+		if j%3 == 0 {
+			with("?")
+		}
+	}
+	return qs
+}
+
+// eventAccess of the access a, as the event of its statement names it, with the name of its index.
+func eventAccess(a engine.Access) string {
+	switch {
+	case a.None:
+		return "none"
+	case a.Full:
+		return "full_scan"
+	case a.Index != "":
+		return "index " + a.Index
+	}
+	return "primary_key"
+}
+
+func TestEngine_orderBy_paths(t *testing.T) {
+	// start SQLite, and run the statements of pathsSetUp on it and on the instance i.
+	start := func(t *testing.T, i *instance) *oracle {
+		t.Helper()
+		o := newOracle(t)
+		t.Cleanup(o.close)
+		for _, src := range pathsSetUp {
+			is.Equal(t, "", i.exec(src).err, src)
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		return o
+	}
+	// write the changes of pathsWrites on the instance i and on SQLite o.
+	write := func(t *testing.T, i *instance, o *oracle) {
+		t.Helper()
+		for _, src := range pathsWrites {
+			is.Equal(t, "", i.exec(src).err, src)
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+	}
+	// some paths, of which those that a table has no index of read as the rules choose.
+	some := []engine.Path{{}, {Forward: true}, {Backward: true}, {Sort: true}, {Full: true, Backward: true},
+		{Primary: true, Sort: true, Forward: true}, {Index: "uns", Forward: true}, {Index: "ub", Sort: true, Backward: true}}
+	// runSome runs each query of pathsQueries on the instance i by each of some, compares the rows with
+	// those of SQLite o, and gives the number of runs.
+	runSome := func(t *testing.T, i *instance, o *oracle) int {
+		t.Helper()
+		defer i.e.SetPath(engine.Path{})
+		runs := 0
+		for _, q := range pathsQueries() {
+			for _, path := range some {
+				i.e.SetPath(path)
+				got := i.queryValues(q.src(), values(q.args))
+				is.Equal(t, "", q.differs(t, o, got), fmt.Sprintf("%v with %v by the path %+v", q.src(), q.args, path))
+				runs++
+			}
+		}
+		return runs
+	}
+
+	t.Run("should give SQLite's rows in the order of the access by every path that can serve a query, with a sort and without, and say how in its event and in the plan of the cache, and read no more rows for a LIMIT of a sort than without it, and none for LIMIT 0", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		o := start(t, i)
+		table, columns := o.columns(t, "u")
+		ct := createTableOf(table, columns)
+		cis, _ := o.tableIndexes(t, table, columns)
+		defer i.e.SetPath(engine.Path{})
+		queries, runs := 0, map[string]int{}
+		for _, q := range pathsQueries() {
+			src, vals := q.src(), values(q.args)
+			s, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			sel := s.(*stmt.Select)
+			want := o.run(t, src, q.args...)
+			is.Equal(t, "", want.err, src)
+			// Every forced path, and the rules in each direction, with a sort and without.
+			cs := candidates(src, ct, cis, vals)
+			for _, path := range []engine.Path{{Forward: true}, {Backward: true}, {Sort: true, Forward: true}, {Sort: true, Backward: true}} {
+				a, ok := engine.PathAccessOf(src, ct, cis, vals, path)
+				is.True(t, ok, src)
+				cs = append(cs, candidate{path: path, access: a})
+			}
+			for _, k := range cs {
+				what := fmt.Sprintf("%v with %v by the path %+v, which reads by %v", src, q.args, k.path, k.access)
+				i.e.SetPath(k.path)
+				got := i.queryValues(src, vals)
+				is.Equal(t, "", q.compare(t, o, got, want), what)
+				if !k.access.None {
+					inOrder := q.inOrderOf(sel, k.access, accessKey(k.access, ct, cis), ct)
+					is.EqualSlice(t, o.run(t, inOrder.src(), inOrder.args...).rows, got.rows, what+", as "+inOrder.src())
+				}
+
+				event, _ := h.last(t)
+				is.Equal(t, eventAccess(k.access), strings.TrimSpace(event[engine.AttrAccess]+" "+event[engine.AttrIndex]), what)
+				order := ""
+				switch {
+				case sel.OrderBy == nil:
+					is.True(t, !k.access.Delivered && !k.access.Sorted, what)
+				case k.access.Delivered:
+					is.True(t, !k.access.Sorted, what)
+					order = "delivered"
+				default:
+					is.True(t, k.access.Sorted, what)
+					order = "sorted"
+				}
+				is.Equal(t, order, event[engine.AttrOrder], what)
+				runs[map[string]string{"": "without ORDER BY"}[order]+order]++
+
+				if !k.access.None && k.access.Point == nil {
+					sql, plan := scanPlan(t, i, ct.GetTable(), k.access)
+					is.EqualSlice(t, wantPlans(k.access, ct, cis), plan, what+", which the cache runs as "+sql)
+				}
+
+				read := event[engine.AttrRowsRead]
+				switch {
+				case q.limit == "0" || q.limit == "?" && q.args[len(q.args)-1] == int64(0):
+					is.Equal(t, "0", read, what)
+					runs["limit 0"]++
+				case q.limit != "" && k.access.Sorted:
+					all := q.unlimited()
+					is.Equal(t, "", all.differs(t, o, i.queryValues(all.src(), values(all.args))), what+", without its LIMIT")
+					event, _ := h.last(t)
+					is.Equal(t, event[engine.AttrRowsRead], read, what)
+					runs["sorted with a limit"]++
+				}
+			}
+			queries++
+			runs["all"] += len(cs)
+		}
+		// The runs of each kind, so that a path that drops out shows.
+		is.Equal(t, 107, queries)
+		is.Equal(t, "map[all:1955 delivered:315 limit 0:338 sorted:1568 sorted with a limit:646 without ORDER BY:72]", fmt.Sprint(runs))
+	})
+
+	t.Run("should give SQLite's rows in order in a write transaction, which reads the rows that it wrote, and after its rollback", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		o := start(t, i)
+		is.NotError(t, i.c.Begin(t.Context()))
+		for _, src := range oracleBegin(false) {
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		write(t, i, o)
+		is.Equal(t, 856, runSome(t, i, o))
+		is.NotError(t, i.c.Rollback(t.Context()))
+		for _, src := range oracleEnd(false, false) {
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		is.Equal(t, 856, runSome(t, i, o))
+	})
+
+	t.Run("should give SQLite's rows in order in a read-only transaction", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		o := start(t, i)
+		write(t, i, o)
+		is.NotError(t, i.c.BeginReadOnly(t.Context()))
+		for _, src := range oracleBegin(true) {
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		is.Equal(t, 856, runSome(t, i, o))
+		is.NotError(t, i.c.Commit(t.Context()))
+		for _, src := range oracleEnd(true, true) {
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+	})
+
+	t.Run("should give SQLite's rows in order after a restart with an empty cache", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		o := start(t, i)
+		write(t, i, o)
+		i.restart(true, engine.Options{})
+		is.Equal(t, o.state(t), i.state())
+		is.Equal(t, 856, runSome(t, i, o))
+	})
+
+	t.Run("should give SQLite's rows in order on a database in memory", func(t *testing.T) {
+		i := newMemoryInstance(t)
+		o := start(t, i)
+		write(t, i, o)
+		is.Equal(t, 856, runSome(t, i, o))
 	})
 }
