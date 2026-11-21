@@ -1873,23 +1873,23 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 // by the rows of a query and by the count of an update or a delete, whose outcome says so already.
 // A select that is run as no query has no rows to tell, and keeps "ok".
 func reachValueFirst(s *stmt.Select, args []any, c stmttest.Call, got answer, kind, outcome string, count func(string)) {
-	any := outcome
+	ofAnyKind := outcome
 	switch {
 	case outcome == "ok" && kind == "select" && c.Query:
 		outcome = map[bool]string{true: "ok, no row found", false: "ok, rows found"}[len(got.rows) == 0]
-		any = map[bool]string{true: "finds no row", false: "finds rows"}[len(got.rows) == 0]
+		ofAnyKind = map[bool]string{true: "finds no row", false: "finds rows"}[len(got.rows) == 0]
 	case outcome == "ok, no row found":
-		any = "finds no row"
+		ofAnyKind = "finds no row"
 	case outcome == "ok, rows changed":
-		any = "finds rows"
+		ofAnyKind = "finds rows"
 	}
 	cases := stmttest.ValueFirstCases(s, args)
 	for _, what := range cases {
-		count(what + " " + any)
+		count(what + " " + ofAnyKind)
 		count(kind + " with a " + what + " " + outcome)
 	}
 	if cases != nil {
-		count("value on the left " + any)
+		count("value on the left " + ofAnyKind)
 		count(kind + " with a value on the left " + outcome)
 	}
 }
@@ -2176,14 +2176,14 @@ func checkChoice(t testing.TB, o *oracle, s *stmt.Select, args []any, c stmttest
 	// The choices that a condition with its value on the left decides: with != in place of the
 	// operator of each, which pins and bounds nothing and keeps a comparison with NULL, the model
 	// chooses another access.
-	rest, turned := *s, false
+	rest, valueFirst := *s, false
 	rest.Where = slices.Clone(s.Where)
 	for i, w := range rest.Where {
 		if w.ValueFirst {
-			rest.Where[i].Operator, turned = stmt.OpNotEqual, true
+			rest.Where[i].Operator, valueFirst = stmt.OpNotEqual, true
 		}
 	}
-	if without, ok := stmttest.ChosenAccess(columns, indexes, &rest, args); turned && ok && !without.Same(want) {
+	if without, ok := stmttest.ChosenAccess(columns, indexes, &rest, args); valueFirst && ok && !without.Same(want) {
 		count("chosen " + kind + " by a value on the left")
 	}
 }

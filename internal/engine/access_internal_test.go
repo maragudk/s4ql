@@ -144,13 +144,16 @@ func accessText(a access) string {
 // ", with the comparisons for which turn reports true, by their number among the comparisons from 0,
 // written `value op' column`, where op' compares with its sides swapped as op does.
 func turnedWhere(where string, turn func(n int) bool) string {
-	swapped := map[string]string{"=": "=", "<>": "<>", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+	swapped := map[string]string{"=": "=", "==": "==", "!=": "!=", "<>": "<>", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
 	conditions := strings.Split(where, " and ")
 	n := 0
 	for i, c := range conditions {
 		fields := strings.Fields(c)
-		if len(fields) != 3 || swapped[fields[1]] == "" {
+		if len(fields) != 3 || fields[1] == "is" {
 			continue
+		}
+		if swapped[fields[1]] == "" {
+			panic("no operator " + fields[1] + " to turn round in " + where)
 		}
 		if turn(n) {
 			conditions[i] = fields[2] + " " + swapped[fields[1]] + " " + fields[0]

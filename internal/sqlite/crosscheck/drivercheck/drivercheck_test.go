@@ -863,7 +863,7 @@ func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner
 		count(statement + map[bool]string{true: " with WHERE ", false: " without WHERE "}[where != nil] + outcome)
 		if len(runs[i]) != s.Parameters() || argumentRefusal(runs[i]) != "" {
 			count(statement + " with arguments that s4ql refuses " + outcome)
-			reachValueFirst(&stmt.Select{Where: where}, nil, outcome, -1, count)
+			reachValueFirst(&stmt.Select{Where: where}, nil, kind(out), -1, count)
 			continue
 		}
 		var bound []any
@@ -873,6 +873,13 @@ func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner
 			}
 			bound = append(bound, converted(a))
 		}
+		sel, selArgs := stmttest.SelectOf(s, bound)
+		rows := -1
+		if out.affected != "" {
+			rows = map[bool]int{true: 0, false: 1}[out.affected == "0"]
+		}
+		// Also for a SET of a column that the table does not have, as the engine's checks count it.
+		reachValueFirst(sel, selArgs, kind(out), rows, count)
 		missing := false
 		if u, ok := s.(*stmt.Update); ok {
 			for _, what := range stmttest.SetCases(columns, u, bound) {
@@ -883,17 +890,11 @@ func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner
 		if where == nil || missing {
 			continue
 		}
-		sel, selArgs := stmttest.SelectOf(s, bound)
 		for _, what := range stmttest.WhereCases(columns, sel, selArgs) {
 			if strings.HasPrefix(what, "WHERE ") {
 				count(statement + " " + what + " " + outcome)
 			}
 		}
-		rows := -1
-		if out.affected != "" {
-			rows = map[bool]int{true: 0, false: 1}[out.affected == "0"]
-		}
-		reachValueFirst(sel, selArgs, kind(out), rows, count)
 	}
 }
 
