@@ -154,3 +154,56 @@ A restart costs the planning of a run, 4 to 9 minutes under this load, and saves
 ### Future work
 
 - The core's last run, the numbers in the README of the runner, and the checks.
+
+## Step 4: Two more merges of `main`, the lost scratch directory, the last runs, and the checks
+
+**Author:** index-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the coordinator during the run) "For your merge of `origin/main`: `docs/todo.md` was split (pull request #115). [...] take `main`'s index for `docs/todo.md`, and move what you added or changed into `docs/todo/slice-09.md` [...] Also on `main` since you last merged: slice 10 (#110) and slice 11 (#114) through the engine with their generated checks (many pins moved [...]), so recount your planted bugs and tallies after the merge." And from the brief: "Finish: `make test`, `make lint`, `make check-browser`, `make fuzz-shards` pass."
+**Interpretation:** Merge again, keep the reach of the two tallies without moving `main`'s pins where that can be helped, rerun what the merges changed, and record the results.
+**Inferred intent:** A branch that merges into `main` as it is now, with numbers of its code.
+
+### What I did
+
+- The scratchpad of the session was emptied twice by a cleanup outside the round (the whole directory, not only `ixm`), which stopped the runs of the core and the engine each time; I told the coordinator and moved the runs into an untracked `.ixm/` of the worktree, with backups of the results every minute. The results that survived in the backup (319 of the core, 524 of the engine) count; the rest ran again (`r7`).
+- Merged `origin/main` twice more: with the split of the todo, slices 10 to 13, #111, #112, and #113. `docs/todo.md` is `main`'s; the decisions of this round are in a section of `docs/todo/slice-09.md`, its item on the mutation round is gone, and the open failures of the core are in `docs/todo/storage-core-tests.md`.
+- The bound of the key in `Sequence.changeConditions` drew its value before the spelling of the column, where `main` draws the spelling first, so every sequence drew in another order than `main` and every merge moved `main`'s pins and some rare least numbers. It draws in `main`'s order now, and the operator comes from the place of the value: for every third of the values that the sequence keeps, the key is bounded on one side of it, with `<`, `<=`, `>`, and `>=` in turn. `TestDifferential` passes with `main`'s pins and least numbers and reaches the update to an upper bound 11 times; the driver check reaches the delete to an upper bound twice, and only its least number of "update WHERE that reads a get of one key ok, rows changed" is a third of the new count, 2.
+- The lines that the merges wrote are left out of the selection (`ixm/select.py` takes the mutants on lines of #92, #97, #105, #108, and this round's own commits, by `git blame`), and the mutants of the functions that a merge changed ran again (`ixm/changed.py`).
+- New tests from the last runs: `TestChooseAccess` (an index that pins more over a later one that pins less and bounds), `TestEngine_report` (the access of every statement of a transaction), `TestReadTx_Close` and a subtest beside it (`Indexes`, `Index`, `ScanIndex`, and `ScanPlan` after the end, and the refusals of `ScanPlan`), `TestTx_CreateIndex` (the length and the limit of an index too long for the cache, and the whole refusal of an index without a name), `TestScanIndex` (an upper bound of another storage class beside a valid lower one), `TestReplay_indexes` (an index of 250 columns), and `TestTx_readFails` (a read that fails under a create index, a drop index, and a scan by an index).
+- The planted bugs over 200 seeds after the last merge: every bug is found, none without it; the table in the README of the engine has the counts. `openBound` is found by 10 seeds of the hammer workload, where it was 32 before slice 9 and 24 after the first changes of this round. The core's two bugs of slice 9 were found by 33 and 29 of 200 seeds, as #108 measured.
+- `make test`, `make lint`, `make check-browser`, and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` and `=6` pass; the new tests pass 10 times under `-race` and 20 times without.
+
+### Why
+
+Drawing the bound from numbers that `main` draws anyway keeps the generated checks of the other slices as they are, which every later merge then keeps too.
+
+### What worked
+
+- The comparison of the run with the bound switched off against `main`'s own run, which showed that the order of the draws, not the bound, moved the pins.
+
+### What didn't work
+
+- Each merge of `main` before that moved a few rare least numbers below theirs; four shares of the bound were tried before the order of the draws was found.
+- A first try at a test of the commit of a create index under a fault of a read failed the commit elsewhere, so 18 mutants of failures around indexes in the core stay open, with the test to write in `docs/todo/storage-core-tests.md`.
+- Nine equivalent mutants of `conn.loadIndexes` and `conn.lookUpIndex` timed out in the run after #112 under a load of about 30; the tool counts them with the killed ones, and their entries stay.
+
+### What I learned
+
+- The order of evaluation in a composite literal is the order of its random draws: moving one call out of a literal changes every number after it.
+- A scratch directory outside the worktree can vanish under a long run; the results belong where the run's owner controls them.
+
+### What was tricky
+
+- Keeping four packages' results, from nine runs on six copies of the tree, apart from the mutants that the merges removed or moved; `ixm/tally.py` takes each mutant's last result in the current selection.
+
+### What warrants review
+
+- The 18 open mutants of the core and the test that would close them.
+- That the scope leaves out the lines of #107, #111, #112, and slices 10 to 13 in the functions of slice 9.
+
+### Future work
+
+- The test of the failures of the core around indexes, in `docs/todo/storage-core-tests.md`.
+- Long fuzz runs of the code of slice 9 in the pass, in `docs/todo/slice-09.md`.
