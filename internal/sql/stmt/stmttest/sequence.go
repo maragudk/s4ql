@@ -983,7 +983,8 @@ func (q *Sequence) keysOf(table stmt.Name) [][]orderColumn {
 // the start or in the middle of the key, and the ORDER BY is of the columns of the key around it, up
 // to the one after it at least, which the key delivers with the pinned column taken out of it; one
 // time in three the pinned column stays in the ORDER BY at its place, and the select has a LIMIT one
-// time in two. A pin is by =, with a value as [Sequence.conditionValue] draws it, or by IS NULL one
+// time in two. A pin at the start has, one time in two, a bound or two on the next column too, each
+// open or closed, which the scan bounds while it delivers the order. A pin is by =, with a value as [Sequence.conditionValue] draws it, or by IS NULL one
 // time in four for a column that takes NULL. The columns of the ORDER BY are in the directions of
 // the key, or all turned one time in two. The conditions are in any order one time in three. Where
 // no key has two columns, a pin of which leaves another, the select has no WHERE and no aim.
@@ -1053,6 +1054,15 @@ func (q *Sequence) aimedWhere(r Rand, table stmt.Name) []stmt.Condition {
 		p := places[r.IntN(len(places))]
 		key := keys[p.key]
 		cs = append(cs, pin(key[p.at].fold))
+		if p.at == 0 && r.IntN(2) == 0 {
+			// A range of the column after the pin, which the scan of the key bounds while it delivers the
+			// order.
+			for range 1 + r.IntN(2) {
+				c := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, key[1].fold)}, Operator: bounds[r.IntN(len(bounds))]}
+				c.Value.Value = q.conditionValue(r, areaIndexes, table, key[1].fold, typeOf(key[1].fold))
+				cs = append(cs, c)
+			}
+		}
 		keep := r.IntN(3) == 0
 		var by []orderColumn
 		for i, k := range key {

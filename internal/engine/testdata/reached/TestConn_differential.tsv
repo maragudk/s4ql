@@ -6,13 +6,14 @@
 mixed	9	3	delete attempt to write a readonly database
 mixed	108	=	excused: a value of another type than its column, checked against s4ql's rule
 mixed	2	=	excused: already exists after the start of a table, accepted
-mixed	55	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	56	=	excused: an argument that no column holds, checked against s4ql's rule
 mixed	124	=	excused: the wrong number of arguments, checked against s4ql's rule
-mixed	7	2	reached: LIMIT by an argument ok
+mixed	8	2	reached: LIMIT by an argument ok
 mixed	3	1	reached: NULL given for a column with a default, which takes NULL ok in a write transaction
 mixed	48	16	reached: WHERE run by every path on a table with an index
 mixed	311	103	reached: changed both ways
 mixed	73	24	reached: changed both ways in a read-only transaction
+mixed	3	1	reached: chosen every row, sorted
 mixed	10	3	reached: commit of a transaction whose update or delete changed rows
 mixed	24	8	reached: commit of a transaction with a create index or a drop index
 mixed	13	4	reached: create index attempt to write a readonly database
@@ -32,12 +33,12 @@ mixed	5	1	reached: drop table if exists did nothing: no table of the name exists
 mixed	6	2	reached: insert that leaves out a column with a default of integer ok in a write transaction
 mixed	7	2	reached: insert that leaves out a column with a default that an index holds ok
 mixed	3	1	reached: insert that leaves out the key with a default ok in a write transaction
-mixed	20	6	reached: path that delivers the order
-mixed	46	15	reached: path that sorts
+mixed	17	5	reached: path that delivers the order
+mixed	52	17	reached: path that sorts
 mixed	182	60	reached: read both ways
 mixed	39	13	reached: read both ways in a read-only transaction
 mixed	4	1	reached: roll back of a transaction whose update or delete changed rows
-mixed	110	36	reached: select read by the access that the model chooses
+mixed	111	37	reached: select read by the access that the model chooses
 mixed	14	4	reached: select with a value on the left ok, no row found in a write transaction
 mixed	11	3	reached: select without ORDER BY whose rows came in the order of the key of its access
 mixed	10	3	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
@@ -202,25 +203,23 @@ arguments	6	2	reached: select without ORDER BY whose rows came in the order of t
 arguments	3	1	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 arguments	8	2	update with a parameter attempt to write a readonly database
 order	4	1	delete attempt to write a readonly database
-order	57	=	excused: a value of another type than its column, checked against s4ql's rule
-order	25	8	reached: LIMIT by an argument ok
-order	5	1	reached: LIMIT that cuts
-order	20	6	reached: ORDER BY that gives rows in a write transaction after a change of rows
-order	134	44	reached: WHERE run by every path on a table with an index
-order	54	18	reached: changed both ways
-order	15	5	reached: changed both ways in a read-only transaction
-order	30	10	reached: chosen every row, sorted
+order	54	=	excused: a value of another type than its column, checked against s4ql's rule
+order	29	9	reached: LIMIT by an argument ok
+order	8	2	reached: LIMIT that cuts
+order	24	8	reached: ORDER BY that gives rows in a write transaction after a change of rows
+order	145	48	reached: WHERE run by every path on a table with an index
+order	45	15	reached: changed both ways
+order	22	7	reached: changed both ways in a read-only transaction
+order	42	14	reached: chosen every row, sorted
 order	7	2	reached: commit of a transaction whose update or delete changed rows
-order	21	7	reached: commit of a transaction with a create index or a drop index
-order	20	6	reached: create index attempt to write a readonly database
-order	3	1	reached: drop index attempt to write a readonly database
-order	160	53	reached: path that delivers the order
-order	524	174	reached: path that sorts
-order	186	62	reached: read both ways
-order	43	14	reached: read both ways in a read-only transaction
-order	3	1	reached: roll back of a transaction whose update or delete changed rows
+order	16	5	reached: commit of a transaction with a create index or a drop index
+order	16	5	reached: create index attempt to write a readonly database
+order	137	45	reached: path that delivers the order
+order	663	221	reached: path that sorts
+order	247	82	reached: read both ways
+order	60	20	reached: read both ways in a read-only transaction
 order	3	1	reached: roll back of a transaction with a create index or a drop index
-order	202	67	reached: select read by the access that the model chooses
-order	7	2	reached: select without ORDER BY whose rows came in the order of the key of its access
-order	6	2	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
-order	3	1	update with a parameter attempt to write a readonly database
+order	235	78	reached: select read by the access that the model chooses
+order	4	1	reached: select without ORDER BY whose rows came in the order of the key of its access
+order	5	1	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+order	7	2	update with a parameter attempt to write a readonly database

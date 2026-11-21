@@ -2799,16 +2799,20 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// of them by its own violation.
 		{"unturnedBound", hammerWorkload, "hammer", stmttest.ValueFirst, []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// A key delivers an ORDER BY of mixed directions as if each were in the direction of its first
-		// column, so a select gives its rows in another order than SQLite's. The profile of the ORDER
-		// BY draws ORDER BY of the columns of an index with one turned: 16 of 200 seeds find the
-		// bug, each by its own violation.
+		// column, so a select gives its rows in another order than SQLite's where they tie in the first.
+		// The profile of the ORDER BY draws ORDER BY of the leading columns of the key of an index with
+		// the first or the second turned, over values that tie, [stmttest.Profile.Ties], and the hammer
+		// environment runs more statements on one instance than the default one, which it needs to find
+		// the bug in one seed in five: 49 of 200 seeds find the bug, each by its own violation, as many
+		// without crashes, as under the address sanitizer, since the environment has none. In the
+		// default one, whose seeds play out otherwise without crashes, CI's sanitizer found it in 1 of 100.
 		{"turnMixed", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
 		// A LIMIT takes the first rows of an access that is sorted, and sorts those, so a select gives
-		// other rows than SQLite's first: 32 of 200 seeds find the bug, each by its own
-		// violation.
-		{"limitFirst", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
-		// A sort by a descending last column of ORDER BY sorts it ascending: 61 of 200 seeds
+		// other rows than SQLite's first: in the hammer environment, as for turnMixed, 82 of 200 seeds
 		// find the bug, each by its own violation.
+		{"limitFirst", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
+		// A sort by a descending last column of ORDER BY sorts it ascending: in the hammer environment,
+		// as for turnMixed, 118 of 200 seeds find the bug, each by its own violation.
 		{"ascendLast", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
 	}
 	shard := testshard.Get(t)

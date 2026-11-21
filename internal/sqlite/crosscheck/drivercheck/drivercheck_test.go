@@ -3431,11 +3431,25 @@ func pickLevel(r stmttest.Rand) string {
 
 // again are the arguments args of a call of q for another run of its prepared statement: each value
 // replaced by another value of q of the same Go type, as [stmttest.Sequence.Like] gives it, so that
-// the run has the same number and the same types of arguments.
-func again(q *stmttest.Sequence, args []any) []any {
+// the run has the same number and the same types of arguments. An argument of the LIMIT of the select
+// src that is a negative integer stays, so that s4ql refuses every run alike, as [pair.checkRefused]
+// requires: another integer could be one from 0, which s4ql takes, where every value of another type
+// that s4ql refuses for LIMIT is refused again.
+func again(q *stmttest.Sequence, src string, args []any) []any {
+	keep := -1
+	if s, err := stmt.Check(src); err == nil {
+		if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 && sel.Limit.Parameter <= len(args) {
+			if v, ok := args[sel.Limit.Parameter-1].(int64); ok && v < 0 {
+				keep = sel.Limit.Parameter - 1
+			}
+		}
+	}
 	next := slices.Clone(args)
 	for i, a := range next {
-		next[i] = q.Like(a)
+		// Each argument draws, so that the stream draws as it would without the one that stays.
+		if like := q.Like(a); i != keep {
+			next[i] = like
+		}
 	}
 	return next
 }
@@ -3504,7 +3518,7 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 			src, supported, runs = "", false, nil
 		case callPrepareExecRuns:
 			for range 1 + r.IntN(3) {
-				runs = append(runs, again(q, next.Args))
+				runs = append(runs, again(q, next.Src, next.Args))
 			}
 		}
 		for i := range runs {
