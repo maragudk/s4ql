@@ -804,3 +804,5 @@ internal/core/index.go checkCreateIndex condition: err != nil => false
 	NewCommitWriter fails only for a header that it refuses, and its parent is the empty log and its commit time the clock of the host now, which a protobuf timestamp holds; the write of the header into io.Discard does not fail.
 internal/core/index.go checkCreateIndex remove statement: return err =>
 	NewCommitWriter fails only for a header that it refuses, and its parent is the empty log and its commit time the clock of the host now, which a protobuf timestamp holds; the write of the header into io.Discard does not fail.
+internal/core/index.go Tx.spoolCreatedIndexes remove statement: return 0, nil =>
+	Without an index that the transaction created, the loop below writes none and gives 0 and nil too, after a read of the names of the indexes, which changes nothing and does not fail where the reads of the commit before it did not.
