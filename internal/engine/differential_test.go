@@ -1546,13 +1546,11 @@ func (p *pair) checkPlan(src, table string, a engine.Access, ct *s4qlpb.CreateTa
 }
 
 // wantPlans are the rows of SQLite's plan of the statement of the cache for the scan of the access a
-// on the table ct with the indexes cis: the row of [wantPlan], and then SQLite's sort where a is
-// sorted, unless a is a scan by the primary key that pins every column of it, whose one row or none
-// SQLite does not sort. SQLite sorts the rows of a scan of an index that pins every column of the
-// index and of the primary key, though there too there is one row or none.
+// on the table ct with the indexes cis: the row of [wantPlan], and then SQLite's sort exactly where a
+// is sorted.
 func wantPlans(a engine.Access, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex) []string {
 	plan := []string{wantPlan(a, ct, cis)}
-	if a.Sorted && (a.Index != "" || len(a.Equal) < len(ct.GetPrimaryKey())) {
+	if a.Sorted {
 		plan = append(plan, "USE TEMP B-TREE FOR ORDER BY")
 	}
 	return plan
@@ -3465,9 +3463,9 @@ func TestPair_orderBy(t *testing.T) {
 			"excused: the wrong number of arguments, checked against s4ql's rule: 3",
 			"reached: LIMIT run by every path: 192",
 			"reached: ORDER BY run by every path: 315",
-			"reached: path that delivers the order: 390",
-			"reached: path that sorts: 4116",
-			"reached: plan of the cache checked: 402",
+			"reached: path that delivers the order: 411",
+			"reached: path that sorts: 4074",
+			"reached: plan of the cache checked: 401",
 		}, "\n"), strings.Join(counts, "\n"))
 	})
 

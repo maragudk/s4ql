@@ -655,7 +655,7 @@ func TestEngine_orderBy_paths(t *testing.T) {
 		}
 		// The runs of each kind, so that a path that drops out shows.
 		is.Equal(t, 107, queries)
-		is.Equal(t, "map[all:1955 delivered:315 limit 0:338 sorted:1568 sorted with a limit:646 without ORDER BY:72]", fmt.Sprint(runs))
+		is.Equal(t, "map[all:1948 delivered:322 limit 0:337 sorted:1554 sorted with a limit:640 without ORDER BY:72]", fmt.Sprint(runs))
 	})
 
 	t.Run("should give SQLite's rows in order in a write transaction, which reads the rows that it wrote, and after its rollback", func(t *testing.T) {
