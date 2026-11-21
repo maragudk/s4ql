@@ -598,6 +598,17 @@ func open(tb testing.TB, o s4ql.Options) *sql.DB {
 // tally of the outcomes of the texts of a test, which counts nothing if it is nil.
 type tally map[string]int
 
+// comparedWithSQLite is the kind under which a tally counts the calls that ran in SQLite, whose
+// outcomes [pair.compare] compared with s4ql's.
+const comparedWithSQLite = "compared with SQLite"
+
+// compared counts a call that runs in SQLite, under [comparedWithSQLite].
+func (y tally) compared() {
+	if y != nil {
+		y[comparedWithSQLite]++
+	}
+}
+
 // add the outcome got of s4ql for src through its call with the arguments of each run: the call, with
 // arguments if a run has any, and the outcome of each run, by the kind of the statement, with a
 // parameter if it has one. Each is counted once by itself, and once more after scope and a colon if
@@ -1536,6 +1547,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	}
 
 	first := firstStatement(src)
+	p.y.compared()
 	var want outcome
 	_, isSelect := s.(*stmt.Select)
 	if _, ok := o.(inTx); ok && c == callStmtExec && isSelect {

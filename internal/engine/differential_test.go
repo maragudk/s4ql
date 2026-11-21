@@ -756,6 +756,17 @@ func (y tally) excused(kind string) {
 	}
 }
 
+// comparedWithSQLite is the kind under which a tally counts the calls that ran in SQLite, whose
+// answers [pair.step] compared with the engine's.
+const comparedWithSQLite = "compared with SQLite"
+
+// compared counts a call that runs in SQLite, under [comparedWithSQLite].
+func (y tally) compared() {
+	if y != nil {
+		y[comparedWithSQLite]++
+	}
+}
+
 // acceptedStartedTable is the kind of a text that [startedTable] accepts, and knownGapSuffix ends the
 // kind of a text of a [knownGap], after the gap.
 const (
@@ -1059,6 +1070,7 @@ func (p *pair) step(c stmttest.Call) string {
 	if mayslip {
 		is.Equal(t, "", o.run(t, "savepoint s4ql_record").err)
 	}
+	p.y.compared()
 	want := o.run(t, src, args...)
 	if mayslip {
 		is.Equal(t, "", o.run(t, "rollback to s4ql_record").err)
