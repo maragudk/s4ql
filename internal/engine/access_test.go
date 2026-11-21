@@ -780,6 +780,11 @@ var planSchemas = []planSchema{
 			{name: "a get delivers every order", src: "select a from r where k = 3 order by c limit 1"},
 			{name: "no row delivers every order", src: "select a from r where c > null order by d"},
 			{name: "a limit without an order changes nothing", src: "select k from r where b = 'x' and c > 1.5 limit 1"},
+			{name: "a column pinned after the first of a key is taken out of it", src: "select k from r where c = 1.5 order by b"},
+			{name: "a pinned column in the middle of an order orders nothing", src: "select k from r where b = 'x' order by c desc, b, k"},
+			{name: "an order of pinned columns alone is delivered forward", src: "select k from r where a = 1 order by a desc"},
+			{name: "a test for null of a column that takes none pins nothing", src: "select k from r where a is null order by a desc, k"},
+			{name: "a limit of 0 has the access of any other limit", src: "select k from r where k > 3 order by a limit 0"},
 		},
 	},
 }

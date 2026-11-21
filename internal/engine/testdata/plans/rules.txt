@@ -216,3 +216,28 @@ order: delivered, forward
 ## a limit without an order changes nothing
 select k from r where b = 'x' and c > 1.5 limit 1
 access: index rbc (b, c desc, k), pins b = 'x', bounds 1.5 < c
+
+## a column pinned after the first of a key is taken out of it
+select k from r where c = 1.5 order by b
+access: index rb (b, k)
+order: delivered, forward
+
+## a pinned column in the middle of an order orders nothing
+select k from r where b = 'x' order by c desc, b, k
+access: index rbc (b, c desc, k), pins b = 'x'
+order: delivered, forward
+
+## an order of pinned columns alone is delivered forward
+select k from r where a = 1 order by a desc
+access: index ra (a, k), pins a = 1
+order: delivered, forward
+
+## a test for null of a column that takes none pins nothing
+select k from r where a is null order by a desc, k
+access: every row
+order: sorted by a desc, k
+
+## a limit of 0 has the access of any other limit
+select k from r where k > 3 order by a limit 0
+access: index ra (a, k)
+order: delivered, forward
