@@ -2016,9 +2016,6 @@ func orderOf(columns ...any) []core.KeyColumn {
 	return order
 }
 
-// sortStep is the row of SQLite's plan for a sort of all the rows of a statement by its ORDER BY.
-const sortStep = "USE TEMP B-TREE FOR ORDER BY"
-
 func TestScanIndex_order(t *testing.T) {
 	// The table t has the key c0, the integer c1 and the text c2, which take NULL, and the real c3.
 	// Its index i is on c1 and c2 descending, so its key is c1, c2 descending, c0, and its index j is
@@ -2192,7 +2189,8 @@ func TestScanIndex_order(t *testing.T) {
 
 						sql, plan, err := r.ScanPlan(t.Context(), name, scan)
 						is.NotError(t, err)
-						is.EqualSlice(t, []string{wantPlan(table.ct, ci, scan), sortStep}, plan, sql)
+						// SQLite's plan has one row for a sort of all the rows of the statement by its ORDER BY.
+						is.EqualSlice(t, []string{wantPlan(table.ct, ci, scan), "USE TEMP B-TREE FOR ORDER BY"}, plan, sql)
 						// The same scan without the order reads the same index and sorts nothing.
 						scan.Order = nil
 						sql, plan, err = r.ScanPlan(t.Context(), name, scan)
@@ -2204,6 +2202,39 @@ func TestScanIndex_order(t *testing.T) {
 			}
 		}
 		is.Equal(t, 2*(10*15+2*10+3*7), checked)
+	})
+
+	t.Run("should select each column of the order as the term that it orders by, and sort nothing for a scan that pins the whole primary key", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, start...)
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+
+		// SQLite keeps the value of a selected column that is also a term of the ORDER BY once in what
+		// it sorts, so the statement selects the term, and the key after the terms breaks the ties.
+		sql, plan, err := r.ScanPlan(t.Context(), "t", core.IndexScan{Index: "i", Equal: row(1), Order: orderOf(desc(3), 2), Backward: true})
+		is.NotError(t, err)
+		is.Equal(t, `select "c0", "c1", +"c2", +"c3" from main."t" indexed by "i" where "c1" = ?1 order by +"c3" desc, +"c2", "c0" desc`, sql)
+		is.EqualSlice(t, []string{"SEARCH main.t USING INDEX i (c1=?)", "USE TEMP B-TREE FOR ORDER BY"}, plan)
+
+		// One row at most has a whole primary key, and SQLite does not sort it.
+		for _, test := range []struct {
+			table string
+			scan  core.IndexScan
+			want  string
+		}{
+			{table: "t", scan: core.IndexScan{Equal: row(3), Order: orderOf(1)}, want: "SEARCH main.t USING PRIMARY KEY (c0=?)"},
+			{table: "u", scan: core.IndexScan{Equal: row(1, 2), Order: orderOf(desc(2))}, want: "SEARCH main.u USING PRIMARY KEY (a=? AND b=?)"},
+		} {
+			sql, plan, err := r.ScanPlan(t.Context(), test.table, test.scan)
+			is.NotError(t, err)
+			is.EqualSlice(t, []string{test.want}, plan, sql)
+			before := r.RowsRead()
+			is.Equal(t, 1, len(scanBy(t, r, test.table, test.scan)))
+			is.Equal(t, int64(1), r.RowsRead()-before)
+		}
 	})
 
 	t.Run("should count every row within the bounds of a scan with an order, however early the loop over it stops", func(t *testing.T) {
@@ -2293,6 +2324,45 @@ func TestScanIndex_order(t *testing.T) {
 		}
 		is.Equal(t, int64(0), r.RowsRead())
 		is.Equal(t, int64(0), tx.RowsRead())
+	})
+
+	t.Run("should sort every row that the table holds under a length limit, also the longest, by any of its columns", func(t *testing.T) {
+		const limit = 1000
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: limit})
+		long := typedTable("long", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_REAL)
+		transact(t, d, createWith(long), upsert("long", 1, strings.Repeat("a", 300), strings.Repeat("b", 600), 2.0, 3.0))
+		// The longest row that the table takes, with two reals that the table stores as integers of one
+		// byte and a sort as reals of eight.
+		longest := 0
+		for n := limit; n > 0 && longest == 0; n-- {
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			if err := tx.Upsert(t.Context(), "long", row(2, "", strings.Repeat("c", n), 4.0, 5.0)); err != nil {
+				is.Error(t, core.ErrTooBig, err)
+				is.NotError(t, tx.Rollback(t.Context()))
+				continue
+			}
+			is.NotError(t, tx.Commit(t.Context()))
+			longest = n
+		}
+		is.True(t, longest > limit-20, fmt.Sprint("the longest text of a row is ", longest, " bytes"))
+
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, tx.Rollback(t.Context())) }()
+		for _, order := range [][]core.KeyColumn{
+			orderOf(1), orderOf(2), orderOf(desc(2)), orderOf(3), orderOf(desc(4), 3), orderOf(3, 2, 1), orderOf(1, 2, 3, 4, 0), orderOf(0),
+		} {
+			for _, backward := range []bool{false, true} {
+				scan := core.IndexScan{Order: order, Backward: backward}
+				is.Equal(t, 2, len(scanBy(t, r, "long", scan)), fmt.Sprint(order))
+				is.Equal(t, 2, len(scanBy(t, tx, "long", scan)), fmt.Sprint(order))
+			}
+		}
 	})
 
 	t.Run("should sort more rows than SQLite holds in memory in temporary files of the cache, and fail as a local failure when it cannot write them", func(t *testing.T) {
