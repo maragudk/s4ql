@@ -826,3 +826,23 @@ internal/core/index.go Tx.spoolCreatedIndexes swap arguments: fmt.Errorf("%w: it
 	Tx.CreateIndex records the name of each index that it creates, and Tx.DropIndex, the drop of its table, and a roll back to a savepoint forget the ones that they take away, and indexNames lists every index of the cache, so the loop writes each recorded index once and written is their number.
 internal/core/index.go Tx.spoolCreatedIndexes swap arguments: fmt.Errorf("%w: it holds %v of the %v indexes that the transaction created", ErrCacheVersion, written, len(tx.createdIndexes)) => fmt.Errorf("%w: it holds %v of the %v indexes that the transaction created", ErrCacheVersion, len(tx.createdIndexes), written)
 	Tx.CreateIndex records the name of each index that it creates, and Tx.DropIndex, the drop of its table, and a roll back to a savepoint forget the ones that they take away, and indexNames lists every index of the cache, so the loop writes each recorded index once and written is their number.
+internal/core/index.go applyCreateIndex constant: 0 => 1
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 0, err => return 1, err
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 0, err => return 1, err #2
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: 0 => 1 #2
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 0, err => return 1, err #3
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: 0 => 1 #3
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: 0 => 1 #4
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 0, brokenf("it creates the index %q on %v", ci.GetIndex(), err) => return 1, brokenf("it creates the index %q on %v", ci.GetIndex(), err)
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyDropIndex constant: return 0, err => return 1, err
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyDropIndex constant: return 0, brokenf("it drops the index %q, which does not exist", name) => return 1, brokenf("it drops the index %q, which does not exist", name)
+	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
