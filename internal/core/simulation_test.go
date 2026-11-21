@@ -406,34 +406,37 @@ type run struct {
 
 // The tables that the callers of a workload use: three names, each in two spellings that SQLite
 // takes for one, with characters that an identifier must be quoted for, and eight shapes, with
-// columns of every type, keys of one and of two columns, and columns of every type that take NULL
-// beside columns that do not.
+// columns of every type, keys of one and of two columns, columns of every type that take NULL
+// beside columns that do not, and defaults of every type and of NULL, on key columns, on columns
+// that take NULL, and on columns that do not, beside columns without one.
 var (
 	tableNames = [][2]string{{"t0", "T0"}, {`q"t'1`, `Q"T'1`}, {"tbl 2;--", "TBL 2;--"}}
 	shapes     = []func(name string) *s4qlpb.CreateTable{
 		func(name string) *s4qlpb.CreateTable { return tableOf(name, 1, "k", "v") },
-		func(name string) *s4qlpb.CreateTable { return nullableTable(tableOf(name, 2, "a", "b", `v "w"`), 2) },
+		func(name string) *s4qlpb.CreateTable {
+			return withDefault(nullableTable(tableOf(name, 2, "a", "b", `v "w"`), 2), 2, nil)
+		},
 		func(name string) *s4qlpb.CreateTable { return tableOf(name, 1, "select") },
 		func(name string) *s4qlpb.CreateTable {
 			// The primary key is the third column and then the second.
 			ct := tableOf(name, 0, "v", "k2", "k1")
 			ct.SetPrimaryKey([]uint32{2, 1})
-			return ct
+			return withDefault(withDefault(ct, 0, math.MinInt64), 2, 7)
 		},
 		func(name string) *s4qlpb.CreateTable {
-			return nullableTable(typedTable(name, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT), 1)
+			return withDefault(nullableTable(typedTable(name, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT), 1), 1, `it's "q"`)
 		},
 		func(name string) *s4qlpb.CreateTable {
-			return nullableTable(typedTable(name, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_REAL), 1, 2)
+			return withDefault(withDefault(nullableTable(typedTable(name, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_REAL), 1, 2), 1, []byte{0, 0xff}), 2, -0.5)
 		},
 		func(name string) *s4qlpb.CreateTable {
-			return nullableTable(typedTable(name, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_INTEGER), 1)
+			return withDefault(nullableTable(typedTable(name, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_INTEGER), 1), 0, []byte{})
 		},
 		func(name string) *s4qlpb.CreateTable {
 			// A key of a blob and a real, after a text that does not take NULL and an integer that does.
 			ct := typedTable(name, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_INTEGER, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_REAL)
 			ct.SetPrimaryKey([]uint32{2, 3})
-			return nullableTable(ct, 1)
+			return withDefault(withDefault(nullableTable(ct, 1), 0, nil), 3, 1e300)
 		},
 	}
 	// simKeys are the keys of each type, of which a key of one column takes one of the first six,

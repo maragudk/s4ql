@@ -290,22 +290,23 @@ func (t tableOf) end(context.Context) error { return nil }
 
 // plantable bugs, by the names of the fields of [bugs].
 var plantable = map[string]func(b *bugs){
-	"skipUnique":    func(b *bugs) { b.skipUnique = true },
-	"ackUnknown":    func(b *bugs) { b.ackUnknown = true },
-	"checkOutside":  func(b *bugs) { b.checkOutside = true },
-	"keepOpen":      func(b *bugs) { b.keepOpen = true },
-	"keepRead":      func(b *bugs) { b.keepRead = true },
-	"annotateNext":  func(b *bugs) { b.annotateNext = true },
-	"keepFailed":    func(b *bugs) { b.keepFailed = true },
-	"readNewest":    func(b *bugs) { b.readNewest = true },
-	"rollbackKeeps": func(b *bugs) { b.rollbackKeeps = true },
-	"convertReal":   func(b *bugs) { b.convertReal = true },
-	"listOrder":     func(b *bugs) { b.listOrder = true },
-	"zeroLeftOut":   func(b *bugs) { b.zeroLeftOut = true },
-	"openBound":     func(b *bugs) { b.openBound = true },
-	"changeNothing": func(b *bugs) { b.changeNothing = true },
-	"keepOldKey":    func(b *bugs) { b.keepOldKey = true },
-	"pinByPlace":    func(b *bugs) { b.pinByPlace = true },
+	"skipUnique":      func(b *bugs) { b.skipUnique = true },
+	"ackUnknown":      func(b *bugs) { b.ackUnknown = true },
+	"checkOutside":    func(b *bugs) { b.checkOutside = true },
+	"keepOpen":        func(b *bugs) { b.keepOpen = true },
+	"keepRead":        func(b *bugs) { b.keepRead = true },
+	"annotateNext":    func(b *bugs) { b.annotateNext = true },
+	"keepFailed":      func(b *bugs) { b.keepFailed = true },
+	"readNewest":      func(b *bugs) { b.readNewest = true },
+	"rollbackKeeps":   func(b *bugs) { b.rollbackKeeps = true },
+	"convertReal":     func(b *bugs) { b.convertReal = true },
+	"listOrder":       func(b *bugs) { b.listOrder = true },
+	"zeroLeftOut":     func(b *bugs) { b.zeroLeftOut = true },
+	"openBound":       func(b *bugs) { b.openBound = true },
+	"changeNothing":   func(b *bugs) { b.changeNothing = true },
+	"keepOldKey":      func(b *bugs) { b.keepOldKey = true },
+	"pinByPlace":      func(b *bugs) { b.pinByPlace = true },
+	"replaceExisting": func(b *bugs) { b.replaceExisting = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.
@@ -325,6 +326,7 @@ const (
 	AttrCode         = attrCode
 	AttrExtendedCode = attrExtendedCode
 	AttrDuration     = attrDuration
+	AttrNothing      = attrNothing
 )
 
 // FromCore is [fromCore].

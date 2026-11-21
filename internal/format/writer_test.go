@@ -207,6 +207,32 @@ func TestCommitWriter(t *testing.T) {
 		is.True(t, math.Signbit(items[1].annotation.GetStatement().GetParameters()[0].GetReal()), "the parameter lost its sign")
 	})
 
+	t.Run("should write and read back a default of every type, DEFAULT NULL apart from no default, and DEFAULT NULL on a column that does not take NULL and on the primary key", func(t *testing.T) {
+		creates := []*s4qlpb.Change{
+			withDefault(withDefault(withDefault(withDefault(withDefault(everyType(), 0, integer(math.MinInt64)), 1, integer(math.MaxInt64)), 2, realValue(-math.SmallestNonzeroFloat64)), 3, text("it's \"q\" \n\t é😀")), 4, blob([]byte{0, 0xff, '\'', 'x'})),
+			withDefault(withDefault(withDefault(withDefault(createTypedTable("n", []string{"k", "a", "b", "c"}, []s4qlpb.Type{s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_BLOB, s4qlpb.Type_TYPE_INT}, []uint32{0}), 0, null()), 1, null()), 2, blob(nil)), 3, null()),
+			withDefault(withDefault(nullable(createTypedTable("m", []string{"k", "a", "b", "c"}, []s4qlpb.Type{s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL}, []uint32{0, 3}), 1, 2), 1, null()), 2, text("")),
+		}
+		var b bytes.Buffer
+		w, err := format.NewCommitWriter(&b, format.EmptyLog, testCommitTime)
+		is.NotError(t, err)
+		for _, c := range creates {
+			is.NotError(t, w.CreateTable(c.GetCreateTable()))
+		}
+		name, err := w.Close()
+		is.NotError(t, err)
+
+		_, items, err := readAll(b.Bytes(), name)
+		is.NotError(t, err)
+		is.Equal(t, len(creates), len(items))
+		for i, c := range creates {
+			is.True(t, proto.Equal(c, items[i].change), "a create table differs", i)
+		}
+		m := items[2].change.GetCreateTable().GetColumns()
+		is.True(t, m[1].HasDefault() && m[1].GetDefault().HasNull(), "the nullable column with DEFAULT NULL has no default NULL")
+		is.True(t, !m[0].HasDefault() && !m[3].HasDefault(), "a column without a default has one")
+	})
+
 	t.Run("should make one call of Write for the header and for each change and annotation", func(t *testing.T) {
 		var cw countingWriter
 		writeExample(t, &cw)
@@ -296,6 +322,18 @@ func TestCommitWriter(t *testing.T) {
 			ct.GetColumns()[1].SetNullable(true)
 			return w.CreateTable(ct)
 		}, why: "primary_key[0] is column 1, which takes NULL"},
+		{name: "should refuse a default of another type than its column", write: func(w *format.CommitWriter) error {
+			return w.CreateTable(withDefault(everyType(), 1, realValue(1)).GetCreateTable())
+		}, why: "columns[1].default is a value of kind real, which a column of type TYPE_INTEGER does not hold"},
+		{name: "should refuse a default that is -0.0", write: func(w *format.CommitWriter) error {
+			return w.CreateTable(withDefault(everyType(), 2, realValue(math.Copysign(0, -1))).GetCreateTable())
+		}, why: "columns[2].default is a real that is -0.0"},
+		{name: "should refuse a default that is text with the character NUL", write: func(w *format.CommitWriter) error {
+			return w.CreateTable(withDefault(everyType(), 3, text("\x00")).GetCreateTable())
+		}, why: "columns[3].default is text that holds the character NUL"},
+		{name: "should refuse a default that is infinite", write: func(w *format.CommitWriter) error {
+			return w.CreateTable(withDefault(everyType(), 2, realValue(math.Inf(-1))).GetCreateTable())
+		}, why: "columns[2].default is a real that is infinite"},
 		{name: "should refuse a delete with a NULL in its key", write: func(w *format.CommitWriter) error {
 			return w.DeleteRow("t", []*s4qlpb.Value{integer(1), null()})
 		}},
@@ -477,11 +515,28 @@ func FuzzCommitWriter(f *testing.F) {
 			switch op := in.byte() % 8; op {
 			case 0:
 				c = createTable(table, []string{"x", "y", "z"}[:1+in.byte()%3], []uint32{0})
-				// The columns outside the primary key take NULL by the bits of a byte.
-				nullable := in.byte()
-				for i, column := range c.GetCreateTable().GetColumns()[1:] {
-					if nullable&(1<<i) != 0 {
+				// The columns outside the primary key take NULL by the bits of a byte, and each column
+				// has a default by the bits of another, of the type of the column, which is that of the
+				// default, or NULL on a column of type INT.
+				nullable, defaults := in.byte(), in.byte()
+				for i, column := range c.GetCreateTable().GetColumns() {
+					if i > 0 && nullable&(1<<(i-1)) != 0 {
 						column.SetNullable(true)
+					}
+					if defaults&(1<<i) == 0 {
+						continue
+					}
+					v := in.value()
+					column.SetDefault(v)
+					switch v.WhichKind() {
+					case s4qlpb.Value_Integer_case:
+						column.SetType([]s4qlpb.Type{s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER}[defaults>>7])
+					case s4qlpb.Value_Real_case:
+						column.SetType(s4qlpb.Type_TYPE_REAL)
+					case s4qlpb.Value_Text_case:
+						column.SetType(s4qlpb.Type_TYPE_TEXT)
+					case s4qlpb.Value_Blob_case:
+						column.SetType(s4qlpb.Type_TYPE_BLOB)
 					}
 				}
 				err = w.CreateTable(c.GetCreateTable())
