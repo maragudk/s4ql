@@ -163,6 +163,32 @@ func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr, use
 	return fmt.Errorf("%w: %v %v the column %v.%v of type %v", stmt.ErrNotSupported, what, use, t.GetTable(), c.GetName(), typeName(c.GetType()))
 }
 
+// limitCount is the number of rows of a LIMIT whose expression e, a literal or a parameter, has the
+// value v: an integer from 0. Every other value is "not supported", by the rule of exact types, as
+// [checkType] refuses a value of another type than its column: a negative integer, which SQLite
+// reads as no limit; a real and a text, which SQLite converts to an integer where they hold one, and
+// refuses with `datatype mismatch` where they do not; and a blob and NULL, which SQLite refuses with
+// `datatype mismatch`. The statement pass has refused every such literal, so the value is the
+// argument of a parameter, which the message names by its number, without its value.
+func limitCount(e Expr, v *s4qlpb.Value) (int64, error) {
+	var which string
+	switch {
+	case v.HasInteger() && v.GetInteger() >= 0:
+		return v.GetInteger(), nil
+	case v.HasInteger():
+		which = "a negative integer"
+	case v.HasNull():
+		which = "NULL"
+	default:
+		which = kindName(v)
+	}
+	p, ok := e.(*Parameter)
+	if !ok {
+		return 0, internalError("a LIMIT of an expression of type %T, which is %v", e, which)
+	}
+	return 0, fmt.Errorf("%w: argument %v, which is %v, for LIMIT, which takes an integer from 0", stmt.ErrNotSupported, p.Number, which)
+}
+
 // kindName of the kind of the value v, in a sentence: "an integer", "a real", "text", or "a blob".
 func kindName(v *s4qlpb.Value) string {
 	switch v.WhichKind() {

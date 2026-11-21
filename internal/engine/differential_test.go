@@ -944,6 +944,10 @@ type pair struct {
 	ways int
 	// last is the engine's answer of the last call of [pair.step].
 	last answer
+	// otherOrdered is the answer of the other instance to the query of the call of [pair.bothWays], if
+	// it is a select with ORDER BY or LIMIT that gives rows on both, which [pair.step] compares with
+	// SQLite in order, or nil.
+	otherOrdered *answer
 	// rnd draws the candidates of [pair.everyPath], from a seed of the pair's own, so that the
 	// sequence draws as it would without them.
 	rnd *rand.Rand
@@ -1036,9 +1040,8 @@ func (p *pair) step(c stmttest.Call) string {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
-		// empty database without a syntax error. A select with ORDER BY or LIMIT, of slice 13, is
-		// not supported until the engine runs it, as [orderedOrLimited] says.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil && !orderedOrLimited(s) {
+		// empty database without a syntax error.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -1076,7 +1079,22 @@ func (p *pair) step(c stmttest.Call) string {
 		// decides alone.
 		return fmt.Sprintf("%q with the arguments %v: a literal of a condition is longer than the length limit, and the engine gives %v, and the rule %q", src, args, got, tooBig)
 	}
-	if got.String() != want.String() {
+	// The rows of a query with ORDER BY or LIMIT are compared as [ordered.differs] says, those of the
+	// instance and those of the other instance, which [pair.bothWays] compared by their number alone.
+	differs := got.String() != want.String()
+	if sel, ok := u.(*stmt.Select); ok && c.Query && (sel.OrderBy != nil || sel.Limited()) && got.err == "" && want.err == "" {
+		q := orderedOf(sel, args)
+		if how := q.compare(t, o, got, want); how != "" {
+			return fmt.Sprintf("%q with the arguments %v: %v", src, args, how)
+		}
+		if p.otherOrdered != nil {
+			if how := q.compare(t, o, *p.otherOrdered, want); how != "" {
+				return fmt.Sprintf("%q with the arguments %v: by the path of the other instance, %v", src, args, how)
+			}
+		}
+		differs = false
+	}
+	if differs {
 		gap := knownGap(src, got, want)
 		switch {
 		case startedTable(t, p.empty, src, got, want):
@@ -1237,7 +1255,8 @@ type candidate struct {
 // the order in which they were created: every path that can serve it, each once for what it reads
 // and its direction. They are every row, the primary key, and each index, each with every number of
 // pinned columns that it can have, of which the most bounds the next column if the conditions bound
-// it, and each forward and backward.
+// it, and each forward and backward, and for a select with ORDER BY each also with a sort, as
+// [engine.Path] has Sort.
 func candidates(src string, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex, args []*s4qlpb.Value) []candidate {
 	var cs []candidate
 	seen := map[string]bool{}
@@ -1256,17 +1275,26 @@ func candidates(src string, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex, a
 	for _, ci := range cis {
 		names = append(names, ci.GetIndex())
 	}
-	for _, backward := range []bool{false, true} {
-		add(engine.Path{Full: true, Forward: !backward, Backward: backward})
-		for _, name := range names {
-			p := engine.Path{Primary: name == "", Index: name, Forward: !backward, Backward: backward}
-			a, ok := add(p)
-			if !ok {
-				continue
-			}
-			for pins := range len(a.Equal) {
-				p.Limited, p.Pins = true, pins
-				add(p)
+	// A select with ORDER BY is also read by each path with a sort, where the key delivers the order.
+	sorts := []bool{false}
+	if s, _ := stmt.Check(src); s != nil {
+		if sel, ok := s.(*stmt.Select); ok && sel.OrderBy != nil {
+			sorts = append(sorts, true)
+		}
+	}
+	for _, sort := range sorts {
+		for _, backward := range []bool{false, true} {
+			add(engine.Path{Full: true, Forward: !backward, Backward: backward, Sort: sort})
+			for _, name := range names {
+				p := engine.Path{Primary: name == "", Index: name, Forward: !backward, Backward: backward, Sort: sort}
+				a, ok := add(p)
+				if !ok {
+					continue
+				}
+				for pins := range len(a.Equal) {
+					p.Limited, p.Pins = true, pins
+					add(p)
+				}
 			}
 		}
 	}
@@ -1365,16 +1393,19 @@ func pathKinds(k candidate, key []keyColumn, ct *s4qlpb.CreateTable) []string {
 // rules.
 const pathSample = 4
 
-// everyPath runs the WHERE of the statement s of the call c, a select with WHERE or the select of the
-// WHERE of an update or a delete, as [stmttest.SelectOf] gives it, on the other instance of the pair,
-// before the call changes anything: by the access of the rules, and by [pathSample] candidates of
-// [candidates] at random, or by each if there are no more or the pair has allPaths. Each must give
-// the rows that SQLite gives, as a multiset, and a candidate, whose path is forced, the rows in the
-// order of its key, as SQLite's ORDER BY of the key gives them. One candidate in four, and the access of the rules, run outside a
-// transaction on the core, also go through [core.ReadTx.ScanPlan], and SQLite must search the index
-// and the bounds that the engine asked for, as [wantPlan] says. A WHERE that s4ql refuses, or SQLite,
-// or that has an argument that no column holds, is left to the comparison of the call. The candidates
-// that it runs are counted in the tally, by [pathKinds]. It gives what differs, or "".
+// everyPath runs the WHERE of the statement s of the call c, a select with WHERE or ORDER BY or the
+// select of the WHERE of an update or a delete, as [stmttest.SelectOf] gives it, on the other instance
+// of the pair, before the call changes anything, with the ORDER BY and the LIMIT of a select: by the
+// access of the rules, and by [pathSample] candidates of [candidates] at random, or by each if there
+// are no more or the pair has allPaths. Each must give the rows that SQLite gives, as a multiset, or
+// as [ordered.differs] says for a select with ORDER BY or LIMIT, and a candidate, whose path is
+// forced, the rows in the order in which its access gives them, as [ordered.inOrderOf] says, which is
+// the order of its key where nothing sorts. One candidate in four, and the access of the rules, run
+// outside a transaction on the core, also go through [core.ReadTx.ScanPlan], and SQLite must search
+// the index and the bounds that the engine asked for, as [wantPlan] says, and sort exactly where the
+// access is sorted. A select that s4ql refuses, or SQLite, or that has an argument that no column
+// holds, is left to the comparison of the call. The candidates that it runs are counted in the
+// tally, by [pathKinds]. It gives what differs, or "".
 func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	t, o, other := p.t, p.o, p.other
 	t.Helper()
@@ -1386,14 +1417,15 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	case *stmt.Update, *stmt.Delete:
 		sel, args = stmttest.SelectOf(s, c.Args)
 	}
-	if sel == nil || sel.Where == nil || len(args) != sel.Parameters() || slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" }) || p.longCondition(c.Src) {
+	if sel == nil || sel.Where == nil && sel.OrderBy == nil || len(args) != sel.Parameters() || slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" }) || p.longCondition(c.Src) {
 		return ""
 	}
 	table, columns := o.columns(t, sel.Table.Value)
 	if columns == nil {
 		return ""
 	}
-	src, bound := stmttest.SelectText(sel, oracleArgs(args), "")
+	q := orderedOf(sel, oracleArgs(args))
+	src, bound := q.src(), q.args
 	want := o.run(t, src, bound...)
 	if want.err != "" {
 		return ""
@@ -1407,8 +1439,18 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 		// checks against s4ql's rule.
 		return ""
 	}
-	if rules.String() != want.String() {
-		return fmt.Sprintf("%q with %#v: the WHERE, as %q with %#v, gives\n%v\nas the rules choose, and SQLite\n%v", c.Src, c.Args, src, bound, rules, want)
+	// differs says how the answer got differs from SQLite's, or "".
+	differs := func(got answer) string {
+		switch {
+		case !q.plain():
+			return q.compare(t, o, got, want)
+		case got.String() != want.String():
+			return fmt.Sprintf("the engine gives\n%v\nand SQLite\n%v", got, want)
+		}
+		return ""
+	}
+	if how := differs(rules); how != "" {
+		return fmt.Sprintf("%q with %#v: the select, as %q with %#v, as the rules choose: %v", c.Src, c.Args, src, bound, how)
 	}
 	ct := createTableOf(table, columns)
 	cis, _ := o.tableIndexes(t, table, columns)
@@ -1418,9 +1460,17 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 		}
 	}
 	cs := candidates(src, ct, cis, vals)
-	p.count("WHERE run by every path")
-	if len(cis) > 0 {
-		p.count("WHERE run by every path on a table with an index")
+	if sel.Where != nil {
+		p.count("WHERE run by every path")
+		if len(cis) > 0 {
+			p.count("WHERE run by every path on a table with an index")
+		}
+	}
+	if sel.OrderBy != nil {
+		p.count("ORDER BY run by every path")
+	}
+	if sel.Limited() {
+		p.count("LIMIT run by every path")
 	}
 	// A WHERE with a value on the left, which src writes as the text does.
 	valueFirst := slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return c.ValueFirst })
@@ -1436,19 +1486,30 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 			cs[j], cs[k] = cs[k], cs[j]
 		}
 		cs = cs[:pathSample]
-		p.count("WHERE run by a sample of its paths")
+		if sel.Where != nil {
+			p.count("WHERE run by a sample of its paths")
+		}
 	}
 	for _, k := range cs {
 		other.e.SetPath(k.path)
 		got := other.queryValues(src, vals)
-		if got.String() != want.String() {
-			return fmt.Sprintf("%q with %#v: the WHERE, as %q with %#v, gives\n%v\nby the path %+v, which reads by %v, and SQLite\n%v", c.Src, c.Args, src, bound, got, k.path, k.access, want)
+		if how := differs(got); how != "" {
+			return fmt.Sprintf("%q with %#v: the select, as %q with %#v, by the path %+v, which reads by %v: %v", c.Src, c.Args, src, bound, k.path, k.access, how)
 		}
 		key := accessKey(k.access, ct, cis)
-		ordered, orderedArgs := stmttest.SelectText(sel, oracleArgs(args), orderOf(key, k.access.Backward))
-		in := o.run(t, ordered, orderedArgs...)
+		inOrder := q.inOrderOf(sel, k.access, key, ct)
+		in := o.run(t, inOrder.src(), inOrder.args...)
+		if in.err != "" {
+			t.Fatalf("%v: SQLite gives %v", inOrder.src(), in.err)
+		}
 		if !k.access.None && !slices.Equal(got.rows, in.rows) {
-			return fmt.Sprintf("%q with %#v: the WHERE gives the rows\n%v\nby the path %+v, which reads by %v, and SQLite, as %q,\n%v", c.Src, c.Args, got.rows, k.path, k.access, ordered, in.rows)
+			return fmt.Sprintf("%q with %#v: the select gives the rows\n%v\nby the path %+v, which reads by %v, and SQLite, as %q,\n%v", c.Src, c.Args, got.rows, k.path, k.access, inOrder.src(), in.rows)
+		}
+		if k.access.Delivered {
+			p.count("path that delivers the order")
+		}
+		if k.access.Sorted {
+			p.count("path that sorts")
 		}
 		for _, kind := range pathKinds(k, key, ct) {
 			p.count(kind)
@@ -1467,21 +1528,32 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 
 // checkPlan of the select src on the table of the name, which reads by the access a, on the table ct
 // with the indexes cis: on the other instance of the pair, outside a transaction and on the core, the
-// plan of SQLite for the scan of a, as [core.ReadTx.ScanPlan] gives it, must be the one row that
-// [wantPlan] gives. An access that reads no row, or one row by a get, has no scan. It gives what
-// differs, or "".
+// plan of SQLite for the scan of a, as [core.ReadTx.ScanPlan] gives it, must be the row that
+// [wantPlan] gives, and then SQLite's sort exactly where a is sorted. An access that reads no row, or
+// one row by a get, has no scan. It gives what differs, or "".
 func (p *pair) checkPlan(src, table string, a engine.Access, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex) string {
 	other := p.other
 	if other.d == nil || p.inTx || a.None || a.Point != nil {
 		return ""
 	}
 	sql, plan := scanPlan(p.t, other, table, a)
-	want := wantPlan(a, ct, cis)
-	if !slices.Equal(plan, []string{want}) {
+	want := wantPlans(a, ct, cis)
+	if !slices.Equal(plan, want) {
 		return fmt.Sprintf("%q: the cache runs %q for the access %v, and SQLite's plan for it is %q, where it must be %q", src, sql, a, plan, want)
 	}
 	p.count("plan of the cache checked")
 	return ""
+}
+
+// wantPlans are the rows of SQLite's plan of the statement of the cache for the scan of the access a
+// on the table ct with the indexes cis: the row of [wantPlan], and then SQLite's sort exactly where a
+// is sorted.
+func wantPlans(a engine.Access, ct *s4qlpb.CreateTable, cis []*s4qlpb.CreateIndex) []string {
+	plan := []string{wantPlan(a, ct, cis)}
+	if a.Sorted {
+		plan = append(plan, "USE TEMP B-TREE FOR ORDER BY")
+	}
+	return plan
 }
 
 // scanPlan of the scan of the access a of the table of the name in the instance i, outside a
@@ -1595,9 +1667,11 @@ func (p *pair) indexNames(s stmt.Statement) []string {
 // of the pair, through the same method, by the next of the paths of [otherPaths] for the indexes of
 // the table of c, as [engine.Engine.SetPath] forces it, where the engine of the instance reads the
 // rows as the rules choose, and as the rules choose where it reads every row, as an engine of
-// -scanall does. Before that, for a WHERE, it runs [pair.everyPath]. The rows of the two are compared
+// -scanall does. Before that, for a WHERE or an ORDER BY, it runs [pair.everyPath]. The rows of the two are compared
 // as multisets, as every two answers are: each query of the instance reads in a direction that its
-// engine draws. The two must give the same answer, message, and count of changes, and after an update
+// engine draws. Those of a query with LIMIT are compared by their number, since which rows a LIMIT
+// keeps depends on the path, and [pair.step] compares those of a query with ORDER BY or LIMIT of each
+// instance with SQLite. The two must give the same answer, message, and count of changes, and after an update
 // or a delete with WHERE the same rows of its table, as a select of * gives them on each, so that each
 // test that compares the instance with SQLite compares the ways of reading rows, of a select and of
 // the rows that an update or a delete changes, also in transactions. The other instance runs every
@@ -1627,11 +1701,21 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		all = other.execValues(c.Src, values(c.Args))
 	}
 	changes, allChanges := i.changes, other.changes
+	// Which rows a LIMIT keeps, of those that SQLite leaves unordered, depends on the path, and so does
+	// the order of rows that tie, so the rows of a select with ORDER BY or LIMIT are compared by their
+	// number here, and each answer with SQLite in [pair.step].
+	same := all.String() == got.String()
+	p.otherOrdered = nil
+	if sel, ok := s.(*stmt.Select); ok && c.Query && (sel.OrderBy != nil || sel.Limited()) && all.err == "" && got.err == "" {
+		same = all.columns == got.columns && len(all.rows) == len(got.rows)
+		otherAnswer := all
+		p.otherOrdered = &otherAnswer
+	}
 	if !byKey {
 		// The instance read every row, as -scanall makes it, and the other instance by the key.
 		got, all, changes, allChanges = all, got, allChanges, changes
 	}
-	if all.String() != got.String() || all.message != got.message || allChanges != changes {
+	if !same || all.message != got.message || allChanges != changes {
 		return fmt.Sprintf("%q with %#v: the engine gives\n%v (%q)\nas the rules choose, and\n%v (%q)\nby the path %+v, with %v changes as the rules choose and %v by the path", c.Src, c.Args, got, got.message, all, all.message, path, changes, allChanges)
 	}
 	var table *stmt.Name
@@ -1834,6 +1918,12 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 	}
 	for _, what := range stmttest.WhereCases(columns, s, args) {
 		count(what + " " + outcome)
+	}
+	if s.OrderBy != nil || limitRule(s, args) != "" {
+		// The rule and the model choose an access for the conditions alone, and an ORDER BY takes part
+		// in the choice: [pair.everyPath] runs such a select by every path. An argument of LIMIT that
+		// s4ql refuses leaves the select without an access.
+		return
 	}
 	// The plan reads the rows by the key as the rule says, which the comparison of the rows cannot see
 	// where it reads more rows than it needs.
@@ -2556,7 +2646,8 @@ func byteLength(v any) int {
 // where SQLite would convert the value or give an error of its own, as [stmttest.TypeRule] gives it,
 // and for the first condition of a select, in the order of the text, whose value is of another type
 // than its column, as [stmttest.ConditionRule] gives it, and as [stmttest.UpdateRule] and
-// [stmttest.DeleteRule] give it for an update and a delete; or "". It is "" for another text, a
+// [stmttest.DeleteRule] give it for an update and a delete, and after that for the argument of the
+// LIMIT of a select, as [limitRule] gives it; or "". It is "" for another text, a
 // statement that SQLite does not prepare, which gets SQLite's error, one with another number of
 // arguments than parameters, an insert that leaves a column without a value, which gets SQLite's
 // `NOT NULL constraint failed` first, and a statement whose every value has the type of its column.
@@ -2574,11 +2665,14 @@ func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 		table, columns := o.columns(t, s.Table.Value)
 		return stmttest.TypeRule(table, columns, s, args)
 	case *stmt.Select:
-		if s.Where == nil || o.prepare(t, src) != nil {
+		if s.Where == nil && !s.Limited() || o.prepare(t, src) != nil {
 			return ""
 		}
 		table, columns := o.columns(t, s.Table.Value)
-		return stmttest.ConditionRule(table, columns, s, args)
+		if rule := stmttest.ConditionRule(table, columns, s, args); rule != "" {
+			return rule
+		}
+		return limitRule(s, args)
 	case *stmt.Update:
 		if o.prepare(t, src) != nil {
 			return ""
@@ -2596,6 +2690,36 @@ func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 		return stmttest.DeleteRule(table, columns, s, args)
 	}
 	return ""
+}
+
+// limitRule of the select s with the arguments args as SQLite binds them, one for each parameter of
+// s: s4ql's "not supported" for an argument of its LIMIT that is not an integer from 0, which SQLite
+// would convert to an integer, take for no limit, or refuse with `datatype mismatch`; or "". A literal
+// of LIMIT is always an integer from 0, since the statement pass refuses every other.
+func limitRule(s *stmt.Select, args []any) string {
+	if s.Limit.Parameter == 0 {
+		return ""
+	}
+	var which string
+	switch a := args[s.Limit.Parameter-1].(type) {
+	case int64:
+		if a >= 0 {
+			return ""
+		}
+		which = "a negative integer"
+	case float64:
+		which = "a real"
+	case string:
+		which = "text"
+	case []byte:
+		which = "a blob"
+	case nil:
+		which = "NULL"
+	default:
+		// An argument that no column holds, which [checkArguments] checks.
+		return ""
+	}
+	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", s.Limit.Parameter, which)
 }
 
 // readOnlyRule is [typeRule] in a read-only transaction, which refuses an insert, and the SET of an
@@ -3244,6 +3368,116 @@ func TestPair_recordSlips(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPair_orderBy(t *testing.T) {
+	// run the calls on the pair, each of which must give what SQLite or s4ql's rule gives.
+	run := func(t *testing.T, p *pair, calls []stmttest.Call) {
+		t.Helper()
+		for _, c := range calls {
+			is.Equal(t, "", p.step(c), fmt.Sprintf("%v with %#v", c.Src, c.Args))
+		}
+	}
+	// queries are the selects of pathsQueries, run as queries, and two as no query.
+	var queries []stmttest.Call
+	for _, q := range pathsQueries() {
+		queries = append(queries, stmttest.Call{Src: q.src(), Args: q.args, Query: true, Supported: true})
+	}
+	queries = append(queries, stmttest.Call{Src: "select k from u order by s limit 2", Supported: true},
+		stmttest.Call{Src: "select * from u where i = 1 order by r desc", Supported: true})
+	long := strings.Repeat("x", 1001)
+	// refused are selects with ORDER BY or LIMIT that SQLite or s4ql's rules refuse, in the order of
+	// the errors of the engine.
+	refused := []stmttest.Call{
+		{Src: "select k from u order by x", Query: true},
+		{Src: `select k from u where i = ? order by "x" limit ?`, Args: []any{"text", 2.5}, Query: true},
+		{Src: "select k from u limit ?", Query: true},
+		{Src: "select k from u order by s limit ?", Args: []any{math.NaN()}, Query: true},
+		{Src: "select k from u where s = ? order by k limit ?", Args: []any{long, 2.5}, Query: true},
+		{Src: "select k from u where i = ? order by k limit ?", Args: []any{"text", []byte(long)}, Query: true},
+		{Src: "select k from u where i = ? order by k limit ?", Args: []any{"text", 2.5}, Query: true},
+		{Src: "select k from u where r = ? limit ?", Args: []any{int64(1), int64(2)}, Query: true},
+	}
+	for _, a := range []any{2.5, 2.0, "2", []byte("2"), []byte{}, nil, int64(-1), int64(math.MinInt64)} {
+		refused = append(refused, stmttest.Call{Src: "select k from u order by s limit ?", Args: []any{a}, Query: true},
+			stmttest.Call{Src: "select k from u where i = ? limit ?", Args: []any{int64(1), a}, Query: true},
+			stmttest.Call{Src: "select * from u where n = ? and s > ? order by r desc, k limit ?", Args: []any{int64(2), "a", a}})
+	}
+	// begin a transaction, read-only if readOnly, on both instances of the pair p and on SQLite.
+	begin := func(t *testing.T, p *pair, readOnly bool) {
+		t.Helper()
+		for _, c := range []*engine.Conn{p.i.c, p.other.c} {
+			is.NotError(t, map[bool]func(context.Context) error{false: c.Begin, true: c.BeginReadOnly}[readOnly](t.Context()))
+		}
+		for _, src := range oracleBegin(readOnly) {
+			is.Equal(t, "", p.o.run(t, src).err, src)
+		}
+		p.inTx, p.readOnly = true, readOnly
+	}
+	// rollback the transaction of begin.
+	rollback := func(t *testing.T, p *pair) {
+		t.Helper()
+		for _, c := range []*engine.Conn{p.i.c, p.other.c} {
+			is.NotError(t, c.Rollback(t.Context()))
+		}
+		for _, src := range oracleEnd(p.readOnly, false) {
+			is.Equal(t, "", p.o.run(t, src).err, src)
+		}
+		p.inTx, p.readOnly = false, false
+	}
+
+	t.Run("should take selects with ORDER BY and LIMIT, by every path, and refusals of their arguments by s4ql's rules, outside a transaction and in each kind", func(t *testing.T) {
+		y := tally{}
+		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), y)
+		p.allPaths = true
+		var setUp, writes []stmttest.Call
+		for _, src := range pathsSetUp {
+			setUp = append(setUp, stmttest.Call{Src: src, Supported: true})
+		}
+		for _, src := range pathsWrites {
+			writes = append(writes, stmttest.Call{Src: src, Supported: true})
+		}
+		run(t, p, setUp)
+		run(t, p, queries)
+		run(t, p, refused)
+		begin(t, p, false)
+		run(t, p, writes)
+		run(t, p, queries)
+		run(t, p, refused)
+		rollback(t, p)
+		begin(t, p, true)
+		run(t, p, queries)
+		run(t, p, refused)
+		rollback(t, p)
+		is.Equal(t, p.o.state(t), p.i.state())
+		is.Equal(t, p.o.state(t), p.other.state())
+		var counts []string
+		for _, kind := range slices.Sorted(maps.Keys(y)) {
+			if strings.Contains(kind, "ORDER BY") || strings.Contains(kind, "LIMIT") || strings.HasPrefix(kind, "excused: ") || strings.Contains(kind, "sort") || strings.Contains(kind, "delivers") || strings.Contains(kind, "plan") {
+				counts = append(counts, fmt.Sprint(kind, ": ", y[kind]))
+			}
+		}
+		is.Equal(t, strings.Join([]string{
+			"excused: a value of another type than its column, checked against s4ql's rule: 78",
+			"excused: an argument that no column holds, checked against s4ql's rule: 3",
+			"excused: the wrong number of arguments, checked against s4ql's rule: 3",
+			"reached: LIMIT run by every path: 192",
+			"reached: ORDER BY run by every path: 315",
+			"reached: path that delivers the order: 411",
+			"reached: path that sorts: 4074",
+			"reached: plan of the cache checked: 401",
+		}, "\n"), strings.Join(counts, "\n"))
+	})
+
+	t.Run("should take them on a database in memory", func(t *testing.T) {
+		p := newPair(t, newMemoryInstance(t), nil)
+		p.allPaths = true
+		for _, src := range pathsSetUp {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		run(t, p, queries)
+		run(t, p, refused)
+	})
 }
 
 // FuzzDifferential runs the sequence of statements that its input chooses, the seed and the number of

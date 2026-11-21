@@ -20,7 +20,8 @@ type Plan interface {
 	plan()
 }
 
-// Node of a plan that gives rows: a [*Scan], a [*Filter], a [*Values], or a [*Project].
+// Node of a plan that gives rows: a [*Scan], a [*Filter], an [*Order], a [*Limit], a [*Values], or a
+// [*Project].
 type Node interface {
 	node()
 }
@@ -112,15 +113,41 @@ type Delete struct {
 	Source Node
 }
 
-// Query gives the rows of Root.
+// Query gives the rows of Root: a [*Project], over a [*Limit] if the select has a LIMIT, over an
+// [*Order] if it has an ORDER BY, over a [*Filter] if it has a WHERE, over the [*Scan] of its table.
 type Query struct {
 	Root Node
 }
 
 // Scan gives every row of a table, forward or backward in the order of its primary key, or of the
-// index that the engine reads it by for the conditions of a [Filter] above it.
+// index that the engine reads it by for the conditions of a [Filter] and the columns of an [Order]
+// above it.
 type Scan struct {
 	Table stmt.Name
+}
+
+// Order gives the rows of Source in the order of Columns, of the ORDER BY of a select: by the first,
+// and among rows that are equal in it by the next. The order of rows that are equal in all of them
+// is not specified, and varies. It says what the order is, and not how the rows get into it: the
+// engine reads them in that order by the primary key or by an index where one holds them so, and
+// has them sorted otherwise.
+type Order struct {
+	Source  Node
+	Columns []OrderColumn
+}
+
+// OrderColumn is a column of an [Order], by its name as the statement writes it: ascending, with
+// NULL before every value, or, if Descending, descending, with NULL after every value.
+type OrderColumn struct {
+	Column     stmt.Name
+	Descending bool
+}
+
+// Limit gives the first rows of Source, at most as many as Count says, of the LIMIT of a select:
+// an [*Integer] from 0, or a [*Parameter], whose argument must be an integer from 0.
+type Limit struct {
+	Source Node
+	Count  Expr
 }
 
 // Filter gives the rows of Source for which every one of Conditions is true, in the order of Source.
@@ -197,6 +224,8 @@ func (*Delete) plan()      {}
 func (*Query) plan()       {}
 func (*Scan) node()        {}
 func (*Filter) node()      {}
+func (*Order) node()       {}
+func (*Limit) node()       {}
 func (*Values) node()      {}
 func (*Project) node()     {}
 func (*Integer) expr()     {}
@@ -211,7 +240,8 @@ func (*Parameter) expr()   {}
 // NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
 // one without have the same plan. A column with DEFAULT has the literal of its DEFAULT as its
 // Default. A select, an update, and a delete with WHERE read their rows through a [*Filter] of the
-// conditions, in the order of the text.
+// conditions, in the order of the text. A select with ORDER BY has an [*Order] of its columns over
+// that, and one with LIMIT a [*Limit] over that, as [Query] says.
 func NewPlan(s stmt.Statement) Plan {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
@@ -245,7 +275,18 @@ func NewPlan(s stmt.Statement) Plan {
 	case *stmt.Delete:
 		return &Delete{Table: s.Table, Source: rowsOf(s.Table, s.Where)}
 	case *stmt.Select:
-		return &Query{Root: &Project{Source: rowsOf(s.Table, s.Where), Star: s.Columns == nil, Columns: s.Columns}}
+		source := rowsOf(s.Table, s.Where)
+		if s.OrderBy != nil {
+			o := &Order{Source: source}
+			for _, c := range s.OrderBy {
+				o.Columns = append(o.Columns, OrderColumn{Column: c.Name, Descending: c.Descending})
+			}
+			source = o
+		}
+		if s.Limited() {
+			source = &Limit{Source: source, Count: term(s.Limit)}
+		}
+		return &Query{Root: &Project{Source: source, Star: s.Columns == nil, Columns: s.Columns}}
 	}
 	panic(fmt.Sprintf("engine: a statement of type %T", s))
 }
@@ -268,7 +309,8 @@ func rowsOf(table stmt.Name, where []stmt.Condition) Node {
 	return f
 }
 
-// term of a row of an insert, of an assignment, or of a condition, as an expression: its literal, NULL among them, or its parameter.
+// term of a row of an insert, of an assignment, of a condition, or of a LIMIT, as an expression: its
+// literal, NULL among them, or its parameter.
 func term(t stmt.Term) Expr {
 	switch v := t.Value.(type) {
 	case stmt.Integer:
@@ -394,6 +436,22 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 			}
 		}
 		b.WriteString("\n")
+		formatNode(b, n.Source, depth+1)
+	case *Order:
+		b.WriteString("order by")
+		for i, c := range n.Columns {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			fmt.Fprint(b, " ", c.Column.Raw)
+			if c.Descending {
+				b.WriteString(" desc")
+			}
+		}
+		b.WriteString("\n")
+		formatNode(b, n.Source, depth+1)
+	case *Limit:
+		fmt.Fprint(b, "limit ", formatExpr(n.Count), "\n")
 		formatNode(b, n.Source, depth+1)
 	case *Project:
 		b.WriteString("project")

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -1237,7 +1238,8 @@ func newPlain(t *testing.T, ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateInde
 // plainScan gives the rows of a scan as SQLite gives them from the plain database c for a
 // statement that the test writes itself: every pinned column "is" its value, which is how SQL
 // writes an equality that NULL takes part in, the bounds are comparisons, the order is the whole
-// key of the index, each column in its direction or all in the other, and SQLite picks its plan.
+// key of the index, each column in its direction or all in the other, or, for a scan with Order, the
+// columns of Order and then the primary key, and SQLite picks its plan.
 func plainScan(t *testing.T, c *sqlite.Conn, ct *s4qlpb.CreateTable, ci *s4qlpb.CreateIndex, scan core.IndexScan) []string {
 	t.Helper()
 	key := keyParts(ct, ci)
@@ -1258,6 +1260,17 @@ func plainScan(t *testing.T, c *sqlite.Conn, ct *s4qlpb.CreateTable, ci *s4qlpb.
 	}
 	for i, part := range key {
 		order = append(order, name(i)+map[bool]string{false: " asc", true: " desc"}[part.descending != scan.Backward])
+	}
+	if len(scan.Order) > 0 {
+		// The columns of the order, each in its direction, and then the whole primary key, ascending or
+		// all descending.
+		order = nil
+		for _, c := range scan.Order {
+			order = append(order, sqlName(ct.GetColumns()[c.Position].GetName())+map[bool]string{false: " asc", true: " desc"}[c.Descending])
+		}
+		for _, position := range ct.GetPrimaryKey() {
+			order = append(order, sqlName(ct.GetColumns()[position].GetName())+map[bool]string{false: " asc", true: " desc"}[scan.Backward])
+		}
 	}
 	sql := "select * from " + sqlName(ct.GetTable())
 	if len(conditions) > 0 {
@@ -1983,6 +1996,428 @@ func FuzzScanIndex(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, input []byte) {
 		checkIndexScans(t, &choices{b: input}, false)
+	})
+}
+
+// orderOf the columns at the given positions of a table, for [core.IndexScan.Order]: an int for a
+// column in ascending order, and a [desc] for one in descending order.
+func orderOf(columns ...any) []core.KeyColumn {
+	var order []core.KeyColumn
+	for _, c := range columns {
+		switch c := c.(type) {
+		case int:
+			order = append(order, core.KeyColumn{Position: c})
+		case desc:
+			order = append(order, core.KeyColumn{Position: int(c), Descending: true})
+		default:
+			panic(fmt.Sprintf("no column of an order for a %T", c))
+		}
+	}
+	return order
+}
+
+func TestScanIndex_order(t *testing.T) {
+	// The table t has the key c0, the integer c1 and the text c2, which take NULL, and the real c3.
+	// Its index i is on c1 and c2 descending, so its key is c1, c2 descending, c0, and its index j is
+	// on c3 descending and c0 descending. Rows tie in each of c1, c2, and c3.
+	ct := nullableTable(typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL), 1, 2)
+	i, j := indexOf("i", "t", 1, desc(2)), indexOf("j", "t", desc(3), desc(0))
+	tRows := [][]*s4qlpb.Value{
+		row(1, nil, nil, 1.5), row(2, nil, "x", 2.5), row(3, 1, "a", 0.5), row(4, 1, "b", 3.5),
+		row(5, 1, nil, 1.5), row(6, 2, "a", 1.5), row(7, 1, "b", 2.5),
+	}
+	// The table v has a column of each type, each of which takes NULL, with the values whose order
+	// SQLite's sort decides: NULL, the ends of the integers, 0.0 and -0.0, which are equal, and texts
+	// and blobs that differ in their bytes and in their length.
+	cv := nullableTable(typedTable("v", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB), 1, 2, 3, 4)
+	vRows := [][]*s4qlpb.Value{
+		row(1, nil, nil, nil, nil),
+		row(2, int64(math.MinInt64), -1e300, "", []byte{}),
+		row(3, int64(math.MaxInt64), 1e300, "😀", []byte{0xff}),
+		row(4, 0, 0.0, "a", []byte{0x00}),
+		row(5, 0, math.Copysign(0, -1), "a", []byte{0x00}),
+		row(6, -1, -0.5, "A", []byte{0x01}),
+		row(7, 1, 0.5, "a b", []byte{0x01, 0x00}),
+		row(8, 2, 1.5, "ab", []byte{0x7f}),
+		row(9, nil, nil, nil, nil),
+		row(10, 3, 2.5, "É", []byte{0x80}),
+		row(11, 4, 3.5, "é", []byte{0x80, 0x00}),
+	}
+	// The table u has a key of two columns, and one value in its third.
+	cu := tableOf("u", 2, "a", "b", "v")
+	uRows := [][]*s4qlpb.Value{row(1, 1, 0), row(1, 2, 0), row(1, 3, 0), row(2, 1, 0)}
+
+	start := []step{createWith(ct), createWith(cv), createWith(cu)}
+	for _, r := range tRows {
+		start = append(start, func(t *testing.T, tx *core.Tx) { is.NotError(t, tx.Upsert(t.Context(), "t", r)) })
+	}
+	for _, r := range vRows {
+		start = append(start, func(t *testing.T, tx *core.Tx) { is.NotError(t, tx.Upsert(t.Context(), "v", r)) })
+	}
+	for _, r := range uRows {
+		start = append(start, func(t *testing.T, tx *core.Tx) { is.NotError(t, tx.Upsert(t.Context(), "u", r)) })
+	}
+	start = append(start, func(t *testing.T, tx *core.Tx) {
+		is.NotError(t, tx.CreateIndex(t.Context(), i))
+		is.NotError(t, tx.CreateIndex(t.Context(), j))
+	})
+	closed := func(v any) core.Bound { return core.Bound{Value: row(v)[0]} }
+	keys := func(rows []string) string {
+		var ks []string
+		for _, r := range rows {
+			k, _, _ := strings.Cut(r, ",")
+			ks = append(ks, k)
+		}
+		return strings.Join(ks, " ")
+	}
+
+	t.Run("should give the rows in the order of the columns, with NULL first ascending and last descending, and the rows that tie by the primary key or its reverse", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, start...)
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+
+		for _, test := range []struct {
+			name  string
+			table string
+			scan  core.IndexScan
+			// want are the keys of the rows, in their order: c0 of t and of v.
+			want string
+		}{
+			{name: "an integer column ascending, with NULL first, and the rows that tie by the key", table: "t", scan: core.IndexScan{Order: orderOf(1)}, want: "1 2 3 4 5 7 6"},
+			{name: "an integer column ascending, and the rows that tie by the reverse of the key", table: "t", scan: core.IndexScan{Order: orderOf(1), Backward: true}, want: "2 1 7 5 4 3 6"},
+			{name: "an integer column descending, with NULL last", table: "t", scan: core.IndexScan{Order: orderOf(desc(1))}, want: "6 3 4 5 7 1 2"},
+			{name: "an integer column descending, and the rows that tie by the reverse of the key", table: "t", scan: core.IndexScan{Order: orderOf(desc(1)), Backward: true}, want: "6 7 5 4 3 2 1"},
+			{name: "two columns, each in its direction", table: "t", scan: core.IndexScan{Order: orderOf(desc(3), 2)}, want: "4 7 2 1 5 6 3"},
+			{name: "the order that the index of the scan has", table: "t", scan: core.IndexScan{Index: "i", Order: orderOf(1, desc(2))}, want: "2 1 4 7 3 5 6"},
+			{name: "the reverse of the order that the index of the scan has", table: "t", scan: core.IndexScan{Index: "i", Order: orderOf(desc(1), 2), Backward: true}, want: "6 5 3 7 4 1 2"},
+			{name: "the rows of a pinned column of an index, by another column", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1), Order: orderOf(3)}, want: "3 5 7 4"},
+			{name: "the rows within the bounds of an index, by another column", table: "t", scan: core.IndexScan{Index: "j", Lower: closed(1.5), Upper: closed(2.5), Order: orderOf(2, 1)}, want: "1 5 6 7 2"},
+			{name: "the rows above a key, by the key descending", table: "t", scan: core.IndexScan{Lower: closed(3), Order: orderOf(desc(0))}, want: "7 6 5 4 3"},
+			{name: "the integers, with the rows of NULL first", table: "v", scan: core.IndexScan{Order: orderOf(1)}, want: "1 9 2 6 4 5 7 8 10 11 3"},
+			{name: "the reals descending, with 0.0 and -0.0 equal, and NULL last", table: "v", scan: core.IndexScan{Order: orderOf(desc(2))}, want: "3 11 10 8 7 4 5 6 2 1 9"},
+			{name: "the texts by their bytes", table: "v", scan: core.IndexScan{Order: orderOf(3)}, want: "1 9 2 6 4 5 7 8 10 11 3"},
+			{name: "the blobs by their bytes and then their length, descending", table: "v", scan: core.IndexScan{Order: orderOf(desc(4))}, want: "3 11 10 8 7 6 4 5 2 1 9"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				is.Equal(t, test.want, keys(scanBy(t, r, test.table, test.scan)))
+			})
+		}
+
+		t.Run("the rows that tie in a table with a key of two columns, by the columns of the key that the order does not name", func(t *testing.T) {
+			pairs := func(scan core.IndexScan) string {
+				var ps []string
+				for _, r := range scanBy(t, r, "u", scan) {
+					parts := strings.Split(r, ",")
+					ps = append(ps, parts[0]+"."+parts[1])
+				}
+				return strings.Join(ps, " ")
+			}
+			is.Equal(t, "1.1 1.2 1.3 2.1", pairs(core.IndexScan{Order: orderOf(2)}))
+			is.Equal(t, "2.1 1.3 1.2 1.1", pairs(core.IndexScan{Order: orderOf(2), Backward: true}))
+			is.Equal(t, "1.1 2.1 1.2 1.3", pairs(core.IndexScan{Order: orderOf(1)}))
+			is.Equal(t, "2.1 1.1 1.2 1.3", pairs(core.IndexScan{Order: orderOf(1), Backward: true}))
+			is.Equal(t, "1.3 1.2 1.1 2.1", pairs(core.IndexScan{Order: orderOf(2, desc(1), 0), Backward: true}))
+		})
+	})
+
+	t.Run("should give the rows that SQLite gives for the same order, by every scan, forward and backward, in a read and in a write transaction, with exactly one sort in the plan of the cache where the scan has an order and none where it has not", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, start...)
+		type table struct {
+			ct      *s4qlpb.CreateTable
+			indexes []*s4qlpb.CreateIndex
+			rows    [][]*s4qlpb.Value
+			scans   []core.IndexScan
+			orders  [][]core.KeyColumn
+		}
+		tables := []table{
+			{
+				ct: ct, indexes: []*s4qlpb.CreateIndex{i, j}, rows: tRows,
+				scans: []core.IndexScan{
+					{}, {Lower: closed(3)}, {Index: "i"}, {Index: "i", Equal: row(1)}, {Index: "i", Equal: row(nil)},
+					{Index: "i", Equal: row(1), Lower: closed("a"), Upper: closed("b")}, {Index: "i", Equal: row(1, "b")},
+					{Index: "j"}, {Index: "j", Lower: closed(1.5)}, {Index: "j", Equal: row(9.5)},
+				},
+				orders: [][]core.KeyColumn{
+					orderOf(1), orderOf(desc(1)), orderOf(2), orderOf(desc(2)), orderOf(3), orderOf(desc(3), 1),
+					orderOf(1, desc(2)), orderOf(desc(1), 2), orderOf(1, desc(2), 0), orderOf(desc(3), desc(0)),
+					orderOf(0), orderOf(desc(0)), orderOf(2, desc(0)), orderOf(1, 2, 3, 0), orderOf(desc(3), desc(2), desc(1), desc(0)),
+				},
+			},
+			{
+				ct: cv, rows: vRows, scans: []core.IndexScan{{}, {Upper: closed(9)}},
+				orders: [][]core.KeyColumn{
+					orderOf(1), orderOf(desc(1)), orderOf(2), orderOf(desc(2)), orderOf(3), orderOf(desc(3)), orderOf(4), orderOf(desc(4)),
+					orderOf(2, desc(3)), orderOf(desc(4), 1, 2, 3),
+				},
+			},
+			{
+				ct: cu, rows: uRows, scans: []core.IndexScan{{}, {Equal: row(1)}, {Equal: row(1), Lower: closed(2)}},
+				orders: [][]core.KeyColumn{orderOf(2), orderOf(1), orderOf(desc(1)), orderOf(desc(0)), orderOf(1, 0), orderOf(desc(1), desc(0)), orderOf(2, 1, 0)},
+			},
+		}
+
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, tx.Rollback(t.Context())) }()
+
+		checked := 0
+		for _, table := range tables {
+			plain := newPlain(t, table.ct, table.indexes, table.rows)
+			name := table.ct.GetTable()
+			for _, scan := range table.scans {
+				var ci *s4qlpb.CreateIndex
+				for _, ix := range table.indexes {
+					if ix.GetIndex() == scan.Index {
+						ci = ix
+					}
+				}
+				for _, order := range table.orders {
+					for _, backward := range []bool{false, true} {
+						scan.Order, scan.Backward = order, backward
+						what := fmt.Sprintf("%v order %v", describeScan(scan), order)
+						want := plainScan(t, plain, table.ct, ci, scan)
+						is.EqualSlice(t, want, scanBy(t, r, name, scan), what)
+						is.EqualSlice(t, want, scanBy(t, tx, name, scan), what)
+
+						sql, plan, err := r.ScanPlan(t.Context(), name, scan)
+						is.NotError(t, err)
+						// SQLite's plan has one row for a sort of all the rows of the statement by its ORDER BY.
+						is.EqualSlice(t, []string{wantPlan(table.ct, ci, scan), "USE TEMP B-TREE FOR ORDER BY"}, plan, sql)
+						// The same scan without the order reads the same index and sorts nothing.
+						scan.Order = nil
+						sql, plan, err = r.ScanPlan(t.Context(), name, scan)
+						is.NotError(t, err)
+						is.EqualSlice(t, []string{wantPlan(table.ct, ci, scan)}, plan, sql)
+						checked++
+					}
+				}
+			}
+		}
+		is.Equal(t, 2*(10*15+2*10+3*7), checked)
+	})
+
+	t.Run("should select each column of the order as the term that it orders by, and sort nothing for a scan that pins the whole primary key", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, start...)
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+
+		// SQLite keeps the value of a selected column that is also a term of the ORDER BY once in what
+		// it sorts, so the statement selects the term, and the key after the terms breaks the ties.
+		sql, plan, err := r.ScanPlan(t.Context(), "t", core.IndexScan{Index: "i", Equal: row(1), Order: orderOf(desc(3), 2), Backward: true})
+		is.NotError(t, err)
+		is.Equal(t, `select "c0", "c1", +"c2", +"c3" from main."t" indexed by "i" where "c1" = ?1 order by +"c3" desc, +"c2", "c0" desc`, sql)
+		is.EqualSlice(t, []string{"SEARCH main.t USING INDEX i (c1=?)", "USE TEMP B-TREE FOR ORDER BY"}, plan)
+
+		// One row at most has a whole primary key, and SQLite does not sort it.
+		for _, test := range []struct {
+			table string
+			scan  core.IndexScan
+			want  string
+		}{
+			{table: "t", scan: core.IndexScan{Equal: row(3), Order: orderOf(1)}, want: "SEARCH main.t USING PRIMARY KEY (c0=?)"},
+			{table: "u", scan: core.IndexScan{Equal: row(1, 2), Order: orderOf(desc(2))}, want: "SEARCH main.u USING PRIMARY KEY (a=? AND b=?)"},
+		} {
+			sql, plan, err := r.ScanPlan(t.Context(), test.table, test.scan)
+			is.NotError(t, err)
+			is.EqualSlice(t, []string{test.want}, plan, sql)
+			before := r.RowsRead()
+			is.Equal(t, 1, len(scanBy(t, r, test.table, test.scan)))
+			is.Equal(t, int64(1), r.RowsRead()-before)
+		}
+	})
+
+	t.Run("should count every row within the bounds of a scan with an order, however early the loop over it stops", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, start...)
+
+		for _, read := range []bool{true, false} {
+			var r interface {
+				ScanIndex(ctx context.Context, table string, scan core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error]
+				RowsRead() int64
+			}
+			// rows is the number of rows of t as the transaction sees it.
+			rows := int64(7)
+			if read {
+				rtx, err := startRead(t, d)
+				is.NotError(t, err)
+				defer func() { is.NotError(t, rtx.Close(t.Context())) }()
+				r = rtx
+			} else {
+				tx, err := d.Begin(t.Context())
+				is.NotError(t, err)
+				defer func() { is.NotError(t, tx.Rollback(t.Context())) }()
+				// The transaction reads its own row.
+				upsert("t", 8, 1, "c", 4.5)(t, tx)
+				r, rows = tx, 8
+			}
+			// stop the loop over the scan after it has given the number of rows, and give the rows that the
+			// transaction read for it.
+			stop := func(scan core.IndexScan, after int) int64 {
+				before, seen := r.RowsRead(), 0
+				for _, err := range r.ScanIndex(t.Context(), "t", scan) {
+					is.NotError(t, err)
+					if seen++; seen == after {
+						break
+					}
+				}
+				return r.RowsRead() - before
+			}
+			sorted := core.IndexScan{Order: orderOf(desc(3))}
+			// A loop to the end counts each row once, and so does one that stops at the last row.
+			is.Equal(t, rows, stop(sorted, 0))
+			is.Equal(t, rows, stop(sorted, int(rows)))
+			// A loop that stops at the first row has made the cache read every row, to sort them.
+			is.Equal(t, rows, stop(sorted, 1))
+			is.Equal(t, rows, stop(sorted, 3))
+			sorted.Backward = true
+			is.Equal(t, rows, stop(sorted, 2))
+			// The same loop over the scan without the order reads the row that it stops at.
+			is.Equal(t, int64(1), stop(core.IndexScan{}, 1))
+			// The rows within the bounds are counted, and no others: those with 1 in the first column of
+			// the index, of which the table has four and the write transaction a fifth, those of them
+			// between two bounds, and none.
+			is.Equal(t, rows-3, stop(core.IndexScan{Index: "i", Equal: row(1), Order: orderOf(3)}, 1))
+			is.Equal(t, int64(3), stop(core.IndexScan{Index: "i", Equal: row(1), Lower: closed("a"), Upper: closed("b"), Order: orderOf(3)}, 1))
+			is.Equal(t, int64(2), stop(core.IndexScan{Index: "i", Equal: row(nil), Order: orderOf(desc(0))}, 1))
+			is.Equal(t, int64(0), stop(core.IndexScan{Index: "i", Equal: row(9), Order: orderOf(3)}, 1))
+			is.Equal(t, int64(0), stop(core.IndexScan{Index: "i", Equal: row(9), Order: orderOf(3)}, 0))
+		}
+	})
+
+	t.Run("should refuse an order of a column that the table does not have, and of more columns than it has", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, start...)
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, tx.Rollback(t.Context())) }()
+
+		for _, order := range [][]core.KeyColumn{orderOf(4), orderOf(1, -1), orderOf(0, 1, 2, 3, 0)} {
+			for _, s := range []interface {
+				ScanIndex(ctx context.Context, table string, scan core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error]
+			}{r, tx} {
+				n := 0
+				for row, err := range s.ScanIndex(t.Context(), "t", core.IndexScan{Order: order}) {
+					n++
+					is.True(t, row == nil)
+					is.Error(t, core.ErrInvalid, err)
+				}
+				is.Equal(t, 1, n)
+			}
+			_, _, err := r.ScanPlan(t.Context(), "t", core.IndexScan{Order: order})
+			is.Error(t, core.ErrInvalid, err)
+		}
+		is.Equal(t, int64(0), r.RowsRead())
+		is.Equal(t, int64(0), tx.RowsRead())
+	})
+
+	t.Run("should sort every row that the table holds under a length limit, also the longest, by any of its columns", func(t *testing.T) {
+		const limit = 1000
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: limit})
+		long := typedTable("long", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_REAL)
+		transact(t, d, createWith(long), upsert("long", 1, strings.Repeat("a", 300), strings.Repeat("b", 600), 2.0, 3.0))
+		// The longest row that the table takes, with two reals that the table stores as integers of one
+		// byte and a sort as reals of eight.
+		longest := 0
+		for n := limit; n > 0 && longest == 0; n-- {
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			if err := tx.Upsert(t.Context(), "long", row(2, "", strings.Repeat("c", n), 4.0, 5.0)); err != nil {
+				is.Error(t, core.ErrTooBig, err)
+				is.NotError(t, tx.Rollback(t.Context()))
+				continue
+			}
+			is.NotError(t, tx.Commit(t.Context()))
+			longest = n
+		}
+		is.True(t, longest > limit-20, fmt.Sprint("the longest text of a row is ", longest, " bytes"))
+
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, tx.Rollback(t.Context())) }()
+		for _, order := range [][]core.KeyColumn{
+			orderOf(1), orderOf(2), orderOf(desc(2)), orderOf(3), orderOf(desc(4), 3), orderOf(3, 2, 1), orderOf(1, 2, 3, 4, 0), orderOf(0),
+		} {
+			for _, backward := range []bool{false, true} {
+				scan := core.IndexScan{Order: order, Backward: backward}
+				is.Equal(t, 2, len(scanBy(t, r, "long", scan)), fmt.Sprint(order))
+				is.Equal(t, 2, len(scanBy(t, tx, "long", scan)), fmt.Sprint(order))
+			}
+		}
+	})
+
+	t.Run("should sort more rows than SQLite holds in memory in temporary files of the cache, and fail as a local failure when it cannot write them", func(t *testing.T) {
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		w := newWorld(t)
+		o := core.Options{}
+		o.VFS = vfs.Name()
+		d := w.serve(t, "a", o)
+		// 2,000 rows of 4,000 bytes each are 8 MB, and SQLite sorts up to 2 MB, the size of its page
+		// cache, in memory. The column c1 orders them otherwise than their key.
+		const rows = 2000
+		big := nullableTable(typedTable("big", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_BLOB))
+		body := make([]byte, 4000)
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), big))
+			is.NotError(t, tx.CreateTable(t.Context(), typedTable("small", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT)))
+			for k := range rows {
+				is.NotError(t, tx.Upsert(t.Context(), "big", row(k, (k*7919)%rows, body)))
+			}
+			for k := range 10 {
+				is.NotError(t, tx.Upsert(t.Context(), "small", row(k, -k)))
+			}
+		})
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+
+		// 7919 is a prime that does not divide 2000, so each value of c1 from 0 to 1999 is in one row.
+		n := 0
+		for row, err := range r.ScanIndex(t.Context(), "big", core.IndexScan{Order: orderOf(desc(1))}) {
+			is.NotError(t, err)
+			is.Equal(t, int64(rows-1-n), row[1].GetInteger())
+			is.Equal(t, len(body), len(row[2].GetBlob()))
+			n++
+		}
+		is.Equal(t, rows, n)
+		is.Equal(t, int64(rows), r.RowsRead())
+
+		// With every write of a temporary file failing, a sort of few rows, which SQLite holds in
+		// memory, still succeeds, and the sort of the many fails.
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write, Files: faultvfs.Temp})
+		is.Equal(t, 10, len(scanBy(t, r, "small", core.IndexScan{Order: orderOf(1)})))
+		is.Equal(t, 0, vfs.Failures())
+		n = 0
+		for row, err := range r.ScanIndex(t.Context(), "big", core.IndexScan{Order: orderOf(desc(1))}) {
+			n++
+			is.True(t, row == nil)
+			is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+		}
+		is.Equal(t, 1, n)
+		is.True(t, vfs.Failures() > 0, "no write of a temporary file failed")
+		vfs.Fail(faultvfs.Fault{})
+		_ = r.Close(t.Context())
+		_ = d.Close(t.Context())
+		is.NotError(t, vfs.Close())
 	})
 }
 

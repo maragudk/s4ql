@@ -167,7 +167,7 @@ func TestConn_Begin(t *testing.T) {
 				{src: t1, want: "1/1: table t1 already exists"},
 				{src: "drop table t2", want: "1/1: no such table: t2"},
 				{src: "selec * from t1", want: `1/1: near "selec": syntax error`},
-				{src: "select * from t1 order by v1", want: "not supported"},
+				{src: "select * from t1 group by v1", want: "not supported"},
 				{src: " ; ", want: "no statement"},
 				{src: insertP, args: []any{3, 4}, want: "wrong arguments"},
 				{src: "insert into t1 (v1) values (3)"},

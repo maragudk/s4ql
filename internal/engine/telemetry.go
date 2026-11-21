@@ -53,10 +53,17 @@ const (
 	// name of the index that a create index or a drop index names, as its value.
 	attrIndex = "statement.index"
 	// attrDirection is the direction that the engine drew for a query, forward or backward, as
-	// [Engine.reading] draws it, so that a run whose rows depend on it can be told from its event. A
-	// statement that draws none, an update, a delete, or a query whose path the tests force, has
-	// none, and so has a query without the attribute [attrAccess].
+	// [Engine.reading] draws it, so that a run whose rows depend on it can be told from its event: the
+	// direction of the scan of a query without ORDER BY, and of the rows that tie of a query whose
+	// rows are sorted. A statement that draws none, an update, a delete, or a query whose path the
+	// tests force, has none, and so has a query without the attribute [attrAccess], and a query whose
+	// access delivers the order of its ORDER BY, for which the draw decides nothing.
 	attrDirection = "statement.direction"
+	// attrOrder is how the rows of a query with ORDER BY came in its order, as [ordering] says:
+	// delivered, by the key of its access, with no sort, or sorted, by the storage, which then read
+	// every row of the access before the first. A statement without ORDER BY has none, and so has a
+	// query without the attribute [attrAccess].
+	attrOrder = "statement.order"
 	// attrRowsRead is the number of rows that the statement read from the cache, whether or not its
 	// conditions held for them: by its scan or its get, and, for an update, also the row that it reads
 	// to check a NULL for a column that does not take it, and each row again that it changes.
@@ -172,6 +179,9 @@ type report struct {
 	// direction is the direction that the engine drew for a query, forward or backward, or empty for a
 	// statement that drew none.
 	direction string
+	// order is how the rows of a query with ORDER BY came in its order, delivered or sorted, or empty
+	// for a statement without ORDER BY.
+	order string
 	// clause is set for a statement of IF NOT EXISTS or IF EXISTS, looked once its sink is built, and
 	// nothing if that sink does nothing.
 	clause, looked, nothing bool
@@ -222,6 +232,12 @@ func (r *report) reads(rd reader, built any) {
 		r.access, r.index = "index", a.index
 	default:
 		r.access = "primary_key"
+	}
+	switch s.access.order {
+	case delivered:
+		r.order = "delivered"
+	case sorted:
+		r.order = "sorted"
 	}
 	r.reader, r.before = rd, rd.rowsRead()
 }
@@ -304,8 +320,11 @@ func (r *report) end(ctx context.Context, err error) {
 	if r.index != "" {
 		attrs = append(attrs, slog.String(attrIndex, r.index))
 	}
-	if r.access != "" && r.direction != "" {
+	if r.access != "" && r.direction != "" && r.order != "delivered" {
 		attrs = append(attrs, slog.String(attrDirection, r.direction))
+	}
+	if r.access != "" && r.order != "" {
+		attrs = append(attrs, slog.String(attrOrder, r.order))
 	}
 	if r.access != "" {
 		attrs = append(attrs, slog.Int64(attrRowsRead, r.reader.rowsRead()-r.before))

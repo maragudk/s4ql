@@ -394,8 +394,11 @@ func TestEngine_order(t *testing.T) {
 
 // checkPlanOf the select src with args on the instance i, outside a transaction: the access that the
 // rules choose for it on the table and the indexes that the core holds, and SQLite's plan for the
-// statement that the cache runs for its scan, which must be the one row that [wantPlan] gives, so that
-// the rows that the cache reads cannot come from a scan of a whole index that SQLite filters.
+// statement that the cache runs for its scan, which must be the rows that [wantPlans] gives: the one
+// row of [wantPlan], so that the rows that the cache reads cannot come from a scan of a whole index
+// that SQLite filters, and after it, for an access whose rows are sorted, the one row of a sort of
+// all the rows, and for every other access no row more, so that the cache sorts exactly where the
+// engine says so.
 func checkPlanOf(t *testing.T, i *instance, src string, args []any) {
 	t.Helper()
 	s, err := stmt.Check(src)
@@ -424,13 +427,14 @@ func checkPlanOf(t *testing.T, i *instance, src string, args []any) {
 		return
 	}
 	sql, plan := scanPlan(t, i, ct.GetTable(), a)
-	is.EqualSlice(t, []string{wantPlan(a, ct, cis)}, plan, src+", which the cache runs as "+sql)
+	is.EqualSlice(t, wantPlans(a, ct, cis), plan, src+", which the cache runs as "+sql)
 }
 
 func TestEngine_rowsRead(t *testing.T) {
 	// read runs src with args on the instance, by the rules and then forward and backward, and gives
-	// the access of its event and the number of rows that it read from the cache, which must be the
-	// same in each direction, and the number of rows that it gave.
+	// the access of its event, with "delivered" or "sorted" after it for a query with ORDER BY, and the
+	// number of rows that it read from the cache, which must be the same in each direction, and the
+	// number of rows that it gave.
 	read := func(t *testing.T, i *instance, h *events, src string, args ...any) (access string, read, rows string) {
 		t.Helper()
 		for n, path := range []engine.Path{{}, {Forward: true}, {Backward: true}} {
@@ -441,6 +445,9 @@ func TestEngine_rowsRead(t *testing.T) {
 			a := event[engine.AttrAccess]
 			if event[engine.AttrIndex] != "" {
 				a += " " + event[engine.AttrIndex]
+			}
+			if event[engine.AttrOrder] != "" {
+				a += " " + event[engine.AttrOrder]
 			}
 			if n > 0 {
 				is.Equal(t, access, a, src)
@@ -549,6 +556,67 @@ func TestEngine_rowsRead(t *testing.T) {
 		is.Equal(t, "", i.exec("create index goqite_queue_timeout on goqite (queue, timeout)").err)
 		readEach("index goqite_queue_timeout reads 500 gives 400")
 	})
+
+	t.Run("should read one row for goqite's receive by goqite's index when a message is ready, also beside an index on the queue and the timeout, the rows of the queue when none is, and every row of the table for a sort without it", func(t *testing.T) {
+		const now, past, future = "2026-11-20T15:00:00.000Z", "2026-11-20T12:00:00.000Z", "2026-11-20T18:00:00.000Z"
+		args := []any{"queue-1", now, int64(3)}
+		for _, test := range []struct {
+			name string
+			// timeout of every message.
+			timeout string
+			// want of the receive with no index, with goqite's index, and with both indexes, and then of
+			// the receive without its LIMIT with both indexes.
+			want [4]string
+			// id of the message that the receive gives, or empty for none.
+			id string
+		}{
+			{name: "every message ready", timeout: past, id: `"m_0010"`, want: [4]string{
+				"full_scan sorted reads 3000 gives 1",
+				"index goqite_queue_priority_created_idx delivered reads 1 gives 1",
+				"index goqite_queue_priority_created_idx delivered reads 1 gives 1",
+				"index goqite_queue_timeout sorted reads 1000 gives 1000",
+			}},
+			{name: "no message ready", timeout: future, want: [4]string{
+				"full_scan sorted reads 3000 gives 0",
+				"index goqite_queue_priority_created_idx delivered reads 1000 gives 0",
+				"index goqite_queue_priority_created_idx delivered reads 1000 gives 0",
+				"index goqite_queue_timeout sorted reads 0 gives 0",
+			}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				h := &events{}
+				i := newInstance(t, engine.Options{Logger: slog.New(h)})
+				is.Equal(t, "", i.exec(goqiteTable).err)
+				// 3,000 messages in 3 queues of 1,000 each, with 4 priorities, none of them received. The
+				// message 10 is the oldest of the highest priority of its queue.
+				fill(t, i, 3000, func(n int) (string, []any) {
+					created := fmt.Sprintf("2026-11-20T10:%02d:%02d.%03dZ", n/60000%60, n/1000%60, n%1000)
+					return "insert into goqite values (?, ?, ?, ?, ?, ?, ?, ?)",
+						[]any{fmt.Sprintf("m_%04d", n), created, created, fmt.Sprint("queue-", n%3), []byte("body"), test.timeout, int64(0), int64(n / 3 % 4)}
+				})
+				readEach := func(want string) {
+					t.Helper()
+					for _, receive := range []string{goqiteReceive, goqiteReceiveTurned} {
+						access, rowsRead, rows := read(t, i, h, receive, args...)
+						is.Equal(t, want, fmt.Sprint(access, " reads ", rowsRead, " gives ", rows), receive)
+						got := i.queryValues(receive, values(args))
+						is.Equal(t, "", got.err)
+						is.Equal(t, test.id, strings.Join(got.rows, " "), receive)
+					}
+				}
+				readEach(test.want[0])
+				is.Equal(t, "", i.exec(goqiteIndex).err)
+				readEach(test.want[1])
+				// SQLite's own planner reads by the index on the queue and the timeout here, and sorts. The
+				// rules read by goqite's index, in its order, for the LIMIT.
+				is.Equal(t, "", i.exec("create index goqite_queue_timeout on goqite (queue, timeout)").err)
+				readEach(test.want[2])
+				// Without the LIMIT every row that passes is read, so the bound wins, and its rows are sorted.
+				access, rowsRead, rows := read(t, i, h, strings.TrimSuffix(goqiteReceive, " limit 1"), args...)
+				is.Equal(t, test.want[3], fmt.Sprint(access, " reads ", rowsRead, " gives ", rows))
+			})
+		}
+	})
 }
 
 var update = flag.Bool("update", false, "rewrite the golden files of TestAccessOf_golden with the plans that the engine chooses now")
@@ -576,11 +644,22 @@ const (
 	goqiteIndex = "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"
 )
 
-// goqiteQueries are shaped like the statements of goqite, a queue on SQLite. The receive is
-// goqite's without its ORDER BY and its LIMIT, which slice 13 brings, once as goqite writes its
-// WHERE, with `? >= timeout`, and once with `timeout <= ?`, which must have the same access, as
-// [TestAccessOf_golden] checks.
+// goqiteReceive is the query with which goqite picks the next message of a queue, as goqite writes
+// it, with the value on the left of timeout, and goqiteReceiveTurned the same with the column on the
+// left.
+const (
+	goqiteReceive       = "select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1"
+	goqiteReceiveTurned = "select id from goqite where queue = ? and timeout <= ? and received < ? order by priority desc, created limit 1"
+)
+
+// goqiteQueries are the statements of goqite, a queue on SQLite, and statements shaped like them.
+// The receive is goqite's, once as goqite writes its WHERE, with `? >= timeout`, and once with
+// `timeout <= ?`, which must have the same access, as [TestAccessOf_golden] checks; and each of the
+// two without its ORDER BY and its LIMIT, and the first without its LIMIT.
 var goqiteQueries = []planQuery{
+	{name: "receive in order", src: goqiteReceiveTurned, args: []any{"default", "2026-11-20T12:00:00.000Z", int64(3)}},
+	{name: "receive in order as goqite writes it", src: goqiteReceive, args: []any{"default", "2026-11-20T12:00:00.000Z", int64(3)}},
+	{name: "receive in order without a limit", src: strings.TrimSuffix(goqiteReceive, " limit 1"), args: []any{"default", "2026-11-20T12:00:00.000Z", int64(3)}},
 	{name: "receive", src: "select id from goqite where queue = ? and timeout <= ? and received < ?",
 		args: []any{"default", "2026-11-20T12:00:00.000Z", int64(3)}},
 	{name: "receive as goqite writes it", src: "select id from goqite where queue = ? and ? >= timeout and received < ?",
@@ -616,6 +695,8 @@ var planSchemas = []planSchema{
 			{name: "by token and expiry", src: "select data from sessions where token = ? and expiry > ?", args: []any{"abc", 1763640000.5}},
 			{name: "a range of expiries", src: "select token from sessions where expiry >= 1763640000.0 and expiry <= 1763650000.0"},
 			{name: "update by token", src: "update sessions set expiry = ? where token = ?", args: []any{1763650000.5, "abc"}},
+			{name: "the sessions that expire first", src: "select token from sessions order by expiry limit 10"},
+			{name: "the sessions that expire last", src: "select token from sessions where expiry > ? order by expiry desc limit ?", args: []any{1763640000.5, int64(10)}},
 		},
 	},
 	{
@@ -626,6 +707,8 @@ var planSchemas = []planSchema{
 		},
 		queries: []planQuery{
 			{name: "example", src: "select v1 from t1 where v2 = 'a' and v3 > 1.5"},
+			{name: "first example of slice 13", src: "select v1, v2 from t1 order by v2 desc, v1 limit 10"},
+			{name: "second example of slice 13", src: "select v1 from t1 where v2 > ? order by v1 limit ?", args: []any{"a", int64(10)}},
 		},
 	},
 	{
@@ -679,6 +762,24 @@ var planSchemas = []planSchema{
 			{name: "a value on the left pins and bounds an index", src: "select k from r where 'x' = b and ? > c", args: []any{9.5}},
 			{name: "a get by a value on the left", src: "update r set a = 2 where 3 = k"},
 			{name: "no row for null on the left", src: "delete from r where null <= a"},
+			{name: "the order of the primary key", src: "select a from r order by k"},
+			{name: "the reverse of the primary key", src: "select a from r order by k desc limit 3"},
+			{name: "an index that delivers the order wins over every row and a sort", src: "select k from r order by a"},
+			{name: "a sort of every row", src: "select k from r order by c"},
+			{name: "a sort of every row with a limit", src: "select k from r order by c desc, k limit 5"},
+			{name: "the first index created that delivers the order", src: "select k from r order by b desc"},
+			{name: "an index backward for the reverse of its key", src: "select k from r order by b desc, c limit 2"},
+			{name: "mixed directions are sorted", src: "select k from r order by b, c"},
+			{name: "the order after a pinned column", src: "select k from r where b = 'x' order by c desc"},
+			{name: "the order of a pinned column and the next", src: "select k from r where b is null order by b desc, c, k desc"},
+			{name: "a range wins over the order without a limit", src: "select k from r where k > 3 order by a"},
+			{name: "the order wins over a range with a limit", src: "select k from r where k > 3 order by a limit 1"},
+			{name: "a range and the order by one index", src: "select k from r where a >= ? order by a desc limit ?", args: []any{int64(1), int64(4)}},
+			{name: "more pins win over the order, also with a limit", src: "select k from r where b = 'x' order by a limit 1"},
+			{name: "a column after the whole key is sorted", src: "select k from r order by a, k, b"},
+			{name: "a get delivers every order", src: "select a from r where k = 3 order by c limit 1"},
+			{name: "no row delivers every order", src: "select a from r where c > null order by d"},
+			{name: "a limit without an order changes nothing", src: "select k from r where b = 'x' and c > 1.5 limit 1"},
 		},
 	},
 }
@@ -719,6 +820,13 @@ func TestAccessOf_golden(t *testing.T) {
 		}
 		if want, ok := accesses["receive"]; ok {
 			is.Equal(t, want, accesses["receive as goqite writes it"], "the access of goqite's receive in the schema "+s.name)
+			is.Equal(t, accesses["receive in order"], accesses["receive in order as goqite writes it"], "the access of goqite's receive in order in the schema "+s.name)
+		}
+		// goqite's receive reads by goqite's index, in its order, wherever the index is there, also
+		// beside an index on the queue and the timeout, which bounds a range and would need a sort.
+		if strings.Contains(strings.Join(s.statements, "\n"), goqiteIndex) {
+			is.Equal(t, "index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'\norder: delivered, forward\n",
+				accesses["receive in order as goqite writes it"], "the access of goqite's receive in order in the schema "+s.name)
 		}
 	}
 
@@ -767,6 +875,16 @@ func planText(t *testing.T, s planSchema) string {
 			b.WriteString("args: " + strings.Join(texts, ", ") + "\n")
 		}
 		b.WriteString("access: " + planAccess(ct, indexes, a) + "\n")
+		switch {
+		case a.Delivered:
+			b.WriteString("order: delivered, " + map[bool]string{false: "forward", true: "backward"}[a.Backward] + "\n")
+		case a.Sorted:
+			terms := make([]string, len(a.By))
+			for i, c := range a.By {
+				terms[i] = ct.GetColumns()[c.Position].GetName() + map[bool]string{true: " desc"}[c.Descending]
+			}
+			b.WriteString("order: sorted by " + strings.Join(terms, ", ") + "\n")
+		}
 	}
 	return b.String()
 }
@@ -1025,4 +1143,58 @@ func planBlocks(s string) (string, [][2]string) {
 		blocks = append(blocks, [2]string{name, "## " + part})
 	}
 	return parts[0], blocks
+}
+
+func TestEngine_events_order(t *testing.T) {
+	t.Run("should say in the event of a query with ORDER BY whether its order was delivered or sorted, with the drawn direction only where it decides something, and nothing of the order for a statement without ORDER BY", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		for _, src := range []string{
+			"create table t (k int primary key, a int not null, b text) strict, without rowid",
+			"insert into t values (1, 2, 'x')", "insert into t values (2, 1, 'x')", "insert into t values (3, 1, null)",
+			"create index ta on t (a)",
+		} {
+			is.Equal(t, "", i.exec(src).err, src)
+		}
+		for _, test := range []struct {
+			src string
+			// access, index, and order of the event, and whether it has a direction.
+			access, index, order string
+			direction            bool
+		}{
+			{src: "select k from t order by a desc limit 2", access: "index", index: "ta", order: "delivered"},
+			{src: "select k from t order by k", access: "full_scan", order: "delivered"},
+			{src: "select k from t where k = 1 order by b", access: "primary_key", order: "delivered"},
+			{src: "select k from t where b = null order by b", access: "none", order: "delivered"},
+			{src: "select k from t order by b", access: "full_scan", order: "sorted", direction: true},
+			{src: "select k from t where a = 1 order by b desc limit 1", access: "index", index: "ta", order: "sorted", direction: true},
+			{src: "select k from t where a = 1 limit 1", access: "index", index: "ta", direction: true},
+			{src: "select k from t limit 1", access: "full_scan", direction: true},
+			{src: "update t set b = 'y' where a = 1", access: "index", index: "ta"},
+			{src: "delete from t where k > 5", access: "primary_key"},
+		} {
+			got := i.queryValues(test.src, nil)
+			is.Equal(t, "", got.err, test.src)
+			event, _ := h.last(t)
+			is.Equal(t, test.access, event[engine.AttrAccess], test.src)
+			is.Equal(t, test.index, event[engine.AttrIndex], test.src)
+			is.Equal(t, test.order, event[engine.AttrOrder], test.src)
+			_, has := event[engine.AttrDirection]
+			is.Equal(t, test.direction, has, test.src)
+		}
+
+		// A query that fails before it has an access says nothing of its order, and a path with a
+		// direction draws none.
+		got := i.queryValues("select k from t order by x", nil)
+		is.Equal(t, "1/1: no such column: x", got.err)
+		event, _ := h.last(t)
+		_, has := event[engine.AttrOrder]
+		is.True(t, !has)
+		i.e.SetPath(engine.Path{Backward: true})
+		is.Equal(t, "", i.queryValues("select k from t order by b", nil).err)
+		event, _ = h.last(t)
+		is.Equal(t, "sorted", event[engine.AttrOrder])
+		_, has = event[engine.AttrDirection]
+		is.True(t, !has)
+	})
 }

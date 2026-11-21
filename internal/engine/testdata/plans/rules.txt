@@ -126,3 +126,93 @@ access: get, k = 3
 ## no row for null on the left
 delete from r where null <= a
 access: no row
+
+## the order of the primary key
+select a from r order by k
+access: every row
+order: delivered, forward
+
+## the reverse of the primary key
+select a from r order by k desc limit 3
+access: every row
+order: delivered, backward
+
+## an index that delivers the order wins over every row and a sort
+select k from r order by a
+access: index ra (a, k)
+order: delivered, forward
+
+## a sort of every row
+select k from r order by c
+access: every row
+order: sorted by c
+
+## a sort of every row with a limit
+select k from r order by c desc, k limit 5
+access: every row
+order: sorted by c desc, k
+
+## the first index created that delivers the order
+select k from r order by b desc
+access: index rb (b, k)
+order: delivered, backward
+
+## an index backward for the reverse of its key
+select k from r order by b desc, c limit 2
+access: index rbc (b, c desc, k)
+order: delivered, backward
+
+## mixed directions are sorted
+select k from r order by b, c
+access: every row
+order: sorted by b, c
+
+## the order after a pinned column
+select k from r where b = 'x' order by c desc
+access: index rbc (b, c desc, k), pins b = 'x'
+order: delivered, forward
+
+## the order of a pinned column and the next
+select k from r where b is null order by b desc, c, k desc
+access: index rbc (b, c desc, k), pins b = NULL
+order: delivered, backward
+
+## a range wins over the order without a limit
+select k from r where k > 3 order by a
+access: primary key (k), bounds 3 < k
+order: sorted by a
+
+## the order wins over a range with a limit
+select k from r where k > 3 order by a limit 1
+access: index ra (a, k)
+order: delivered, forward
+
+## a range and the order by one index
+select k from r where a >= ? order by a desc limit ?
+args: 1, 4
+access: index ra (a, k), bounds 1 <= a
+order: delivered, backward
+
+## more pins win over the order, also with a limit
+select k from r where b = 'x' order by a limit 1
+access: index rb (b, k), pins b = 'x'
+order: sorted by a
+
+## a column after the whole key is sorted
+select k from r order by a, k, b
+access: every row
+order: sorted by a, k, b
+
+## a get delivers every order
+select a from r where k = 3 order by c limit 1
+access: get, k = 3
+order: delivered, forward
+
+## no row delivers every order
+select a from r where c > null order by d
+access: no row
+order: delivered, forward
+
+## a limit without an order changes nothing
+select k from r where b = 'x' and c > 1.5 limit 1
+access: index rbc (b, c desc, k), pins b = 'x', bounds 1.5 < c

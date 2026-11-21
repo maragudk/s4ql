@@ -208,7 +208,7 @@ func TestEngine_errors(t *testing.T) {
 
 	t.Run("should give not supported, and no statement, as errors of their own", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
-		_, err := i.c.Exec(t.Context(), "select * from t1 order by v1")
+		_, err := i.c.Exec(t.Context(), "select * from t1 group by v1")
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		var se *sqlerr.Error
 		is.True(t, !errors.As(err, &se))
