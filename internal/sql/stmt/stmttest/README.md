@@ -1,0 +1,252 @@
+# The generator of statements
+
+`internal/sql/stmt/stmttest` writes random statements for tests. It is code for tests only. It has two parts:
+
+- **`Generator` writes one statement.** It gives the text and the typed form of [`stmt`](../README.md) that the text holds. The tests of the statement pass use it directly. They turn each feature on with an option, such as `Generator.Exists` or `Generator.OrderBy`. It draws from the one `Rand` that the test gives it.
+- **`Sequence` writes a series of calls that meet at a few tables.** `Sequence.Next` gives a `Call`: a text, its arguments, and whether it runs as a query. A sequence drives a `Generator` through its hooks. The differential tests of the engine, the simulation of the engine, and the driver check run sequences.
+
+The package also holds the rules that tests check answers against (`rule.go`), and the check of what a generated test reaches (`reached.go`).
+
+This document is about `Sequence`: its profiles, its random streams, the numbers that pin it, and how to add to it. The reasons for the design are in [the diary of the workload profiles](../../../../docs/diary/2026-11-21-workload-profiles.md).
+
+## Profiles
+
+A sequence is a function of its seed alone. `NewSequence(seed)` takes nothing else.
+
+The seed names the profile of the sequence. A `Profile` gives a weight to each kind of statement, and odds to each area of the generator. An area whose odds are 0 is off.
+
+- **`Profiles` is the list of the profiles.** The place of a profile in the list is its slot.
+- **`ProfileOf(seed)` gives the profile at the slot `seed % Slots`.** `Slots` is 32. A slot that no profile has gives `Mixed`.
+- **`Profile.Seed(k)` gives seed number `k` of a profile, from 0.** It is `k*Slots` plus the slot of the profile.
+
+So one number replays a run. The flags `-seed` and `-replay` of the engine's tests need no second flag for the profile.
+
+### The ten profiles
+
+`mixed` has every area on. Each other profile weighs one area, over the statements that the area needs to do its work.
+
+Five areas are on in every profile: `names`, `plan`, `tables`, `inserts`, and `text`. The table gives the other areas that each profile has on. `Profile.on` decides it from the fields of the profile.
+
+| Slot | Name | What it weighs | Other areas that are on |
+| --- | --- | --- | --- |
+| 0 | `mixed` | Every area, with the odds at which a statement of several features meets each. Bugs also live where areas meet. | `selects`, `changes`, `indexes`, `exists`, `defaults`, `valuefirst`, `arguments`, `others` |
+| 1 | `tables` | The tables themselves: their columns, types, and keys, and the columns that take NULL. Also the lists and the faults of an insert, whole reals for a column of integers, and a select of all rows. | `selects`, `arguments` |
+| 2 | `where` | The select with WHERE, on keys and on other columns. | `selects`, `arguments` |
+| 3 | `changes` | The update and the delete. | `selects`, `changes`, `arguments` |
+| 4 | `indexes` | The create index, the drop index, and the WHERE that an index serves. | `selects`, `changes`, `indexes`, `arguments` |
+| 5 | `exists` | IF NOT EXISTS and IF EXISTS, on tables and indexes that are there and that are not. | `selects`, `changes`, `indexes`, `exists`, `arguments` |
+| 6 | `defaults` | The DEFAULT, and the inserts that leave a column out. | `selects`, `changes`, `defaults`, `arguments` |
+| 7 | `valuefirst` | The value on the left of a comparison, in the WHERE of a select, an update, and a delete, on keys and on indexes. | `selects`, `changes`, `indexes`, `valuefirst`, `arguments` |
+| 8 | `transactions` | The statements that write, and those that read what was written. Its test begins transactions more often. | `selects`, `changes`, `indexes`, `arguments` |
+| 9 | `arguments` | The parameters, the arguments around those that s4ql supports, and the texts of `Others`: the errors and the refusals. | `selects`, `changes`, `arguments`, `others` |
+
+### The fields of a profile
+
+| Field | What it does |
+| --- | --- |
+| `Weights` | The weight of each kind of statement. A statement is of a kind as often as the weight of the kind is of the sum. |
+| `Aim` | The number of statements in four that `Sequence.aim` aims at the tables as the sequence left them. A create table then names a table that is not there, and every other statement names one that is. With 0, the sequence names its tables at random, and many statements meet no table. |
+| `Faults` | The areas whose statements have their faults at the full odds. In every other area, `Sequence.fault` gives each fault a quarter as often. |
+| `Columns` | The least number of columns of a table. With 2, each table has a column beside its key, for an index that does not hold the key first. |
+| `Where` | The number of selects in four that have a WHERE. |
+| `Indexes` | With 0, the sequence has no indexes. With 1, it has one or two names of indexes. One WHERE in two of a table with an index is then drawn for the index. With 2, it has two or three names, and three such WHERE in four. More of its indexes hold every column but the key. More of its WHERE pin every column of an index, and the key after them. |
+| `Exists` | One create in `Exists` says IF NOT EXISTS, and one drop in `Exists` says IF EXISTS. |
+| `Defaults` | With 0, no table has a DEFAULT. With 1, a third of the tables have none, and a third have one on every column. The last third have one on each column one time in two. With 2, every table has one of the last two forms. |
+| `ValueFirst` | One comparison in `ValueFirst` has its value on the left. |
+| `Parameters` | One value in `Parameters` is a plain `?`. |
+| `Around` | One call in `Around[0]` of a statement with a parameter has arguments around those that s4ql supports. So has one call in `Around[1]` of a statement without a parameter. |
+| `Others` | One text in `Others` is one of the texts of the list `Others`, in place of a statement. |
+| `Mistyped` | One insert in `Mistyped` gives an integer of a column of INT or INTEGER as the real of the same value. |
+| `Transactions` | This field is for the test that runs the sequence. One turn in `Transactions` outside a transaction begins one. |
+
+`Aim` and `Faults` are what make a focused profile work. Without them, many statements of a sequence meet a table that is not there, or fail for a fault. Focus alone then does not make a rare kind of outcome more frequent. To aim, the sequence keeps a model of its own statements: the tables that are live (`live`), the indexes that it keeps (`indexed`), and the values that it gave each column (`stored`). The model follows the statements as the sequence wrote them, whether SQLite takes them or not.
+
+### Each profile runs on seeds of its own
+
+A test runs each profile on the seeds `p.Seed(0)`, `p.Seed(1)`, and so on, and keeps a tally for each profile. So a new profile runs on seeds that no other profile has. The other profiles write the same sequences as before, and their tallies do not move.
+
+A profile is only added at the end of `Profiles`. No profile is removed or moved. The slot of a profile is its place in the list, and the seeds of a profile are those of its slot. If a profile moves, it gets other seeds, and every number that is pinned for it moves. `Slots` is more than the number of profiles, so a new profile takes a slot that is free.
+
+A seed whose slot is free writes a sequence of `mixed`. When a profile takes the slot, the seed writes a sequence of that profile. The tests that pin numbers take their seeds from `Profile.Seed`, so they run no such seed.
+
+## Streams
+
+Each area draws its random numbers from a stream of its own. The areas are constants in `profile.go`:
+
+| Area | What it draws |
+| --- | --- |
+| `names` | The names of the tables and the columns of the sequence, and their spellings. |
+| `plan` | Which statement comes next, and the name of its table or its index. |
+| `tables` | The shape of a table, and the columns of a create table that differ from the shape. |
+| `inserts` | The list and the values of an insert, and its faults. |
+| `selects` | The select list and the WHERE of a select. |
+| `changes` | The assignments of an update, and the WHERE of an update and a delete. |
+| `indexes` | The names of the indexes, the columns of a create index, and the WHERE that an index serves. |
+| `exists` | Whether a create or a drop says IF NOT EXISTS or IF EXISTS. |
+| `defaults` | The defaults of a shape, those of a create table that differ, and whether an insert leaves out a column with a default. |
+| `valuefirst` | Whether a comparison has its value on the left. |
+| `arguments` | Whether a value is a parameter, and the arguments around those of a call. |
+| `others` | The texts of `Others`. |
+| `text` | How a statement is written: its gaps, the case of its keywords, the spelling of its literals and operators, and its semicolons. |
+
+A stream is seeded in one of two ways:
+
+- **By statement** (`Sequence.stream`, a `stepStream`). The stream is seeded from the seed, the name of the area, and the number of the statement in the sequence. It starts anew at each statement. Most draws come from such a stream.
+- **By thing** (`Sequence.entity`). The stream is seeded from the seed, the name of the area, and a name, such as the name of a table. The names of the sequence, the names of its indexes, and the shape and the defaults of each table come from such a stream.
+
+The `Generator` of a sequence has the stream of `text` as its `Rand`. It has four more streams, which are not exported: `plan`, `clause` for the area `exists`, `params` for the area `arguments`, and `turned` for the area `valuefirst`. In a generator without a sequence, the four are its one `Rand`.
+
+Four things follow:
+
+- **A draw more or less in one statement moves no number of another statement.**
+- **A draw more or less in one area moves no number of another area,** also in the same statement.
+- **The shape of a table does not depend on which statement names the table first.**
+- **What a test draws for itself comes from `Sequence.Stream(name)`.** Examples are the transactions of `TestConn_differential` and the restarts of `TestDifferential`. The stream gives the same numbers for the same seed and name, whatever the sequence draws. So the test moves no statement.
+
+### The limit of the streams
+
+The stream of a statement gives the same numbers, whatever the earlier statements drew. The text of the statement can still depend on them. A statement reads what earlier statements left in the model of the sequence:
+
+- the values in `stored`, from which the conditions of a WHERE draw
+- the tables in `live`, at which `Sequence.aim` aims
+- the indexes in `indexed`, which decide whether a WHERE is drawn for an index
+
+So a change to the inserts can change the text of a later select, although the select gets the same numbers. A text of `Others` in place of a statement changes later statements too, because the statement whose place it takes never stores its values.
+
+`TestNewSequence` shows the stronger claim for two areas that store nothing, `exists` and `valuefirst`. Other numbers for such an area change no statement outside the area.
+
+### An area that is off
+
+The stream of an area that a profile has off panics at a draw (`offStream`). `TestNewSequence` runs 300 calls of 20 seeds of each profile, so a draw from an area that is off fails the test. That is what makes "off" mean "draws nothing".
+
+## The proof and the pins
+
+Two sets of numbers pin the sequences: a digest for each profile, and the counts of what each run reaches.
+
+### The digests
+
+`TestNewSequence` in `profile_internal_test.go` pins a digest for each profile. The digest is a hash of the first 200 calls of the first three seeds of the profile: their texts, their arguments, and how they run.
+
+A change to the generator of an area can change the digest of a profile only if the profile has the area on. So the digests that change tell which profiles a change reaches. Those are the profiles whose counts you must recount.
+
+If the digest of a profile changes that has the area off, the change reaches more than its area. Find the cause before you put the new digest in the test.
+
+### What a run reaches
+
+Each generated test counts kinds of outcome for each run. A run is the sequences of one profile. In the simulation, a run is the seeds of one environment. `stmttest.Reached` checks the counts against two files in `testdata/reached/` of the package of the test, both named after the test:
+
+- **`<Test>.kinds` holds the kinds that the test requires,** one on a line. A builder writes this file.
+- **`<Test>.tsv` holds the counts.** The test writes this file. A row is a run, what the run reached when the file was written, the least number that the test requires, and the kind. Do not edit a number by hand.
+
+`Reached.Check` has these rules:
+
+- **The least number is a third.** A run must reach each kind of its rows at least a third as often as when the file was written, rounded down.
+- **No least number is 0.** A kind that a run reaches fewer than three times has no row for that run. A row with a least number of 0, or of more than a third of its count, fails the check.
+- **A required kind needs a row in one run at least.** If every run reaches a required kind fewer than three times, the check fails. The recount fails too, and writes nothing. The message says how often each run reaches the kind.
+- **An exact kind is pinned exactly.** `Reached.Exact` names the exact kinds. In the differential tests of the engine, they are the kinds that begin with `excused: `. These count the texts that the test does not compare with SQLite. A run must give an exact kind as often as its row says. A run without a row must not give it.
+- **Only required kinds and exact kinds have rows.** A row of another kind fails the check, and so does a row of a run that the test does not have.
+
+Remove a kind from a `.kinds` file only if it is pinned somewhere else, and say where in the commit.
+
+The files of `TestDifferential`, `TestConn_differential`, and `TestSimulation` are in `internal/engine/testdata/reached/`. The driver check, `TestGenerated` in `internal/sqlite/crosscheck/drivercheck`, uses files of the same two kinds.
+
+### The recount
+
+After a change of the generator, write each `.tsv` file again from a run of its test:
+
+```
+S4QL_RECOUNT=1 go test -count=1 -run '^TestDifferential$' ./internal/engine/
+S4QL_RECOUNT=1 go test -count=1 -run '^TestConn_differential$' ./internal/engine/
+S4QL_RECOUNT=1 go test -count=1 -run '^TestSimulation$' ./internal/engine/
+```
+
+For the driver check, run this from `internal/sqlite/crosscheck`:
+
+```
+S4QL_RECOUNT=1 go test -count=1 -run '^TestGenerated$' ./drivercheck/
+```
+
+A recount needs a full run. Do not pass `-short`, `-race`, or `-asan`. Keep the flags of the test at their defaults, and do not set `S4QL_ENGINE_SIM_SEEDS`. In every other run, the tests run fewer or other sequences and do not call `Reached.Check`, so the recount writes nothing.
+
+Then read the diff of the `.tsv` file. Rows can change only for the runs that the change reaches. If an exact count changes, say why in the commit.
+
+## Add a statement or an option to an area
+
+1. Put the draw in the hook of the area in `sequence.go`, on the stream of the area. The table after these steps gives the stream of each hook.
+2. If `Generator` itself must draw for the option, give it a stream for the area, as `clause` and `turned` are. Set the stream in `newSequence`.
+3. Run `go test ./internal/sql/stmt/stmttest/`. The digests of the profiles that have the area on change.
+4. Make sure that no other digest changes. Then put the new digests in `TestNewSequence`.
+5. If the tests need a rule for the answer, or names for the cases, add a function to `rule.go`. Add a table test for it to `rule_test.go`. `WhereCases`, `ValueFirstCases`, and `IndexRule` are examples.
+6. Count the new kinds in the tests. See "Where the kinds are counted" below.
+7. Add each new kind to the `.kinds` file of each test that must reach it. Write the kind as the tally has it.
+8. Recount each test, and read the diffs.
+
+Never draw from the stream of another area. Such a draw moves the numbers of that area in the same statement. In a profile that has that area off, it panics.
+
+| Hook or function | Stream |
+| --- | --- |
+| `create` | `rTables`, and `rDefaults` for the defaults |
+| `insert` | `rInserts`, and `rDefaults` for the defaults |
+| `selectList`, `where` | `rSelects` |
+| `update`, `delete`, `changeConditions` | `rChanges` |
+| `createIndex`, `indexWhere`, `indexConditions` | `rIndexes` |
+| `shapeOf` | `entity(areaTables, name)`, and `entity(areaDefaults, name)` for the defaults |
+| `conditions`, `conditionValue` | The stream that the caller gives |
+| `Next`, `around`, `Like` | `rArguments` |
+| `next` | `rPlan`, and `rOthers` for a text of `Others` |
+
+`conditions` and `conditionValue` serve the areas `selects`, `changes`, and `indexes`. A draw more in them reaches every profile but `tables`, whose statements have no WHERE.
+
+### Where the kinds are counted
+
+- **The differential tests of the engine** count in the `reach*` functions of `internal/engine/differential_test.go`: `reach`, `reachInsert`, `reachWhere`, `reachValueFirst`, `reachChange`, `reachIndex`, and `reachExists`. `pair.reach` calls them for `TestDifferential` and for `TestConn_differential`. It writes each kind into the tally with `reached: ` before its name. The tally also counts each statement by its kind and its outcome, such as `insert with a parameter ok`.
+- **The simulation of the engine** counts in `tallyOf` and in `run.event` of `internal/engine/simulation_test.go`.
+- **The driver check** counts in its own test.
+
+To see what a run reaches, run the test with `-v`. Each test logs the tally of each run.
+
+## Add a feature area
+
+The worked example is slice 13, `order by` and `limit`. None of it is built. `Generator.OrderBy` and the hook `Generator.Order` exist for the tests of the statement pass. A `Sequence` sets neither of them.
+
+1. **Add the area and its profile in `profile.go`.**
+   1. Add a constant `areaOrder`, with a comment that says what the area draws. Add it to `areas`.
+   2. Add a field to `Profile` for the odds of the area.
+   3. Add a case to `Profile.on`: the area is on if the field is not 0. Without a case, the area is on in every profile, and its stream never panics.
+   4. Add the new profile at the end of `Profiles`. It takes the next free slot, which is 10. No seed of another profile changes.
+   5. Turn the area on in `Mixed`. `TestProfileOf` requires that `Mixed` has every area of `areas` on.
+2. **Add the stream and the hook in `sequence.go`.**
+   1. Give `Sequence` a stream for the area, as `rIndexes` is one. Set it in `newSequence` with `q.stream(areaOrder)`.
+   2. Write the hook. It draws from that stream only, and gives what `Generator.Order` asks for: the columns of the ORDER BY, and the LIMIT.
+   3. Set `q.g.Order` only if the profile has the area on.
+3. **Make sure that the nine focused profiles that exist do not change.** If `Order` is nil and `OrderBy` is 0, `Generator.order` returns before any draw. So every sequence of these profiles is the same, byte for byte. Their digests do not change, and no row of theirs in a `.tsv` file moves.
+4. **Know what changes in `mixed`.**
+   - A select that gets the clause changes its text, and can change its arguments.
+   - Every other statement of `mixed` keeps its text. The clause is written within its own statement. The generator writes it with the stream of `text`, and draws from the stream of `arguments` whether the LIMIT is a `?`. Both streams start anew at the next statement. A select stores nothing that later statements read: no value, no live table, and no index.
+   - A select for which the hook gives no clause keeps its text too. The generator draws nothing for it.
+   - The counts of `mixed` change. A `LIMIT ?` adds an argument, which moves the exact counts of the excused calls.
+5. **Add the rule.** Write the rule for a select with the clause, and the names of its cases, in `rule.go`. Add a table test to `rule_test.go`.
+6. **Count the kinds.** Count them in the `reach*` functions, and in `tallyOf` for the simulation. Add them to the `.kinds` files.
+7. **Add the profile to the simulation.** Add a cell with the profile to an environment of `simEnvironments`. A cell that is added adds to what the environment reaches, and takes nothing from it.
+8. **Add a planted bug that names the new profile.** `TestSimulation_plantedBugs` gives each bug the profile that weighs what the bug breaks. `TestDifferential_plantedBugs` does the same for a bug of the choice of an access. The bugs themselves are in the engine, and `Options.Plant` in `internal/engine/export_test.go` plants one by its name.
+9. **Recount each test.** Use the commands of [The recount](#the-recount).
+10. **Read the diff of each `.tsv` file.** In the files of the differential tests, only the rows of `mixed` and of the new profile can change. In `TestSimulation.tsv`, a row is an environment, which sums its cells. So the rows of each environment that has `mixed` or the new profile can change. If a row of another profile changes, find the cause before you commit.
+11. **Update the digests.** Put the new digest of `mixed` and the digest of the new profile in `TestNewSequence`. The test requires a digest for each profile.
+
+If the rare kinds of the new profile need more sequences, give it twice as many in `sequencesOf` of `TestDifferential`.
+
+## What runs where
+
+`slow` in `internal/engine/differential_test.go` reports whether a run has `-short`, the race detector, or the address sanitizer. A slow run of a generated test runs fewer sequences and checks no count: a tenth of the sequences in `TestDifferential`, one in twenty in `TestConn_differential`, and one seed of each cell in `TestSimulation`. The digests of `TestNewSequence` are checked in every run.
+
+| Where | What it runs | The generated tests |
+| --- | --- | --- |
+| `make test` | `go test -short ./...` | A slow run, without counts. |
+| CI, job `sql` | `make test-sql`, which runs `./internal/sql/...` and `./internal/engine/...` without `-short`, `-race`, and `-asan` | The full run. It checks the counts of the `.tsv` files. |
+| CI, jobs `test` and `test-engine` | `go test -race`. `test-engine` runs the engine, and `test` runs every package but the core and the engine. | A slow run, without counts. |
+| CI, jobs `asan` and `asan-engine` | `make asan-test`, which runs `go test -asan -short`. `asan-engine` runs the engine in shards. | A slow run, without counts. |
+| CI, job `crosscheck` | `go test -race ./...` in `internal/sqlite/crosscheck` | The driver check. `make test` runs this module too, without `-race`. |
+| Nightly, job `generated-engine` | `TestDifferential` with `-sequences 400`, and `TestSimulation` with `S4QL_ENGINE_SIM_SEEDS=100` | Ten times the sequences of each profile, and 100 seeds of each cell. No counts, because the counts are those of the full run of CI. |
+| Nightly, job `simulation-engine` | `TestSimulation_plantedBugs` with `S4QL_ENGINE_SIM_SEEDS` | Each planted bug on many seeds of its profile. |
+
+A sequence that fails prints its seed, and a seed of the simulation that fails prints the command that replays it.

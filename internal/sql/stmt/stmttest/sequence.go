@@ -50,17 +50,19 @@ import (
 // values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every type meets a key
 // that exists. An update sets some columns of the shape, as [Sequence.update] draws it, and an
 // update three times in four and a delete four times in five have a WHERE, as [Sequence.changeConditions]
-// draws one: mostly as a select has one, and one time in three the key equal to a value of an
-// insert, or, for every third of those values, bounded on one side by it.
+// draws one: one time in two, if the sequence keeps a value of the key, the key equal to that value,
+// or, for every third of those values, bounded on one side by it, and otherwise as a select has one.
 // A create index names an index from a few names in several spellings, or now and then a name of a
 // table, on a table of the sequence, and the columns of its shape, as [Sequence.createIndex] draws
 // them; a drop index names one of those names, or now and then a name of a table; and a create table
 // and a drop table name one of the names of an index now and then. One WHERE of a select in two of a
-// table on which the sequence drew a create index, and one of an update or a delete in three, pins
-// leading columns of the index, as [Sequence.indexConditions] draws them. One create table, create
-// index, drop table, and drop index in three says IF NOT EXISTS or IF EXISTS, as [Generator.Exists]
-// writes it. One comparison in three of a WHERE has its value on the left and its column on the
-// right, as [Generator.ValueFirst] writes it, with the conditions as the hooks give them.
+// table of which the sequence keeps an index, as [Sequence.indexed] says, and one in two of the WHERE
+// of an update or a delete that are drawn as a select has one, pins leading columns of the index, or
+// one time in eight only bounds its first column, as [Sequence.indexConditions] draws them. One
+// create table, create index, drop table, and drop index in three says IF NOT EXISTS or IF EXISTS, as
+// [Generator.Exists] writes it. One comparison in three of a WHERE has its value on the left and its
+// column on the right, as [Generator.ValueFirst] writes it, with the conditions as the hooks give
+// them.
 //
 // One value in [Profile.Parameters] is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
@@ -163,8 +165,9 @@ type sequenceIndex struct {
 const storedIndexes = 3
 
 // indexWhere reports whether the WHERE of a statement of table is one that an index of the
-// sequence could serve, as [Sequence.indexConditions] draws it: for a table on which the sequence
-// drew a create index, one time in two, or three times in four with [Profile.Indexes] of 2.
+// sequence could serve, as [Sequence.indexConditions] draws it: for a table of which the sequence
+// keeps an index, as [Sequence.indexed] says, one time in two, or three times in four with
+// [Profile.Indexes] of 2.
 func (q *Sequence) indexWhere(table stmt.Name) bool {
 	if len(q.indexed[table.Fold()]) == 0 {
 		return false
@@ -493,11 +496,13 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 // does: the columns of its shape, in a list in any order or without a list, with a value of the type
 // of each, or NULL one time in four for a column that takes NULL, which a list also leaves out one
 // time in three. One list in eight leaves a column out, one in twelve has a name in place of one of
-// its own that is no other of the list, one insert in sixteen has a value more and one a value less,
-// one in ten has a value of any type, and one in three of these a second, and one in twelve has NULL
-// for any column, also the key. A list that leaves out a column with a long default has, one time in
-// two, a value of 85 hundredths of [LengthLimit] bytes for its first column of text or a blob.
-// After [Sequence.Mistyped], one insert in eight also gives an integer of a column of INT or
+// its own that is no other of the list, one insert in ten has a value of any type, and one in three
+// of these a second, one in twelve has NULL for any column, also the key, and one in eight has a
+// value more or a value less, each one time in two. These are the faults of the inserts, with the
+// odds of a profile that has the inserts among [Profile.Faults]; in another profile each is a quarter
+// as likely, as [Sequence.fault] says. A list that leaves out a column with a long default has, one
+// time in two, a value of 85 hundredths of [LengthLimit] bytes for its first column of text or a
+// blob. With [Profile.Mistyped], one insert in Mistyped also gives an integer of a column of INT or
 // INTEGER as a real.
 func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	r, d := q.rInserts, q.rDefaults
@@ -686,16 +691,20 @@ var inverses = map[stmt.Operator]stmt.Operator{
 }
 
 // where gives the conditions of the WHERE of a select of table, as [Generator.Where] gives them:
-// none one time in two. Otherwise, one time in five, a range of the key, a lower and an upper bound,
-// each open or closed, in either order, of two values as [Sequence.conditionValue] draws them, the
-// lower first in three ranges of four where they compare, and from none to two more conditions; or
-// else one or two conditions, or one time in eight from four to seven. The column of each such
-// condition is that of an earlier condition one time in four, one that the shape does not have one
-// time in ten, which can be in double quotes, and otherwise the key one time in three and any column
-// of the shape, the key too, else. Its operator is IS NULL or IS NOT NULL one time in twelve each, and
-// otherwise a comparison, with a value as [Sequence.conditionValue] draws it. One WHERE in eight then
-// has one more condition, the inverse of one of its conditions, which contradicts it, and for a
-// bound of the key leaves the range of the two without a key.
+// none for all but [Profile.Where] selects in four. Otherwise, where [Sequence.indexWhere] says so,
+// those that [Sequence.indexConditions] draws for an index of the table. Otherwise, one time in five,
+// a range of the key, a lower and an upper bound, each open or closed, in either order, of two values
+// as [Sequence.conditionValue] draws them, which change places three times in four where they compare
+// and the value of the lower bound is the greater, and from none to two more conditions; or else one
+// or two conditions, or one time in eight from four to seven. The column of each such condition is
+// that of an earlier condition one time in four, one that the shape does not have one time in ten,
+// which can be in double quotes, and otherwise the key one time in three and any column of the shape,
+// the key too, else. Its operator is IS NULL or IS NOT NULL one time in twelve each, and otherwise a
+// comparison, with a value as [Sequence.conditionValue] draws it. One WHERE in eight then has one
+// more condition, the inverse of one of its conditions, which contradicts it, and for a bound of the
+// key leaves the range of the two without a key. The column that the shape does not have and the
+// contradiction are faults, each a quarter as likely in a profile without the selects among
+// [Profile.Faults], as [Sequence.fault] says.
 func (q *Sequence) where(table stmt.Name) []stmt.Condition {
 	if q.rSelects.IntN(4) >= q.profile.Where {
 		return nil
@@ -706,10 +715,10 @@ func (q *Sequence) where(table stmt.Name) []stmt.Condition {
 	return q.conditions(q.rSelects, areaSelects, table)
 }
 
-// conditions of a WHERE of a statement of table, one or more, as [Sequence.where] draws them when it
-// gives a WHERE, with the random numbers of r, and with the faults of the area, as [Sequence.fault]
-// draws them: a column that the shape does not have, a contradiction, and a value that is NULL or of
-// another type than its column.
+// conditions of a WHERE of a statement of table, one or more, as [Sequence.where] describes them for
+// a WHERE that is not drawn for an index, with the random numbers of r, and with the faults of the
+// area, as [Sequence.fault] draws them: a column that the shape does not have, a contradiction, and a
+// value that is NULL or of another type than its column.
 func (q *Sequence) conditions(r Rand, area string, table stmt.Name) []stmt.Condition {
 	shape := q.shapeOf(table)
 	key := &shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
@@ -776,11 +785,16 @@ func (q *Sequence) conditions(r Rand, area string, table stmt.Name) []stmt.Condi
 
 // createIndex gives the columns of a create index of the name index on table, as
 // [Generator.CreateIndex] gives them: from one to all of the columns of the shape of table, each once,
-// in any order, so that the key is among them now and then, each descending one time in three. A
-// name that the shape does not have, which can be in double quotes, is added at any place one time in
-// twelve, and one time in forty, so that a few create indexes have two, another than the first, and
-// SQLite gives `no such column` for the first in the order of the text. The columns are kept for the
-// conditions of a WHERE, as [Sequence.indexConditions] draws them.
+// in any order, so that the key is among them now and then, or with [Profile.Indexes] of 2, three
+// times in four, every column but the key of a shape of two columns or more, in any order; each
+// descending one time in three. A name that the shape does not have, which can be in double quotes,
+// is added at any place one time in twelve, and one time in forty, so that a few create indexes have
+// two, another than the first, and SQLite gives `no such column` for the first in the order of the
+// text; each is a quarter as likely in a profile without the indexes among [Profile.Faults], as
+// [Sequence.fault] says. The columns are kept for the conditions of a WHERE, as
+// [Sequence.indexConditions] draws them, only as [Sequence.indexed] says: if the table is live, the
+// name is not that of a live table or of an index that the sequence keeps, and every column is one of
+// the shape.
 func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
 	r := q.rIndexes
 	shape := q.shapeOf(table)
@@ -825,12 +839,16 @@ func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
 }
 
 // indexConditions of a WHERE of a statement of table, which an index of the sequence on table can
-// serve, or nil if the sequence has drawn no create index on table: for the columns of one of them,
-// the leading ones, from one to all, each pinned by = with a value as [Sequence.conditionValue] draws
-// it, or by IS NULL one time in three for a column that takes NULL and one time in eight otherwise;
-// then, one time in two, a bound or two on the next column of the key of the index, which is the key
-// of the table after the columns of the index, each open or closed; and one time in three one more
-// condition as [Sequence.conditions] draws it. The conditions are in any order one time in three.
+// serve, or nil if the sequence keeps no index of table, as [Sequence.indexed] says: for the columns
+// of one of them, the leading ones, from one to all, or with [Profile.Indexes] of 2 all of them one
+// time in two, each pinned by = with a value as [Sequence.conditionValue] draws it, or by IS NULL one
+// time in three for a column that takes NULL and one time in eight otherwise. The key of the index is
+// its columns, and the key of the table after them if it is not among them. With [Profile.Indexes] of
+// 2, one time in four, the next column of that key after the pins, if it has one, is pinned by = too;
+// otherwise, one time in two, that column has a bound or two, each open or closed. One time in eight
+// the WHERE has no pin, and a bound or two on the first column of the index. Then, one time in three,
+// it has one more condition, one of those that [Sequence.conditions] draws. The conditions are in any
+// order one time in three.
 func (q *Sequence) indexConditions(table stmt.Name) []stmt.Condition {
 	r := q.rIndexes
 	indexed := q.indexed[table.Fold()]
@@ -937,9 +955,11 @@ func (q *Sequence) missing(r Rand, shape []stmt.Column) string {
 // update gives the assignments and the conditions of an update of table, as [Generator.Update] gives
 // them: from one to all of the columns of its shape, each once, in any order, where one time in two
 // the key is left out of two or more; one update in twelve has a name that the shape does not have
-// in place of one of them, which can be in double quotes. The value of each is NULL one time in ten,
-// also for the key and for a column that does not take NULL, for text or a blob one of about
-// [LengthLimit] bytes one time in twelve of the others, and otherwise drawn as
+// in place of one of them, which can be in double quotes, or one in forty-eight in a profile without
+// the changes among [Profile.Faults], as [Sequence.fault] says. The value of each is NULL one time in
+// ten, also for the key and for a column that does not take NULL, for a real one of the two zeros,
+// 0.0 and -0.0, one time in four of the others, for text or a blob one of about [LengthLimit] bytes
+// one time in twelve of the others, and otherwise drawn as
 // [Sequence.conditionValue] draws a value for a condition on its column: mostly a value that an
 // insert gave the column, a neighbour of one, or an edge of its type, now and then one of another
 // type, and as an insert gets one otherwise, so that a change of the key meets a key that exists and
@@ -1007,14 +1027,15 @@ func (q *Sequence) delete(table stmt.Name) []stmt.Condition {
 	return q.changeConditions(table)
 }
 
-// changeConditions of the WHERE of an update or a delete of table: one time in three, if an insert
-// gave the key a value, the one condition on the key with the i-th of the values that the sequence
+// changeConditions of the WHERE of an update or a delete of table: one time in two, if the sequence
+// keeps a value of the key, the one condition on the key with the i-th of the values that the sequence
 // keeps for it, which finds the row of the key if it is there, since most WHERE that
 // [Sequence.conditions] draws find no row of a table of a few rows. The condition is that the key is
 // the value, or, for every third i from the third on, that the key is on one side of it, with <,
 // <=, >, and >= in turn, which finds the rows on that side; the operator comes from i, so that the
 // sequence draws the same random numbers as for the key equal to the value. Otherwise the
-// conditions are as [Sequence.conditions] draws them.
+// conditions are those that [Sequence.indexConditions] draws, where [Sequence.indexWhere] says so,
+// and else as [Sequence.conditions] draws them.
 func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
 	r := q.rChanges
 	shape := q.shapeOf(table)
@@ -1040,7 +1061,9 @@ func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
 // time in twenty; a value of another type than t one time in twenty; a value that an insert of the
 // sequence gave the column, as [Sequence.store] keeps them, two times in five, and a neighbour of
 // one, as [Sequence.neighbour] gives it, one time in eight; an edge of t, as [edgeOf] gives it, one
-// time in ten; and otherwise as [Sequence.valueOf] gives it.
+// time in ten; and otherwise as [Sequence.valueOf] gives it. In a profile without the area among
+// [Profile.Faults], NULL and a value of another type come a quarter as often, as [Sequence.fault]
+// says, and a value as [Sequence.valueOf] gives it in their place.
 func (q *Sequence) conditionValue(r Rand, area string, table stmt.Name, fold string, t stmt.Type) stmt.Value {
 	stored := q.stored[[2]string{table.Fold(), fold}]
 	n := r.IntN(40)
