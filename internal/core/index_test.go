@@ -2033,13 +2033,21 @@ func indexFaultBase() []step {
 // shrinkPageCache of the cache at path to the fewest pages that SQLite takes, as the default of
 // every connection that opens it later, so that SQLite reads most pages from the file each time it
 // needs them, and a fault of a read can land in nearly every read of the cache. The official build
-// of SQLite in a browser does not have the PRAGMA, and its connections keep their page cache.
-func shrinkPageCache(t *testing.T, path string) {
+// of SQLite in a browser does not have the PRAGMA, and its connections keep their page cache, so a
+// commit there reads nothing from the file. It reports whether the cache keeps the size.
+func shrinkPageCache(t *testing.T, path string) bool {
 	t.Helper()
 	c, err := sqlite.Open(path)
 	is.NotError(t, err)
 	is.NotError(t, c.Exec("pragma default_cache_size = 1"))
+	s, err := c.Prepare("pragma default_cache_size")
+	is.NotError(t, err)
+	ok, err := s.Step()
+	is.NotError(t, err)
+	kept := ok && s.ColumnInt64(0) == 1
+	is.NotError(t, s.Finalize())
 	is.NotError(t, c.Close())
+	return kept
 }
 
 // faultStep is the distance between two positions of a fault in the fault tests of indexes: each
@@ -2077,7 +2085,7 @@ func TestTx_Commit_indexFaults(t *testing.T) {
 			is.NotError(t, d.Close(t.Context()))
 
 			for _, kind := range []string{"read", "spool write"} {
-				runs, failed := 0, 0
+				runs, failed, shrunk := 0, 0, false
 				for at := 0; ; at += faultStep() {
 					what := fmt.Sprint(kind, " ", at)
 					if at == 100000 {
@@ -2088,7 +2096,7 @@ func TestTx_Commit_indexFaults(t *testing.T) {
 					transact(t, d, indexFaultBase()...)
 					is.NotError(t, d.Close(t.Context()))
 					path := filepath.Join(w.dir, "a.db")
-					shrinkPageCache(t, path)
+					shrunk = shrinkPageCache(t, path)
 					head := w.manifest(t).Head
 
 					o := core.Options{}
@@ -2147,7 +2155,8 @@ func TestTx_Commit_indexFaults(t *testing.T) {
 					}
 				}
 				t.Log(kind, ": ", runs, " runs, ", failed, " failed")
-				is.True(t, failed > 0, "no commit failed at a "+kind)
+				// Without the small page cache, as in a browser, a commit reads nothing from the file.
+				is.True(t, failed > 0 || (kind == "read" && !shrunk), "no commit failed at a "+kind)
 			}
 		})
 	}
@@ -2177,7 +2186,7 @@ func TestReplay_indexFaults(t *testing.T) {
 			want := read(t, a)
 			is.NotError(t, a.Close(t.Context()))
 			head := w.manifest(t).Head
-			shrinkPageCache(t, filepath.Join(w.dir, "b.db"))
+			_ = shrinkPageCache(t, filepath.Join(w.dir, "b.db"))
 			data, err := os.ReadFile(filepath.Join(w.dir, "b.db"))
 			is.NotError(t, err)
 			o := core.Options{}
