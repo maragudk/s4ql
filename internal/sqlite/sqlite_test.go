@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"weak"
 
 	"maragu.dev/is"
 
@@ -1401,6 +1402,36 @@ func TestStmt_StepContext(t *testing.T) {
 		_, err = s.StepContext(t.Context())
 		is.Equal(t, codeMisuse, code(t, err))
 	})
+
+	t.Run("should have no current row after a step that ends the statement, also after a step with a row", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 1")
+		ok, err := s.StepContext(t.Context())
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, int64(1), s.ColumnInt64(0))
+		ok, err = s.StepContext(t.Context())
+		is.NotError(t, err)
+		is.True(t, !ok)
+		is.Equal(t, "sqlite: no current row", panicMessage(t, func() { s.ColumnInt64(0) }))
+	})
+
+	t.Run("should keep no reference to the context of a step after it", func(t *testing.T) {
+		c := memory(t)
+		s := prepare(t, c, "select 1")
+		ctx := &heldContext{Context: t.Context()}
+		collected := weak.Make(ctx)
+		_, err := s.StepContext(ctx)
+		is.NotError(t, err)
+		ctx = nil
+		runtime.GC()
+		is.True(t, collected.Value() == nil)
+	})
+}
+
+// heldContext is a context of its own allocation, whose collection a test can watch.
+type heldContext struct {
+	context.Context
 }
 
 // BenchmarkStmt_StepContext compares [sqlite.Stmt.StepContext] with [sqlite.Stmt.Step] for the first
