@@ -196,3 +196,48 @@ Nothing beyond step 3.
 - Mutation testing of the code of slice 11 in the engine (`buildValues`, the default in `buildSink`, `tooLongForCache`, `nullDefault`) for a fresh builder.
 - The two older claims of the README that the writer reported.
 - The status of the README, the site, and the roadmap are for the lead's sub-agent after the merge.
+
+## Step 5: The findings of the independent review, and the landing
+
+**Author:** default-engine landing builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "1. **Two simulation least numbers check nothing.** [...] Make the loop fail when `least > 0 && int(least*n) == 0`, so a least number can never silently check nothing again [...] and drop these two with the reason written beside them, naming where each kind is still required. 2. **A stale paragraph** in `internal/sql/stmt/README.md` [...] 3. **The goqite test** [...] Use goqite's own statements as far as slices 1 to 11 support them [...] and keep the re-run with `if not exists` as a separate, clearly named extra case."
+**Interpretation:** Fix the three small findings of the review in tests and docs, check that the branch is up to date with `main`, and land it.
+**Inferred intent:** A check that passes always checks something, and the goqite case is what glue really runs.
+
+### What I did
+
+- `TestSimulation` in `/internal/engine/simulation_test.go` fails when a least number gives a required count of 0 for the seeds of the run. At 50 seeds that held for 14 least numbers, not 2: "selects with WHERE of their own compared with SQLite, read by an index" of the default workload (0.014), twelve of the idle workload (0.0025 to 0.014), and "fault: broken read" of the hammer workload (0.019). All are dropped, with comments beside them that name the workloads which still require each kind. Every kind is still required by at least one other workload at 50 seeds. The core's tests and the driver check have no least number computed per seed, since the driver check pins whole counts, so the guard is needed only in the engine.
+- `/internal/sql/stmt/README.md`: the engine and the driver run the forms of slice 11 since 2026-11-21; the paragraph on `defaultRefusal` is gone.
+- `TestEngine_defaults` in `/internal/engine/defaults_test.go`: goqite v0.4.0's `schema_sqlite.sql`, read from the module cache, is a plain `create table` (columns `id, created, updated, queue, body, timeout, received, priority`, `strict`), a trigger, and a plain `create index`. The case runs the plain create table and the create index once, as glue's migrations apply them. The cuts are the four expression defaults, the trigger, `returning`, and `without rowid` added beside `strict`. A second case runs the table with `if not exists` again over a table with rows, before and after a replay.
+- `git merge origin/main`: already up to date, so no conflict and no pins moved.
+
+### Why
+
+The rounding to 0 made the least numbers lower than one occurrence in 50 seeds check nothing, and nothing said so.
+
+### What worked
+
+Without `-short`: `go test ./internal/engine/... ./internal/sql/...`, `make test` (with the driver check), `make lint`, `make check-browser`, and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` all passed. The planted bugs of the engine's simulation were all found.
+
+### What didn't work
+
+A Python here-doc that rewrote the goqite case was refused by the harness as "too complex to verify that it stays inside the worktree"; the Edit tool did it.
+
+### What I learned
+
+The brief counted two least numbers that rounded to 0; a scan of the three maps found fourteen. A per-seed least number below 0.02 never checks anything at the default of 50 seeds.
+
+### What was tricky
+
+Saying, for each dropped kind, where it is still required: the hammer workload requires all of the idle workload's dropped kinds except the statements read by the index that their engine forces and the crashes with an empty cache of a log with an index, which only the default workload requires.
+
+### What warrants review
+
+- The comments beside the dropped least numbers in `TestSimulation`.
+
+### Future work
+
+- Mutation testing of slice 11 in the engine, as in step 4.
