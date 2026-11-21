@@ -38,8 +38,9 @@ import (
 	"maragu.dev/s4ql/internal/testshard"
 )
 
-// hostRand is the [stmttest.Rand] of a host, so that the statements of a simulation come from its
-// seed.
+// hostRand is the [stmttest.Rand] of a host, for what the callers of a simulation draw for
+// themselves: their waits, their transactions, and how they read the rows of a query. The statements
+// come from the sequence of the seed, whatever the scheduler does.
 type hostRand struct {
 	h host.Host
 }
@@ -2569,13 +2570,17 @@ func replayCommand(seed uint64, flags ...string) string {
 	return "go test " + mode + "-run '^TestSimulation$' -v ./internal/engine/ -replay " + fmt.Sprint(seed) + " " + strings.Join(flags, " ")
 }
 
-// TestSimulation_plantedBugs runs the workload with each planted bug until it finds the bug by its own
-// violation in two seeds, and the same seeds without the bug, which find nothing. With
-// S4QL_TEST_SHARD set, it runs the bugs of that shard only: see [testshard].
+// TestSimulation_plantedBugs runs each planted bug in its environment, on the seeds of its profile,
+// until two seeds have found the bug by its own violation, and each seed that finds the bug again
+// without it, which must find nothing. With S4QL_ENGINE_SIM_SEEDS, it runs that many seeds of the
+// profile of each bug, and logs how many find it. With S4QL_TEST_SHARD set, it runs the bugs of that
+// shard only: see [testshard].
 func TestSimulation_plantedBugs(t *testing.T) {
 	limit := simSeeds(t, 100)
-	// The workload of each bug, and the violation that finds it: the check of an insert in a read
-	// transaction of its own needs two inserts of one key on one instance at once.
+	// The environment and the profile of each bug, and the violations that find it. The comment of a
+	// bug says why its profile exercises what the bug breaks, and how many of the first 200 seeds of
+	// the profile found the bug on 2026-11-21, with S4QL_ENGINE_SIM_SEEDS=200. Count them again when
+	// the generator of the profile changes.
 	bugs := []struct {
 		name string
 		w    workload
@@ -2587,114 +2592,138 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// bug must cause in two seeds at least.
 		finds []string
 	}{
-		// An insert of a write transaction that replaces a row succeeds, where SQLite fails.
+		// An insert that replaces a row makes a commit of the log fail in SQLite, and an insert of a
+		// write transaction that replaces a row succeeds, where SQLite fails. The profile of the
+		// tables weighs the inserts, whose keys repeat: 180 of 200 seeds find the bug, 178 of them by
+		// its own violation.
 		{"skipUnique", defaultWorkload, "default", stmttest.Tables, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed", "(write), which began at commit"}},
+		// A statement that succeeds while its commit did not land is acknowledged, and is not in the
+		// log. The profile of the tables weighs the inserts, and so the commits: 48 of 200 seeds find
+		// the bug, each by its own violation, where 39 do on the mixed profile.
 		{"ackUnknown", defaultWorkload, "default", stmttest.Tables, []string{"is not in the log"}},
+		// The check of an insert in a read transaction of its own lets two inserts of one key both
+		// commit, and the second commit fails in SQLite. That needs two inserts of one key on one
+		// instance at once, which the hammer environment gives, and the profile of the tables weighs
+		// the inserts: 79 of 200 seeds find the bug, each by its own violation.
 		{"checkOutside", hammerWorkload, "hammer", stmttest.Tables, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A write transaction left open keeps the instance from a write, and from a close that
-		// releases the lease, so the next instance never runs the queries of its connections.
+		// releases the lease, so the next instance never runs the queries of its connections. Any
+		// write that fails leaves one open, and about half of the statements of the mixed profile meet
+		// no table: 196 of 200 seeds find the bug, each by its own violation.
 		{"keepOpen", defaultWorkload, "default", stmttest.Mixed, []string{"no instance runs a write", "a query on each connection of its callers ten minutes after the end of the workload"}},
 		// A read transaction left open fails every later query of its connection, and the check of
 		// the connections after the workload.
 		// In a transaction, the rows of the query stay open, which refuses every later statement of the
-		// connection.
+		// connection. The profile of the selects with WHERE weighs the queries, some of which a caller
+		// closes unread: 149 of 200 seeds find the bug, 78 of them by its own violation.
 		{"keepRead", defaultWorkload, "default", stmttest.Where, []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open", "the rows of an earlier query of the connection are open"}},
 		// An annotation with the wrong parameters gives a log that, replayed, inserts other rows than
-		// the callers did, and maybe one that a later insert of the log meets.
+		// the callers did, and maybe one that a later insert of the log meets. Every value of the
+		// profile of the arguments is a parameter: 154 of 200 seeds find the bug, each by its own
+		// violation.
 		{"annotateNext", defaultWorkload, "default", stmttest.Arguments, []string{"and its caller gave the arguments", "the replay of the log holds", "fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A failed statement that is kept is in the commit object of its transaction, whose replay in
 		// SQLite then fails. What it changed before it failed is kept too: an update that changes the key
 		// of a row that the transaction inserted, and fails with UNIQUE after the delete of the old key,
 		// leaves the insert and the delete, whose net effect is nothing, so the commit object holds
-		// neither, and the insert that its caller was told of is not in the log.
+		// neither, and the insert that its caller was told of is not in the log. In the profile of the
+		// transactions, one turn of a caller in two is a transaction: 198 of 200 seeds find the bug,
+		// each by its own violation.
 		{"keepFailed", defaultWorkload, "default", stmttest.Transactions, []string{"whose statements that succeeded and write are", "fails in SQLite", "is not in the log"}},
 		// A read-only transaction that moves on to the newest state reads rows that were committed after
 		// its beginning, and its later statements report the newer state. When its read of the newest
-		// state fails, the transaction keeps the read that the bug ended, whose end then fails.
+		// state fails, the transaction keeps the read that the bug ended, whose end then fails. The bug
+		// needs commits between two statements of one transaction, which the callers of the hammer
+		// environment give, on the profile of the transactions: 194 of 200 seeds find the bug, 173 of
+		// them by its own violation.
 		{"readNewest", hammerWorkload, "hammer", stmttest.Transactions, []string{"(read-only), which began at commit", "the statements of the read-only transaction", "the transaction has ended"}},
+		// A roll back that commits leaves in the log a transaction that its caller rolled back. On the
+		// profile of the transactions, 109 of 200 seeds find the bug, each by its own violation.
 		{"rollbackKeeps", defaultWorkload, "default", stmttest.Transactions, []string{"and its caller rolled it back"}},
 		// SQLite converts the real of the log as the bug did, so the replay of the log agrees with the
 		// engine, and only the check of the type of each value of the log finds it. In a table of
 		// several columns, the real that the bug converts can be the first value of another type than
 		// its column, and the engine then refuses a later one, where the rule refuses the real. The bug
-		// needs an insert of a whole real into an INT or INTEGER column that otherwise succeeds, which
-		// a sequence gives rarely; the hammer workload runs more statements than the default one, on
-		// one instance that no other instance takes the lease from. Of the first 200 seeds, with WHERE
-		// in the sequence, 14 found the bug by its own violation there and 12 in the default workload;
-		// with updates and deletes in it, 18 there; and on 2026-11-20, with indexes in it, which take
-		// turns of the inserts, 8 there, and the second of them is seed 59. Since the sequence of the
-		// hammer workload gives whole reals for INT and INTEGER columns, [stmttest.Sequence.Mistyped],
-		// 81 there, and with the clauses of slice 10 and slices 11 and 12 too, 60.
+		// needs an insert of a whole real into an INT or INTEGER column that otherwise succeeds. The
+		// hammer environment runs more statements than the default one, on one instance that no other
+		// instance takes the lease from, and one insert in eight of the profile of the tables gives an
+		// integer of such a column as a real, [stmttest.Profile.Mistyped]: 119 of 200 seeds find the
+		// bug, 114 of them by its own violation.
 		{"convertReal", hammerWorkload, "hammer", stmttest.Tables, []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
 		// A row that holds its values in other columns than its statement names: the replay of the log
 		// into an empty cache, which writes the rows, differs from SQLite, which runs the statements; a
 		// row whose key is another value makes a later insert of the log fail in SQLite, and a query
 		// give other rows than in SQLite; and a value in a column of another type is refused where the
 		// rule refuses nothing. The log holds no such value, since the check of the type sees the values
-		// in the columns where the bug puts them.
+		// in the columns where the bug puts them. The profile of the tables weighs the inserts and
+		// their lists of columns: 127 of 200 seeds find the bug, 35 of them by its own violation.
 		{"listOrder", defaultWorkload, "default", stmttest.Tables, []string{"the replay of the log holds", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit"}},
 		// A column left out of a list that holds the zero value of its type where SQLite has NULL: a
 		// query of the row gives other rows than in SQLite, which runs the statements of the log, and
 		// so does the replay of the log into an empty cache, which writes its rows. No check of a value
 		// that is not NULL finds it: the zero value has the type of its column, and no column that
 		// takes NULL is the key. An update or a delete whose WHERE meets the zero value changes another
-		// number of rows than in SQLite, and then the statements after it can differ. Since the shapes
-		// of the sequence have defaults, on 2026-11-21, the bug meets only a column without one, and
-		// the default workload found it in 6 of the first 200 seeds, where it found it in 39; the hammer
-		// workload, which runs more statements, finds it in 18, 15 of them by its own violation.
+		// number of rows than in SQLite, and then the statements after it can differ. The bug meets
+		// only a column without a default, and no shape of the profile of the tables has one; the
+		// hammer environment runs more statements than the default one: 64 of 200 seeds find the bug,
+		// 60 of them by its own violation.
 		{"zeroLeftOut", hammerWorkload, "hammer", stmttest.Tables, []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as some engines
-		// of a node do (see [run.open]), does not have the bug. The bug needs a select whose bound of the key is
-		// the key of a row, which the updates and deletes of the sequence made rarer: they take turns of
-		// the selects, and delete rows. The hammer workload runs more statements than the default one,
-		// on one engine that reads by the key. Of the first 200 seeds, with updates and deletes in the
-		// sequence, 32 found the bug there and 8 in the default workload; on 2026-11-20, with indexes
-		// in it, 27 there; and with the bounds of the key of updates and deletes, and the whole reals of
-		// [stmttest.Sequence.Mistyped], 24, and with the clauses of slice 10 and the defaults of slice
-		// 11 and the values on the left of slice 12 too, 11.
+		// of a node do (see [run.open]), does not have the bug. The bug needs a select whose bound of the
+		// key is the key of a row, on an engine that reads by the key. The one engine of the hammer
+		// environment reads as the rules choose, and the profile of the selects with WHERE weighs
+		// such selects, and writes no update or delete that takes their rows: 134 of 200 seeds find the
+		// bug, each by its own violation.
 		{"openBound", hammerWorkload, "hammer", stmttest.Where, []string{", and in SQLite", "which began at commit"}},
 		// A scan that pins a column of the key of an index, or of the primary key, to the value of a
 		// condition on another column. Where the value is of another type than the column, or NULL in
 		// the primary key, the storage core refuses the scan, which the engine had checked, as an
 		// internal error. Otherwise a select gives other rows than in SQLite, and an update or a delete
-		// changes other rows, after which the statements can differ. Of the first 200 seeds, on
-		// 2026-11-20, with the sequence of every second seed indexed, 19 found the bug, each by the
-		// refusal of the core, and the second of them is seed 23; with the bounds of the key of updates
-		// and deletes, 22, and with the clauses of slice 10 and slices 11 and 12 too, 15.
+		// changes other rows, after which the statements can differ. The profile of the indexes weighs
+		// the WHERE that pin the columns of an index, and the hammer environment runs more of them
+		// than the default one: 81 of 200 seeds find the bug, 66 of them by its own violation, where 43
+		// and 38 do in the default environment.
 		{"pinByPlace", hammerWorkload, "hammer", stmttest.Indexes, []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
-		// another count; and the rows that it should have changed make later statements differ.
+		// another count; and the rows that it should have changed make later statements differ. The
+		// profile of the updates and deletes weighs them, and aims most of them at a table that is
+		// there: 192 of 200 seeds find the bug, 178 of them by its own violation.
 		{"changeNothing", defaultWorkload, "default", stmttest.Changes, []string{"is in no commit, and changes", "rows in SQLite, and its caller was told", ", and in SQLite", "which began at commit", "the replay of the log holds", "fails in SQLite"}},
 		// An update that changes the key and leaves the old row: the commit object holds the new row and
 		// no delete of the old key, so the replay of the log into an empty cache, which writes its rows,
 		// differs from SQLite, which runs the statements; and the row that stays makes later statements
 		// differ, among them a write whose net effect on the rows that the bug left is nothing, which is
-		// then in no commit object, and not in the log that its caller was told of.
+		// then in no commit object, and not in the log that its caller was told of. The profile of the
+		// updates and deletes weighs the updates, some of which change the key of a row: 90 of 200
+		// seeds find the bug, 38 of them by its own violation.
 		{"keepOldKey", defaultWorkload, "default", stmttest.Changes, []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "is not in the log"}},
 		// A create table with IF NOT EXISTS of a table that exists, which replaces the table with the
 		// one of the statement, empty, where SQLite does nothing: the commit object holds the drop and
 		// the create, so the replay of the log into an empty cache, which writes them, differs from
 		// SQLite, which runs the statement and does nothing; and the rows that the table lost make later
-		// statements differ.
+		// statements differ. One create in two of the profile of the clauses of slice 10 says IF NOT
+		// EXISTS, of tables that are there and that are not: 183 of 200 seeds find the bug, 106 of them
+		// by its own violation.
 		{"replaceExisting", defaultWorkload, "default", stmttest.Exists, []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 		// An insert that leaves out a column with a default and stores NULL there: a query of the row
 		// gives other rows than in SQLite, which runs the statements of the log, and so does the replay
 		// of the log into an empty cache, which writes its rows; where the column does not take NULL, the
-		// engine gives NOT NULL where SQLite stores the default, so a later statement can differ. Of the
-		// first 200 seeds, on 2026-11-21, 56 found the bug, 53 of them by its own violation. A write in a
-		// transaction plants it too.
+		// engine gives NOT NULL where SQLite stores the default, so a later statement can differ. A
+		// write in a transaction plants it too. Every shape of the profile of the defaults has a
+		// default, and the list of an insert leaves a column with a default out one time in two: 137
+		// of 200 seeds find the bug, each by its own violation.
 		{"nullDefault", defaultWorkload, "default", stmttest.Defaults, []string{", and in SQLite", "the replay of the log holds", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 		// A scan whose bound from a condition with its value on the left, of slice 12, is the operator as
 		// the text writes it, so that `5 < k` reads the keys below 5: a select with WHERE gives fewer
 		// rows than in SQLite, since the filter above the scan drops the rows that the scan read wrongly
 		// and cannot give those that it did not read; an update or a delete changes fewer rows, after
-		// which the statements can differ. An engine that reads every row does not have the bug. Of the
-		// first 200 seeds, on 2026-11-21, 33 found the bug in the hammer workload, 26 of them by its
-		// own violation, and 11 in the default workload, 6 of them by it; the default run finds it the
-		// second time by it at seed 24.
+		// which the statements can differ. An engine that reads every row does not have the bug, and
+		// the one engine of the hammer environment reads as the rules choose. One comparison in two of
+		// the profile of the values on the left has its value there: 130 of 200 seeds find the bug, 92
+		// of them by its own violation.
 		{"unturnedBound", hammerWorkload, "hammer", stmttest.ValueFirst, []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 	}
 	shard := testshard.Get(t)
