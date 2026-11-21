@@ -61,6 +61,12 @@ const (
 	// conditions held for them: by its scan or its get, and, for an update, also the row that it reads
 	// to check a NULL for a column that does not take it, and each row again that it changes.
 	attrRowsRead = "statement.rows_read"
+	// attrNothing is whether a statement of IF NOT EXISTS or IF EXISTS did nothing because its object
+	// was there, or not there, as SQLite does nothing then: true, or false for one that went on to do
+	// what the plain statement does, also if it then failed, as in a read-only transaction. A
+	// statement without the clause has none, and so has one that failed with an error of its names,
+	// of its columns, or of the length limit, or before it read the database.
+	attrNothing = "statement.nothing"
 	// attrSQL is the SQL text, at Debug only.
 	attrSQL = "statement.sql"
 	// attrRows is the number of rows that the statement returned or changed.
@@ -166,6 +172,9 @@ type report struct {
 	// direction is the direction that the engine drew for a query, forward or backward, or empty for a
 	// statement that drew none.
 	direction string
+	// clause is set for a statement of IF NOT EXISTS or IF EXISTS, looked once its sink is built, and
+	// nothing if that sink does nothing.
+	clause, looked, nothing bool
 	// ended is set once the event is logged.
 	ended bool
 }
@@ -179,13 +188,13 @@ func (e *Engine) newReport(sql string) *report {
 func (r *report) of(s stmt.Statement) {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
-		r.kind, r.table = "create_table", s.Table.Value
+		r.kind, r.table, r.clause = "create_table", s.Table.Value, s.IfNotExists
 	case *stmt.DropTable:
-		r.kind, r.table = "drop_table", s.Table.Value
+		r.kind, r.table, r.clause = "drop_table", s.Table.Value, s.IfExists
 	case *stmt.CreateIndex:
-		r.kind, r.table, r.index = "create_index", s.Table.Value, s.Index.Value
+		r.kind, r.table, r.index, r.clause = "create_index", s.Table.Value, s.Index.Value, s.IfNotExists
 	case *stmt.DropIndex:
-		r.kind, r.index = "drop_index", s.Index.Value
+		r.kind, r.index, r.clause = "drop_index", s.Index.Value, s.IfExists
 	case *stmt.Insert:
 		r.kind, r.table = "insert", s.Table.Value
 	case *stmt.Update:
@@ -215,6 +224,16 @@ func (r *report) reads(rd reader, built any) {
 		r.access = "primary_key"
 	}
 	r.reader, r.before = rd, rd.rowsRead()
+}
+
+// doesNothing reports whether the sink s of the statement is [nothing], and records it for a
+// statement of IF NOT EXISTS or IF EXISTS.
+func (r *report) doesNothing(s sink) bool {
+	_, ok := s.(nothing)
+	if r.clause {
+		r.looked, r.nothing = true, ok
+	}
+	return ok
 }
 
 // drew records the direction of the reading how, if the engine drew it.
@@ -290,6 +309,9 @@ func (r *report) end(ctx context.Context, err error) {
 	}
 	if r.access != "" {
 		attrs = append(attrs, slog.Int64(attrRowsRead, r.reader.rowsRead()-r.before))
+	}
+	if r.looked {
+		attrs = append(attrs, slog.Bool(attrNothing, r.nothing))
 	}
 	attrs = append(attrs, slog.Int64(attrRows, r.rows), slog.String(attrOutcome, outcome))
 	var se *sqlerr.Error

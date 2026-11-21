@@ -390,7 +390,7 @@ Background: [the research note on how engines pick an index](research/index-sele
 
 ### Slice 10: `if not exists` and `if exists`
 
-Status: agreed on 2026-11-20, not built.
+Status: built on 2026-11-21, with its generated checks; mutation testing is still to come. The statement pass, the engine, and the `database/sql` driver run `create table if not exists`, `create index if not exists`, `drop table if exists`, and `drop index if exists`. A statement that does nothing writes nothing to the log, is not annotated, and runs also in a read-only transaction. One of its own that does nothing waits for no writer, as in SQLite. It is checked by table tests against SQLite, statement by statement and in transactions. Generated sequences with the clauses run in the engine's differential tests and in the driver's against mattn/go-sqlite3. The simulation finds a planted bug, `replaceExisting`, and an independent review checked the branch.
 
 ```sql
 create table if not exists t1 (v1 int primary key, v2 text) strict, without rowid;

@@ -300,7 +300,9 @@ func commitError(err error) error {
 // between a savepoint and its release, and is annotated before the release; if it fails, the
 // transaction rolls back to the savepoint, so that the statement has no effect and what the
 // statements before it did is kept, as in SQLite. In a read-only transaction, it fails with the
-// error that SQLite gives under `pragma query_only = 1`, after SQLite's errors of its names.
+// error that SQLite gives under `pragma query_only = 1`, after SQLite's errors of its names. A
+// statement of IF NOT EXISTS or IF EXISTS that does nothing succeeds in either, and is not
+// annotated.
 func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (Result, error) {
 	t := c.tx
 	r.at(t.position(), t.write != nil)
@@ -315,6 +317,11 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 			return Result{}, err
 		}
 		r.reads(t.read, s)
+		if r.doesNothing(s) {
+			// SQLite only reads the schema for a statement that does nothing, which a read-only
+			// transaction allows.
+			return Result{}, nil
+		}
 		return Result{SetsChanges: setsChanges(p)}, readOnlyDatabase()
 	}
 
@@ -336,11 +343,19 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 			_ = w.rollbackTo(ctx)
 		}
 	}()
-	s, err := buildSink(ctx, w, p, args, bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal, changeNothing: c.e.bugs.changeNothing, keepOldKey: c.e.bugs.keepOldKey}, c.e.db.lengthLimit(), c.e.reading(false))
+	planted := bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal, changeNothing: c.e.bugs.changeNothing, keepOldKey: c.e.bugs.keepOldKey}
+	planted.replaceExisting = c.e.bugs.replaceExisting
+	s, err := buildSink(ctx, w, p, args, planted, c.e.db.lengthLimit(), c.e.reading(false))
 	if err != nil {
 		return Result{}, err
 	}
 	r.reads(w, s)
+	if r.doesNothing(s) {
+		// The statement does nothing, and is not annotated, so that the commit object of the
+		// transaction, if it has one, does not hold it. Its savepoint holds nothing to keep.
+		kept = true
+		return Result{}, w.release(ctx)
+	}
 	failed := Result{SetsChanges: setsChanges(p)}
 	if err := s.check(ctx); err != nil {
 		return checked(failed, err), err

@@ -31,10 +31,12 @@ type Expr interface {
 	expr()
 }
 
-// CreateTable creates a table, which no table of its name may exist for.
+// CreateTable creates a table, which no table of its name may exist for, or, if IfNotExists, does
+// nothing where a table of its name exists.
 type CreateTable struct {
-	Table   stmt.Name
-	Columns []ColumnDef
+	Table       stmt.Name
+	IfNotExists bool
+	Columns     []ColumnDef
 	// PrimaryKey holds the positions in Columns of the columns of the primary key, in key order.
 	PrimaryKey []int
 	// SQL is the text that SQLite keeps for the table, as [stmt.CreateTable] gives it, which
@@ -50,16 +52,20 @@ type ColumnDef struct {
 	Nullable bool
 }
 
-// DropTable drops a table, which must exist.
+// DropTable drops a table, which must exist, or, if IfExists, does nothing where no table of its
+// name exists.
 type DropTable struct {
-	Table stmt.Name
+	Table    stmt.Name
+	IfExists bool
 }
 
 // CreateIndex creates an index, which is not unique, on columns of a table, which must exist. No
-// table and no index of its name may exist.
+// table and no index of its name may exist, but, if IfNotExists, it does nothing where an index of
+// its name exists.
 type CreateIndex struct {
-	Index stmt.Name
-	Table stmt.Name
+	Index       stmt.Name
+	IfNotExists bool
+	Table       stmt.Name
 	// Columns of the index, in the order of the index.
 	Columns []stmt.IndexColumn
 	// SQL is the text that SQLite keeps for the index, as [stmt.CreateIndex] gives it, which decides
@@ -67,9 +73,11 @@ type CreateIndex struct {
 	SQL string
 }
 
-// DropIndex drops an index, which must exist.
+// DropIndex drops an index, which must exist, or, if IfExists, does nothing where no index of its
+// name exists.
 type DropIndex struct {
-	Index stmt.Name
+	Index    stmt.Name
+	IfExists bool
 }
 
 // Insert inserts the rows of Source into a table, each as a new row. Source gives a value for each
@@ -198,17 +206,17 @@ func (*Parameter) expr()   {}
 func NewPlan(s stmt.Statement) Plan {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
-		p := &CreateTable{Table: s.Table, PrimaryKey: []int{s.Key()}, SQL: s.SQL}
+		p := &CreateTable{Table: s.Table, IfNotExists: s.IfNotExists, PrimaryKey: []int{s.Key()}, SQL: s.SQL}
 		for _, c := range s.Columns {
 			p.Columns = append(p.Columns, ColumnDef{Name: c.Name, Type: columnType(c.Type), Nullable: !c.PrimaryKey && !c.NotNull})
 		}
 		return p
 	case *stmt.DropTable:
-		return &DropTable{Table: s.Table}
+		return &DropTable{Table: s.Table, IfExists: s.IfExists}
 	case *stmt.CreateIndex:
-		return &CreateIndex{Index: s.Index, Table: s.Table, Columns: s.Columns, SQL: s.SQL}
+		return &CreateIndex{Index: s.Index, IfNotExists: s.IfNotExists, Table: s.Table, Columns: s.Columns, SQL: s.SQL}
 	case *stmt.DropIndex:
-		return &DropIndex{Index: s.Index}
+		return &DropIndex{Index: s.Index, IfExists: s.IfExists}
 	case *stmt.Insert:
 		row := make([]Expr, len(s.Values))
 		for i, t := range s.Values {
@@ -273,7 +281,7 @@ func Format(p Plan) string {
 	var b strings.Builder
 	switch p := p.(type) {
 	case *CreateTable:
-		fmt.Fprint(&b, "create table ", p.Table.Raw, " (")
+		fmt.Fprint(&b, "create table ", ifClause(p.IfNotExists, "if not exists "), p.Table.Raw, " (")
 		for i, c := range p.Columns {
 			if i > 0 {
 				b.WriteString(", ")
@@ -292,9 +300,9 @@ func Format(p Plan) string {
 		}
 		b.WriteString("))\n")
 	case *DropTable:
-		fmt.Fprint(&b, "drop table ", p.Table.Raw, "\n")
+		fmt.Fprint(&b, "drop table ", ifClause(p.IfExists, "if exists "), p.Table.Raw, "\n")
 	case *CreateIndex:
-		fmt.Fprint(&b, "create index ", p.Index.Raw, " on ", p.Table.Raw, " (")
+		fmt.Fprint(&b, "create index ", ifClause(p.IfNotExists, "if not exists "), p.Index.Raw, " on ", p.Table.Raw, " (")
 		for i, c := range p.Columns {
 			if i > 0 {
 				b.WriteString(", ")
@@ -306,7 +314,7 @@ func Format(p Plan) string {
 		}
 		b.WriteString(")\n")
 	case *DropIndex:
-		fmt.Fprint(&b, "drop index ", p.Index.Raw, "\n")
+		fmt.Fprint(&b, "drop index ", ifClause(p.IfExists, "if exists "), p.Index.Raw, "\n")
 	case *Insert:
 		fmt.Fprint(&b, "insert into ", p.Table.Raw)
 		if p.Columns != nil {
@@ -392,6 +400,14 @@ func names(ns []stmt.Name) string {
 		raw[i] = n.Raw
 	}
 	return strings.Join(raw, ", ")
+}
+
+// ifClause of a statement that says it, which [Format] prints, or "".
+func ifClause(says bool, clause string) string {
+	if says {
+		return clause
+	}
+	return ""
 }
 
 func formatExpr(e Expr) string {
