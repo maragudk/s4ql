@@ -3615,7 +3615,12 @@ func TestPair_orderBy(t *testing.T) {
 		is.Equal(t, p.o.state(t), p.other.state())
 		var counts []string
 		for _, kind := range slices.Sorted(maps.Keys(y)) {
-			if strings.Contains(kind, "ORDER BY") || strings.Contains(kind, "LIMIT") || strings.HasPrefix(kind, "excused: ") || strings.Contains(kind, "sort") || strings.Contains(kind, "delivers") || strings.Contains(kind, "plan") {
+			// The kinds of the order of the rows that tie and of those without ORDER BY depend on the
+			// directions that the engines draw, from a seed of each run.
+			if strings.Contains(kind, " came in the ") && !strings.HasPrefix(kind, "reached: delivered ") {
+				continue
+			}
+			if strings.Contains(kind, "ORDER BY") || strings.Contains(kind, "LIMIT") || strings.HasPrefix(kind, "excused: ") || strings.Contains(kind, "sort") || strings.Contains(kind, "deliver") || strings.Contains(kind, "plan") {
 				counts = append(counts, fmt.Sprint(kind, ": ", y[kind]))
 			}
 		}
@@ -3623,8 +3628,58 @@ func TestPair_orderBy(t *testing.T) {
 			"excused: a value of another type than its column, checked against s4ql's rule: 78",
 			"excused: an argument that no column holds, checked against s4ql's rule: 3",
 			"excused: the wrong number of arguments, checked against s4ql's rule: 3",
+			"reached: LIMIT 0: 54",
+			"reached: LIMIT above the number of rows: 54",
+			"reached: LIMIT by an argument a value of another type: 3",
+			"reached: LIMIT by an argument ok: 75",
+			"reached: LIMIT of the number of rows: 6",
 			"reached: LIMIT run by every path: 192",
+			"reached: LIMIT that cuts: 69",
+			"reached: LIMIT that cuts a group of rows that tie: 16",
+			"reached: LIMIT with an argument that is NULL not supported: 9",
+			"reached: LIMIT with an argument that is a blob not supported: 18",
+			"reached: LIMIT with an argument that is a blob string or blob too big: 3",
+			"reached: LIMIT with an argument that is a negative integer not supported: 18",
+			"reached: LIMIT with an argument that is a real a value of another type: 3",
+			"reached: LIMIT with an argument that is a real no such column: 3",
+			"reached: LIMIT with an argument that is a real not supported: 18",
+			"reached: LIMIT with an argument that is a real string or blob too big: 3",
+			"reached: LIMIT with an argument that is text not supported: 9",
+			"reached: ORDER BY ascending ok: 147",
+			"reached: ORDER BY descending ok: 87",
+			"reached: ORDER BY of 1 columns ok: 222",
+			"reached: ORDER BY of 2 columns ok: 72",
+			"reached: ORDER BY of 3 columns ok: 21",
+			"reached: ORDER BY of a column of type BLOB ok: 48",
+			"reached: ORDER BY of a column of type INT ok: 111",
+			"reached: ORDER BY of a column of type INTEGER ok: 45",
+			"reached: ORDER BY of a column of type REAL ok: 96",
+			"reached: ORDER BY of a column of type TEXT ok: 129",
+			"reached: ORDER BY of a column that takes NULL ok: 342",
+			"reached: ORDER BY of a column that the table does not have no such column: 3",
+			"reached: ORDER BY of mixed directions ok: 81",
+			"reached: ORDER BY or LIMIT with arguments that s4ql refuses not supported: 3",
+			"reached: ORDER BY or LIMIT with arguments that s4ql refuses wrong number of arguments: 3",
+			"reached: ORDER BY over rows with NULL in its columns: 165",
 			"reached: ORDER BY run by every path: 315",
+			"reached: ORDER BY with LIMIT read by an index that delivers the order beside one that narrows a range: 6",
+			"reached: ORDER BY without WHERE ok: 150",
+			"reached: chosen a get of a table of several indexes, delivered forward: 21",
+			"reached: chosen an index with 0 pinned and a range of a table of several indexes, delivered backward: 12",
+			"reached: chosen an index with 0 pinned and a range of a table of several indexes, delivered forward: 6",
+			"reached: chosen an index with 0 pinned and a range of a table of several indexes, sorted: 9",
+			"reached: chosen an index with 0 pinned of a table of several indexes, delivered backward: 51",
+			"reached: chosen an index with 0 pinned of a table of several indexes, delivered forward: 66",
+			"reached: chosen an index with 1 pinned and a range of a table of several indexes, delivered backward: 6",
+			"reached: chosen an index with 1 pinned of a table of several indexes, delivered backward: 27",
+			"reached: chosen an index with 1 pinned of a table of several indexes, delivered forward: 33",
+			"reached: chosen an index with 1 pinned of a table of several indexes, sorted: 6",
+			"reached: chosen every row of a table of several indexes, delivered backward: 6",
+			"reached: chosen every row of a table of several indexes, delivered forward: 9",
+			"reached: chosen every row of a table of several indexes, sorted: 45",
+			"reached: chosen no row of a table of several indexes, delivered forward: 9",
+			"reached: chosen the primary key with 0 pinned and a range of a table of several indexes, delivered backward: 9",
+			"reached: delivered select whose rows that tie came in the order of the key of its access: 96",
 			"reached: path that delivers the order: 411",
 			"reached: path that sorts: 4074",
 			"reached: plan of the cache checked: 401",

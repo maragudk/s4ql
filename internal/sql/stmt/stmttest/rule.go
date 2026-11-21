@@ -101,7 +101,8 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 // names. SQLite looks the select list up first, in its order, and then the conditions, in the order
 // of the text: the first comparison of a column that the table does not have gives the error. A test
 // for NULL of such a column does not stop SQLite, which goes on with the error of that column: a
-// later such test replaces it, and the next comparison ends the walk with it.
+// later such test replaces it, and the next comparison ends the walk with it. Then come the columns
+// of the ORDER BY, of slice 13, in their order.
 func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 	for _, name := range s.Columns {
 		if ColumnOf(columns, name) < 0 {
@@ -124,6 +125,11 @@ func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 	}
 	if missing != nil {
 		return *missing, true
+	}
+	for _, c := range s.OrderBy {
+		if ColumnOf(columns, c.Name) < 0 {
+			return c.Name, true
+		}
 	}
 	return stmt.Name{}, false
 }
@@ -913,11 +919,6 @@ type Access struct {
 func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, args []any) (Access, bool) {
 	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" {
 		return Access{}, false
-	}
-	for _, c := range s.OrderBy {
-		if ColumnOf(columns, c.Name) < 0 {
-			return Access{}, false
-		}
 	}
 	if s.Limit.Parameter > 0 {
 		if n, ok := args[s.Limit.Parameter-1].(int64); !ok || n < 0 {
