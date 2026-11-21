@@ -738,8 +738,10 @@ var inverses = map[stmt.Operator]stmt.Operator{
 	stmt.OpLessOrEqual: stmt.OpGreater, stmt.OpGreater: stmt.OpLessOrEqual, stmt.OpIsNull: stmt.OpIsNotNull, stmt.OpIsNotNull: stmt.OpIsNull,
 }
 
-// where gives the conditions of the WHERE of a select of table, as [Generator.Where] gives them:
-// none for all but [Profile.Where] selects in four. Otherwise, where [Sequence.indexWhere] says so,
+// where gives the conditions of the WHERE of a select of table, as [Generator.Where] gives them: for
+// one select in [Profile.Aimed] of a table of which the sequence keeps an index, those that
+// [Sequence.aimedWhere] draws together with its ORDER BY. Otherwise none for all but [Profile.Where]
+// selects in four. Otherwise, where [Sequence.indexWhere] says so,
 // those that [Sequence.indexConditions] draws for an index of the table. Otherwise, one time in five,
 // a range of the key, a lower and an upper bound, each open or closed, in either order, of two values
 // as [Sequence.conditionValue] draws them, which change places three times in four where they compare
@@ -813,7 +815,7 @@ type orderColumn struct {
 }
 
 // orderColumns of the ORDER BY of a select of table, with the random numbers of r, and whether they
-// are aimed at an index beside one of a range. One time in two for a table of which the sequence
+// are aimed at an index beside one of a range. Two times in three for a table of which the sequence
 // keeps an index, as [Sequence.indexed] says, they are the columns of the key of one of them, the
 // index's columns and then those of the primary key that it lacks: where the WHERE of the select
 // pins the leading columns of the keys of two indexes, as many of each, and bounds the next column
@@ -821,9 +823,12 @@ type orderColumn struct {
 // the index that delivers the order wins over the one of the range, as goqite's receive reads by
 // goqite's index beside one on the queue and the timeout; and otherwise its leading columns. Of
 // these, from the first to all are taken, of which a column that the WHERE pins, with = or IS NULL,
-// is left out one time in two. They are in the directions of the key, or all turned one time in two,
-// and but for those aimed at the index beside one of a range, one column is turned again one time in
-// two, so that the directions are mixed. Otherwise, one time in six, the primary key, ascending or
+// is left out one time in two. They are in the directions of the key, or all turned one time in two.
+// But for those aimed at the index beside one of a range, one time in five they are the first column
+// of a key of three columns or more and the columns after a gap of one or more, if the sequence
+// keeps such an index; and three times in five two leading columns of the key or more, with no
+// column left out, of which the first or the second is turned again, so that the directions are
+// mixed. Otherwise, one time in six, the primary key, ascending or
 // descending; and else one column of the shape one time in two, and from one to all of them, each
 // once, in any order, else, each descending one time in two. Then, one time in four, a column that
 // the WHERE pins is put at any place, if the WHERE pins one that the columns lack. One time in

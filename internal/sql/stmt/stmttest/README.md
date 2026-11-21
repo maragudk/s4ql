@@ -39,7 +39,7 @@ Five areas are on in every profile: `names`, `plan`, `tables`, `inserts`, and `t
 | 7 | `valuefirst` | The value on the left of a comparison, in the WHERE of a select, an update, and a delete, on keys and on indexes. | `selects`, `changes`, `indexes`, `valuefirst`, `arguments` |
 | 8 | `transactions` | The statements that write, and those that read what was written. Its test begins transactions more often. | `selects`, `changes`, `indexes`, `arguments` |
 | 9 | `arguments` | The parameters, the arguments around those that s4ql supports, and the texts of `Others`: the errors and the refusals. | `selects`, `changes`, `arguments`, `others` |
-| 10 | `order` | The ORDER BY and the LIMIT of a select: on columns of every type, ascending and descending, with NULL and with rows that tie, with WHERE and without. Also the ORDER BY that an index delivers, beside an index that only narrows a range, and the LIMIT as a literal and as a `?`, with the arguments that s4ql refuses. | `selects`, `changes`, `indexes`, `arguments`, `order` |
+| 10 | `order` | The ORDER BY and the LIMIT of a select: on columns of every type, ascending and descending, with NULL and with rows that tie, with WHERE and without. Also the ORDER BY that an index delivers, beside an index that only narrows a range, around a pinned column of its key, with mixed directions, and with a gap in the key, and the LIMIT as a literal and as a `?`, with the arguments that s4ql refuses. | `selects`, `changes`, `indexes`, `arguments`, `order` |
 
 ### The fields of a profile
 
@@ -63,6 +63,8 @@ Five areas are on in every profile: `names`, `plan`, `tables`, `inserts`, and `t
 | `Limit` | One select in `Limit` has a LIMIT. A select whose ORDER BY is aimed at an index beside one of a range always has one. The area `order` is off if `Order` and `Limit` are both 0. |
 | `Keys` | One insert in `Keys` gives the key a value of its own statement (`keyOfStep`), which no other such insert gives. The insert then seldom meets a key that exists, so the tables hold more rows. With 1, every insert does. |
 | `Shared` | One create index in `Shared`, of a table of which the sequence keeps an index, holds the first column of that index and then another column. So two indexes of a table begin alike, and one can deliver an order where the other narrows a range. |
+| `Aimed` | One select in `Aimed`, of a table of which the sequence keeps an index, has a WHERE and an ORDER BY drawn together for the key of one of its indexes (`Sequence.aimedWhere`): goqite's receive, where two indexes begin alike, or a pin of a column at the start or in the middle of a key and an ORDER BY of the rest of it, one time in two with a range of the next column after a pin at the start. |
+| `Ties` | One value in `Ties` of an insert, for a column that is not the key and gets no NULL, is one of two values of its type (`tieValue`). So rows tie on a column of an index and differ in the next, where the order of a key and that of an ORDER BY can part. |
 
 `Aim` and `Faults` are what make a focused profile work. Without them, many statements of a sequence meet a table that is not there, or fail for a fault. Focus alone then does not make a rare kind of outcome more frequent. To aim, the sequence keeps a model of its own statements: the tables that are live (`live`), the indexes that it keeps (`indexed`), and the values that it gave each column (`stored`). The model follows the statements as the sequence wrote them, whether SQLite takes them or not.
 
@@ -203,9 +205,9 @@ Never draw from the stream of another area. Such a draw moves the numbers of tha
 | Hook or function | Stream |
 | --- | --- |
 | `create` | `rTables`, and `rDefaults` for the defaults |
-| `insert` | `rInserts`, also for the key of `Profile.Keys`, and `rDefaults` for the defaults |
-| `selectList`, `where` | `rSelects` |
-| `order`, `orderColumns` | `rOrder` |
+| `insert` | `rInserts`, also for the key of `Profile.Keys` and the values of `Profile.Ties`, and `rDefaults` for the defaults |
+| `selectList`, `where` | `rSelects`, and `rOrder` for the draw of `Profile.Aimed` |
+| `order`, `orderColumns`, `aimedWhere` | `rOrder` |
 | `update`, `delete`, `changeConditions` | `rChanges` |
 | `createIndex`, `indexWhere`, `indexConditions` | `rIndexes`, also for the columns of `Profile.Shared` |
 | `shapeOf` | `entity(areaTables, name)`, and `entity(areaDefaults, name)` for the defaults |
@@ -257,7 +259,7 @@ A `Generator` writes the clause where `Generator.OrderBy` is set, or where the h
 
 If the rare kinds of the new profile need more sequences, give it twice as many in `sequencesOf` of `TestDifferential`, as `order` has.
 
-A profile can need more than its own area to reach its kinds. In the first sequences of `order`, most selects gave no row or one row, because the keys repeat, and two indexes of a table seldom began with the same column. `Profile.Keys` and `Profile.Shared` changed both. Each is a field of another area, the inserts and the indexes, and draws from the stream of that area. Each is 0 in every other profile, so no other profile changed.
+A profile can need more than its own area to reach its kinds. In the first sequences of `order`, most selects gave no row or one row, because the keys repeat, and two indexes of a table seldom began with the same column. `Profile.Keys` and `Profile.Shared` changed both. Each is a field of another area, the inserts and the indexes, and draws from the stream of that area. Each is 0 in every other profile, so no other profile changed. A review then found that a pin in the middle of a key, an ORDER BY with a gap in a key, and an ORDER BY of mixed directions over rows that tie were each too rare for a fault of them to show. `Profile.Aimed`, `Profile.Ties`, three columns in each table of `order`, more selects, and the forms of an ORDER BY of a key in `Sequence.orderColumns`, a gap one time in five and mixed directions three times in five, changed that. `Aimed` and `Ties` are 0 in every other profile too.
 
 The steps cover the generator and its counts. The checks that slice 13 added to the tests of the engine beside them are in [`docs/todo/slice-13.md`](../../../../docs/todo/slice-13.md), under "Generated checks".
 
