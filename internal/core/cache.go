@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"iter"
@@ -183,6 +184,17 @@ func (c *conn) count(sql string, args ...any) (int, error) {
 
 // query the statement sql with args as [bind] takes them, and call row for each of its rows.
 func (c *conn) query(sql string, row func(s *sqlite.Stmt) error, args ...any) error {
+	return c.queryWith((*sqlite.Stmt).Step, sql, row, args...)
+}
+
+// queryContext is [conn.query] of a statement that only reads, each of whose steps SQLite stops once
+// ctx has ended, as [sqlite.Stmt.StepContext] says. It then fails with the error of ctx.
+func (c *conn) queryContext(ctx context.Context, sql string, row func(s *sqlite.Stmt) error, args ...any) error {
+	return c.queryWith(func(s *sqlite.Stmt) (bool, error) { return s.StepContext(ctx) }, sql, row, args...)
+}
+
+// queryWith is [conn.query] with step for each step of the statement.
+func (c *conn) queryWith(step func(s *sqlite.Stmt) (bool, error), sql string, row func(s *sqlite.Stmt) error, args ...any) error {
 	s, err := c.prepare(sql)
 	if err != nil {
 		return err
@@ -192,7 +204,7 @@ func (c *conn) query(sql string, row func(s *sqlite.Stmt) error, args ...any) er
 		return err
 	}
 	for {
-		ok, err := s.Step()
+		ok, err := step(s)
 		if err != nil {
 			_ = s.Finalize()
 			return err
@@ -1022,8 +1034,8 @@ func (t *table) checkBounds(limit int, bounds ...Bound) error {
 }
 
 // scan every row of the table in the order of its primary key, as [conn.scanIndex] reads them.
-func (c *conn) scan(t *table) iter.Seq2[[]*s4qlpb.Value, error] {
-	return c.scanIndex(t, nil, IndexScan{}, nil)
+func (c *conn) scan(ctx context.Context, t *table) iter.Seq2[[]*s4qlpb.Value, error] {
+	return c.scanIndex(ctx, t, nil, IndexScan{}, nil)
 }
 
 // upsert the row into the table: insert it, or replace the row with the same primary key. The

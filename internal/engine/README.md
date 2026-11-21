@@ -368,7 +368,7 @@ Operators are of two kinds. A source gives rows to the operator above it. A sink
 
 | Operator | Kind | What it does |
 | --- | --- | --- |
-| `scan` | source | Gives the rows of a table as its `access` reads them: no row, the row of one primary key by a `get`, or a scan by the primary key or by an index, in the order of that key or in its reverse, or, for an access whose rows are sorted, in the order of the ORDER BY. The zero `access` reads every row in the order of the primary key. It checks the context before each row, and ends with the error of the context when the context has ended. |
+| `scan` | source | Gives the rows of a table as its `access` reads them: no row, the row of one primary key by a `get`, or a scan by the primary key or by an index, in the order of that key or in its reverse, or, for an access whose rows are sorted, in the order of the ORDER BY. The zero `access` reads every row in the order of the primary key. It checks the context before each row, and ends with the error of the context when the context has ended. The cache stops a sort of the rows of the access when the context ends during it, and the scan then ends with the error of the context too. |
 | `filter` | source | Gives the rows of its source for which every one of its conditions is true, in the order of the source. |
 | `limit` | source | Gives the first rows of its source, at most as many as its count, in the order of the source, and ends the loop over the source with the last of them. |
 | `values` | source | Gives rows of constants. It checks the context before each row too. |
@@ -620,7 +620,7 @@ What a query with ORDER BY or LIMIT reads follows from its access and its order.
 - **`limit 0` reads nothing,** with ORDER BY or without, by a scan, by a sort, or by a `get`. It gives the errors of the names and of the arguments all the same.
 - **A LIMIT without ORDER BY reads up to the last row that it gives, in the direction that the query drew.** `limit 5` reads 5 rows. Where a filter drops rows before the LIMIT, the number depends on the direction: `where c > 2.0 limit 2` reads 5 rows forward. The test pins such a query forward only.
 - **A LIMIT above the number of rows reads every row of the access.**
-- **When a query stops before the end of a sort, the core counts the rows of the scan with a second statement,** `select count(*)` by the same conditions on the same index (`core.conn.unread`). SQLite does not say how many rows its sorter holds. See [the README of the core](../core/README.md#the-interface).
+- **When a query stops before the end of a sort, the core counts the rows of the scan with a second statement,** a count of a column of the primary key by the same conditions on the same index (`core.conn.unread`), which SQLite stops, as it stops the sort, when the context ends. SQLite does not say how many rows its sorter holds. See [the README of the core](../core/README.md#the-interface).
 
 ## IF NOT EXISTS and IF EXISTS
 

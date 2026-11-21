@@ -37,6 +37,7 @@
 package sqlite
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -569,6 +570,16 @@ func (s *Stmt) Step() (bool, error) {
 		}
 		return false, errorFromConn(s.db, rc)
 	}
+}
+
+// StepContext is [Stmt.Step], and does not interrupt the step: unlike the cgo binding, it installs no
+// progress handler, and a step runs to its end whether or not ctx ends, also a step that sorts many
+// rows. SQLite runs on the one thread of the page, where the only goroutines that run during a step,
+// and could end ctx, are those of the yields of the VFS. A handler would have to call Go every so
+// many instructions, and Go's runtime runs every goroutine that is ready during each such call, so
+// goroutines of the simulation would run in the middle of a step, and could call SQLite there.
+func (s *Stmt) StepContext(_ context.Context) (bool, error) {
+	return s.Step()
 }
 
 // ColumnCount of the statement's results, which is 0 for a statement without results. It panics on a

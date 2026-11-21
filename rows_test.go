@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql"
+	"maragu.dev/s4ql/internal/ctxtest"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
@@ -416,6 +418,62 @@ func TestRows(t *testing.T) {
 		is.Error(t, s4ql.ErrStopped, failed(t, rows.Err()))
 		is.NotError(t, rows.Close())
 		is.EqualSlice(t, []int64{1, 2}, values(t, w.serve(t, "b"), select1))
+	})
+
+	t.Run("should end a query with the error of the context when the context ends while the cache sorts its rows, and run the next query", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		// 10,000 rows, which the cache sorts in about ten periods of SQLite's progress handler, each of
+		// which looks at the context once. 7919 is a prime that does not divide 10,000, so v orders the
+		// rows otherwise than k, and no index has the order.
+		const n = 10_000
+		// readersFree reads t1.
+		exec(t, db, t1, insert1, "create table big (k int primary key, v int not null) strict, without rowid")
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		for k := range n {
+			_, err := tx.ExecContext(t.Context(), "insert into big (k, v) values (?, ?)", k, (k*7919)%n)
+			is.NotError(t, err)
+		}
+		is.NotError(t, tx.Commit())
+		// The row with the largest v: 2321 * 7919 is 18,379,999.
+		const sorted, point = "select k from big order by v desc limit 1", "select k from big where k = 2321"
+
+		// first runs the query src with ctx and gives the key of its first row, and the number of
+		// calls of the context's Err by then, or the error of the query.
+		first := func(ctx *ctxtest.Context, src string) (int64, int, error) {
+			rows, err := db.QueryContext(ctx, src)
+			if err != nil {
+				return 0, ctx.Calls(), err
+			}
+			defer func() { _ = rows.Close() }()
+			var k int64
+			if !rows.Next() {
+				return 0, ctx.Calls(), rows.Err()
+			}
+			calls := ctx.Calls()
+			is.NotError(t, rows.Scan(&k))
+			return k, calls, nil
+		}
+		k, calls, err := first(ctxtest.EndAtErr(t.Context(), math.MaxInt), sorted)
+		is.NotError(t, err)
+		is.Equal(t, int64(2321), k)
+		// The driver and the engine look at the context as often for a query that reads one row by
+		// its key, and SQLite's progress handler looks at it in the sort.
+		_, pointCalls, err := first(ctxtest.EndAtErr(t.Context(), math.MaxInt), point)
+		is.NotError(t, err)
+		is.True(t, calls-pointCalls >= 5, fmt.Sprint("the context's Err was called ", calls, " times before the first row of the sort, and ", pointCalls, " before that of the key"))
+
+		// A context that ends at any of those calls, also those of the sort, ends the query with its
+		// error, and the next query on the same database gives the row.
+		for at := 1; at <= calls; at++ {
+			_, _, err := first(ctxtest.EndAtErr(t.Context(), at), sorted)
+			is.Error(t, context.Canceled, failed(t, err), fmt.Sprint("ended at the call ", at))
+			k, _, err := first(ctxtest.EndAtErr(t.Context(), math.MaxInt), sorted)
+			is.NotError(t, err)
+			is.Equal(t, int64(2321), k)
+		}
+		readersFree(t, db)
 	})
 }
 

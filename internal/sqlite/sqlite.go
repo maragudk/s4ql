@@ -3,8 +3,9 @@
 //
 // It is deliberately small: opening and closing a database, through a VFS by its name if need be,
 // finding and registering a VFS, preparing one statement, binding and reading integers, reals, text,
-// blobs, and NULL, stepping, resetting, and finalizing, and reading how much memory SQLite uses. Each statement
-// runs in its own transaction, as SQLite does outside BEGIN and COMMIT.
+// blobs, and NULL, stepping, also with a context that interrupts the step when it ends, resetting, and
+// finalizing, and reading how much memory SQLite uses. Each statement runs in its own transaction, as
+// SQLite does outside BEGIN and COMMIT.
 //
 // SQLite's C code is compiled into this package with file-local symbols, so this package can share a
 // binary with another copy of SQLite without the two clashing at link time. Two copies of SQLite in
@@ -18,7 +19,8 @@ package sqlite
 // SQLite's public functions and variables are made static, so they are local to this translation
 // unit and cannot clash with another copy of SQLite in the same binary. Because of this, all C calls
 // in this package must be in this file, and this file must not use //export, which would copy this
-// preamble into a second translation unit.
+// preamble into a second translation unit. The one Go function that C calls, s4qlInterrupted, is
+// exported in progress.go, whose preamble has declarations only.
 #define SQLITE_API static
 
 #include "options.h"
@@ -140,6 +142,26 @@ static int s4ql_disable_lookaside(sqlite3 *db) {
 	return sqlite3_db_config(db, SQLITE_DBCONFIG_LOOKASIDE, (void *)0, 0, 0);
 }
 
+// s4qlInterrupted is in progress.go: nonzero once the context of the step that the handle h is for
+// has ended.
+extern int s4qlInterrupted(uintptr_t h);
+
+static int s4ql_progress(void *h) {
+	return s4qlInterrupted((uintptr_t)h);
+}
+
+// s4ql_step_interruptible steps stmt with s4ql_progress as the progress handler of its connection,
+// with the handle h, which SQLite calls every period instructions of its virtual machine and which
+// ends the step with SQLITE_INTERRUPT when it returns nonzero. The handler is removed before the
+// function returns, so it runs in this step and in no other.
+static int s4ql_step_interruptible(sqlite3_stmt *stmt, uintptr_t h, int period) {
+	sqlite3 *db = sqlite3_db_handle(stmt);
+	sqlite3_progress_handler(db, period, s4ql_progress, (void *)h);
+	int rc = sqlite3_step(stmt);
+	sqlite3_progress_handler(db, 0, 0, 0);
+	return rc;
+}
+
 // s4ql_tokenize the NUL-terminated SQL text at z with sqlite3GetToken, and write the type and the
 // length of each token into types and lens, which have room for max tokens. It stops after the token
 // at the NUL, which has length 0, and returns the number of tokens, or -1 if they do not fit.
@@ -158,9 +180,11 @@ static int s4ql_tokenize(const unsigned char *z, int *types, sqlite3_int64 *lens
 import "C"
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
+	"runtime/cgo"
 	"strings"
 	"unsafe"
 )
@@ -201,6 +225,10 @@ func errorFromConn(db *C.sqlite3, rc C.int) error {
 // Conn is a connection to a database.
 type Conn struct {
 	db *C.sqlite3
+	// progress is what the progress handler of a step that [Stmt.StepContext] runs reads, through
+	// its handle. Every statement of the connection shares it, which is one reason why a Conn and
+	// its statements are not safe for concurrent use.
+	progress *progress
 }
 
 // Open the database file at path for reading and writing, creating it if it does not exist. The path
@@ -252,7 +280,9 @@ func open(path, vfs string, flags C.int) (*Conn, error) {
 		C.sqlite3_close(db)
 		return nil, err
 	}
-	return &Conn{db: db}, nil
+	p := &progress{}
+	p.handle = cgo.NewHandle(p)
+	return &Conn{db: db, progress: p}, nil
 }
 
 // FindVFS registered under the given name, or SQLite's default VFS for the empty name. The result
@@ -298,6 +328,8 @@ func (c *Conn) Close() error {
 		return errorFromConn(c.db, rc)
 	}
 	c.db = nil
+	c.progress.handle.Delete()
+	c.progress = nil
 	return nil
 }
 
@@ -356,7 +388,7 @@ func (c *Conn) PrepareFirst(sql string) (*Stmt, int, error) {
 	if stmt == nil {
 		return nil, int(tail), nil
 	}
-	return &Stmt{stmt: stmt}, int(tail), nil
+	return &Stmt{stmt: stmt, progress: c.progress}, int(tail), nil
 }
 
 // DenyProcessPragmas on the connection from now on: the PRAGMAs soft_heap_limit, hard_heap_limit,
@@ -432,6 +464,8 @@ type Stmt struct {
 	stmt *C.sqlite3_stmt
 	// row is true while the most recent step returned a row.
 	row bool
+	// progress is that of the connection of the statement.
+	progress *progress
 }
 
 // error for the result code rc of a call on the statement.
@@ -537,7 +571,60 @@ func (s *Stmt) Step() (bool, error) {
 		return false, errorFromConn(nil, C.SQLITE_MISUSE)
 	}
 	s.row = false
-	switch rc := C.sqlite3_step(s.stmt); rc {
+	return s.result(C.sqlite3_step(s.stmt))
+}
+
+// progressPeriod is the number of instructions of SQLite's virtual machine between two calls of the
+// progress handler in a step of [Stmt.StepContext], each of which calls Go to look at the Err of the
+// context. A call was measured at about 75 ns on an Apple M4, as much as a few instructions of
+// a sort, so the handler adds well under a tenth of a percent to a step, which is too little to
+// measure, and a step stops within a period of instructions after its context ends, which is a
+// fraction of a millisecond of SQLite's work.
+const progressPeriod = 10_000
+
+// StepContext is [Stmt.Step], and ends the step when ctx ends: SQLite looks at ctx.Err every 10,000
+// instructions of its virtual machine, and once it is not nil, it stops the step, which then fails
+// with the error of ctx, [context.Canceled] or [context.DeadlineExceeded]. The statement has then
+// failed with SQLITE_INTERRUPT, which [Stmt.Reset] and [Stmt.Finalize] give, and it runs again after
+// a reset. A context that has ended before the step stops it at the first look, and a step that
+// ends before that gives its result. A context without Done, such as [context.Background], cannot
+// end, and the step runs as Step does.
+//
+// SQLite looks only between two instructions, so an instruction that runs long by itself runs to its
+// end first. Of the statements that read, the one that matters is the count of every row of a
+// table, "select count(*) from t" without WHERE, which SQLite runs in one instruction that reads the
+// whole table; a count of a column that is never NULL, such as one of the primary key, gives the
+// same number and is stopped. The instructions of a sort are bounded by the memory of the sort, so
+// a statement that sorts is stopped within a period of instructions however many rows it sorts.
+//
+// Only this step runs with the progress handler, so no other step and no other statement on the
+// connection is stopped for ctx, before it or after it. A statement that SQLite stops while it
+// writes, an insert, an update, or a delete, rolls back the whole transaction of an explicit BEGIN,
+// as https://sqlite.org/c3ref/interrupt.html says, so StepContext is for statements that only read:
+// SQLite stops one of those, also in an explicit transaction, and the transaction and its writes
+// stay.
+func (s *Stmt) StepContext(ctx context.Context) (bool, error) {
+	if s.stmt == nil {
+		return false, errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	if ctx.Done() == nil {
+		return s.Step()
+	}
+	s.row = false
+	s.progress.ctx = ctx
+	rc := C.s4ql_step_interruptible(s.stmt, C.uintptr_t(s.progress.handle), progressPeriod)
+	s.progress.ctx = nil
+	if rc == C.SQLITE_INTERRUPT {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+	}
+	return s.result(rc)
+}
+
+// result of a step that gave rc.
+func (s *Stmt) result(rc C.int) (bool, error) {
+	switch rc {
 	case C.SQLITE_ROW:
 		s.row = true
 		return true, nil
@@ -546,6 +633,13 @@ func (s *Stmt) Step() (bool, error) {
 	default:
 		return false, s.error(rc)
 	}
+}
+
+// vmSteps is the number of instructions of SQLite's virtual machine that the statement has run since
+// it was prepared.
+func (s *Stmt) vmSteps() int {
+	s.mustNotBeFinalized()
+	return int(C.sqlite3_stmt_status(s.stmt, C.SQLITE_STMTSTATUS_VM_STEP, 0))
 }
 
 // ColumnCount of the statement's results, which is 0 for a statement without results. It panics on a
