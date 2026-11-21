@@ -611,7 +611,9 @@ func TestEngine_orderBy_paths(t *testing.T) {
 				is.Equal(t, "", q.compare(t, o, got, want), what)
 				if !k.access.None {
 					inOrder := q.inOrderOf(sel, k.access, accessKey(k.access, ct, cis), ct)
-					is.EqualSlice(t, o.run(t, inOrder.src(), inOrder.args...).rows, got.rows, what+", as "+inOrder.src())
+					in := o.run(t, inOrder.src(), inOrder.args...)
+					is.Equal(t, "", in.err, inOrder.src())
+					is.EqualSlice(t, in.rows, got.rows, what+", as "+inOrder.src())
 				}
 
 				event, _ := h.last(t)

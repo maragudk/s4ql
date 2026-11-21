@@ -1486,7 +1486,9 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 			cs[j], cs[k] = cs[k], cs[j]
 		}
 		cs = cs[:pathSample]
-		p.count("WHERE run by a sample of its paths")
+		if sel.Where != nil {
+			p.count("WHERE run by a sample of its paths")
+		}
 	}
 	for _, k := range cs {
 		other.e.SetPath(k.path)
@@ -1497,6 +1499,9 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 		key := accessKey(k.access, ct, cis)
 		inOrder := q.inOrderOf(sel, k.access, key, ct)
 		in := o.run(t, inOrder.src(), inOrder.args...)
+		if in.err != "" {
+			t.Fatalf("%v: SQLite gives %v", inOrder.src(), in.err)
+		}
 		if !k.access.None && !slices.Equal(got.rows, in.rows) {
 			return fmt.Sprintf("%q with %#v: the select gives the rows\n%v\nby the path %+v, which reads by %v, and SQLite, as %q,\n%v", c.Src, c.Args, got.rows, k.path, k.access, inOrder.src(), in.rows)
 		}
@@ -1664,9 +1669,11 @@ func (p *pair) indexNames(s stmt.Statement) []string {
 // of the pair, through the same method, by the next of the paths of [otherPaths] for the indexes of
 // the table of c, as [engine.Engine.SetPath] forces it, where the engine of the instance reads the
 // rows as the rules choose, and as the rules choose where it reads every row, as an engine of
-// -scanall does. Before that, for a WHERE, it runs [pair.everyPath]. The rows of the two are compared
+// -scanall does. Before that, for a WHERE or an ORDER BY, it runs [pair.everyPath]. The rows of the two are compared
 // as multisets, as every two answers are: each query of the instance reads in a direction that its
-// engine draws. The two must give the same answer, message, and count of changes, and after an update
+// engine draws. Those of a query with LIMIT are compared by their number, since which rows a LIMIT
+// keeps depends on the path, and [pair.step] compares those of a query with ORDER BY or LIMIT of each
+// instance with SQLite. The two must give the same answer, message, and count of changes, and after an update
 // or a delete with WHERE the same rows of its table, as a select of * gives them on each, so that each
 // test that compares the instance with SQLite compares the ways of reading rows, of a select and of
 // the rows that an update or a delete changes, also in transactions. The other instance runs every
@@ -2711,7 +2718,8 @@ func limitRule(s *stmt.Select, args []any) string {
 	case nil:
 		which = "NULL"
 	default:
-		panic(fmt.Sprintf("an argument of type %T", a))
+		// An argument that no column holds, which [checkArguments] checks.
+		return ""
 	}
 	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", s.Limit.Parameter, which)
 }
