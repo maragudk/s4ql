@@ -9,6 +9,11 @@ select id from goqite where queue = ? and timeout <= ? and received < ?
 args: 'default', '2026-11-20T12:00:00.000Z', 3
 access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'
 
+## receive as goqite writes it
+select id from goqite where queue = ? and ? >= timeout and received < ?
+args: 'default', '2026-11-20T12:00:00.000Z', 3
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'
+
 ## by id
 select body from goqite where id = ?
 args: 'm_0001'

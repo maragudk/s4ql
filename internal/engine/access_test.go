@@ -179,7 +179,7 @@ func keyOf(p engine.Path) []string {
 }
 
 func TestEngine_paths(t *testing.T) {
-	t.Run("should give SQLite's rows for every select by every path that can serve it, in the order of the key of the path or in its reverse", func(t *testing.T) {
+	t.Run("should give SQLite's rows for every select by every path that can serve it, in the order of the key of the path or in its reverse, with the values of its comparisons on either side", func(t *testing.T) {
 		p := newIndexPair(t, 0, pathTable)
 		for _, x := range pathIndexes {
 			is.Equal(t, "", p.run(x.create("p")).err)
@@ -192,8 +192,10 @@ func TestEngine_paths(t *testing.T) {
 		for _, path := range pathsOf() {
 			p.i.e.SetPath(path)
 			for _, w := range pathWheres {
-				for _, columns := range []string{"*", "k", "s, n, k"} {
-					src := fmt.Sprint("select ", columns, " from p where ", w.where)
+				// Each WHERE as written, with every comparison of it written with its value first, and with
+				// every second one so, which reads the rows of the WHERE as written by the same access.
+				for n, columns := range []string{"*", "k", "s, n, k"} {
+					src := fmt.Sprint("select ", columns, " from p where ", valueFirst(w.where, func(m int) bool { return n == 1 || n == 2 && m%2 == 0 }))
 					what := fmt.Sprintf("%v with %#v by the path %+v", src, w.args, path)
 					want := p.o.run(t, src, oracleArgs(w.args)...)
 					is.Equal(t, "", want.err, what)
@@ -239,7 +241,7 @@ func TestEngine_paths(t *testing.T) {
 		}
 	})
 
-	t.Run("should change the rows that SQLite changes with every update and delete by every path that can serve it", func(t *testing.T) {
+	t.Run("should change the rows that SQLite changes with every update and delete by every path that can serve it, with the values of its comparisons on either side", func(t *testing.T) {
 		changes := []string{"update p set n = 7 where ", "update p set s = 'z', i = null where ", "update p set r = 9.5, b = x'07' where ", "delete from p where "}
 		// Each path gets a fresh database for each statement, so only every eighth condition runs by
 		// each path, a different eighth for each path.
@@ -248,7 +250,9 @@ func TestEngine_paths(t *testing.T) {
 				if (n+m)%8 != 0 {
 					continue
 				}
-				src := changes[(n+m/8)%len(changes)] + w.where
+				// The paths that run a condition are eight apart, and every second of them writes its
+				// comparisons with their values first.
+				src := changes[(n+m/8)%len(changes)] + valueFirst(w.where, func(int) bool { return n/8%2 == 1 })
 				what := fmt.Sprintf("%v with %#v by the path %+v", src, w.args, path)
 				var options engine.Options
 				options.Path(path)
@@ -504,7 +508,7 @@ func TestEngine_rowsRead(t *testing.T) {
 		}
 	})
 
-	t.Run("should read the rows of one queue for a query shaped like goqite's receive without its ORDER BY, with goqite's index, and every row without it", func(t *testing.T) {
+	t.Run("should read the rows of one queue for a query shaped like goqite's receive without its ORDER BY, as goqite writes it and with its column first, with goqite's index, and every row without it", func(t *testing.T) {
 		h := &events{}
 		i := newInstance(t, engine.Options{Logger: slog.New(h)})
 		is.Equal(t, "", i.exec(`create table goqite (id text primary key, created text not null, updated text not null, queue text not null,
@@ -524,20 +528,26 @@ func TestEngine_rowsRead(t *testing.T) {
 			return "insert into goqite values (?, ?, ?, ?, ?, ?, ?, ?)",
 				[]any{fmt.Sprintf("m_%04d", n), created, created, fmt.Sprint("queue-", n%3), []byte("body"), timeout, received, int64(n / 3 % 4)}
 		})
-		receive := "select id from goqite where queue = ? and timeout <= ? and received < ?"
+		// The receive as goqite writes its WHERE, with the value on the left of timeout, and with the
+		// column first, read the same rows by the same access.
+		receives := []string{"select id from goqite where queue = ? and ? >= timeout and received < ?", "select id from goqite where queue = ? and timeout <= ? and received < ?"}
 		args := []any{"queue-1", "2026-11-20T15:00:00.000Z", int64(3)}
+		readEach := func(want string) {
+			t.Helper()
+			for _, receive := range receives {
+				access, rowsRead, rows := read(t, i, h, receive, args...)
+				is.Equal(t, want, fmt.Sprint(access, " reads ", rowsRead, " gives ", rows), receive)
+			}
+		}
 
-		access, rowsRead, rows := read(t, i, h, receive, args...)
-		is.Equal(t, "full_scan reads 3000 gives 400", fmt.Sprint(access, " reads ", rowsRead, " gives ", rows))
+		readEach("full_scan reads 3000 gives 400")
 
 		is.Equal(t, "", i.exec("create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)").err)
-		access, rowsRead, rows = read(t, i, h, receive, args...)
-		is.Equal(t, "index goqite_queue_priority_created_idx reads 1000 gives 400", fmt.Sprint(access, " reads ", rowsRead, " gives ", rows))
+		readEach("index goqite_queue_priority_created_idx reads 1000 gives 400")
 
 		// An index on the queue and the timeout pins as much and bounds the next column, so it wins.
 		is.Equal(t, "", i.exec("create index goqite_queue_timeout on goqite (queue, timeout)").err)
-		access, rowsRead, rows = read(t, i, h, receive, args...)
-		is.Equal(t, "index goqite_queue_timeout reads 500 gives 400", fmt.Sprint(access, " reads ", rowsRead, " gives ", rows))
+		readEach("index goqite_queue_timeout reads 500 gives 400")
 	})
 }
 
@@ -567,10 +577,13 @@ const (
 )
 
 // goqiteQueries are shaped like the statements of goqite, a queue on SQLite. The receive is
-// goqite's without its ORDER BY and its LIMIT, which slice 13 brings, and with `timeout <= ?` where
-// goqite writes `? >= timeout`, which slice 12 brings.
+// goqite's without its ORDER BY and its LIMIT, which slice 13 brings, once as goqite writes its
+// WHERE, with `? >= timeout`, and once with `timeout <= ?`, which must have the same access, as
+// [TestAccessOf_golden] checks.
 var goqiteQueries = []planQuery{
 	{name: "receive", src: "select id from goqite where queue = ? and timeout <= ? and received < ?",
+		args: []any{"default", "2026-11-20T12:00:00.000Z", int64(3)}},
+	{name: "receive as goqite writes it", src: "select id from goqite where queue = ? and ? >= timeout and received < ?",
 		args: []any{"default", "2026-11-20T12:00:00.000Z", int64(3)}},
 	{name: "by id", src: "select body from goqite where id = ?", args: []any{"m_0001"}},
 	{name: "by queue", src: "select id from goqite where queue = 'default'"},
@@ -662,6 +675,10 @@ var planSchemas = []planSchema{
 			{name: "an update by a get", src: "update r set a = 2 where k = 3"},
 			{name: "a delete", src: "delete from r where a = ? and k <= ?", args: []any{int64(1), int64(10)}},
 			{name: "a delete of no row", src: "delete from r where k is null"},
+			{name: "a value on the left bounds its column as the operator turned round", src: "select a from r where 3 < k and 9 >= k"},
+			{name: "a value on the left pins and bounds an index", src: "select k from r where 'x' = b and ? > c", args: []any{9.5}},
+			{name: "a get by a value on the left", src: "update r set a = 2 where 3 = k"},
+			{name: "no row for null on the left", src: "delete from r where null <= a"},
 		},
 	},
 }
@@ -689,6 +706,19 @@ func TestAccessOf_golden(t *testing.T) {
 		is.NotError(t, err)
 		if diff := planDiff(string(want), got); diff != "" {
 			t.Errorf("the plans of the schema %v differ from %v, which go test ./internal/engine -run TestAccessOf_golden -update rewrites:\n%v", s.name, file, diff)
+		}
+	}
+
+	// goqite's receive has the same access whichever side of timeout its value is on.
+	for _, s := range planSchemas {
+		accesses := map[string]string{}
+		for _, block := range strings.Split(planText(t, s), "\n## ")[1:] {
+			name, _, _ := strings.Cut(block, "\n")
+			_, access, _ := strings.Cut(block, "\naccess: ")
+			accesses[name] = access
+		}
+		if want, ok := accesses["receive"]; ok {
+			is.Equal(t, want, accesses["receive as goqite writes it"], "the access of goqite's receive in the schema "+s.name)
 		}
 	}
 

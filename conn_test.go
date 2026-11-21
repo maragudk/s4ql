@@ -1801,6 +1801,131 @@ func TestDefaults(t *testing.T) {
 	})
 }
 
+func TestValueFirst(t *testing.T) {
+	// The table of goqite's queue, as far as slices 1 to 12 take it.
+	const create = "create table goqite (id text primary key, queue text not null, body blob not null, timeout text not null, " +
+		"received integer not null default 0, priority integer not null default 0) strict, without rowid"
+	fill := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		exec(t, db, create, "create index goqite_queue_timeout on goqite (queue, timeout)",
+			"insert into goqite (id, queue, body, timeout) values ('m1', 'q', x'01', '2026-11-21T10:00:00.000Z')",
+			"insert into goqite (id, queue, body, timeout, received) values ('m2', 'q', x'02', '2026-11-21T12:00:00.000Z', 3)",
+			"insert into goqite (id, queue, body, timeout) values ('m3', 'q', x'03', '2026-11-21T14:00:00.000Z')",
+			"insert into goqite (id, queue, body, timeout) values ('m4', 'r', x'04', '2026-11-21T10:00:00.000Z')")
+	}
+	// goqite's receive, without its ORDER BY and its LIMIT, which slice 13 brings, as goqite writes it,
+	// and with its column first.
+	const receive = "select id from goqite where queue = ? and ? >= timeout and received < ?"
+	const columnFirst = "select id from goqite where queue = ? and timeout <= ? and received < ?"
+
+	t.Run("should give the rows of a comparison with its value on the left, directly, prepared, several times with other arguments, and in a transaction, as with its column first", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		for args, want := range map[[3]any]string{
+			{"q", "2026-11-21T13:00:00.000Z", 3}: "id TEXT: m1",
+			{"q", "2026-11-21T13:00:00.000Z", 4}: "id TEXT: m1; m2",
+			{"q", "2026-11-21T09:00:00.000Z", 4}: "id TEXT: ",
+			{"r", "2026-11-21T10:00:00.000Z", 1}: "id TEXT: m4",
+		} {
+			is.Equal(t, want, rowsText(t, db, receive, args[:]...), fmt.Sprint(args))
+			is.Equal(t, want, rowsText(t, db, columnFirst, args[:]...), fmt.Sprint(args))
+		}
+		is.Equal(t, "id TEXT: m3; m4", rowsText(t, db, "select id from goqite where 'm2' < id and 'm4' >= id"))
+		is.Equal(t, "id TEXT: ", rowsText(t, db, "select id from goqite where null = queue"))
+		is.Equal(t, "id TEXT: ", rowsText(t, db, "select id from goqite where ? <> queue", nil))
+
+		p, err := db.PrepareContext(t.Context(), receive)
+		is.NotError(t, err)
+		for received, want := range map[int]string{0: "", 1: "m1 m3", 4: "m1 m2 m3"} {
+			rows, err := p.QueryContext(t.Context(), "q", "2026-11-21T15:00:00.000Z", received)
+			is.NotError(t, err)
+			var ids []string
+			for rows.Next() {
+				var id string
+				is.NotError(t, rows.Scan(&id))
+				ids = append(ids, id)
+			}
+			is.NotError(t, rows.Err())
+			slices.Sort(ids)
+			is.Equal(t, want, strings.Join(ids, " "), fmt.Sprint(received))
+		}
+		is.NotError(t, p.Close())
+
+		var id string
+		is.NotError(t, db.QueryRowContext(t.Context(), "select id from goqite where ? = id", "m3").Scan(&id))
+		is.Equal(t, "m3", id)
+
+		tx := begin(t, db, nil)
+		_, err = tx.ExecContext(t.Context(), "insert into goqite (id, queue, body, timeout) values ('m5', 'q', x'05', '2026-11-21T11:00:00.000Z')")
+		is.NotError(t, err)
+		is.Equal(t, "id TEXT: m1; m5", rowsText(t, tx, receive, "q", "2026-11-21T13:00:00.000Z", 3))
+		is.NotError(t, tx.Commit())
+	})
+
+	t.Run("should change and delete the rows of a comparison with its value on the left, with arguments numbered in the order of the text, and the count of rows, directly, prepared, and after a replay", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		// goqite's extend and delete are shaped so, with the value of a condition on the left.
+		res, err := db.ExecContext(t.Context(), "update goqite set timeout = ?, received = ? where ? = queue and id = ?", "2026-11-21T20:00:00.000Z", 1, "q", "m1")
+		is.Equal(t, int64(1), affected(t, res, err))
+		p, err := db.PrepareContext(t.Context(), "update goqite set priority = ? where ? > timeout and queue = ?")
+		is.NotError(t, err)
+		res, err = p.ExecContext(t.Context(), 7, "2026-11-21T13:00:00.000Z", "q")
+		is.Equal(t, int64(1), affected(t, res, err))
+		res, err = p.ExecContext(t.Context(), 8, "2026-11-21T23:00:00.000Z", "q")
+		is.Equal(t, int64(3), affected(t, res, err))
+		is.NotError(t, p.Close())
+		res, err = db.ExecContext(t.Context(), "delete from goqite where ? <= timeout and 'q' = queue", "2026-11-21T14:00:00.000Z")
+		is.Equal(t, int64(2), affected(t, res, err))
+		const want = "id TEXT, priority INTEGER, received INTEGER: m2 8 3; m4 0 0"
+		is.Equal(t, want, rowsText(t, db, "select id, priority, received from goqite"))
+		is.Equal(t, `delete from goqite where ? <= timeout and 'q' = queue with "2026-11-21T14:00:00.000Z"`, annotations(t, w)[len(annotations(t, w))-1])
+
+		is.NotError(t, db.Close())
+		db = w.serve(t, "b")
+		is.Equal(t, want, rowsText(t, db, "select id, priority, received from goqite"))
+		is.Equal(t, "id TEXT: m4", rowsText(t, db, "select id from goqite where 0 = received"))
+	})
+
+	t.Run("should give SQLite's errors of the names, and refuse a value of another type and an argument that no column holds, on the left too", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		fill(t, db)
+		for src, message := range map[string]string{
+			"select * from goqite where 1 = nope":                   "no such column: nope",
+			`select * from goqite where 'q' = "nope"`:               `no such column: "nope" - should this be a string literal in single-quotes?`,
+			"select * from goqite where nope is null and 1 < nope2": "no such column: nope",
+			"update goqite set received = 1 where 'x' > nope":       "no such column: nope",
+			"delete from goqite where 'q' = queue and x'00' = nope": "no such column: nope",
+		} {
+			_, err := db.ExecContext(t.Context(), src)
+			sqliteError(t, 1, 1, message, err)
+		}
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: "select * from goqite where 1 = queue", want: "an integer literal compared with the column goqite.queue of type TEXT"},
+			{src: "select * from goqite where queue = ? and ? >= timeout", args: []any{"q", 5}, want: "argument 2, which is an integer, compared with the column goqite.timeout of type TEXT"},
+			{src: "delete from goqite where ? < received", args: []any{true}, want: "argument 1 of type bool"},
+			{src: "update goqite set received = 1 where 1.5 < received", want: "a real literal compared with the column goqite.received of type INTEGER"},
+		} {
+			_, err := db.ExecContext(t.Context(), c.src, c.args...)
+			is.Equal(t, c.want, notSupported(t, err), c.src)
+			p, err := db.PrepareContext(t.Context(), c.src)
+			is.NotError(t, err, c.src)
+			_, err = p.ExecContext(t.Context(), c.args...)
+			is.Equal(t, c.want, notSupported(t, err), c.src)
+			is.NotError(t, p.Close())
+		}
+		_, err := db.QueryContext(t.Context(), receive, "q", "2026-11-21T13:00:00.000Z")
+		is.Equal(t, "s4ql: wrong number of arguments: 2 for a statement with 3 parameters", fmt.Sprint(err))
+	})
+}
+
 func TestConn_Raw(t *testing.T) {
 	t.Run("should run the calls of the driver's interfaces that database/sql makes no more, as it runs those with a context", func(t *testing.T) {
 		w := newWorld(t)
