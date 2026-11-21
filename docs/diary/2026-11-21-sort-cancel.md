@@ -103,3 +103,49 @@ A failed count stops the instance on both paths, since a read fault is a local f
 ### Future work
 
 The stop of an instance could stop a running sort too, through a context that the stop cancels. Not decided.
+
+## Step 3: Self-review and the checks
+
+**Author:** sort-cancel builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Run new tests with `go test -count=50` and under `-race`. Because you change `internal/sqlite`, run the sanitizer for the packages you touch only [...]. Run `make test` and `make lint` before you hand in."
+
+**Interpretation:** review the diff with the code-review skill, fix what matters, and run every check.
+
+**Inferred intent:** the branch is ready for the lead's review without surprises.
+
+### What I did
+
+Ran `/code-review medium main...sort-cancel`. It found nothing important, and three smaller points. (1) Pre-existing: a scan whose key has more than 63 unpinned columns sorts in its first step under the connection's small length limit, since `conn.step` raises the limit only for `Order`. Not this task's; I made the comment on `conn.step` say "a scan with Order" and recorded it as a known item in `/docs/todo/storage-core.md`. (2) The count of a column costs more than `OP_Count`: I measured it on 300,000 rows of about 200 bytes, `count(*)` 13 to 16 ms, `count(k)` 19 ms, the sort before it 49 to 53 ms, and recorded the numbers in `/docs/todo/slice-13.md`; the trade is kept, since the 15 ms of `count(*)` could not be stopped. (3) The `progress` struct is shared by the statements of a connection: a comment at the field now says so; a `Conn` was already not safe for concurrent use.
+
+Checks: `make lint` with 0 issues, simlint included; `make test`, exit 0; the sanitizer in Docker with `make asan-test ASANPKGS="maragu.dev/s4ql/internal/sqlite maragu.dev/s4ql/internal/core"`, `ok` for both (core 265 s, sqlite 63 s); every new test with `-count=50` and with `-race`.
+
+### Why
+
+The measured cost of the count was the one claim of the branch without a number.
+
+### What worked
+
+The review agreed with the reasoning on transactions, the handle's lifetime, and the count's equality.
+
+### What didn't work
+
+A one-shot benchmark written with a heredoc was refused by the worktree guard; I wrote it with the edit tool as `internal/sqlite/zz_count_test.go`, ran it, and deleted it.
+
+### What I learned
+
+On a file database `count(*)` of 300,000 rows takes about 15 ms, which is a third of the sort's time: the uninterruptible count was not negligible before this change either.
+
+### What was tricky
+
+Nothing beyond step 2.
+
+### What warrants review
+
+The two open items in `/docs/todo/storage-core.md`.
+
+### Future work
+
+None beyond those items.

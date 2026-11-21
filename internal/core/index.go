@@ -926,8 +926,8 @@ func (c *conn) scanIndex(ctx context.Context, t *table, ix *index, scan IndexSca
 // statement only reads, so the transaction of the connection and its writes stay: SQLite rolls
 // nothing back for a read that it stops.
 //
-// The step of a sorting scan runs under SQLite's largest length limit, and the limit of the
-// connection is put back after it, also when it fails. SQLite builds a record of what it sorts for
+// The step of a scan with Order, for which sorting is set, runs under SQLite's largest length
+// limit, and the limit of the connection is put back after it, also when it fails. SQLite builds a record of what it sorts for
 // each row, under the length limit, and that record is longer than the row is in the table where a
 // real of the row holds an integer, which the table keeps in fewer bytes: without the larger limit,
 // a row that the table holds under a small limit could not be sorted. The limit bounds nothing else

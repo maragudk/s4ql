@@ -226,7 +226,8 @@ func errorFromConn(db *C.sqlite3, rc C.int) error {
 type Conn struct {
 	db *C.sqlite3
 	// progress is what the progress handler of a step that [Stmt.StepContext] runs reads, through
-	// its handle.
+	// its handle. Every statement of the connection shares it, which is one reason why a Conn and
+	// its statements are not safe for concurrent use.
 	progress *progress
 }
 
