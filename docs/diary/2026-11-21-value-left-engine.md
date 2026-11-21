@@ -207,3 +207,26 @@ Nothing beyond the steps before.
 - Mutation testing of the engine step of slice 12, and long fuzz runs, for a fresh builder.
 - The roadmap's slice 12, the status of the README, and the site, for the lead's sub-agent after the merge.
 - `listOrder` in `TestSimulation_plantedBugs`, with the work on the workloads of the planted bugs.
+
+## Step 5: The reviewer's addition, the checks, and the landing
+
+**Author:** value-left-engine landing agent
+
+### What I did
+
+- The independent reviewer found no fault and asked for one addition. The doc comments of `engine.Condition.ValueFirst` (`/internal/engine/plan.go`) and `condition.valueFirst` (`/internal/engine/operator.go`) now say that the field is there only for the planted bug `unturnedBound` and for tests, that the statement pass has turned the operator round already, and that nothing may turn it round again from the field.
+- The reviewer also asked for a case in the statement pass's tests that fails if `recognize.condition` forgets `Swapped()` for any single operator. It is there already: "every operator with the value on the left" in `/internal/sql/stmt/check_test.go` writes all eight spellings with the value first and expects the recorded operators as literals, not through `Swapped()`. `TestOperator_Swapped` pins `Swapped` itself. So I added no test.
+- `git merge origin/main`: already up to date (`9ae52f6`).
+
+### What worked
+
+- Without `-short`: `go test ./internal/engine/... ./internal/sql/...` (the engine in 127 s) and the driver check in `/internal/sqlite/crosscheck` all pass. No pin moved, and `listOrder` is still found within its seeds.
+- `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` (37 fuzz tests, each once), `make lint`, `make check-browser`, and `make test`.
+
+### What didn't work
+
+Nothing.
+
+### Future work
+
+- Mutation testing of slices 9 to 12, then slice 13.
