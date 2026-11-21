@@ -15,7 +15,7 @@ import (
 
 func TestFromCore(t *testing.T) {
 	t.Run("should make each refusal of the core an internal error, and a value or a row that is too long SQLite's error", func(t *testing.T) {
-		for _, err := range []error{core.ErrTableExists, core.ErrNoTable, core.ErrReservedName, core.ErrInvalid, core.ErrTxDone, core.ErrReaderClosed} {
+		for _, err := range []error{core.ErrTableExists, core.ErrNoTable, core.ErrIndexExists, core.ErrNoIndex, core.ErrReservedName, core.ErrInvalid, core.ErrTxDone, core.ErrReaderClosed} {
 			is.True(t, errors.Is(fromCore(fmt.Errorf("a call: %w", err)), ErrInternal), err.Error())
 		}
 		var se *sqlerr.Error
