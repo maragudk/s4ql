@@ -658,7 +658,7 @@ func TestChooseAccess_orderBy(t *testing.T) {
 			is.NotError(t, err)
 			is.Equal(t, limited, orderedText(a), "with a LIMIT")
 
-			// Without the ORDER BY, the access is the one of slice 9, with a LIMIT and without, and its
+			// Without the ORDER BY, the access is the one that pins and bounds decide, with a LIMIT and without, and its
 			// rows have no order.
 			plain, err := chooseAccess(one, indexes, conditions, orderBy{}, bugs{})
 			is.NotError(t, err)

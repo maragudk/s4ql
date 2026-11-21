@@ -52,7 +52,7 @@ func TestNewPlan(t *testing.T) {
 		{src: `DROP INDEX "I 1"`, want: "drop index \"I 1\"\n"},
 		// A condition with its value on the left is the condition with its column first.
 		{src: "select v1 from t1 where 1 < v1 and ? >= v2 and null = v3 and v2 = ?", want: "query\n  project v1\n    filter v1 > 1 and v2 <= ?1 and v3 = null and v2 = ?2\n      scan t1\n"},
-		// Slice 13: the order over the filter, and the limit over the order, with the parameter of LIMIT
+		// The order is over the filter, and the limit over the order, with the parameter of LIMIT
 		// numbered after those of WHERE.
 		{src: "select v1, v2 from t1 order by v2 desc, v1 limit 10", want: "query\n  project v1, v2\n    limit 10\n      order by v2 desc, v1\n        scan t1\n"},
 		{src: "select v1 from t1 where v2 > ? order by v1 limit ?", want: "query\n  project v1\n    limit ?2\n      order by v1\n        filter v2 > ?1\n          scan t1\n"},
