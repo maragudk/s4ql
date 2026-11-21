@@ -3735,6 +3735,8 @@ func TestPair_orderBy(t *testing.T) {
 func FuzzDifferential(f *testing.F) {
 	f.Add(uint64(0), uint8(40))
 	f.Add(uint64(1), uint8(10))
+	// A seed of the profile of ORDER BY and LIMIT, of slice 13.
+	f.Add(stmttest.Order.Seed(0), uint8(48))
 	f.Fuzz(func(t *testing.T, seed uint64, n uint8) {
 		differentialOn(t, seed, int(n%64), false, nil, newMemoryInstance(t))
 	})
@@ -3748,6 +3750,7 @@ func FuzzDifferential_core(f *testing.F) {
 	f.Add(uint64(1), uint8(40), true, false)
 	f.Add(uint64(2), uint8(40), false, true)
 	f.Add(uint64(3), uint8(40), true, true)
+	f.Add(stmttest.Order.Seed(1), uint8(48), false, true)
 	f.Fuzz(func(t *testing.T, seed uint64, n uint8, restarts, limited bool) {
 		differential(t, seed, int(n%64), restarts, map[bool]int{true: stmttest.LengthLimit}[limited], nil)
 	})
