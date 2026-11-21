@@ -21,6 +21,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
@@ -360,9 +361,11 @@ type run struct {
 	ways map[string]string
 	// events of the run that are not statements: crashes, closes, and restarts, by kind.
 	events map[string]int
-	// wide is the number of rows of tables of several columns in the log, and nulls the number of
-	// NULL values in its rows, as [run.verifyRows] counts them.
-	wide, nulls int
+	// wide is the number of rows of tables of several columns in the log, nulls the number of NULL
+	// values in its rows, defaults the number of values in its rows that are the default of their
+	// column, NULL apart, and defaultTables the number of its create tables with a default, as
+	// [run.verifyRows] counts them.
+	wide, nulls, defaults, defaultTables int
 	// endedForLease are the numbers of the run's clock of events at which an instance ended a write
 	// transaction because it lost its lease, by the node and the generation of its engine, as the
 	// event of the storage core says: see [run.verifyOverlaps].
@@ -1403,15 +1406,19 @@ type logCommit struct {
 // the table, in the order of the table, and each value has the type of its column, or is NULL in a
 // column that takes NULL. The replay of the
 // log in SQLite runs its statements, and not its rows, so it does not see a row that holds the
-// values of a statement in other columns. It gives the number of rows of tables of several columns,
-// and the number of NULL values in the rows.
-func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide, nulls int) {
+// values of a statement in other columns. It counts the rows of tables of several columns, the NULL
+// values in the rows, the values that are the default of their column, which is not NULL, and the
+// create tables with a default, of slice 11, in r.
+func (r *run) verifyRows(ctx context.Context, log []logCommit) {
 	tables := map[string]*s4qlpb.CreateTable{}
 	for k, c := range log {
 		for _, ch := range c.changes {
 			switch {
 			case ch.HasCreateTable():
 				tables[fold(ch.GetCreateTable().GetTable())] = ch.GetCreateTable()
+				if slices.ContainsFunc(ch.GetCreateTable().GetColumns(), (*s4qlpb.Column).HasDefault) {
+					r.defaultTables++
+				}
 			case ch.HasDropTable():
 				delete(tables, fold(ch.GetDropTable().GetTable()))
 			case ch.HasUpsertRows():
@@ -1437,11 +1444,14 @@ func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide, nulls int)
 						continue
 					}
 					if len(columns) > 1 {
-						wide++
+						r.wide++
 					}
 					for i, v := range values {
+						if d := columns[i].GetDefault(); columns[i].HasDefault() && !d.HasNull() && proto.Equal(d, v) {
+							r.defaults++
+						}
 						if v.HasNull() {
-							nulls++
+							r.nulls++
 							// NULL has no type. The core refuses it for a column that does not take
 							// it, so this finds a fault of the engine and of the core together.
 							if !columns[i].GetNullable() {
@@ -1457,7 +1467,6 @@ func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide, nulls int)
 			}
 		}
 	}
-	return wide, nulls
 }
 
 // holds reports whether a column of the type t holds the value v: an integer for INT and INTEGER, a
@@ -1516,7 +1525,7 @@ func fold(name string) string {
 //     the cache of a node after its crash or at the end of the workload: see [run.checkCache].
 func (r *run) verify(ctx context.Context) {
 	log := readLog(r.store)
-	r.wide, r.nulls = r.verifyRows(ctx, log)
+	r.verifyRows(ctx, log)
 	index := map[string]int{format.EmptyLog.String(): 0}
 	inLog := map[uint64]int{}
 	txInLog := map[uint64]int{}
@@ -2330,6 +2339,8 @@ func tallyOf(s simulation) map[string]int {
 	counts["commits"] = len(log)
 	counts["rows of several columns"] = r.wide
 	counts["NULL values in the log"] = r.nulls
+	counts["values of a default in the log"] = r.defaults
+	counts["create tables with a default in the log"] = r.defaultTables
 	for _, c := range log {
 		if slices.ContainsFunc(c.params, func(ps []*s4qlpb.Value) bool { return len(ps) > 0 }) {
 			counts["commits with a parameter"]++
@@ -2481,6 +2492,10 @@ func TestSimulation(t *testing.T) {
 			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.98, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.54,
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.76, "statements that do nothing, compared with SQLite": 0.41,
 			"statements that do nothing in a transaction, compared with SQLite": 0.57,
+			// The defaults of slice 11, which the shapes of the sequence have since 2026-11-21: the create
+			// tables of the log with a default, and the values of its rows that are the default of their
+			// column, NULL apart, which [run.verifyRows] counts.
+			"create tables with a default in the log": 0.34, "values of a default in the log": 0.3,
 		}, 0.15},
 		// The ends of transactions for the lease, which only this workload reaches.
 		{"idle", idleWorkload, map[string]float64{
@@ -2516,14 +2531,18 @@ func TestSimulation(t *testing.T) {
 			"create index: 8/8: attempt to write a readonly database": 0.036, "drop index: ok": 0.02,
 			"drop index: 1/1: no such index: …": 0.23, "drop index: 8/8: attempt to write a readonly database": 0.0025,
 			"selects read by an index": 0.013, "updates read by an index": 0.008, "deletes read by an index": 0.0044,
-			"statements on an engine that forces an index path":     1.4,
-			"statements read by the index that their engine forces": 0.02,
+			"statements on an engine that forces an index path": 1.4,
+			// A quarter of the 59 that the first 1,000 seeds gave on 2026-11-21, where it was 0.02, since
+			// the sequence writes defaults and draws other random numbers; the first 50 seeds give none,
+			// and the default workload requires 3 of them.
+			"statements read by the index that their engine forces": 0.014,
 			"crash, then an empty cache, of a log with an index":    0.0052, "replays of a log with an index": 0.038,
 			"indexes dropped while the rows of a query that read by them were open": 0.0035,
 			"integrity checks after a crash":                                        1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
 			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.31, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.25,
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.43, "statements that do nothing, compared with SQLite": 0.068,
 			"statements that do nothing in a transaction, compared with SQLite": 0.24,
+			"create tables with a default in the log":                           0.1, "values of a default in the log": 0.055,
 		}, 0.15},
 		// The least number of the selects with WHERE in a transaction read by an index is a quarter of
 		// the 186 that the first 1,000 seeds gave on 2026-11-20, where it was 0.06, since the sequence
@@ -2533,7 +2552,10 @@ func TestSimulation(t *testing.T) {
 			"failed: timeout": 2.9, "query not read to its end": 0.96, "acknowledged writes": 5.9, "commits": 4.2,
 			"commits with a parameter": 1.2,
 			"fault: lost request":      0.23, "fault: lost response": 0.21, "fault: no answer": 0.25, "fault: conflict": 0.14,
-			"fault: slow way": 0.45, "fault: broken read": 0.02, "fault: cut-off": 0.058, "fault: outage": 0.026,
+			// A quarter of the 81 that the first 1,000 seeds gave on 2026-11-21, where it was 0.02, since
+			// the sequence writes defaults and draws other random numbers; the first 50 seeds give none,
+			// and the other workloads require 12 each.
+			"fault: slow way": 0.45, "fault: broken read": 0.019, "fault: cut-off": 0.058, "fault: outage": 0.026,
 			"fault: write applied after its caller gave up": 0.079, "fault: write stuck in the network": 0.41,
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4.2,
 			"transactions rolled back": 1.5, "transactions not committed": 0.15, "transactions unknown": 0.1,
@@ -2561,6 +2583,7 @@ func TestSimulation(t *testing.T) {
 			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 1.9, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.92,
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 1.4, "statements that do nothing, compared with SQLite": 0.81,
 			"statements that do nothing in a transaction, compared with SQLite": 1.1,
+			"create tables with a default in the log":                           0.49, "values of a default in the log": 0.6,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2741,6 +2764,12 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// SQLite, which runs the statement and does nothing; and the rows that the table lost make later
 		// statements differ.
 		{"replaceExisting", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
+		// An insert that leaves out a column with a default and stores NULL there: a query of the row
+		// gives other rows than in SQLite, which runs the statements of the log, and so does the replay
+		// of the log into an empty cache, which writes its rows; where the column does not take NULL, the
+		// engine gives NOT NULL where SQLite stores the default, so a later statement can differ. Of the
+		// first 200 seeds, on 2026-11-21, 38 found the bug, 35 of them by its own violation.
+		{"nullDefault", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {

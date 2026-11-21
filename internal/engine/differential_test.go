@@ -797,6 +797,10 @@ const (
 	// rows: no rows for a blob literal, which it turns into NULL, and for a string literal on the
 	// upper bound of the key whose search reaches no row. See [pair.longCondition].
 	excusedLongCondition = "a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule"
+	// excusedCacheLimit is a create table that SQLite takes under the length limit and whose
+	// statement in the cache is longer than the limit, which s4ql refuses as not supported. See
+	// [pair.tooLongForCache].
+	excusedCacheLimit = "a create table whose statement in the cache is longer than the length limit, checked against the length of that statement"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -1024,6 +1028,10 @@ func (p *pair) step(c stmttest.Call) string {
 		}
 		return failure
 	}
+	if got.err == "not supported" && p.tooLongForCache(src, got.message) {
+		p.y.excused(excusedCacheLimit)
+		return ""
+	}
 	if got.err == "not supported" {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
@@ -1102,6 +1110,107 @@ func (p *pair) step(c stmttest.Call) string {
 		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
 	}
 	return ""
+}
+
+// createDefaults are the kinds of the defaults of slice 11 of the create table s, each once, for a
+// count of what a test reaches: "create table with a default of integer" (of real, of text, or of
+// blob), "create table with DEFAULT NULL on a column that takes NULL", "create table with DEFAULT
+// NULL on a column that does not take NULL", "create table with a default on the key", and "create
+// table with a default of [stmttest.LongDefault] bytes or more".
+func createDefaults(s *stmt.CreateTable) []string {
+	seen := map[string]bool{}
+	var kinds []string
+	add := func(kind string) {
+		if !seen[kind] {
+			seen[kind] = true
+			kinds = append(kinds, kind)
+		}
+	}
+	for _, c := range s.Columns {
+		switch v := c.Default.Value.(type) {
+		case nil:
+			continue
+		case stmt.Null:
+			add(map[bool]string{true: "create table with DEFAULT NULL on a column that takes NULL", false: "create table with DEFAULT NULL on a column that does not take NULL"}[!c.PrimaryKey && !c.NotNull])
+		default:
+			add("create table with a default of " + map[string]string{"stmt.Integer": "integer", "stmt.Real": "real", "stmt.Text": "text", "stmt.Blob": "blob"}[fmt.Sprintf("%T", v)])
+		}
+		if c.PrimaryKey {
+			add("create table with a default on the key")
+		}
+		if c.Default.Span.End-c.Default.Span.Start >= stmttest.LongDefault {
+			add("create table with a default of " + fmt.Sprint(stmttest.LongDefault) + " bytes or more")
+		}
+	}
+	return kinds
+}
+
+// cacheStatementLength of the create table s: the length of its statement as the storage core keeps
+// it in the cache under the length limit, without "main.", written again here apart from the core,
+// so that the excuse of [pair.tooLongForCache] holds only where the cache's statement is longer than
+// the limit: every name in double quotes with each double quote doubled, the declared type in lower
+// case, PRIMARY KEY after the key, NOT NULL after every other column that does not take NULL, and
+// each default in the core's canonical form, an integer in decimal, a real in the shortest exponent
+// form and -0.0 as 0.0, text in single quotes with each doubled, a blob as x and its lower-case hex
+// digits in single quotes, and null.
+func cacheStatementLength(s *stmt.CreateTable) int {
+	quote := func(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }
+	var b strings.Builder
+	b.WriteString("create table " + quote(s.Table.Value) + " (")
+	for i, c := range s.Columns {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(quote(c.Name.Value) + " " + strings.ToLower(c.Type.String()))
+		switch {
+		case c.PrimaryKey:
+			b.WriteString(" primary key")
+		case c.NotNull:
+			b.WriteString(" not null")
+		}
+		switch v := c.Default.Value.(type) {
+		case nil:
+		case stmt.Integer:
+			b.WriteString(" default " + fmt.Sprint(int64(v)))
+		case stmt.Real:
+			f := float64(v)
+			if f == 0 {
+				f = 0
+			}
+			b.WriteString(" default " + strconv.FormatFloat(f, 'e', -1, 64))
+		case stmt.Text:
+			b.WriteString(" default '" + strings.ReplaceAll(string(v), "'", "''") + "'")
+		case stmt.Blob:
+			b.WriteString(" default x'" + hex.EncodeToString(v) + "'")
+		case stmt.Null:
+			b.WriteString(" default null")
+		}
+	}
+	b.WriteString(") strict, without rowid")
+	return b.Len()
+}
+
+// tooLongForCache reports whether message is the engine's refusal of the create table of the text
+// src as one whose statement in the cache is longer than the length limit, where that statement, as
+// [cacheStatementLength] measures it, is longer than the limit, and SQLite takes the text: SQLite
+// runs it in a savepoint, which is rolled back.
+func (p *pair) tooLongForCache(src, message string) bool {
+	t := p.t
+	t.Helper()
+	s, _ := stmt.Check(src)
+	c, ok := s.(*stmt.CreateTable)
+	if !ok || p.i.limit == 0 || message != "s4ql: not supported: the table "+c.Table.Value+", whose statement in the cache is longer than the length limit" {
+		return false
+	}
+	if cacheStatementLength(c) <= p.i.limit {
+		return false
+	}
+	is.Equal(t, "", p.o.run(t, "savepoint s4ql_cache").err)
+	defer func() {
+		is.Equal(t, "", p.o.run(t, "rollback to s4ql_cache").err)
+		is.Equal(t, "", p.o.run(t, "release s4ql_cache").err)
+	}()
+	return p.o.run(t, src).err == ""
 }
 
 // otherPaths are the paths that the other instance of a [pair] runs the calls by, in turn, where the
@@ -1569,6 +1678,10 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 			if p.inTx && slices.ContainsFunc([]string{"create table if not exists ", "drop table if exists ", "create index if not exists ", "drop index if exists "}, func(k string) bool { return strings.HasPrefix(what, k) }) {
 				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
 			}
+			// So do the defaults of slice 11.
+			if p.inTx && (strings.Contains(what, " default") || strings.Contains(what, "DEFAULT NULL")) {
+				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
+			}
 		})
 		if p.longCondition(c.Src) {
 			p.y["reached: WHERE with a literal longer than the length limit"]++
@@ -1646,6 +1759,9 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, 
 			default:
 				count("create table of which some columns outside the key take NULL " + outcome)
 			}
+		}
+		for _, what := range createDefaults(s) {
+			count(what + " " + outcome)
 		}
 	case *stmt.Update, *stmt.Delete:
 		reachChange(t, o, s, c, got, outcome, changes, count)
@@ -2089,6 +2205,9 @@ func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outco
 	}
 	if !refused {
 		for _, what := range stmttest.NullCases(columns, s, args) {
+			count(what + " " + outcome)
+		}
+		for _, what := range stmttest.DefaultCases(columns, s, args) {
 			count(what + " " + outcome)
 		}
 	}
@@ -2617,7 +2736,14 @@ func TestDifferential(t *testing.T) {
 		// that takes NULL by IS NULL one time in three, where it was one time in eight, they went from 16,
 		// 836, 326, 528, 1, and 3 to 15, 862, 324, 524, 1, and 2: the generator draws other random numbers
 		// after the first such pin, which moves each of them, and none of these kinds is of the pin.
-		want := map[string]int{acceptedStartedTable: 15, excusedArguments: 862, excusedArgument: 324, excusedType: 524, excusedLong: 1, excusedLongChange: 2, excusedLongCondition: 1}
+		// When the sequence wrote the defaults of slice 11, they went from 15, 862, 324, 524, 1, 2, and
+		// 1 to 13, 816, 278, 530, 4, 4, and 0: an insert leaves out a column with a default one time in
+		// two, and so has fewer values, fewer parameters, and fewer arguments around them, which took
+		// the second and the third down; and the sequence draws other random numbers for the defaults
+		// of its shapes and the text of each DEFAULT, which moves each of them. [excusedCacheLimit] is
+		// 0: no create table of the sequence comes near the limit by its statement in the cache, which
+		// TestPair_tooLongForCache and TestEngine_defaults pin by hand.
+		want := map[string]int{acceptedStartedTable: 13, excusedArguments: 816, excusedArgument: 278, excusedType: 530, excusedLong: 4, excusedLongChange: 4, excusedLongCondition: 0, excusedCacheLimit: 0}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			// The count of [excusedRecordSlip] depends on the allocator of the platform.
@@ -2657,7 +2783,7 @@ var reachedDifferential = map[string]int{
 	"create table of mixed types ok": 76, "create table with two columns of a type ok": 120,
 	"create table with the key at 0 ok": 140, "create table with the key at 1 ok": 68, "create table with the key at 2 ok": 26,
 	"insert without a list ok": 130, "insert with a list in the order of the table ok": 120, "insert with a list in another order ok": 86,
-	"insert with a list in another order UNIQUE constraint failed": 26, "insert with a list in another order a value of another type": 17,
+	"insert with a list in another order UNIQUE constraint failed": 7, "insert with a list in another order a value of another type": 17,
 	"insert with a list in another order NOT NULL constraint failed":         8,
 	"insert with a column that the table does not have: has no column named": 29, "insert with a column without a value: NOT NULL constraint failed": 43,
 	"insert with the wrong number of values: values were supplied": 37, "insert with the wrong number of values:  values for ": 44,
@@ -2761,7 +2887,7 @@ var reachedDifferential = map[string]int{
 	"update with WHERE UNIQUE constraint failed": 6, "update without WHERE UNIQUE constraint failed": 12,
 	"update with arguments that s4ql refuses not supported": 10, "update with arguments that s4ql refuses wrong number of arguments": 22,
 	"update with a literal longer than the length limit in SET": 1,
-	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10, "update WHERE that reads a scan from a lower bound ok, rows changed": 1,
+	"update WHERE that reads no row ok, no row found":           13, "update WHERE that reads a get of one key ok, rows changed": 10,
 	"update WHERE that reads a scan between two bounds ok, rows changed":                  1,
 	"update WHERE that reads a scan between two bounds that hold no key ok, no row found": 5, "update WHERE that reads a scan of every row ok, rows changed": 3,
 	"update WHERE that tests a column more than once ok, rows changed": 3, "update WHERE with contradicting conditions ok, no row found": 11,
@@ -2770,7 +2896,7 @@ var reachedDifferential = map[string]int{
 	"delete with arguments that s4ql refuses wrong number of arguments": 11, "delete WHERE that reads no row ok, no row found": 12,
 	"delete WHERE that reads a get of one key ok, rows changed": 15, "delete WHERE that reads a scan from a lower bound ok, rows changed": 3,
 	"delete WHERE that reads a scan to an upper bound ok, rows changed": 2, "delete WHERE that reads a scan between two bounds ok, rows changed": 4,
-	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 2, "delete WHERE that reads a scan of every row ok, rows changed": 7,
+	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 2, "delete WHERE that reads a scan of every row ok, rows changed": 2,
 	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 3,
 	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 2, "changed both ways": 576,
 	// The create indexes and drop indexes of slice 9, by outcome and by their columns, as [reachIndex]
@@ -2811,6 +2937,32 @@ var reachedDifferential = map[string]int{
 	"create index if not exists no such column": 7,
 	"drop index if exists did its work":         9, "drop index if exists did nothing: no index of the name exists": 28,
 	"drop index if exists did nothing: no index of the name exists, and a table has it": 11,
+
+	// Slice 11, a third of what the run gave on 2026-11-21 when the sequence wrote defaults, or 1:
+	// create tables with a default of each type, of a long one, on the key, and DEFAULT NULL on a
+	// column that takes NULL and on one that does not; inserts that leave out a column and store its
+	// default of each type, also of the key, and DEFAULT NULL in a column that takes NULL; NOT NULL
+	// from a DEFAULT NULL in a column that does not take NULL and in the key; UNIQUE from a default
+	// of the key; a record that a long default makes too long; and an explicit NULL for a column with
+	// a default, kept as NULL in a column that takes NULL and refused by NOT NULL in one that does
+	// not. The sequence drew other random numbers then, which took "insert with a list in another
+	// order UNIQUE constraint failed" from 29 to 22 and "delete WHERE that reads a scan of every row
+	// ok, rows changed" from 13 to 5, whose least numbers are a third now, and "update WHERE that
+	// reads a scan from a lower bound ok, rows changed" from 3 to 0, which is left out:
+	// TestEngine_update pins an update by a lower bound of the key that changes rows, and the delete
+	// by a lower bound is still required here.
+	"create table with a default of integer ok": 59, "create table with a default of real ok": 25, "create table with a default of text ok": 27,
+	"create table with a default of blob ok": 24, "create table with a default of 250 bytes or more ok": 21, "create table with a default on the key ok": 104,
+	"create table with DEFAULT NULL on a column that takes NULL ok": 7, "create table with DEFAULT NULL on a column that does not take NULL ok": 20,
+	"insert that leaves out a column with a default of integer ok": 32, "insert that leaves out a column with a default of real ok": 9,
+	"insert that leaves out a column with a default of text ok": 10, "insert that leaves out a column with a default of blob ok": 7,
+	"insert that leaves out the key with a default ok": 12, "insert that leaves out a column that takes NULL with DEFAULT NULL ok": 7,
+	"insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed": 10,
+	"insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed":                          4,
+	"insert that leaves out the key with a default UNIQUE constraint failed":                               6,
+	"insert that leaves out a column with a long default string or blob too big":                           1,
+	"NULL given for a column with a default, which takes NULL ok":                                          10,
+	"NULL given for a column with a default, which does not take NULL NOT NULL constraint failed":          19,
 }
 
 // TestDifferential_plantedBugs runs the first sequences of [TestDifferential] with each planted bug
@@ -2867,6 +3019,74 @@ func TestDifferential_plantedBugs(t *testing.T) {
 // length limit of 1000: the engine refuses the update of two rows whose second record is too long,
 // which SQLite stores on some platforms and refuses on others, and the comparison accepts either
 // only by an update of each row alone in SQLite.
+func TestPair_tooLongForCache(t *testing.T) {
+	// 42 columns of a real with the default .5, whose canonical form 5e-01 is three bytes longer: SQLite
+	// takes the text under the limit of 1000, and the cache's statement is longer than the limit.
+	table := func(n int, dflt string) string {
+		var columns []string
+		for i := range n {
+			columns = append(columns, fmt.Sprintf("c%v real default%v", i, dflt))
+		}
+		return "create table t(k int primary key," + strings.Join(columns, ",") + ")strict,without rowid"
+	}
+
+	t.Run("should excuse a create table that SQLite takes and whose statement in the cache is longer than the limit, and measure that statement as the cache does", func(t *testing.T) {
+		y := tally{}
+		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), y)
+		src := table(42, ".5")
+		s, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.True(t, cacheStatementLength(s.(*stmt.CreateTable)) > 1000)
+		is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}))
+		is.Equal(t, 1, y["excused: "+excusedCacheLimit])
+		is.Equal(t, "", p.o.state(t), "SQLite has no table after the check")
+		is.Equal(t, "", p.step(stmttest.Call{Src: table(10, ".5"), Supported: true}))
+		is.Equal(t, 1, y["excused: "+excusedCacheLimit])
+	})
+
+	t.Run("should measure the statement in the cache as the core does: the core takes a table whose statement is as long as the limit, and refuses one a byte longer", func(t *testing.T) {
+		for _, dflt := range []string{".5", "1e300", "-1.5e-300", "0.25"} {
+			// Twenty-five reals with the default .5, whose canonical form makes the cache's statement longer
+			// than SQLite's text, three with the default, a column of each other kind of default and a
+			// name with a double quote, and a text default of n bytes, which moves the length byte by
+			// byte.
+			src := func(n int) string {
+				var columns []string
+				for i := range 25 {
+					columns = append(columns, fmt.Sprintf("c%v real default.5", i))
+				}
+				for i := range 3 {
+					columns = append(columns, fmt.Sprintf("d%v real default %v", i, dflt))
+				}
+				columns = append(columns, `"we""ird" int not null default 00012`, "b blob default X'aBcD'", "z real not null default -0.0", "u text default NULL",
+					"q text default 'it''s'", "s text default '"+strings.Repeat("x", n)+"'")
+				return "create table t(k int primary key," + strings.Join(columns, ",") + ")strict,without rowid"
+			}
+			length := func(n int) int {
+				s, err := stmt.Check(src(n))
+				is.NotError(t, err)
+				return cacheStatementLength(s.(*stmt.CreateTable))
+			}
+			n := 1000 - length(0)
+			is.True(t, n > 0, dflt)
+			is.Equal(t, 1000, length(n), dflt)
+			o := newOracleLimited(t, 1000)
+			for _, m := range []int{n, n + 1} {
+				is.Equal(t, "", o.run(t, src(m)).err, "SQLite takes the table")
+				is.Equal(t, "", o.run(t, "drop table t").err)
+				i := newInstanceLimited(t, engine.Options{}, nil, 1000)
+				got := i.exec(src(m))
+				if m == n {
+					is.Equal(t, "", got.err, dflt)
+					continue
+				}
+				is.Equal(t, "not supported", got.err, dflt)
+				is.Equal(t, "s4ql: not supported: the table t, whose statement in the cache is longer than the length limit", got.message)
+			}
+		}
+	})
+}
+
 func TestPair_recordSlips(t *testing.T) {
 	setup := []string{
 		"create table t (k int primary key, a text, b text not null) strict, without rowid",
@@ -3034,7 +3254,10 @@ var typesTables = []string{
 // the table. It compares each answer with SQLite's,
 // as [TestDifferential] does, by s4ql's rules where they differ from SQLite: a value of another type
 // than its column, NaN, an infinity, and text that holds NUL or is not valid UTF-8 are refused, and
-// NULL is refused by SQLite's NOT NULL in the key and in a column that does not take it. Then
+// NULL is refused by SQLite's NOT NULL in the key and in a column that does not take it. Then it
+// creates a table of each type whose column has the value, as [typesLiteral] writes it, as its
+// DEFAULT, of slice 11, inserts a row that leaves the column out and one that gives it NULL, and
+// reads the table, each compared with SQLite as before. Then
 // it compares the tables. [FuzzTypes_core] runs the same on the storage core. The database in memory
 // has no length limit, so the input of the limit that [FuzzTypes_core] reads changes nothing here.
 func FuzzTypes(f *testing.F) {
@@ -3110,6 +3333,33 @@ func typesCall(table string, data []byte, form uint8) stmttest.Call {
 	}
 }
 
+// typesLiteral is the value of the bytes data in the form, as [typesCall] gives it, written as a
+// literal, for a DEFAULT: the literal of a form of a literal, the argument of a form of an argument
+// as a literal, an integer in decimal and a real in the shortest exponent form, which is NaN or
+// +Inf for those, NULL for [formNull], and the bytes themselves for [formSQL].
+func typesLiteral(data []byte, form uint8) string {
+	var b [8]byte
+	copy(b[:], data)
+	bits := binary.LittleEndian.Uint64(b[:])
+	switch form % forms {
+	case formTextArgument, formStringLiteral:
+		return "'" + strings.ReplaceAll(string(data), "'", "''") + "'"
+	case formBlobArgument, formBlobLiteral:
+		x := "x'" + hex.EncodeToString(data) + "'"
+		if form/forms%2 == 1 {
+			x = strings.ToUpper(x)
+		}
+		return x
+	case formRealArgument:
+		return strconv.FormatFloat(math.Float64frombits(bits), 'e', -1, 64)
+	case formIntegerArgument:
+		return fmt.Sprint(int64(bits))
+	case formNull:
+		return "null"
+	}
+	return string(data)
+}
+
 // fuzzTypes is [FuzzTypes] on the instances of newInstance, which takes the length limit, 0 for
 // SQLite's default. Its seeds are values at the edges of each type in every form.
 func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance) {
@@ -3154,6 +3404,23 @@ func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance
 			}
 			if failure := p.step(stmttest.Call{Src: "select * from " + table, Query: true, Supported: true}); failure != "" {
 				t.Fatal(failure)
+			}
+		}
+		// A table of each type whose column has the value of the form as its DEFAULT, of slice 11: an
+		// insert that leaves the column out stores it, and one that gives NULL stores NULL. The pass
+		// refuses a default that is not a literal of the type of the column, and SQLite's error, such
+		// as a syntax error, comes as it does.
+		for _, typ := range []string{"int", "integer", "real", "text", "blob"} {
+			table := "t_" + typ + "_d"
+			for _, c := range []stmttest.Call{
+				{Src: "create table " + table + " (k int primary key, v " + typ + " default " + typesLiteral(data, form) + ") strict, without rowid"},
+				{Src: "insert into " + table + " (k) values (1)"},
+				{Src: "insert into " + table + " (k, v) values (2, null)"},
+				{Src: "select * from " + table, Query: true},
+			} {
+				if failure := p.step(c); failure != "" {
+					t.Fatal(failure)
+				}
 			}
 		}
 		want := p.o.state(t)

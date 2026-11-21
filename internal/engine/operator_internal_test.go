@@ -1382,6 +1382,47 @@ func TestBuild(t *testing.T) {
 		}
 	})
 
+	t.Run("should give a column that the list leaves out its default, or NULL without one, the zero value only to one without a default with the planted bug zeroLeftOut, and NULL in place of its default with the planted bug nullDefault", func(t *testing.T) {
+		for _, c := range []struct {
+			src  string
+			b    bugs
+			want string
+		}{
+			{src: "insert into t (k) values (2)", want: "[7 2 null 'd']"},
+			{src: "insert into t (k, a, d) values (2, null, null)", want: "[null 2 null null]"},
+			{src: "insert into t values (1, 2, 3, 'x')", want: "[1 2 3 'x']"},
+			{src: "insert into t (k) values (2)", b: bugs{zeroLeftOut: true}, want: "[7 2 0 'd']"},
+			{src: "insert into t (k) values (2)", b: bugs{nullDefault: true}, want: "[null 2 null null]"},
+			{src: "insert into t (k, d) values (2, 'e')", b: bugs{nullDefault: true}, want: "[null 2 null 'e']"},
+			{src: "insert into t values (1, 2, 3, 'x')", b: bugs{nullDefault: true}, want: "[1 2 3 'x']"},
+		} {
+			f := newFake().with("t", []string{"a", "k", "c", "d"})
+			ct := f.tables["t"].ct
+			ct.SetPrimaryKey([]uint32{1})
+			for _, position := range []int{0, 2, 3} {
+				ct.GetColumns()[position].SetNullable(true)
+			}
+			ct.GetColumns()[0].SetDefault(integer(7))
+			ct.GetColumns()[3].SetType(s4qlpb.Type_TYPE_TEXT)
+			ct.GetColumns()[3].SetDefault(s4qlpb.Value_builder{Text: new("d")}.Build())
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(c.src), nil, c.b, 1_000_000_000, reading{})
+			is.NotError(t, err, c.src)
+			is.NotError(t, s.check(t.Context()), c.src)
+			var values []string
+			for _, v := range s.(*insert).src.data[0] {
+				switch {
+				case v.HasNull():
+					values = append(values, "null")
+				case v.HasText():
+					values = append(values, "'"+v.GetText()+"'")
+				default:
+					values = append(values, fmt.Sprint(v.GetInteger()))
+				}
+			}
+			is.Equal(t, c.want, fmt.Sprint(values), c.src)
+		}
+	})
+
 	t.Run("should check that each column has a value before the type of each value, in the order of the table", func(t *testing.T) {
 		f := newFake().with("t", []string{"a", "k", "c"})
 		f.tables["t"].ct.SetPrimaryKey([]uint32{1})
