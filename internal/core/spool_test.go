@@ -13,21 +13,24 @@ import (
 	"maragu.dev/s4ql/internal/core"
 )
 
-// spoolFaults makes reads of the spool files of an instance fail on demand. Each failure is an I/O
-// error of the operating system, [syscall.EIO]. Whether a read fails depends only on the reads
-// before it, and not on time.
+// spoolFaults makes reads and writes of the spool files of an instance fail on demand. Each failure
+// is an I/O error of the operating system, [syscall.EIO]. Whether a read or a write fails depends
+// only on the reads or the writes before it, and not on time.
 type spoolFaults struct {
 	mu sync.Mutex
 	// reads that are still to fail, by the kind of spool file: "commit" or "annotations".
 	reads map[string]int
-	// failed is the number of reads that failed.
+	// writes is the number of writes to go, of any kind of spool file, before one fails, and -1 for
+	// none.
+	writes int
+	// failed is the number of reads and writes that failed.
 	failed int
 }
 
 // failSpools of the instance that is opened with the options o, from when [spoolFaults.failReads]
 // arms them.
 func failSpools(o *core.Options) *spoolFaults {
-	f := &spoolFaults{reads: map[string]int{}}
+	f := &spoolFaults{reads: map[string]int{}, writes: -1}
 	o.WrapSpools(func(kind string, file *os.File) core.SpoolFile {
 		return &faultySpool{f: file, kind: kind, faults: f}
 	})
@@ -39,6 +42,14 @@ func (f *spoolFaults) failReads(kind string, times int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads[kind] += times
+}
+
+// failWrite makes the write after the next ones fail, of a spool file of any kind, and no write
+// after it: after is the number of writes that succeed first. A negative after makes no write fail.
+func (f *spoolFaults) failWrite(after int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writes = max(after, -1)
 }
 
 // failures so far.
@@ -60,7 +71,23 @@ func (f *spoolFaults) failRead(kind string) bool {
 	return true
 }
 
-// faultySpool is a spool file whose reads fail when its faults say so. It does not embed the file,
+// failWriteNow reports whether a write of a spool file fails, and counts it if it does.
+func (f *spoolFaults) failWriteNow() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.writes < 0 {
+		return false
+	}
+	if f.writes > 0 {
+		f.writes--
+		return false
+	}
+	f.writes = -1
+	f.failed++
+	return true
+}
+
+// faultySpool is a spool file whose reads and writes fail when its faults say so. It does not embed the file,
 // so that no method of the file, such as ReadFrom or WriteTo, goes around the faults.
 type faultySpool struct {
 	f      *os.File
@@ -76,6 +103,9 @@ func (s *faultySpool) Read(p []byte) (int, error) {
 }
 
 func (s *faultySpool) Write(p []byte) (int, error) {
+	if s.faults.failWriteNow() {
+		return 0, &fs.PathError{Op: "write", Path: s.f.Name(), Err: syscall.EIO}
+	}
 	return s.f.Write(p)
 }
 

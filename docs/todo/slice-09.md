@@ -74,6 +74,14 @@ The decisions and notes of the builders of [slice 9 of the roadmap](../roadmap.m
   - `keepFailed` and `keepOldKey` count "is not in the log" among their violations: under either bug a transaction's acknowledged write can have a net effect of nothing on the rows that the bug left, and be in no commit object.
   - Scope: the mutants on lines of slice 9 (#92, #97, #105, #108) and of this round; lines that #107, #111, #112, and the engines of slices 10 and 11 wrote in the same functions are left to their own rounds.
 
+## The faults of the commit and the replay of indexes
+
+- **Decided by the builder of the fault tests of indexes on 2026-11-21, built, for the lead to confirm.** `TestTx_Commit_indexFaults` and `TestReplay_indexFaults` in `internal/core/index_test.go` close the 18 mutants that the mutation testing of slice 9 left open in the core. They fail each read of the cache (through `faultvfs`) and each write of a spool file (through `Options.WrapSpools`), one fault in each run, at the commit and at the replay of five transactions: a create index, a drop index, both, a create table with an index on it, and row changes with both beside them. No fault in the code was found.
+  - The cache of the tests has `pragma default_cache_size = 1`, which SQLite keeps in the file and applies to every connection that opens it, so SQLite reads most pages from the file each time it needs them. With the default page cache, the reads of `sqlite_schema` by `conn.indexNames` and `conn.lookUpIndex` find their pages in memory and no fault reaches them, which is why the first try of the round failed elsewhere. The official SQLite build of the browser omits the PRAGMA; the tests pass there too, with fewer positions.
+  - A failed read must never pass unseen: a commit that succeeds after one must have stopped the instance, and a replay that succeeds must have had no failed read. That, the check that no failure reads as a cache of another version or as a broken log, and the comparison of the commit object with the one of the same transaction without a fault kill 14 of the 18.
+  - The other 4 ignore an error of `CommitWriter.CreateIndex` or `CommitWriter.DropIndex`. The writer keeps its first error and returns it at its next method and at its close, so the commit fails as before; they are in `internal/sql/mutation/equivalent.txt`.
+  - Under `-short` the tests run every fourth position.
+
 ## Not built yet
 
 - **Not built, for a fresh builder: long fuzz runs of the code of slice 9 in the pass** (`FuzzCheck` and `FuzzGenerate`). Its mutation testing is done; the results are in [the README of the runner](../../internal/sql/mutation/README.md#the-indexes-of-slice-9).
