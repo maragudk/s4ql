@@ -1666,6 +1666,50 @@ func TestScanIndex(t *testing.T) {
 		is.NotError(t, tx.Commit(t.Context()))
 	})
 
+	t.Run("should scan the longest row that a table takes by a key of more than 63 columns of reals that hold integers, which SQLite sorts", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: 3000})
+		// A key of 70 columns, 6 in the primary key and 64 reals in the index, and a text that fills
+		// the row up to the limit. The table keeps a real that holds an integer in fewer bytes than
+		// the 8 of what SQLite sorts, so the record of the sort is longer than the row.
+		wide := tableOf("wide", 6, manyColumns(71)...)
+		values := make([]any, 71)
+		positions := make([]any, 64)
+		for i := range values {
+			values[i] = 1000 + i
+		}
+		for i := range positions {
+			positions[i] = 6 + i
+			wide.GetColumns()[6+i].SetType(s4qlpb.Type_TYPE_REAL)
+			values[6+i] = float64(i)
+		}
+		wide.GetColumns()[70].SetType(s4qlpb.Type_TYPE_TEXT)
+		transact(t, d, createWith(wide), createIndex("wide_i", "wide", positions...))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		// The longest text with which SQLite takes the row.
+		longest := -1
+		for n := 3000; n > 2000; n-- {
+			values[70] = strings.Repeat("x", n)
+			err := tx.Upsert(t.Context(), "wide", row(values...))
+			if err == nil {
+				longest = n
+				break
+			}
+			is.Error(t, core.ErrTooBig, err)
+		}
+		is.True(t, longest > 2000 && longest < 3000, fmt.Sprint(longest))
+		for _, scan := range []core.IndexScan{{Index: "wide_i"}, {Index: "wide_i", Backward: true}, {Index: "wide_i", Lower: core.Bound{Value: row(0.0)[0]}}} {
+			is.Equal(t, 1, len(scanBy(t, tx, "wide", scan)), describeScan(scan))
+		}
+		is.NotError(t, tx.Commit(t.Context()))
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		is.Equal(t, 1, len(scanBy(t, r, "wide", core.IndexScan{Index: "wide_i"})))
+	})
+
 	t.Run("should read the same rows in the same order, sorted by SQLite, by a key of more columns than SQLite compares with the order of an index", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})

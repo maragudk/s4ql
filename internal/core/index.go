@@ -878,12 +878,15 @@ func (c *conn) scanIndex(ctx context.Context, t *table, ix *index, scan IndexSca
 				_ = c.rest(sql, s)
 			}
 		}()
+		// SQLite sorts the rows of a scan with Order, and of one whose key has more than 63 columns that
+		// it does not pin, in the first step.
+		sorting := len(scan.Order) > 0 || len(t.scanKey(ix, c.bugs))-len(scan.Equal) > 63
 		first := true
 		for {
 			var ok bool
 			var err error
 			if first {
-				ok, err = c.step(ctx, s, len(scan.Order) > 0)
+				ok, err = c.step(ctx, s, sorting)
 				first = false
 			} else {
 				ok, err = s.Step()
@@ -926,7 +929,7 @@ func (c *conn) scanIndex(ctx context.Context, t *table, ix *index, scan IndexSca
 // statement only reads, so the transaction of the connection and its writes stay: SQLite rolls
 // nothing back for a read that it stops.
 //
-// The step of a scan with Order, for which sorting is set, runs under SQLite's largest length
+// The step of a scan that sorts, for which sorting is set, runs under SQLite's largest length
 // limit, and the limit of the connection is put back after it, also when it fails. SQLite builds a record of what it sorts for
 // each row, under the length limit, and that record is longer than the row is in the table where a
 // real of the row holds an integer, which the table keeps in fewer bytes: without the larger limit,
