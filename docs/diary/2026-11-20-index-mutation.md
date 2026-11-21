@@ -100,3 +100,57 @@ Nothing yet.
 ### Future work
 
 - The recount of every planted bug over 200 seeds, and the survivors.
+
+## Step 3: The survivors, the tests and the code that close them, a fault, the full disk, and the merge of `main`
+
+**Author:** index-mutation builder
+
+### Prompt Context
+
+**Verbatim prompt:** (from the brief) "A survivor that shows a missing test: write the test in the package's style [...] A survivor that shows a real fault: fix the code, add the test, and put it in the first line of your report. The rules of `chooseAccess` deserve the most care [...]". And from the coordinator during the run: "Tonight the machine's disk filled to 0 bytes and stopped every agent [...] keep `ixm` under 5 GB [...] If any of your runs failed or gave odd results while the disk was full [...] treat those results as void and rerun them [...] `main` gained #111 [...] #112 [...] and #113; merge `origin/main` before your pull request."
+**Interpretation:** Classify each survivor as it comes, write its test or its reason, restart a run on a new copy of the tree when its survivors are known to be killed by new tests, and rerun what the full disk and the merge touched.
+**Inferred intent:** Numbers that a rerun on the final code gives again.
+
+### What I did
+
+- A real fault: `engine.Conn.queryIn` drew the direction of a query in a transaction and did not record it, so its event had `statement.access` and no `statement.direction`, which the README of the engine promises for every query. The survivor `Conn.queryIn boolean: true => false` showed it. `r.drew(how)` is there now, and `TestEngine_report` requires the directions of the queries of a write and of a read-only transaction, and no draw for the update and the delete between them, which also kills `Conn.writeIn boolean: false => true #3`.
+- `chooseAccess`: four survivors were the check of rule 4, `len(best.equal) == 0 && !best.ranged()`, which is the primary key's fit itself (an index wins only by more pins or a range, so a winner without either is the primary key, whose access pins and bounds nothing, the zero access); the check is gone, and the doc of rule 4 says why. Two were the parameter `byNull` of `pinOf`, which `pointOf` passed false: `never` gives no row for IS NULL of a column of the primary key first, and no such column takes NULL; the parameter is gone. No survivor of `chooseAccess` was a rule that the tests did not pin, and none needed an excuse.
+- Code that nothing needs, removed: the bounds of `core.conn.scan`, which both callers left empty; the refusal of an index without columns in `core.conn.loadIndexes`, which SQLite never gives (the merge of #112 brought it back as `foreign(...)`, and it is gone again).
+- New tests: `TestForcedAccess` (an internal error of `fit`); `TestEngine_reading` (the directions of a seed against splitmix64 from Vigna's code); `TestFilter` (a failed read of the indexes for a select, an update, and a delete, and a path of an index that the table does not have, which reads as the rules choose); `TestBuild` (failed lookups of a table and of an index for a create table, a create index, and a drop index, and the internal error of a create index that names a column twice); `TestNewPlan` (the plans of a create index and a drop index); `TestFromCore` (`ErrIndexExists` and `ErrNoIndex`); `TestCheck` and `TestRecognize` of `stmt` (a schema before a reserved name of an index, and the guards `isNext` of `createIndex`, `indexColumn`, and `notIf`); `TestOpen_cache_indexes` of the core (an index of a reserved name and an index on a table of a reserved name that another process adds). The fake of the engine fails the read of the indexes, the lookup of an index, and the lookup of a table of one name. `lookUpIndex` reads the owner of an index with `limit 1`, so that its query fails only before its row.
+- The equivalent ones are in a section of `/internal/sql/mutation/equivalent.txt` of their own: the variants of the planted bugs `openBound` and `shortKey`, the direction that a sink of a read-only transaction and the planted bug `checkOutside` draw and never read, `max` and the sum of `indexTooBig`, which do not care about order, the errors of `fit` that `checkType` rules out, the order of `pragma_index_list` in `loadIndexes`, `pragma_index_xinfo`'s positions, the errors that a caller reads before the bool of `conn.insert` and `conn.delete`, and the version of the cache.
+- Runs: I stopped and restarted the engine's run twice and the core's three times on new copies of the tree, each with the mutants that had no result and the survivors that the list did not hold (`ixm/left.py`, `ixm/plan.py`), so that a survivor that a new test kills does not cost its ten minutes again.
+- The full disk: the run `r3-core` stopped with `no space left on device`, and 10 of its 25 results held I/O errors; all 25 are void and ran again. No other run's results hold an error of the disk. The build cache of the runs is trimmed every minute to stay under 1.5 GB (`find -mmin +3 -delete`), since a mutant of the core leaves about 14 MB in it.
+- The merge of `origin/main` (#107's follow-ups, #110, #111, #112, #113, and the engine of slice 10): conflicts in the pins of `TestDifferential` and the driver check, the README of the engine, `docs/todo.md`, `plan_test.go`, `index.go`, and `index_test.go`. I took `main`'s side and recounted. The bound of the key draws `IntN(6) == 4` now, which leaves the share of the key equal to a value of an insert as `main` draws it; of the shares I tried (2, 3, 4, 5 of six), only 4 loses no required kind in either test, and 5 lost "path of an index with 3 pinned". The table with a rowid in `TestOpen_cache_indexes` is gone, since the strict load of #112 refuses it at its first read. After the merge, the mutants of the selection in functions that the merge changed ran again, with those without a result.
+- The recount of the planted bugs after the merge failed twice: seeds 158 and 78 found `keepFailed` and `keepOldKey` by "is not in the log". Without the bugs they find nothing. The traces show why: under `keepFailed` an update that changes the key of a row that its transaction inserted fails with UNIQUE after the delete of the old key, which stays, so the net effect of the transaction is nothing and its acknowledged insert is in no commit object; under `keepOldKey` a later delete takes the row that the bug left, and the net effect of an acknowledged update and that delete is nothing. Both bugs count that violation now, with the reason in the comment.
+
+### Why
+
+A restart costs the planning of a run, 4 to 9 minutes under this load, and saves the ten minutes of each survivor that a new test kills.
+
+### What worked
+
+- `ixm/mutant.py` checked every new test against its mutant in seconds before a rerun.
+
+### What didn't work
+
+- The disk filled while three runs and a recount ran; the build cache of the runs was 18 GB.
+- `python3 -` with nothing on stdin hung a command, which I stopped.
+- Shell commands that chained `git` with other commands were refused as too complex to verify; I ran `git` alone.
+
+### What I learned
+
+- A mutant of the core costs about 14 MB of build cache, so a run of a thousand of them needs the cache trimmed while it runs.
+- Under a load of 25 to 32, a survivor of the core costs 10 to 15 minutes, since it runs every test of the core and of the engine.
+
+### What was tricky
+
+- Telling the survivors that the tests of a later copy kill from those that are equivalent, across five runs of the engine and four of the core; `plan.py` takes each mutant's last result.
+
+### What warrants review
+
+- The reasons of the new section of `equivalent.txt`, above all those of `loadIndexes`, which rest on what `pragma_index_list` and `pragma_index_xinfo` give.
+- The two violations that `keepFailed` and `keepOldKey` count now.
+
+### Future work
+
+- The core's last run, the numbers in the README of the runner, and the checks.
