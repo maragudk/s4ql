@@ -639,9 +639,9 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	return list, values
 }
 
-// keyOfStep is a value of a key of the type t that no other statement of a sequence gives, for the
-// statement number step, which [Sequence.valueOf] does not give either, so that the insert meets no
-// key that exists.
+// keyOfStep is a value of a key of the type t for the statement number step, which no other insert
+// of [keyOfStep] gives, and [Sequence.valueOf] gives only now and then, by [ValueOf], so that an
+// insert seldom meets a key that exists.
 func keyOfStep(t stmt.Type, step uint64) stmt.Value {
 	switch t {
 	case stmt.TypeReal:

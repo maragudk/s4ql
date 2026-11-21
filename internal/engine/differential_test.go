@@ -564,9 +564,19 @@ func newInstanceLogged(t testing.TB, options engine.Options, coreLog *slog.Logge
 // default.
 func newInstanceLimited(t testing.TB, options engine.Options, coreLog *slog.Logger, limit int) *instance {
 	t.Helper()
+	return newInstanceSeeded(t, options, coreLog, limit, 0)
+}
+
+// newInstanceSeeded is [newInstanceLimited] whose engines draw the directions of their scans from
+// seed, unless it is 0 or the flag -directions gives one, as [instance.seeded] says.
+func newInstanceSeeded(t testing.TB, options engine.Options, coreLog *slog.Logger, limit int, seed uint64) *instance {
+	t.Helper()
 	h := sim.NewFree(sim.Buggify{})
 	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), coreLog: coreLog, limit: limit}
 	i.seeded()
+	if seed != 0 && *directions == 0 {
+		i.seed = seed
+	}
 	i.open(true, options)
 	t.Cleanup(func() {
 		i.close()
@@ -581,18 +591,7 @@ func newInstanceLimited(t testing.TB, options engine.Options, coreLog *slog.Logg
 // function of the seeds of its sequences, as every other count is.
 func newInstanceDirected(t testing.TB, options engine.Options, limit int, seed uint64) *instance {
 	t.Helper()
-	h := sim.NewFree(sim.Buggify{})
-	i := &instance{t: t, host: h, store: simstore.New(h, simstore.Options{}), dir: t.TempDir(), limit: limit}
-	i.seeded()
-	if *directions == 0 {
-		i.seed = seed*0x9e3779b97f4a7c15 + 0x5ca1ab1e
-	}
-	i.open(true, options)
-	t.Cleanup(func() {
-		i.close()
-		is.NotError(t, i.c.Close(context.WithoutCancel(t.Context())))
-	})
-	return i
+	return newInstanceSeeded(t, options, nil, limit, seed*0x9e3779b97f4a7c15+0x5ca1ab1e)
 }
 
 // open an instance of the database, with an empty cache if empty, and with the last one otherwise.
@@ -2171,7 +2170,7 @@ func reachOrder(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 		return
 	}
 	if rule := limitRule(s, args); rule != "" {
-		count("LIMIT with an argument that is " + rule[strings.Index(rule, "which is ")+len("which is "):strings.Index(rule, ", for LIMIT")] + " " + outcome)
+		count("LIMIT with an argument that is " + limitKind(args[s.Limit.Parameter-1]) + " " + outcome)
 		return
 	}
 	if s.Limit.Parameter > 0 {
@@ -3047,26 +3046,32 @@ func limitRule(s *stmt.Select, args []any) string {
 	if s.Limit.Parameter == 0 {
 		return ""
 	}
-	var which string
-	switch a := args[s.Limit.Parameter-1].(type) {
-	case int64:
-		if a >= 0 {
-			return ""
-		}
-		which = "a negative integer"
-	case float64:
-		which = "a real"
-	case string:
-		which = "text"
-	case []byte:
-		which = "a blob"
-	case nil:
-		which = "NULL"
-	default:
-		// An argument that no column holds, which [checkArguments] checks.
+	which := limitKind(args[s.Limit.Parameter-1])
+	if which == "" {
 		return ""
 	}
 	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", s.Limit.Parameter, which)
+}
+
+// limitKind of the argument a of LIMIT that s4ql refuses, as its message names it: "a negative
+// integer", "a real", "text", "a blob", or "NULL"; and "" for an int64 from 0, which runs, and for an
+// argument that no column holds, which [checkArguments] checks.
+func limitKind(a any) string {
+	switch a := a.(type) {
+	case int64:
+		if a < 0 {
+			return "a negative integer"
+		}
+	case float64:
+		return "a real"
+	case string:
+		return "text"
+	case []byte:
+		return "a blob"
+	case nil:
+		return "NULL"
+	}
+	return ""
 }
 
 // limitRefused reports whether s is a select whose argument of LIMIT, of args, s4ql refuses, as

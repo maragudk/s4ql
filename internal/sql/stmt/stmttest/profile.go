@@ -71,8 +71,9 @@ type Profile struct {
 	// [Sequence.order] draws it, and Limit, if not 0, makes one select in Limit have a LIMIT; the
 	// area of the ORDER BY and the LIMIT is off with both 0.
 	Order, Limit int
-	// Keys, if not 0, makes one insert in Keys give the key a value that no other statement gives, as
-	// [keyOfStep] gives it, so that the tables of the sequence hold more rows.
+	// Keys, if not 0, makes one insert in Keys give the key a value of its statement, as [keyOfStep]
+	// gives it, so that the tables of the sequence hold more rows; with 1, every insert does, and an
+	// insert meets a key that exists only where another value of the sequence is the same.
 	Keys int
 	// Shared, if not 0, makes one create index in Shared of a table of which the sequence keeps an
 	// index hold the first column of such an index and then another column, so that two indexes of
