@@ -667,6 +667,29 @@ func TestReplay_indexes(t *testing.T) {
 
 	})
 
+	t.Run("should apply an index of as many columns as this version takes", func(t *testing.T) {
+		w := newWorld(t)
+		l := newHandLog(t, w)
+		l.base()
+		columns := make([]any, core.MaxIndexColumns)
+		for i := range columns {
+			columns[i] = i + 1
+		}
+		l.commit(func(cw *format.CommitWriter) {
+			is.NotError(t, cw.CreateTable(tableOf("wide", 1, manyColumns(core.MaxIndexColumns+1)...)))
+			is.NotError(t, cw.CreateIndex(indexOf("iw", "wide", columns...)))
+		})
+		l.publish()
+
+		d := w.serve(t, "a", core.Options{})
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		ci, err := r.Index(t.Context(), "iw")
+		is.NotError(t, err)
+		is.Equal(t, core.MaxIndexColumns, len(ci.GetColumns()))
+		is.NotError(t, r.Close(t.Context()))
+	})
+
 	many := make([]any, 251)
 	for i := range many {
 		many[i] = i
