@@ -858,3 +858,7 @@ internal/core/index.go scanConditions condition: key[len(scan.Equal)].Descending
 	The planted bug turnDescBound: the bounds change places on every column, also an ascending one, another wrong scan, and the bug is found by it.
 internal/core/index.go scanConditions condition: key[len(scan.Equal)].Descending => !key[len(scan.Equal)].Descending
 	The planted bug turnDescBound: the bounds change places on an ascending column and not on a descending one, another wrong scan, and the bug is found by it.
+internal/core/index.go scanConditions swap arguments: fmt.Sprint(names[len(scan.Equal)], " ", op, " ?", len(args)) => fmt.Sprint(names[len(scan.Equal)], op, " ", " ?", len(args))
+	The condition differs only in its spaces, and a quoted name, an operator, and a parameter read the same without a space between them.
+internal/core/index.go scanConditions swap arguments: fmt.Sprint(names[len(scan.Equal)], " ", op, " ?", len(args)) => fmt.Sprint(" ", names[len(scan.Equal)], op, " ?", len(args))
+	The condition differs only in its spaces, and a quoted name, an operator, and a parameter read the same without a space between them.
