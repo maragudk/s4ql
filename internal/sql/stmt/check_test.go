@@ -1686,6 +1686,12 @@ var checkCases = []checkCase{
 	{name: "a column named twice in order by", src: "select * from t order by v, v", err: "s4ql: not supported: column named twice (at offset 28)"},
 	{name: "a column named twice in order by in another case and direction", src: "select * from t order by v asc, w, V desc", err: "s4ql: not supported: column named twice (at offset 35)"},
 	{name: "a column named twice in order by, once in double quotes", src: `select * from t order by "v", v`, err: "s4ql: not supported: column named twice (at offset 30)"},
+	// A name in brackets or backticks is not supported for its quoting, before the pass looks whether
+	// the list named it before: SQLite reads [v] as v, and "[v]" as [v].
+	{name: "a name in brackets after a name in double quotes with brackets in it in order by", src: `select * from t order by "[v]", [v]`, err: "s4ql: not supported: name in brackets (at offset 32)"},
+	{name: "a name in brackets after a name in double quotes with brackets in it in an insert", src: `insert into t ("[v]", [v]) values (1, 2)`, err: "s4ql: not supported: name in brackets (at offset 22)"},
+	{name: "a name in backticks after the same name bare in a set", src: "update t set v = 1, `v` = 2", err: "s4ql: not supported: name in backticks (at offset 20)"},
+	{name: "a name in brackets after the same name bare in an index", src: "create index i on t (v, [v])", err: "s4ql: not supported: name in brackets (at offset 24)"},
 	{name: "a name in brackets in order by", src: "select * from t order by [v]", err: "s4ql: not supported: name in brackets (at offset 25)"},
 	{name: "a name in backticks in order by", src: "select * from t order by `v`", err: "s4ql: not supported: name in backticks (at offset 25)"},
 	{name: "an empty name in order by", src: `select * from t order by ""`, err: "s4ql: not supported: empty name (at offset 25)"},

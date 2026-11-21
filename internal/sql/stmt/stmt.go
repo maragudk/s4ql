@@ -19,8 +19,8 @@
 // the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, the
 // UPDATE and DELETE of slice 8, the CREATE INDEX and DROP INDEX of slice 9, the IF NOT EXISTS and
 // IF EXISTS of slice 10, the DEFAULT of slice 11, the value on the left of a comparison of slice 12,
-// and the ORDER BY and LIMIT of a select of slice 13. The README next to this file defines them token for token, and lists the names that a "not
-// supported" error gives.
+// and the ORDER BY and LIMIT of a select of slice 13. The README next to this file defines them token
+// for token, and lists the names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist, its values are as many as the columns, or a value has the type of its

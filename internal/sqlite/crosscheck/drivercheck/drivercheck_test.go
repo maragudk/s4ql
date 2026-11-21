@@ -1670,6 +1670,15 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 	tb := p.tb
 	tb.Helper()
 	s, err := stmt.Check(src)
+	if sel, ok := s.(*stmt.Select); ok && (sel.OrderBy != nil || sel.Limited()) {
+		// A select with ORDER BY or LIMIT, of slice 13, which the pass supports, the engine refuses as
+		// not supported until it runs it, with the "not supported" that the pass gave before, when it
+		// runs; Prepare checks the text with the pass alone, and takes it.
+		if !strings.HasPrefix(got.err, "s4ql: not supported: ORDER BY clause ") && !strings.HasPrefix(got.err, "s4ql: not supported: LIMIT clause ") {
+			return fmt.Sprintf("%q: s4ql gives %v, where the engine refuses ORDER BY and LIMIT", src, got)
+		}
+		return ""
+	}
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got)
 	}

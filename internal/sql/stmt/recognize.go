@@ -354,7 +354,7 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 			if i > 0 {
 				r.take(c.Columns.Commas[i-1])
 			}
-			if r.isNext(t) && seen[asciiLower(dequote(t))] {
+			if r.isNext(t) && quotingName(t) == "" && seen[asciiLower(dequote(t))] {
 				// SQLite takes the first value for the column and leaves the others unused.
 				r.reject("column named twice")
 			}
@@ -641,7 +641,7 @@ func (r *recognizer) orderColumn(o *ast.OrderingTerm, seen map[string]bool) Orde
 		case isTrueOrFalse(x):
 			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
 			r.reject("TRUE or FALSE")
-		case r.isNext(x.Column) && seen[asciiLower(dequote(x.Column))]:
+		case r.isNext(x.Column) && quotingName(x.Column) == "" && seen[asciiLower(dequote(x.Column))]:
 			r.reject("column named twice")
 		}
 		r.accept(x)
@@ -754,7 +754,7 @@ func (r *recognizer) update(c *ast.Update) *Update {
 			// The assignment is to a list of columns in parentheses.
 			r.unexpected()
 		}
-		if r.isNext(a.Column) && seen[asciiLower(dequote(a.Column))] {
+		if r.isNext(a.Column) && quotingName(a.Column) == "" && seen[asciiLower(dequote(a.Column))] {
 			// SQLite gives the column the value of its last assignment, and leaves the others unused.
 			r.reject("column named twice")
 		}
@@ -1080,7 +1080,7 @@ func (r *recognizer) indexColumn(o *ast.OrderingTerm, seen map[string]bool) Inde
 		case isTrueOrFalse(x):
 			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
 			r.reject("TRUE or FALSE")
-		case r.isNext(x.Column) && seen[asciiLower(dequote(x.Column))]:
+		case r.isNext(x.Column) && quotingName(x.Column) == "" && seen[asciiLower(dequote(x.Column))]:
 			// SQLite makes an index of the column twice.
 			r.reject("column named twice")
 		}

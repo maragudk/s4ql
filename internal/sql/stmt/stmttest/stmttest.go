@@ -1,4 +1,4 @@
-// Package stmttest is a generator of random statements of slices 1, 2, and 4 to 12, for tests:
+// Package stmttest is a generator of random statements of slices 1, 2, and 4 to 13, for tests:
 // each statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds,
 // with names from pools, keywords and types in any case, values of every type with weight on their
 // edges, and spaces and comments in every gap. The statements of slice 5, of several columns, come
@@ -7,8 +7,8 @@
 // the UPDATE and DELETE of slice 8 with [Generator.Changes] or a kind of their own, the CREATE
 // INDEX and DROP INDEX of slice 9 with [Generator.Indexes] or a kind of their own, the IF NOT
 // EXISTS and IF EXISTS of slice 10 with [Generator.Exists], the DEFAULT of slice 11 with
-// [Generator.Defaults], and the value on the left of a comparison of slice 12 with
-// [Generator.ValueFirst].
+// [Generator.Defaults], the value on the left of a comparison of slice 12 with [Generator.ValueFirst],
+// and the ORDER BY and LIMIT of a select of slice 13 with [Generator.OrderBy] or [Generator.Order].
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -155,7 +155,7 @@ const (
 	KindDropIndex
 )
 
-// Generator of random statements of slices 1, 2, and 4 to 12.
+// Generator of random statements of slices 1, 2, and 4 to 13.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].
