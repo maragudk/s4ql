@@ -151,6 +151,26 @@ func TestScanIndex_interrupt(t *testing.T) {
 			}
 		})
 
+		t.Run(fmt.Sprint("should not count the rows of a sort whose loop reads it to its end, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fillBig(t, d, "x")
+			s, _, total := beginBig(t, d, read)
+
+			// A count of the 10,000 rows of the table runs in about 40,000 instructions, in which
+			// SQLite would look at the context. The loop reads every row, so there is nothing to count.
+			probe := ctxtest.EndAtErr(t.Context(), math.MaxInt)
+			before, looks, n := s.RowsRead(), 0, 0
+			for _, err := range s.ScanIndex(probe, "big", bigSorted) {
+				is.NotError(t, err)
+				n++
+				looks = probe.Calls()
+			}
+			is.Equal(t, total, n)
+			is.Equal(t, int64(total), s.RowsRead()-before)
+			is.Equal(t, looks, probe.Calls(), "looks at the context after the last row")
+		})
+
 		t.Run(fmt.Sprint("should count the rows that a sort by an index read and did not give by that index, within its bounds, in a read transaction ", read), func(t *testing.T) {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})
