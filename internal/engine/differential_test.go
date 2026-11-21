@@ -45,16 +45,6 @@ var (
 	directions = flag.Uint64("directions", 0, "seed of the directions of the scans of the queries of every instance of the tests, or 0 for a seed that each instance draws")
 )
 
-// pinned fails the test unless got, a number of texts that a full run counts, is want. Such a number
-// is pinned when it tells how much of a test escapes the comparison with SQLite, so that a change that
-// lets more escape cannot pass unseen.
-func pinned(t *testing.T, what string, want, got int) {
-	t.Helper()
-	if got != want {
-		t.Errorf("%v: %v, but the test pins %v. Change the pinned number only on purpose, and say why in the commit", what, got, want)
-	}
-}
-
 // atDefault reports whether each flag of names has its default value, for which the pinned numbers
 // hold.
 func atDefault(names ...string) bool {

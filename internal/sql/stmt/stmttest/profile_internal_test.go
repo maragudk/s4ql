@@ -82,7 +82,7 @@ func digestOf(t *testing.T, seed uint64, p *Profile, n int) string {
 	h := sha256.New()
 	for range n {
 		c := q.Next()
-		fmt.Fprintf(h, "%q %#v %v %v\n", c.Src, c.Args, c.Query, c.Supported)
+		_, _ = fmt.Fprintf(h, "%q %#v %v %v\n", c.Src, c.Args, c.Query, c.Supported)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)[:8])
 }
@@ -119,7 +119,7 @@ func TestNewSequence(t *testing.T) {
 		for _, p := range Profiles {
 			h := sha256.New()
 			for k := range uint64(3) {
-				fmt.Fprintln(h, digestOf(t, p.Seed(k), p, 200))
+				_, _ = fmt.Fprintln(h, digestOf(t, p.Seed(k), p, 200))
 			}
 			if got := fmt.Sprintf("%x", h.Sum(nil)[:8]); got != want[p.Name] {
 				t.Errorf("the digest of the profile %v is %q, and the test pins %q", p.Name, got, want[p.Name])
