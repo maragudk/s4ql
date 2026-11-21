@@ -33,6 +33,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/store/simstore"
+	"maragu.dev/s4ql/internal/testshard"
 )
 
 var (
@@ -3504,15 +3505,18 @@ func TestDifferential_plantedBugs(t *testing.T) {
 	for _, b := range []struct {
 		name    string
 		profile *stmttest.Profile
-		// least is the number of the n sequences that must find the bug, a third of what they found
-		// on 2026-11-21, 21 and 15 of 30, each by the rows of a select or by the count of an update or
-		// a delete that differ from SQLite's, and for the bugs of slice 13 4 of 30, 5 of 12, and 6 of 9.
+		// least is the number of the n sequences that must find the bug by its own failure, a third of
+		// what they found on 2026-11-21 and at least 1: 21 and 15 of 30, each by the rows of a select
+		// or by the count of an update or a delete that differ from SQLite's, and for the bugs of slice
+		// 13 2 of 30, 6 of 12, 4 of 9, 4 of 30, and 7 of 12.
 		least int
 		// finds holds a part of each failure that the bug causes, its own first, by which least of the
 		// sequences must find it, or is nil for any failure. For the bugs of slice 13 its own is the
-		// rows of an ordered select at a place where SQLite has other rows, as [ordered.compare] says,
-		// and a bug that changes the choice of an access is found by [pair.checkAccess] too, where the
-		// rows that it gives are SQLite's; for lastIndexWins its own is that of [pair.checkAccess].
+		// rows of an ordered select at a place where SQLite has other rows, as [ordered.compare] says.
+		// A bug that changes the choice of an access is found by [pair.checkAccess] too, where the rows
+		// that it gives are SQLite's, and a bug of the sort by the path that [pair.everyPath] forces;
+		// for lastIndexWins, which changes nothing but the choice, its own is that of
+		// [pair.checkAccess].
 		finds []string
 		// sequences is the number of the n sequences that the bug runs, for a bug that its sequences
 		// find so often that fewer of them find it often enough, or 0 for all n.
@@ -3520,11 +3524,11 @@ func TestDifferential_plantedBugs(t *testing.T) {
 	}{
 		{"pinByPlace", stmttest.Indexes, 7, nil, 0},
 		{"unturnedBound", stmttest.ValueFirst, 5, nil, 0},
-		{"turnMixed", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses"}, 0},
-		{"limitFirst", stmttest.Order, 1, []string{"where SQLite has the rows", "the select gives the rows"}, 12},
-		{"ascendLast", stmttest.Order, 2, []string{"where SQLite has the rows"}, 9},
-		{"skipGap", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses"}, 0},
-		{"lastIndexWins", stmttest.Order, 1, []string{"and the model chooses"}, 0},
+		{"turnMixed", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses", "the select gives the rows"}, 0},
+		{"limitFirst", stmttest.Order, 2, []string{"where SQLite has the rows", "the select gives the rows"}, 12},
+		{"ascendLast", stmttest.Order, 1, []string{"where SQLite has the rows"}, 9},
+		{"skipGap", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses", "the select gives the rows"}, 0},
+		{"lastIndexWins", stmttest.Order, 2, []string{"and the model chooses"}, 12},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			// own is the number of the sequences that find the bug by its own failure.
@@ -3947,6 +3951,21 @@ var fuzzSetUp = []string{
 	`create table "T""2" (v int primary key) strict, without rowid`,
 }
 
+// shardedAdd gives a function that adds a seed of f, as f.Add does, if the shard of the test holds
+// its place among the seeds, as [testshard.Get] gives the shard: every seed outside a run in shards,
+// so that the shards of the sanitizer's job share the seeds of a fuzz test, which run as its
+// subtests.
+func shardedAdd(f *testing.F) func(args ...any) {
+	shard := testshard.Get(f)
+	i := 0
+	return func(args ...any) {
+		if shard.Holds(i) {
+			f.Add(args...)
+		}
+		i++
+	}
+}
+
 // FuzzSQL runs any SQL text on the engine on a database in memory, a test double of the core, with
 // the tables of [fuzzSetUp], and on SQLite with the same tables, and compares what each gives, as
 // [TestDifferential] does, and the tables after it. It runs the text through Query, or through Exec
@@ -3963,22 +3982,23 @@ func FuzzSQL_core(f *testing.F) {
 // fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of a sequence of
 // the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], and every 500th text of the corpus.
 func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
+	add := shardedAdd(f)
 	q := newSequence(f, stmttest.Mixed.Seed(1))
 	for range 40 {
 		c := q.Next()
-		f.Add(c.Src, !c.Query)
+		add(c.Src, !c.Query)
 	}
 	for _, src := range slices.Concat(fuzzSetUp, stmttest.Others) {
 		if !strings.Contains(src, "%") {
-			f.Add(src, false)
+			add(src, false)
 			continue
 		}
-		f.Add(fmt.Sprintf(src, `"foo BAR"`, `"BAR""x"`, 7), false)
-		f.Add(fmt.Sprintf(src, "T1", "v1", 1), true)
+		add(fmt.Sprintf(src, `"foo BAR"`, `"BAR""x"`, 7), false)
+		add(fmt.Sprintf(src, "T1", "v1", 1), true)
 	}
 	for i, e := range corpus.All() {
 		if i%500 == 0 {
-			f.Add(e.SQL, i%1000 == 0)
+			add(e.SQL, i%1000 == 0)
 		}
 	}
 	f.Fuzz(func(t *testing.T, src string, exec bool) {
@@ -4148,6 +4168,7 @@ func typesLiteral(data []byte, form uint8) string {
 // fuzzTypes is [FuzzTypes] on the instances of newInstance, which takes the length limit, 0 for
 // SQLite's default. Its seeds are values at the edges of each type in every form.
 func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance) {
+	add := shardedAdd(f)
 	bits := func(v uint64) []byte { return binary.LittleEndian.AppendUint64(nil, v) }
 	seeds := [][]byte{
 		nil, []byte("a"), []byte("'"), []byte("it''s"), []byte("\x00"), []byte("a\x00b"), []byte("\xff"), []byte("\xc3"),
@@ -4158,14 +4179,14 @@ func fuzzTypes(f *testing.F, newInstance func(t testing.TB, limit int) *instance
 	}
 	for _, data := range seeds {
 		for form := range uint8(forms) {
-			f.Add(data, form, uint8(0))
+			add(data, form, uint8(0))
 		}
-		f.Add(data, uint8(formBlobLiteral+forms), uint8(0))
+		add(data, uint8(formBlobLiteral+forms), uint8(0))
 	}
 	// Values about the length limit of 1001 bytes, where a value or its record is too long.
 	for n := 995; n <= 1002; n++ {
 		for _, form := range []uint8{formTextArgument, formBlobArgument, formStringLiteral, formBlobLiteral + forms} {
-			f.Add([]byte(strings.Repeat("x", n)), form, uint8(1))
+			add([]byte(strings.Repeat("x", n)), form, uint8(1))
 		}
 	}
 	f.Fuzz(func(t *testing.T, data []byte, form, limit uint8) {

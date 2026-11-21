@@ -406,7 +406,7 @@ ASANTIMEOUT ?= 10m
 ASANPKGS ?=
 ASANSKIPPKGS ?=
 ASANSHARD ?=
-ASANSHARDED ?= TestSimulation_plantedBugs
+ASANSHARDED ?= TestSimulation_plantedBugs|FuzzTypes|FuzzTypes_core|FuzzSQL_core
 .PHONY: asan-test
 asan-test:
 	shard='$(ASANSHARD)'; \

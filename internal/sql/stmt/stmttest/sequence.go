@@ -846,7 +846,7 @@ func (q *Sequence) orderColumns(r Rand, table stmt.Name) ([]stmt.OrderColumn, bo
 	aimed := false
 	indexed := q.indexed[table.Fold()]
 	switch {
-	case len(indexed) > 0 && r.IntN(2) == 0:
+	case len(indexed) > 0 && r.IntN(3) != 0:
 		keys := q.keysOf(table)
 		// The primary key is a candidate of the range too.
 		for _, c := range shape {
@@ -884,10 +884,10 @@ func (q *Sequence) orderColumns(r Rand, table stmt.Name) ([]stmt.OrderColumn, bo
 				long = append(long, k)
 			}
 		}
-		// The shape of the ORDER BY: 0 for a gap, 1 and 2 for mixed directions, and 3 for neither.
-		form := 3
+		// The shape of the ORDER BY: 0 for a gap, 1 to 3 for mixed directions, and 4 for neither.
+		form := 4
 		if !aimed {
-			form = r.IntN(4)
+			form = r.IntN(5)
 		}
 		switch {
 		case form == 0 && len(long) > 0:
@@ -897,8 +897,8 @@ func (q *Sequence) orderColumns(r Rand, table stmt.Name) ([]stmt.OrderColumn, bo
 			at := 1 + r.IntN(len(key)-2)
 			taken = append([]orderColumn{key[0]}, key[at+1:at+2+r.IntN(len(key)-at-1)]...)
 		case form == 0:
-			form = 3
-		case form < 3 && len(key) > 1:
+			form = 4
+		case form < 4 && len(key) > 1:
 			// Two leading columns of the key at least, and no column left out, so that the directions
 			// are mixed among columns that the key could deliver.
 			taken, skip = key[:2+r.IntN(len(key)-1)], false
@@ -909,8 +909,9 @@ func (q *Sequence) orderColumns(r Rand, table stmt.Name) ([]stmt.OrderColumn, bo
 			}
 			columns = append(columns, orderColumn{k.fold, k.descending != turned})
 		}
-		if len(columns) > 1 && form > 0 && form < 3 {
-			c := &columns[r.IntN(len(columns))]
+		if len(columns) > 1 && form > 0 && form < 4 {
+			// The first or the second column, so that the turn shows where the rows tie in the first.
+			c := &columns[r.IntN(2)]
 			c.descending = !c.descending
 		}
 	case r.IntN(6) == 0:

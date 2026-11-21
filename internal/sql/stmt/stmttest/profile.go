@@ -130,7 +130,7 @@ var (
 	// descending, with NULL and with rows that tie, with WHERE and without, by an index that delivers
 	// the order and beside one that only narrows a range, and the LIMIT as a literal and as a ?, also
 	// with an argument that s4ql refuses.
-	Order = &Profile{Name: "order", Faults: []string{areaOrder}, Aim: 3, Weights: weights(2, 14, 9, 1, 1, 1, 6, 1), Where: 2, Indexes: 2, Columns: 3,
+	Order = &Profile{Name: "order", Faults: []string{areaOrder}, Aim: 3, Weights: weights(2, 14, 14, 1, 1, 1, 6, 1), Where: 2, Indexes: 2, Columns: 3,
 		Parameters: 3, Transactions: 4, Order: 3, Limit: 2, Keys: 1, Shared: 2, Aimed: 3, Ties: 2}
 )
 
