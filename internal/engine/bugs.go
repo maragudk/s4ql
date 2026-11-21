@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"iter"
+	"slices"
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -76,6 +77,16 @@ type bugs struct {
 	// text writes it, and not turned round, so that `5 < a` bounds a from above, and the scan reads
 	// the rows below 5, of which the filter above it gives none.
 	unturnedBound bool
+	// turnMixed makes a key deliver the order of an ORDER BY whose columns are in the direction of the
+	// key and in the other both, of slice 13, as if each were in the direction of the first of them
+	// against the key, so that the rows of a column in the other direction come in the wrong order.
+	turnMixed bool
+	// limitFirst makes a query with ORDER BY and LIMIT whose rows are sorted take the first rows of its
+	// access, as many as the LIMIT keeps, and sort those, in place of the first rows of the sort.
+	limitFirst bool
+	// ascendLast makes a sort of the rows of a query with ORDER BY sort by its last column ascending,
+	// also where the column is descending.
+	ascendLast bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.
@@ -96,6 +107,85 @@ func (o openBounds) scan(ctx context.Context, name string, s core.IndexScan) ite
 	s.Lower.Open = s.Lower.Open || s.Lower.Value != nil
 	s.Upper.Open = s.Upper.Open || s.Upper.Value != nil
 	return o.reader.scan(ctx, name, s)
+}
+
+// turnedLike is the ORDER BY by with each column that the key holds in the direction of the first
+// such column against the key, which the planted bug turnMixed delivers in place of by.
+func turnedLike(key, by []core.KeyColumn) []core.KeyColumn {
+	turned := slices.Clone(by)
+	first, against := true, false
+	for i, c := range turned {
+		at := slices.IndexFunc(key, func(k core.KeyColumn) bool { return k.Position == c.Position })
+		if at < 0 {
+			continue
+		}
+		if first {
+			first, against = false, key[at].Descending != c.Descending
+		}
+		turned[i].Descending = key[at].Descending != against
+	}
+	return turned
+}
+
+// ascendedLast is the ORDER BY by with its last column ascending, which the planted bug ascendLast
+// sorts by in place of by.
+func ascendedLast(by []core.KeyColumn) []core.KeyColumn {
+	ascended := slices.Clone(by)
+	ascended[len(ascended)-1].Descending = false
+	return ascended
+}
+
+// sortedAfter gives the rows of its source, which it reads to their end first, sorted by the columns
+// by, NULL before every value: the planted bug limitFirst, whose source is a [limit] of the rows of
+// the access, unsorted.
+type sortedAfter struct {
+	src source
+	by  []core.KeyColumn
+}
+
+func (s *sortedAfter) columns() []Column {
+	return s.src.columns()
+}
+
+func (s *sortedAfter) scanned() *scan {
+	return s.src.scanned()
+}
+
+func (s *sortedAfter) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		var rows [][]*s4qlpb.Value
+		for row, err := range s.src.rows(ctx) {
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			rows = append(rows, row)
+		}
+		slices.SortStableFunc(rows, func(a, b []*s4qlpb.Value) int {
+			for _, c := range s.by {
+				x, y := a[c.Position], b[c.Position]
+				var n int
+				switch {
+				case x.HasNull() || y.HasNull():
+					n = map[bool]int{true: 1}[!x.HasNull()] - map[bool]int{true: 1}[!y.HasNull()]
+				default:
+					n, _ = compare(x, y)
+				}
+				if c.Descending {
+					n = -n
+				}
+				if n != 0 {
+					return n
+				}
+			}
+			return 0
+		})
+		for _, row := range rows {
+			if !yield(row, nil) {
+				return
+			}
+		}
+	}
 }
 
 // zeroOf the type t: the value that the planted bug zeroLeftOut gives.

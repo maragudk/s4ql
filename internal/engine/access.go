@@ -82,6 +82,8 @@ type orderBy struct {
 	columns []core.KeyColumn
 	// limited is whether the query has a LIMIT.
 	limited bool
+	// turnMixed and ascendLast are the planted bugs of the names, as [bugs] says.
+	turnMixed, ascendLast bool
 }
 
 // delivers reports whether a scan in the order of the key, of an index or of the primary key of the
@@ -140,7 +142,12 @@ func (o orderBy) place(t *s4qlpb.CreateTable, key []core.KeyColumn, conditions [
 	if o.columns == nil {
 		return a
 	}
-	if ok, backward := delivers(t, key, conditions, o.columns); ok {
+	ok, backward := delivers(t, key, conditions, o.columns)
+	if !ok && o.turnMixed {
+		// The planted bug turnMixed.
+		ok, backward = delivers(t, key, conditions, turnedLike(key, o.columns))
+	}
+	if ok {
 		a.order, a.backward = delivered, backward
 		return a
 	}
@@ -158,6 +165,10 @@ func (o orderBy) sort(t *s4qlpb.CreateTable, a access) access {
 		a.order = delivered
 	default:
 		a.order, a.by, a.backward = sorted, o.columns, false
+		if o.ascendLast {
+			// The planted bug ascendLast.
+			a.by = ascendedLast(o.columns)
+		}
 	}
 	return a
 }

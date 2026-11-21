@@ -2798,6 +2798,18 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the profile of the values on the left has its value there: 130 of 200 seeds find the bug, 92
 		// of them by its own violation.
 		{"unturnedBound", hammerWorkload, "hammer", stmttest.ValueFirst, []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
+		// A key delivers an ORDER BY of mixed directions as if each were in the direction of its first
+		// column, so a select gives its rows in another order than SQLite's. The profile of the ORDER
+		// BY draws ORDER BY of the columns of an index with one turned: 16 of 200 seeds find the
+		// bug, each by its own violation.
+		{"turnMixed", defaultWorkload, "default", stmttest.Order, []string{", and in SQLite"}},
+		// A LIMIT takes the first rows of an access that is sorted, and sorts those, so a select gives
+		// other rows than SQLite's first: 32 of 200 seeds find the bug, each by its own
+		// violation.
+		{"limitFirst", defaultWorkload, "default", stmttest.Order, []string{", and in SQLite"}},
+		// A sort by a descending last column of ORDER BY sorts it ascending: 61 of 200 seeds
+		// find the bug, each by its own violation.
+		{"ascendLast", defaultWorkload, "default", stmttest.Order, []string{", and in SQLite"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {

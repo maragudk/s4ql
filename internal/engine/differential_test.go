@@ -3332,11 +3332,18 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		profile *stmttest.Profile
 		// least is the number of the n sequences that must find the bug, a third of what they found
 		// on 2026-11-21, 21 and 15 of 30, each by the rows of a select or by the count of an update or
-		// a delete that differ from SQLite's.
+		// a delete that differ from SQLite's, and for the bugs of slice 13 4, 14, and 21 of 30.
 		least int
+		// finds is in the failure of each sequence that finds the bug, or empty for any failure: for
+		// the bugs of slice 13, the rows of an ordered select at a place where SQLite has other rows,
+		// as [ordered.compare] says.
+		finds string
 	}{
-		{"pinByPlace", stmttest.Indexes, 7},
-		{"unturnedBound", stmttest.ValueFirst, 5},
+		{"pinByPlace", stmttest.Indexes, 7, ""},
+		{"unturnedBound", stmttest.ValueFirst, 5, ""},
+		{"turnMixed", stmttest.Order, 1, "where SQLite has the rows"},
+		{"limitFirst", stmttest.Order, 4, "where SQLite has the rows"},
+		{"ascendLast", stmttest.Order, 7, "where SQLite has the rows"},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			found := 0
@@ -3352,6 +3359,9 @@ func TestDifferential_plantedBugs(t *testing.T) {
 				i.close()
 				if failure == "" {
 					continue
+				}
+				if !strings.Contains(failure, b.finds) {
+					t.Errorf("seed %v finds the bug by another failure than its own: %v", s, failure[max(0, len(failure)-2000):])
 				}
 				found++
 				if first == "" {

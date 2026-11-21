@@ -792,7 +792,7 @@ type orderColumn struct {
 // these, from the first to all are taken, of which a column that the WHERE pins, with = or IS NULL,
 // is left out one time in two. They are in the directions of the key, or all turned one time in two,
 // and but for those aimed at the index beside one of a range, one column is turned again one time in
-// four, so that the directions are mixed. Otherwise, one time in six, the primary key, ascending or
+// two, so that the directions are mixed. Otherwise, one time in six, the primary key, ascending or
 // descending; and else one column of the shape one time in two, and from one to all of them, each
 // once, in any order, else, each descending one time in two. Then, one time in four, a column that
 // the WHERE pins is put at any place, if the WHERE pins one that the columns lack. One time in
@@ -864,7 +864,7 @@ func (q *Sequence) orderColumns(r Rand, table stmt.Name) ([]stmt.OrderColumn, bo
 			}
 			columns = append(columns, orderColumn{k.fold, k.descending != turned})
 		}
-		if len(columns) > 1 && !aimed && r.IntN(4) == 0 {
+		if len(columns) > 1 && !aimed && r.IntN(2) == 0 {
 			c := &columns[r.IntN(len(columns))]
 			c.descending = !c.descending
 		}

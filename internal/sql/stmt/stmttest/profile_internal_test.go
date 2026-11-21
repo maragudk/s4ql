@@ -152,7 +152,7 @@ func TestNewSequence(t *testing.T) {
 		want := map[string]string{
 			"mixed": "536b69ac81e95c3d", "tables": "29ebcd8aa183db68", "where": "4bda84f3f43b104a", "changes": "e9ff49a7282d4cf7",
 			"indexes": "414a9a700d02c392", "exists": "2b60aa13e8d46150", "defaults": "7691b53223e1efdf", "valuefirst": "d395629f1c472444",
-			"transactions": "d131350fa1745ac7", "arguments": "8c37d49ea586cc44", "order": "b76f6ed75dafeb82",
+			"transactions": "d131350fa1745ac7", "arguments": "8c37d49ea586cc44", "order": "aedc09a7f9101d04",
 		}
 		is.Equal(t, len(Profiles), len(want))
 		for _, p := range Profiles {
