@@ -58,3 +58,47 @@ The README's recipe only covers the generator. The model, the order check, and t
 ### Future work
 
 - The goqite shape with a pin is reached once in the default run and is not required; see `/docs/todo/generated-workload.md`.
+
+## Step 2: self-review, a fuzz find, and the time of the package
+
+**Author:** builder (order-limit-checks)
+
+### Prompt Context
+
+**Verbatim prompt:** (the same brief as step 1: "Run `make test`, `make lint`, `make check-browser` before handing in", and "The default run of each package (plain and `-race`) grows by at most 10% over `main` as it is now; measure back to back and report.")
+**Interpretation:** review the diff with the code-review skill, run the checks, fuzz the generated targets, and measure the engine package against `main`.
+**Inferred intent:** hand in a branch that passes CI and costs what it may.
+
+### What I did
+
+- The review (medium) found no bug in production code and eight nits. I fixed four: the unused slice `ranged` (also the one finding of `make lint`, SA4010), the slicing of `limitRule`'s message (now `limitKind`), the duplicate body of `newInstanceDirected` (now `newInstanceSeeded`), and the comments of `Keys` and `keyOfStep`. I left the others, which are about the internals of the planted bugs.
+- `go test -run '^$' -fuzz '^FuzzDifferential_core$' -fuzztime 90s ./internal/engine/` failed at once on a cached input of seed 95, a `mixed` sequence: `"select ... where "after" > X'6565...' ... limit ?"` with `nil`, where s4ql gives `18/18: string or blob too big` and SQLite `20/20: datatype mismatch`. SQLite turns the blob literal that is too long into NULL and then refuses the NULL of LIMIT. The excuse `excusedLongCondition` now takes that error of SQLite too, and the input is kept in `/internal/engine/testdata/fuzz/FuzzDifferential_core/`. After the fix, 90 s and 60 s of the two targets passed.
+- The engine package grew too much in the first measure, 155 s to 176 s plain: `TestDifferential` +8 s, `TestDifferential_plantedBugs` +8 s, `TestSimulation` +3.5 s, `TestSimulation_plantedBugs` +4.3 s. `limitFirst` and `ascendLast` now run 12 and 9 sequences, where they find the bug 5 and 6 times, and the cells of `order` in the simulation 6 seeds each.
+
+### Why
+
+The brief caps the time; the planted bugs that their sequences find often do not need 30.
+
+### What worked
+
+- `make test`, `make lint`, and `make check-browser` pass.
+
+### What didn't work
+
+- The measures after the trim are not reliable: another builder ran mutation testing, at a load average of 17 to 22. Back to back, main and the branch gave 130 s and 117 s, then 96 s and 106 s plain, and 177 s and 192 s, then 156 s and 207 s under `-race`.
+
+### What I learned
+
+- Under load, one run of a package is no measure of 10%; the lead should measure again on a quiet machine.
+
+### What was tricky
+
+- The fuzz input came from the Go fuzz cache, not from `testdata`, so the plain run of the fuzz targets passed while `-fuzz` failed at once.
+
+### What warrants review
+
+- The time of the engine package, plain and under `-race`, on a quiet machine. `TestSimulation_plantedBugs` of `turnMixed` runs until two seeds find it, about one seed in twelve.
+
+### Future work
+
+- If the time is over, the cheapest cuts are `turnMixed` in the simulation and the factor 2 of `order` in `sequencesOf`, at the cost of the kind of goqite's shape.
