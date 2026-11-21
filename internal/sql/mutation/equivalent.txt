@@ -804,3 +804,5 @@ internal/core/index.go Tx.spoolCreatedIndexes condition: len(tx.createdIndexes) 
 	Without an index that the transaction created, the loop below writes none and gives 0 and nil too, after a read of the names of the indexes, which changes nothing and does not fail where the reads of the commit before it did not.
 internal/core/index.go Tx.spoolCreatedIndexes constant: return 0, err => return 1, err
 	Its caller, Tx.spoolCommit, returns at the error before it reads the number.
+internal/core/index.go Tx.spoolCreatedIndexes constant: return 0, err => return 1, err #2
+	Its caller, Tx.spoolCommit, returns at the error before it reads the number.
