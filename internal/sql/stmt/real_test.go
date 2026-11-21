@@ -159,9 +159,9 @@ func TestCheck_reals(t *testing.T) {
 }
 
 // FuzzLiteral checks the value of any literal that the pass supports as a value of an insert, of a
-// condition of WHERE, or of an assignment of an update, against the value that SQLite gives it. A
-// text with commas is several values of an insert, or several assignments, and a text with AND
-// several conditions.
+// condition of WHERE on either side of its column, or of an assignment of an update, against the
+// value that SQLite gives it. A text with commas is several values of an insert, or several
+// assignments, and a text with AND several conditions.
 func FuzzLiteral(f *testing.F) {
 	for _, c := range checkCases {
 		switch s := c.want.(type) {
@@ -224,6 +224,12 @@ func FuzzLiteral(f *testing.F) {
 			}
 		}
 		src = "select * from t where v = " + lit
+		if s, err := stmt.Check(src); err == nil {
+			if sel, ok := s.(*stmt.Select); ok {
+				check(src, conditionValues(sel.Where))
+			}
+		}
+		src = "select * from t where " + lit + " < v"
 		if s, err := stmt.Check(src); err == nil {
 			if sel, ok := s.(*stmt.Select); ok {
 				check(src, conditionValues(sel.Where))

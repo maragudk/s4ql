@@ -1745,29 +1745,39 @@ func checkTerm(t testing.TB, src string, b stmt.Span, end, parameters *int, v st
 
 // checkConditions of a WHERE of a statement of src in the bounds b, after the end of what comes
 // before them and after as many parameters: each condition comes after the one before it, its column
-// first, and a ? has the number after that of the ? before it. It gives the names of their columns.
+// first, or its value first if it says ValueFirst, which only a comparison says, and a ? has the
+// number after that of the ? before it. It gives the names of their columns.
 func checkConditions(t testing.TB, src string, b stmt.Span, end int, parameters *int, where []stmt.Condition) []stmt.Name {
 	t.Helper()
 	if where != nil && len(where) == 0 {
 		t.Fatalf("%q: an empty list of conditions", src)
 	}
 	var names []stmt.Name
-	for _, c := range where {
-		names = append(names, c.Column)
+	column := func(c stmt.Condition) {
 		if c.Column.Offset < end {
 			t.Fatalf("%q: condition on %q at %v", src, c.Column.Raw, c.Column.Offset)
 		}
 		end = c.Column.Offset + len(c.Column.Raw)
+	}
+	for _, c := range where {
+		names = append(names, c.Column)
 		switch c.Operator {
 		case stmt.OpIsNull, stmt.OpIsNotNull:
-			if v := c.Value; v.Value != nil || v.Parameter != 0 || v.Span != (stmt.Span{}) {
-				t.Fatalf("%q: %v with the value %+v", src, c.Operator, v)
+			column(c)
+			if v := c.Value; v.Value != nil || v.Parameter != 0 || v.Span != (stmt.Span{}) || c.ValueFirst {
+				t.Fatalf("%q: %v with the value %+v, value first %v", src, c.Operator, v, c.ValueFirst)
 			}
 			continue
 		case stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual:
 		default:
 			t.Fatalf("%q: the operator %v", src, c.Operator)
 		}
+		if c.ValueFirst {
+			checkTerm(t, src, b, &end, parameters, c.Value)
+			column(c)
+			continue
+		}
+		column(c)
 		checkTerm(t, src, b, &end, parameters, c.Value)
 	}
 	return names

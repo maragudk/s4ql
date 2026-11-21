@@ -717,10 +717,13 @@ func (r *recognizer) conditions(e ast.Expr, before int) []Condition {
 const maxDepth = 1000
 
 // depth of the condition e, which the recognizer took, as SQLite counts it: a name, a literal, and a
-// parameter are 1 deep, and an operator is one deeper than its deepest operand, a sign too.
+// parameter are 1 deep, and an operator is one deeper than its deepest operand, a sign too, on
+// either side of the operator.
 func depth(e ast.Expr) int {
 	if b, ok := e.(*ast.Binary); ok {
-		if _, ok := b.Y.(*ast.Unary); ok {
+		_, left := b.X.(*ast.Unary)
+		_, right := b.Y.(*ast.Unary)
+		if left || right {
 			return 3
 		}
 	}
@@ -740,8 +743,13 @@ var comparisons = map[token.Kind]Operator{
 }
 
 // condition e of a WHERE clause, after before parameters of the statement: a column compared with a
-// literal or a parameter, with one of the operators of [comparisons], or a column IS NULL or IS NOT
-// NULL.
+// literal or a parameter, with one of the operators of [comparisons], on either side of the
+// operator, or a column IS NULL or IS NOT NULL.
+//
+// A comparison with the value on the left, as `5 < a`, is read as the column compared with the value
+// by the operator swapped, `a > 5`, with [Condition.ValueFirst] set; see [Condition] for why. The
+// value is read as a value on the right is, with the same names for what is not supported, and its
+// ? has its number in the order of the text.
 //
 // The next token is the first of e when it is called, since e follows WHERE or AND, and the first
 // token of the left operand of a condition is the first of the condition.
@@ -768,7 +776,13 @@ func (r *recognizer) condition(e ast.Expr, before int) Condition {
 		r.unexpected()
 	}
 	r.accept(b)
-	c := Condition{Column: r.leftColumn(b.X), Operator: op}
+	if isValue(b.X) {
+		c := Condition{Value: r.term(b.X, before), Operator: op.Swapped(), ValueFirst: true}
+		r.take(b.Op)
+		c.Column = r.conditionColumn(b.Y, "value compared with a value")
+		return c
+	}
+	c := Condition{Column: r.conditionColumn(b.X, ""), Operator: op}
 	r.take(b.Op)
 	if ref, ok := b.Y.(*ast.ColumnRef); ok && !isTrueOrFalse(ref) {
 		r.reject("column compared with a column")
@@ -780,7 +794,7 @@ func (r *recognizer) condition(e ast.Expr, before int) Condition {
 // isCondition: a column IS NULL or IS NOT NULL.
 func (r *recognizer) isCondition(e *ast.Is) Condition {
 	r.accept(e)
-	c := Condition{Column: r.leftColumn(e.X), Operator: OpIsNull}
+	c := Condition{Column: r.conditionColumn(e.X, "value before IS"), Operator: OpIsNull}
 	r.take(e.Is)
 	if e.Not.Present() {
 		r.take(e.Not)
@@ -800,9 +814,11 @@ func (r *recognizer) isCondition(e *ast.Is) Condition {
 	return c
 }
 
-// leftColumn of a condition, the expression x on the left of its operator, which starts at the next
-// token: the bare name of a column.
-func (r *recognizer) leftColumn(x ast.Expr) Name {
+// conditionColumn of a condition, the expression x on either side of its operator, which starts at the next
+// token: the bare name of a column. A literal or a parameter there, with a sign or without one, is
+// not supported as value, the name of that form; value is "" where the caller has read such a
+// value as the value of the condition.
+func (r *recognizer) conditionColumn(x ast.Expr, value string) Name {
 	ref, ok := x.(*ast.ColumnRef)
 	switch {
 	case ok && ref.Table.Present():
@@ -810,8 +826,8 @@ func (r *recognizer) leftColumn(x ast.Expr) Name {
 	case ok && isTrueOrFalse(ref):
 		// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
 		r.reject("TRUE or FALSE")
-	case isValue(x):
-		r.reject("value on the left of a comparison")
+	case value != "" && isValue(x):
+		r.reject(value)
 	case !ok:
 		r.unexpected()
 	}

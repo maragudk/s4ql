@@ -1046,15 +1046,8 @@ var checkCases = []checkCase{
 			cond(name("b", "b", 22), stmt.OpIsNull, stmt.Term{}), cond(name("c", "c", 36), stmt.OpIsNull, stmt.Term{}),
 			cond(name("d", "d", 50), stmt.OpEqual, lit(stmt.Integer(1), 54, 55)), cond(name("e", "e", 60), stmt.OpIsNull, stmt.Term{})}}},
 	{name: "a value and AND without a gap", src: "select * from t where v=1and w<-1", err: `unrecognized token: "1and"`},
-	{name: "a literal on the left", src: "select * from t where 1 = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
-	{name: "a parameter on the left", src: "select * from t where ? = v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
-	{name: "a negative number on the left", src: "select * from t where -1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
-	{name: "a positive number on the left", src: "select * from t where +1 < v", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	// Only a sign makes a value of a literal: ~ is an operator of its own.
 	{name: "a bitwise not of a number on the left", src: "select * from t where ~1 < v", err: "s4ql: not supported: unary operator (at offset 22)"},
-	{name: "a string on the left", src: "select * from t where 'v' = 1", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
-	{name: "null is null", src: "select * from t where null is null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
-	{name: "a blob is not null", src: "select * from t where x'00' is not null", err: "s4ql: not supported: value on the left of a comparison (at offset 22)"},
 	{name: "a column on the right", src: "select * from t where v = w", err: "s4ql: not supported: column compared with a column (at offset 26)"},
 	{name: "a column in double quotes on the right", src: `select * from t where v = "a"`, err: "s4ql: not supported: column compared with a column (at offset 26)"},
 	{name: "a column with its table on the right", src: "select * from t where v = t.w", err: "s4ql: not supported: column compared with a column (at offset 26)"},
@@ -1271,7 +1264,6 @@ var checkCases = []checkCase{
 	{name: "a reserved table in a delete", src: "delete from S4QL_x", err: "s4ql: not supported: reserved table name (at offset 12)"},
 	{name: "a virtual table of SQLite in a delete", src: "delete from json_each", err: "s4ql: not supported: name of a virtual table of SQLite (at offset 12)"},
 	{name: "or in the where of an update", src: "update t set v = 1 where v = 1 or w = 2", err: "s4ql: not supported: OR (at offset 31)"},
-	{name: "a value on the left in the where of a delete", src: "delete from t where 1 = v", err: "s4ql: not supported: value on the left of a comparison (at offset 20)"},
 	{name: "in in the where of an update", src: "update t set v = 1 where v = 1 and w in (1)", err: "s4ql: not supported: IN (at offset 35)"},
 	{name: "a column with its table in the where of a delete", src: "delete from t where t.v = 1", err: "s4ql: not supported: column with the name of a table (at offset 20)"},
 	{name: "a numbered parameter in the where of an update", src: "update t set v = ? where w = ?2", err: "s4ql: not supported: numbered parameter (at offset 29)"},
@@ -1508,6 +1500,128 @@ var checkCases = []checkCase{
 	{name: "drop index with if exists after the name", src: "drop index i if exists", err: `near "if": syntax error`},
 	{name: "drop index if exists twice", src: "drop index if exists if exists i", err: `near "exists": syntax error`},
 	{name: "drop index if exists of an index named exists", src: "drop index if exists exists", err: `near "exists": syntax error`},
+
+	// Slice 12: a value on the left of a comparison. A condition reads column, operator, value, with
+	// the operator swapped where the text writes the value first.
+	{name: "a value on the left, as the roadmap writes it", src: "select v1 from t1 where 5 < v1",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 30}, Table: name("t1", "t1", 15), Columns: []stmt.Name{name("v1", "v1", 7)}, Where: []stmt.Condition{
+			condFirst(name("v1", "v1", 28), stmt.OpGreater, lit(stmt.Integer(5), 24, 25))}}},
+	{name: "a parameter on the left, as the roadmap writes it", src: "select v1 from t1 where ? >= v2",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t1", "t1", 15), Columns: []stmt.Name{name("v1", "v1", 7)}, Where: []stmt.Condition{
+			condFirst(name("v2", "v2", 29), stmt.OpLessOrEqual, param(1, 24))}}},
+	{name: "every operator with the value on the left", src: "select * from t where 1 = a and 2 == b and 3 <> c and 4 != d and 5 < e and 6 <= f and 7 > g and 8 >= h",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 102}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			condFirst(name("a", "a", 26), stmt.OpEqual, lit(stmt.Integer(1), 22, 23)), condFirst(name("b", "b", 37), stmt.OpEqual, lit(stmt.Integer(2), 32, 33)),
+			condFirst(name("c", "c", 48), stmt.OpNotEqual, lit(stmt.Integer(3), 43, 44)), condFirst(name("d", "d", 59), stmt.OpNotEqual, lit(stmt.Integer(4), 54, 55)),
+			condFirst(name("e", "e", 69), stmt.OpGreater, lit(stmt.Integer(5), 65, 66)), condFirst(name("f", "f", 80), stmt.OpGreaterOrEqual, lit(stmt.Integer(6), 75, 76)),
+			condFirst(name("g", "g", 90), stmt.OpLess, lit(stmt.Integer(7), 86, 87)), condFirst(name("h", "h", 101), stmt.OpLessOrEqual, lit(stmt.Integer(8), 96, 97))}}},
+	{name: "values of every type on the left", src: "select * from t where -1.5 < a and 'x' = b and x'00' <> c and - 7 >= d and .5 > e and null = f",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 94}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			condFirst(name("a", "a", 29), stmt.OpGreater, lit(stmt.Real(-1.5), 22, 26)), condFirst(name("b", "b", 41), stmt.OpEqual, lit(stmt.Text("x"), 35, 38)),
+			condFirst(name("c", "c", 56), stmt.OpNotEqual, lit(stmt.Blob{0}, 47, 52)), condFirst(name("d", "d", 69), stmt.OpLessOrEqual, lit(stmt.Integer(-7), 62, 65)),
+			condFirst(name("e", "e", 80), stmt.OpLess, lit(stmt.Real(0.5), 75, 77)), condFirst(name("f", "f", 93), stmt.OpEqual, lit(stmt.Null{}, 86, 90))}}},
+	{name: "the limits of 64 bits on the left", src: "select * from t where -9223372036854775808 < a and 9223372036854775807 >= a",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 75}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			condFirst(name("a", "a", 45), stmt.OpGreater, lit(stmt.Integer(-9223372036854775808), 22, 42)),
+			condFirst(name("a", "a", 74), stmt.OpLessOrEqual, lit(stmt.Integer(9223372036854775807), 51, 70))}}},
+	{name: "parameters on both sides of their columns, numbered in the order of the text", src: "select * from t where a = ? and ? < b and c > ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 47}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("a", "a", 22), stmt.OpEqual, param(1, 26)), condFirst(name("b", "b", 36), stmt.OpGreater, param(2, 32)),
+			cond(name("c", "c", 42), stmt.OpGreater, param(3, 46))}}},
+	{name: "the receive of goqite's queue, as far as slice 12 takes it", src: "select * from goqite where queue = ? and ? >= timeout and received < ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 70}, Table: name("goqite", "goqite", 14), Where: []stmt.Condition{
+			cond(name("queue", "queue", 27), stmt.OpEqual, param(1, 35)), condFirst(name("timeout", "timeout", 46), stmt.OpLessOrEqual, param(2, 41)),
+			cond(name("received", "received", 58), stmt.OpLess, param(3, 69))}}},
+	{name: "a value on the left and a test for NULL of its column", src: "select * from t where 5 = a and a is null",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 41}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			condFirst(name("a", "a", 26), stmt.OpEqual, lit(stmt.Integer(5), 22, 23)), cond(name("a", "a", 32), stmt.OpIsNull, stmt.Term{})}}},
+	{name: "a column in double quotes on the right of a value", src: `select * from t where 'a' < "b c"`,
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 33}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			condFirst(name(`"b c"`, "b c", 28), stmt.OpGreater, lit(stmt.Text("a"), 22, 25))}}},
+	{name: "a column named by a keyword on the right", src: "select * from t where 1 = abort",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			condFirst(name("abort", "abort", 26), stmt.OpEqual, lit(stmt.Integer(1), 22, 23))}}},
+	{name: "comments in every gap of a value on the left", src: "select * from t where/*a*/-/*b*/5/*c*/>=/*d*/a/*e*/;",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 52}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			condFirst(name("a", "a", 45), stmt.OpLessOrEqual, lit(stmt.Integer(-5), 26, 33))}}},
+	{name: "a value on the left in an update, with parameters in set and where", src: "update t set v = ? where ? > w and 1 = x",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 40}, Table: name("t", "t", 7), Set: []stmt.Assignment{set(name("v", "v", 13), param(1, 17))}, Where: []stmt.Condition{
+			condFirst(name("w", "w", 29), stmt.OpLess, param(2, 25)), condFirst(name("x", "x", 39), stmt.OpEqual, lit(stmt.Integer(1), 35, 36))}}},
+	{name: "a value on the left in a delete", src: "delete from t where 1 = v",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 25}, Table: name("t", "t", 12), Where: []stmt.Condition{
+			condFirst(name("v", "v", 24), stmt.OpEqual, lit(stmt.Integer(1), 20, 21))}}},
+	{name: "both orders in a delete", src: "delete from t where 'a' <= v and v < 'b'",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 40}, Table: name("t", "t", 12), Where: []stmt.Condition{
+			condFirst(name("v", "v", 27), stmt.OpGreaterOrEqual, lit(stmt.Text("a"), 20, 23)), cond(name("v", "v", 33), stmt.OpLess, lit(stmt.Text("b"), 37, 40))}}},
+	{name: "a value on the left without a gap before and", src: "select * from t where 1=v and 2<w and 3>=x",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 42}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			condFirst(name("v", "v", 24), stmt.OpEqual, lit(stmt.Integer(1), 22, 23)), condFirst(name("w", "w", 32), stmt.OpGreater, lit(stmt.Integer(2), 30, 31)),
+			condFirst(name("x", "x", 41), stmt.OpLessOrEqual, lit(stmt.Integer(3), 38, 39))}}},
+	// The value on the left is read as the value on the right is, with the same names.
+	{name: "a positive number on the left", src: "select * from t where +1 < v", err: "s4ql: not supported: + sign (at offset 22)"},
+	{name: "a hex integer on the left", src: "select * from t where 0x10 < v", err: "s4ql: not supported: hex literal (at offset 22)"},
+	{name: "true on the left", src: "select * from t where true = v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
+	{name: "false on the left", src: "select * from t where FALSE < v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
+	{name: "a parameter after a sign on the left", src: "select * from t where -? < v", err: "s4ql: not supported: parameter after a sign (at offset 23)"},
+	{name: "null after a minus on the left", src: "select * from t where -null = v", err: "s4ql: not supported: NULL after a sign (at offset 23)"},
+	{name: "null after a plus on the left", src: "select * from t where +null = v", err: "s4ql: not supported: NULL after a sign (at offset 22)"},
+	{name: "two signs on the left", src: "select * from t where - -5 = v", err: "s4ql: not supported: unary operator (at offset 22)"},
+	{name: "a string after a sign on the left", src: "select * from t where -'x' = v", err: "s4ql: not supported: string after a sign (at offset 23)"},
+	{name: "a blob after a sign on the left", src: "select * from t where - x'00' = v", err: "s4ql: not supported: blob after a sign (at offset 24)"},
+	{name: "a number with a digit separator on the left", src: "select * from t where 1_000 = v", err: "s4ql: not supported: number with a digit separator (at offset 22)"},
+	{name: "the current time on the left", src: "select * from t where current_time = v", err: "s4ql: not supported: current date or time (at offset 22)"},
+	{name: "an infinite real on the left", src: "select * from t where 1e999 = v", err: "s4ql: not supported: infinite real number (at offset 22)"},
+	{name: "an integer outside 64 bits on the left", src: "select * from t where 9223372036854775808 > v", err: "s4ql: not supported: integer outside 64 bits (at offset 22)"},
+	{name: "a numbered parameter on the left", src: "select * from t where ?1 = v", err: "s4ql: not supported: numbered parameter (at offset 22)"},
+	{name: "a named parameter on the left", src: "select * from t where :a = v", err: "s4ql: not supported: named parameter (at offset 22)"},
+	{name: "a value on the left in parentheses", src: "select * from t where (5) < v", err: "s4ql: not supported: parentheses (at offset 22)"},
+	{name: "a column on the right in parentheses", src: "select * from t where 5 < (v)", err: "s4ql: not supported: parentheses (at offset 26)"},
+	{name: "a column with its table on the right of a value", src: "select * from t where 5 < t.v", err: "s4ql: not supported: column with the name of a table (at offset 26)"},
+	{name: "a column with its schema and table on the right of a value", src: "select * from t where 5 < main.t.v", err: "s4ql: not supported: column with the name of a table (at offset 26)"},
+	{name: "true on the right of a value", src: "select * from t where 5 < true", err: "s4ql: not supported: TRUE or FALSE (at offset 26)"},
+	{name: "a column in brackets on the right of a value", src: "select * from t where 5 < [v]", err: "s4ql: not supported: name in brackets (at offset 26)"},
+	{name: "a column in backticks on the right of a value", src: "select * from t where 5 < `v`", err: "s4ql: not supported: name in backticks (at offset 26)"},
+	{name: "an empty name on the right of a value", src: `select * from t where 5 < ""`, err: "s4ql: not supported: empty name (at offset 26)"},
+	{name: "an expression on the right of a value", src: "select * from t where 5 < v + 1", err: "s4ql: not supported: binary operator (at offset 26)"},
+	{name: "an expression on the left of a column", src: "select * from t where 5 + 1 < v", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "a function on the right of a value", src: "select * from t where 5 < abs(v)", err: "s4ql: not supported: function call (at offset 26)"},
+	{name: "a column after a sign on the right of a value", src: "select * from t where 5 < -v", err: "s4ql: not supported: unary operator (at offset 26)"},
+	{name: "two comparisons in a row", src: "select * from t where 5 < v < 10", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "a collation on a value on the left", src: "select * from t where 'a' collate nocase < v", err: "s4ql: not supported: COLLATE (at offset 22)"},
+	{name: "a collation on a column on the right", src: "select * from t where 'a' < v collate nocase", err: "s4ql: not supported: COLLATE (at offset 28)"},
+	{name: "or after a value on the left", src: "select * from t where 5 < v or 1 = w", err: "s4ql: not supported: OR (at offset 28)"},
+	{name: "a hex integer in a later condition after a value on the left", src: "select * from t where 5 = v and w = 0x1", err: "s4ql: not supported: hex literal (at offset 36)"},
+	// A value on both sides of a comparison, at the value on the right, as a column on both sides is
+	// at the column on the right.
+	{name: "a number on both sides", src: "select * from t where 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "a parameter on both sides", src: "select * from t where ? = ?", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "a number and a parameter", src: "select * from t where 1 < ?", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "a string and a number", src: "select * from t where 'v' = 1", err: "s4ql: not supported: value compared with a value (at offset 28)"},
+	{name: "null on both sides", src: "select * from t where null = null", err: "s4ql: not supported: value compared with a value (at offset 29)"},
+	{name: "a negative number on the right of a value", src: "select * from t where 1 >= -1", err: "s4ql: not supported: value compared with a value (at offset 27)"},
+	{name: "a string on the right of a value", src: "select * from t where 5 < 'v'", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "a value on both sides after a condition", src: "select * from t where 5 < v and 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 36)"},
+	{name: "a value on both sides in an update", src: "update t set v = 1 where 2 = 2", err: "s4ql: not supported: value compared with a value (at offset 29)"},
+	{name: "a value on both sides in a delete", src: "delete from t where 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 24)"},
+	// A column on both sides stays not supported.
+	{name: "a column on both sides", src: "select * from t where a = b", err: "s4ql: not supported: column compared with a column (at offset 26)"},
+	{name: "a column compared with itself", src: "select * from t where a = a", err: "s4ql: not supported: column compared with a column (at offset 26)"},
+	{name: "a column in double quotes on both sides", src: `select * from t where "a" < "b"`, err: "s4ql: not supported: column compared with a column (at offset 28)"},
+	// IS NULL and IS NOT NULL take only a column on the left.
+	{name: "a number is null", src: "select * from t where 5 is null", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "null is null", src: "select * from t where null is null", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "a parameter is null", src: "select * from t where ? is null", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "a number is not null", src: "select * from t where 5 is not null", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "a blob is not null", src: "select * from t where x'00' is not null", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "a negative number is null", src: "select * from t where -1 is null", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "a number is a column", src: "select * from t where 5 is v", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "a number is distinct from a column", src: "select * from t where 5 is distinct from v", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "a number isnull", src: "select * from t where 5 isnull", err: "s4ql: not supported: NULL test (at offset 22)"},
+	{name: "a value before IS in an update", src: "update t set v = 1 where 2 is null", err: "s4ql: not supported: value before IS (at offset 25)"},
+	{name: "a value before IS in a delete", src: "delete from t where ? is not null", err: "s4ql: not supported: value before IS (at offset 20)"},
+	{name: "a value on the left and nothing after its operator", src: "select * from t where 5 <", err: "incomplete input"},
+	{name: "a value on the left and a keyword after its operator", src: "select * from t where 5 < select", err: `near "select": syntax error`},
+	{name: "an operator without a left side", src: "select * from t where < v", err: `near "<": syntax error`},
 }
 
 // ixc is a column of a CREATE INDEX.
@@ -1518,6 +1632,12 @@ func ixc(n stmt.Name, descending bool) stmt.IndexColumn {
 // cond is a condition of a WHERE on the column, with the operator op and the value v.
 func cond(column stmt.Name, op stmt.Operator, v stmt.Term) stmt.Condition {
 	return stmt.Condition{Column: column, Operator: op, Value: v}
+}
+
+// condFirst is a condition of a WHERE on the column, with the operator op and the value v, whose text
+// writes the value on the left, with the operator swapped.
+func condFirst(column stmt.Name, op stmt.Operator, v stmt.Term) stmt.Condition {
+	return stmt.Condition{Column: column, Operator: op, Value: v, ValueFirst: true}
 }
 
 // set is an assignment of an UPDATE of the value v to the column.
@@ -1703,27 +1823,35 @@ func TestCheck(t *testing.T) {
 		t.Logf("%v keywords are names of columns in the select list: %v", len(names), names)
 	})
 
-	t.Run("should take every keyword of SQLite that SQLite reads as the name of a column in WHERE, and no other", func(t *testing.T) {
+	t.Run("should take every keyword of SQLite that SQLite reads as the name of a column in WHERE, on either side of a comparison, and no other", func(t *testing.T) {
 		d := open(t)
 		d.must("create table t (x int primary key) strict, without rowid")
-		var names []string
-		for _, kw := range keywords(t) {
-			src := "select * from t where " + kw + " = 1"
-			if oracle.Judge(src).Kind != oracle.Parses {
-				continue
+		var left []string
+		for _, form := range []string{"select * from t where %v = 1", "select * from t where 1 = %v", "select * from t where ? < %v"} {
+			var names []string
+			for _, kw := range keywords(t) {
+				src := fmt.Sprintf(form, kw)
+				if oracle.Judge(src).Kind != oracle.Parses {
+					continue
+				}
+				column := false
+				var e *sqlite.Error
+				if err := d.exec(src); errors.As(err, &e) && e.Message == "no such column: "+kw {
+					column = true
+					names = append(names, kw)
+				}
+				o, _ := verify(t, src)
+				is.Equal(t, column, o == supported, src)
 			}
-			column := false
-			var e *sqlite.Error
-			if err := d.exec(src); errors.As(err, &e) && e.Message == "no such column: "+kw {
-				column = true
-				names = append(names, kw)
+			slices.Sort(names)
+			is.True(t, len(names) > 80, "too few keywords are names")
+			t.Logf("%v keywords are names of columns in %q: %v", len(names), form, names)
+			// SQLite reads the same keywords as a column on the right of a comparison as on its left.
+			if left == nil {
+				left = names
 			}
-			o, _ := verify(t, src)
-			is.Equal(t, column, o == supported, src)
+			is.EqualSlice(t, left, names, form)
 		}
-		slices.Sort(names)
-		is.True(t, len(names) > 80, "too few keywords are names")
-		t.Logf("%v keywords are names of columns in WHERE: %v", len(names), names)
 	})
 
 	t.Run("should take every keyword of SQLite that SQLite reads as the name of a table or a column of an update or a delete, and no other", func(t *testing.T) {
@@ -1742,6 +1870,8 @@ func TestCheck(t *testing.T) {
 			{"update t set %v = 1", "no such column: ", stmttest.UpdateColumn},
 			{"update t set x = 1 where %v = 1", "no such column: ", stmttest.SelectColumn},
 			{"delete from t where %v is null", "no such column: ", stmttest.SelectColumn},
+			{"update t set x = 1 where 1 < %v", "no such column: ", stmttest.SelectColumn},
+			{"delete from t where ? >= %v", "no such column: ", stmttest.SelectColumn},
 		} {
 			var names []string
 			for _, kw := range keywords(t) {
@@ -2028,6 +2158,97 @@ func TestCheck(t *testing.T) {
 		}
 	})
 
+	t.Run("should read a value on the left as SQLite does: the rows of its column on the left with the operator swapped, on a column of every type", func(t *testing.T) {
+		// What SQLite does with a value on the left, for the engine: on a strict table with a column of
+		// each type, and on a table that is not strict, `value op column` gives the rows of `column
+		// op' value`, with op' the operator that [stmt.Operator.Swapped] gives, for every operator in
+		// every spelling and a value of every type, NULL included, as a literal and as a ?. SQLite
+		// applies the affinity of a column to the value on either side, so the two orders also agree
+		// where it converts the value, such as '5' compared with an INT column.
+		values := []string{"null", "0", "5", "-5", "10", "5.0", "5.5", "-0.0", "1e300", "9223372036854775807", "-9223372036854775808",
+			"'5'", "'5.0'", "' 5'", "'x'", "''", "'a'", "x''", "x'05'", "x'35'"}
+		spellings := map[string]stmt.Operator{"=": stmt.OpEqual, "==": stmt.OpEqual, "<>": stmt.OpNotEqual, "!=": stmt.OpNotEqual,
+			"<": stmt.OpLess, "<=": stmt.OpLessOrEqual, ">": stmt.OpGreater, ">=": stmt.OpGreaterOrEqual}
+		compared, some := 0, 0
+		for _, options := range []string{" strict, without rowid", ""} {
+			for _, typ := range []string{"int", "real", "text", "blob", "any"} {
+				if typ == "any" && options == "" {
+					continue
+				}
+				d := open(t)
+				d.must("create table c (k int primary key, v " + typ + ")" + options)
+				for i, v := range values {
+					// A strict table refuses a value that its column does not take, and keeps the others.
+					_ = d.exec(fmt.Sprintf("insert into c values (%v, %v)", i, v))
+				}
+				for _, v := range values {
+					arg := d.value("select " + v)
+					for spelling, op := range spellings {
+						for _, value := range []string{v, "?"} {
+							var args []stmt.Value
+							if value == "?" {
+								args = []stmt.Value{arg}
+							}
+							left := fmt.Sprintf("select k from c where %v %v v order by k", value, spelling)
+							right := fmt.Sprintf("select k from c where v %v %v order by k", op.Swapped(), value)
+							_, got, err := d.run(left, args)
+							is.NotError(t, err, left)
+							_, want, err := d.run(right, args)
+							is.NotError(t, err, right)
+							is.Equal(t, showRows(want), showRows(got), typ+options+": "+left)
+							compared++
+							if len(got) > 0 {
+								some++
+							}
+						}
+					}
+				}
+			}
+		}
+		t.Logf("%v selects with a value on the left gave the rows of the column on the left, %v of them some rows", compared, some)
+		is.True(t, some > compared/4, "too few selects gave rows")
+	})
+
+	t.Run("should give SQLite's errors for a value on the left in the order of the other side", func(t *testing.T) {
+		// What SQLite does with the errors of a WHERE with a value on the left, for the engine, with the
+		// length limit lowered to 1,000 bytes: the names come first, in the order of the text, as with
+		// the column on the left, also when a value before them is too long; then a value that is too
+		// long. SQLite never refuses a value for its type, so the engine's refusal of a value of another
+		// type than its column comes last, as it does for the other order.
+		long := "'" + strings.Repeat("x", 1200) + "'"
+		for _, c := range []struct{ src, want string }{
+			{"select * from t where " + long + " < a and nope = 1", "no such column: nope"},
+			{"select * from t where " + long + " < a and 1 = nope", "no such column: nope"},
+			{"select * from t where " + long + " < nope", "no such column: nope"},
+			{"select nope from t where " + long + " < a", "no such column: nope"},
+			{"select * from nope where " + long + " < a", "no such table: nope"},
+			{"select * from t where 'x' < a and 1 = nope", "no such column: nope"},
+			{"select * from t where 1 = nope and 2 = nope2", "no such column: nope"},
+			{"select * from t where nope is null and 1 = nope2", "no such column: nope"},
+			{"select * from t where nope is null and nope2 is null and 1 = nope3", "no such column: nope2"},
+			{`select * from t where 5 < "nope"`, `no such column: "nope" - should this be a string literal in single-quotes?`},
+			{"select * from t where 'x' < a and " + long + " = b", "string or blob too big"},
+			{"select * from t where " + long + " = b and 'x' < a", "string or blob too big"},
+			{"update t set a = 1 where " + long + " < a and 1 = nope", "no such column: nope"},
+			{"update t set nope = 1 where 1 = nope2", "no such column: nope"},
+			{"update t set a = 1 where 1 = nope2", "no such column: nope2"},
+			{"update t set b = " + long + " where 'x' > a", "string or blob too big"},
+			{"delete from t where " + long + " = b and 1 = nope", "no such column: nope"},
+			{"delete from t where " + long + " = b", "string or blob too big"},
+		} {
+			o, _ := verify(t, c.src)
+			is.Equal(t, supported, o, c.src)
+			d := open(t)
+			d.must("create table t (k int primary key, a int, b text) strict, without rowid")
+			d.must("insert into t values (1, 5, 'x')")
+			is.NotError(t, d.c.SetLengthLimit(1000))
+			var e *sqlite.Error
+			err := d.exec(c.src)
+			is.True(t, errors.As(err, &e), c.src)
+			is.Equal(t, c.want, e.Message, c.src)
+		}
+	})
+
 	t.Run("should take as many columns of an index as SQLite allows, and not one more", func(t *testing.T) {
 		index := func(n int) string {
 			var names []string
@@ -2109,7 +2330,7 @@ func TestCheck(t *testing.T) {
 
 	t.Run("should take conditions as deep as SQLite allows, and not one deeper", func(t *testing.T) {
 		// SQLite allows an expression of 1000 levels. Each AND is one level more than the deeper of its
-		// two sides, a condition is two levels, and three with a sign before its value, so a sign in one
+		// two sides, a condition is two levels, and three with a sign before its value on either side, so a sign in one
 		// of the first two conditions takes a level.
 		where := func(first string, n int) string {
 			return "select * from t where " + first + strings.Repeat(" and v = 1", n-1)
@@ -2117,7 +2338,7 @@ func TestCheck(t *testing.T) {
 		for _, c := range []struct {
 			first string
 			most  int
-		}{{"v = 1", 999}, {"v is null", 999}, {"v = -1", 998}} {
+		}{{"v = 1", 999}, {"v is null", 999}, {"v = -1", 998}, {"1 = v", 999}, {"-1 = v", 998}} {
 			src := where(c.first, c.most)
 			s, err := stmt.Check(src)
 			is.NotError(t, err)
@@ -2132,8 +2353,11 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
 			verify(t, src)
 		}
-		// A sign in the second condition takes a level too, and in the third none.
-		_, err := stmt.Check(where("v = 1 and v = -1", 998))
+		// A sign in the second condition takes a level too, on either side of its column, and in the
+		// third none.
+		_, err := stmt.Check(where("v = 1 and -1 = v", 998))
+		is.True(t, errors.Is(err, stmt.ErrNotSupported))
+		_, err = stmt.Check(where("v = 1 and v = -1", 998))
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		_, err = stmt.Check(where("v = 1 and v = 1 and v = -1", 997))
 		is.NotError(t, err)

@@ -390,3 +390,84 @@ func TestGenerator_Defaults(t *testing.T) {
 		}
 	})
 }
+
+func TestGenerator_ValueFirst(t *testing.T) {
+	pools, err := stmttest.NamePools()
+	is.NotError(t, err)
+	// count the conditions of the selects, updates, and deletes of g, which must each be the statement
+	// that the pass gives for its text, by whether the value is on the left, and of those by kind of
+	// statement, operator, and whether the value is a ?.
+	count := func(g *stmttest.Generator) map[string]int {
+		kinds := map[string]int{}
+		for i := range 900 {
+			src, s, _ := g.CallOf([]stmttest.Kind{stmttest.KindSelect, stmttest.KindUpdate, stmttest.KindDelete}[i%3])
+			got, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+			var where []stmt.Condition
+			switch s := s.(type) {
+			case *stmt.Select:
+				where = s.Where
+			case *stmt.Update:
+				where = s.Where
+			case *stmt.Delete:
+				where = s.Where
+			}
+			for _, c := range where {
+				if !c.ValueFirst {
+					kinds["column first"]++
+					continue
+				}
+				kinds["value first"]++
+				kinds[fmt.Sprintf("%T", s)]++
+				kinds[c.Operator.String()]++
+				if c.Value.Parameter > 0 {
+					kinds["?"]++
+				}
+				// The text has the value, then the operator swapped, then the column.
+				is.True(t, c.Value.Span.End <= c.Column.Offset, src)
+			}
+		}
+		return kinds
+	}
+
+	t.Run("should write a value on the left only with ValueFirst", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(17, 18)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions = 3, 3, 3, 4
+		kinds := count(g)
+		is.Equal(t, 0, kinds["value first"], fmt.Sprint(kinds))
+		is.True(t, kinds["column first"] > 500, fmt.Sprint(kinds))
+	})
+
+	t.Run("should write a value on the left with every operator, in every kind of statement with WHERE, with ValueFirst", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(17, 18)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.ValueFirst = 3, 3, 3, 4, 2
+		kinds := count(g)
+		for _, k := range []string{"column first", "value first", "*stmt.Select", "*stmt.Update", "*stmt.Delete", "=", "!=", "<", "<=", ">", ">=", "?"} {
+			is.True(t, kinds[k] > 10, fmt.Sprint(k, " ", kinds))
+		}
+		is.Equal(t, 0, kinds["IS NULL"]+kinds["IS NOT NULL"], fmt.Sprint(kinds))
+	})
+
+	t.Run("should write the value on the left where the hook says so, whatever ValueFirst is", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(17, 18)), pools)
+		g.Parameters = 2
+		g.Where = func(stmt.Name) []stmt.Condition {
+			return []stmt.Condition{
+				{Column: stmt.Name{Raw: "a"}, Operator: stmt.OpLess, Value: stmt.Term{Value: stmt.Integer(5)}, ValueFirst: true},
+				{Column: stmt.Name{Raw: "b"}, Operator: stmt.OpGreaterOrEqual, Value: stmt.Term{Value: stmt.Text("x")}},
+				{Column: stmt.Name{Raw: "c"}, Operator: stmt.OpIsNull},
+			}
+		}
+		for range 50 {
+			src, s, _ := g.CallOf(stmttest.KindSelect)
+			got, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+			where := s.(*stmt.Select).Where
+			is.Equal(t, 3, len(where), src)
+			is.True(t, where[0].ValueFirst && where[0].Operator == stmt.OpLess, src)
+			is.True(t, !where[1].ValueFirst && !where[2].ValueFirst, src)
+		}
+	})
+}

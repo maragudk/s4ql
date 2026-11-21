@@ -694,8 +694,9 @@ A test checks that every name the pass gives in any test is in these tables.
 | `result column other than a column or *` | SELECT has a result column that is not the bare name of a column or `*`, such as `1`, `v + 1`, `t.v`, or `t.*`. |
 | `* and another result column` | SELECT has `*` and another result column. |
 | `SELECT without FROM` | SELECT has no FROM. |
-| `value on the left of a comparison` | A condition of WHERE has a literal or a parameter on the left, also after a sign, as in `1 = v` or `null is null`. |
-| `column compared with a column` | A comparison of WHERE has a column on the right, also in double quotes or with the name of its table, as in `v = w`. |
+| `value compared with a value` | A comparison of WHERE has a literal or a parameter on the left and one on the right, also after a sign, as in `1 = 1`, `? = ?`, or `'v' = 1`. It is at the value on the right. |
+| `value before IS` | IS has a literal or a parameter on the left, also after a sign, as in `null is null`, `? is not null`, or `5 is v`. |
+| `column compared with a column` | A comparison of WHERE has a column on the right of a column, also in double quotes or with the name of its table, as in `v = w`. |
 | `column with the name of a table` | The column of a condition of WHERE, or a column of CREATE INDEX, has the name of its table before it, as in `t.v = 1`. SQLite gives `the "." operator prohibited in index expressions` for it in CREATE INDEX. |
 | `OR` | WHERE has OR. The offset is that of the first OR, after the conditions before it. |
 | `IS DISTINCT FROM` | A condition of WHERE is IS DISTINCT FROM or IS NOT DISTINCT FROM. The offset is that of DISTINCT. |

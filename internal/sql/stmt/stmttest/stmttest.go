@@ -1,12 +1,14 @@
-// Package stmttest is a generator of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, and 10, for tests:
+// Package stmttest is a generator of random statements of slices 1, 2, and 4 to 12, for tests:
 // each statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds,
 // with names from pools, keywords and types in any case, values of every type with weight on their
 // edges, and spaces and comments in every gap. The statements of slice 5, of several columns, come
 // only when a test asks for them, with [Generator.Columns], those of slice 6, with NULL, with
 // [Generator.Nulls], those of slice 7, with WHERE, with [Generator.Conditions] or [Generator.Where],
 // the UPDATE and DELETE of slice 8 with [Generator.Changes] or a kind of their own, the CREATE
-// INDEX and DROP INDEX of slice 9 with [Generator.Indexes] or a kind of their own, and the IF NOT
-// EXISTS and IF EXISTS of slice 10 with [Generator.Exists].
+// INDEX and DROP INDEX of slice 9 with [Generator.Indexes] or a kind of their own, the IF NOT
+// EXISTS and IF EXISTS of slice 10 with [Generator.Exists], the DEFAULT of slice 11 with
+// [Generator.Defaults], and the value on the left of a comparison of slice 12 with
+// [Generator.ValueFirst].
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -153,7 +155,7 @@ const (
 	KindDropIndex
 )
 
-// Generator of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, and 10.
+// Generator of random statements of slices 1, 2, and 4 to 12.
 type Generator struct {
 	r Rand
 	// pools of names, for each [Position].
@@ -249,7 +251,15 @@ type Generator struct {
 	// column that Create gives says DEFAULT if its Default has a Value, whatever Defaults is. With 0
 	// and no such column the generator draws as it did before slice 11.
 	Defaults int
-	b        strings.Builder
+	// ValueFirst, if not 0, makes the generator write the value on the left of a comparison of slice
+	// 12: one comparison of a WHERE in ValueFirst, of a select, an update, or a delete, at random or
+	// from a hook, is written with its value first, the operator swapped in any of its spellings, and
+	// its column on the right, with ValueFirst set in the condition that it gives, which reads as the
+	// comparison does with the column first. A comparison that a hook gives with ValueFirst set is
+	// written so whatever ValueFirst is. A test for NULL keeps its column on the left. With 0 and no
+	// such comparison the generator draws as it did before slice 12.
+	ValueFirst int
+	b          strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -597,6 +607,16 @@ var operators = []struct {
 	{stmt.OpIsNull, nil}, {stmt.OpIsNotNull, nil},
 }
 
+// spelling at random of the operator of a comparison op.
+func (g *Generator) spelling(op stmt.Operator) string {
+	for _, o := range operators {
+		if o.op == op && o.spellings != nil {
+			return o.spellings[g.r.IntN(len(o.spellings))]
+		}
+	}
+	panic(fmt.Sprintf("stmttest: no operator %v", op))
+}
+
 // where of the select s, of slice 7, after the name of its table, and the arguments of its
 // parameters: the conditions that [Generator.Where] gives, or with [Generator.Conditions] one time in
 // two conditions at random, or none.
@@ -634,6 +654,19 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, columns []st
 		g.gap(true)
 		if random {
 			c = g.condition(columns, conditions)
+		}
+		test := c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull
+		if !test && (c.ValueFirst || g.ValueFirst > 0 && g.r.IntN(g.ValueFirst) == 0) {
+			// The value on the left, the operator swapped, and the column on the right, which reads as
+			// the condition c.
+			w := stmt.Condition{Operator: c.Operator, ValueFirst: true}
+			w.Value, args = g.term(c.Value.Value, args)
+			g.gap(false)
+			g.punct(g.spelling(c.Operator.Swapped()))
+			g.gap(false)
+			w.Column = g.write(c.Column.Raw)
+			conditions = append(conditions, w)
+			continue
 		}
 		w := stmt.Condition{Column: g.write(c.Column.Raw), Operator: c.Operator}
 		var spellings []string
