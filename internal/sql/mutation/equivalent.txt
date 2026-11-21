@@ -814,3 +814,5 @@ internal/core/index.go Tx.spoolCreatedIndexes swap arguments: fmt.Errorf("%w: it
 	indexNames gives the names that sqlite_schema holds, in the same transaction, and lookUpIndex finds each of them: its strict load reads every index of the table from pragma_index_list, or refuses the table with an error before.
 internal/core/index.go Tx.spoolCreatedIndexes constant: 0 => 1
 	Its caller, Tx.spoolCommit, returns at the error before it reads the number.
+internal/core/index.go Tx.spoolCreatedIndexes constant: return 0, err => return 1, err #3
+	Its caller, Tx.spoolCommit, returns at the error before it reads the number.
