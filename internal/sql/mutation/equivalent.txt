@@ -798,3 +798,5 @@ internal/core/index.go conn.lookUpIndex swap arguments: fmt.Errorf("%w: its inde
 	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
 internal/core/index.go conn.lookUpIndex swap arguments: fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, name, t.name) => fmt.Errorf("%w: its index %q is listed and cannot be found on its table %q", ErrCacheVersion, t.name, name)
 	The strict load reads every index of the table from pragma_index_list, or refuses the table, so an index that sqlite_schema lists on the table, compared as SQLite compares names as index compares them, is among its indexes.
+internal/core/index.go conn.indexNames condition: !reserved(name) => true
+	Its one caller, Tx.spoolCreatedIndexes, keeps only the names of the indexes that the transaction created, and Tx.CreateIndex refuses a reserved name, so a reserved name that it gives is left out there either way.
