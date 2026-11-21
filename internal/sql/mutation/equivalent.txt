@@ -902,3 +902,5 @@ internal/core/index.go ReadTx.ScanPlan condition: err != nil => false #4
 	scanSQL fails only as checkIndexed would, and the table comes from a lookup with its indexes.
 internal/core/index.go ReadTx.ScanPlan remove statement: return "", nil, err => #4
 	scanSQL fails only as checkIndexed would, and the table comes from a lookup with its indexes.
+internal/core/replay.go apply constant: return 0, err => return 1, err #2
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied; and replay returns at the error before it adds.
