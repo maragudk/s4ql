@@ -148,3 +148,51 @@ The pins that moved by chance: three least numbers of `TestDifferential`, five o
 ### Future work
 
 - The README of the engine, the review, and the checks: step 4.
+
+## Step 4: The README of the engine, the review, the merges, and the checks
+
+**Author:** default-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Update the engine's README. [...] Merge `origin/main` again before you open your pull request [...] Finish: `make test`, `make lint`, `make check-browser`, `make fuzz-shards` pass; `make test-asan` for the packages whose fuzz tests you changed. Self-review against these requirements." And from the lead mid-run: "Commit the uncommitted generated checks first [...] The two simulation failures you saw while the disk filled [...] rerun both, and the whole `TestSimulation` and the planted bugs, more than once [...] `main` moved: #111 [...] is merged, so is #112 [...] Merge `origin/main` before the PR. [...] UNIQUE after the record being too big [...]: follow what you measured in SQLite and record it."
+**Interpretation:** A writer sub-agent for the README, the code-review skill over the branch, fixes, the merge of `origin/main` with #111 and #112, and every check.
+**Inferred intent:** A branch whose code, numbers, and documents agree, ready for the independent reviewer.
+
+### What I did
+
+- Merged `origin/main` (#111, #112, #113). The only conflict was the todo; `core.ErrTooLongForCache` in `conn.create` and `conn.createIndex` merged cleanly with #112, and `TestPair_tooLongForCache` still holds `cacheStatementLength` to the core's statement byte for byte.
+- A writer sub-agent, limited to `/internal/engine/README.md` in this worktree, added the section "DEFAULT with a literal" and the facts of slice 11 to "The stages", "The storage interface", "The operators", "Errors", "Types", "How it is tested", and "Results". I read its diff. It reported two older claims that it left: "The one difference from SQLite that the test accepts is ..." in the paragraph of the differential test, which `excusedRecordSlip` and now `excusedCacheLimit` contradict, and "`-length` ... The default is 40" where the flag's default is 48.
+- `code-review high origin/main...HEAD` found no bug and five nits, all fixed: the doc comment of `TestPair_recordSlips` had slid onto `TestPair_tooLongForCache`; the comment of `tooLongForCache` said that the cache's statement is only a few bytes longer, where it grows with the columns; `writeIn` did not plant `nullDefault`, so no planted bug showed a transaction that fills in no default (it does now, and 56 of the first 200 seeds find it, 53 by its own violation, where 38 and 35 did); and two comments of `Sequence.defaultOf` said too much: a text literal is not twice as long as its value, and a shape with two or three long defaults can be too big for the lowered limit, which the comment now says, since every create of such a table then gets `string or blob too big`, an outcome that the tests count.
+- Reran with room on the disk: seed 0 of the idle workload and seed 607 of the hammer workload, three times each, `TestSimulation` three times, 1,000 seeds of the hammer workload, and `TestSimulation_plantedBugs` twice. All passed.
+
+### Why
+
+The README is where the reasons of the engine live; the checks are the brief's.
+
+### What worked
+
+`make lint` (0 issues), `make check-browser`, `make fuzz-shards FUZZSHARDS=4 FUZZGROUP=c` and `FUZZSHARDS=2 FUZZGROUP=go`, and in Docker (`golang` of `go.mod`) `make asan-test ASANPKGS=maragu.dev/s4ql/internal/engine`, in 269 s. `go test -fuzz FuzzTypes_core -fuzztime 60s` and `FuzzTypes` for 45 s found nothing. The new tests passed 50 times, and 10 or 20 times under `-race`. `make test` passed after the fixes of the review. The full run of `internal/engine` took 125 s on the branch and 143 s on the merge before the generated checks, one after the other on a machine with a load of about 23, so CI's time of the package does not grow by it.
+
+### What didn't work
+
+Nothing new in this step.
+
+### What I learned
+
+UNIQUE comes after a record that is too long, as SQLite builds the record before it looks for the key; the brief's list had it the other way, and the measurement decides.
+
+### What was tricky
+
+Nothing beyond step 3.
+
+### What warrants review
+
+- The section "DEFAULT with a literal" and the "Results" of `/internal/engine/README.md`.
+- The group "Decisions of the engine step of slice 11" in `/docs/todo.md`.
+
+### Future work
+
+- Mutation testing of the code of slice 11 in the engine (`buildValues`, the default in `buildSink`, `tooLongForCache`, `nullDefault`) for a fresh builder.
+- The two older claims of the README that the writer reported.
+- The status of the README, the site, and the roadmap are for the lead's sub-agent after the merge.
