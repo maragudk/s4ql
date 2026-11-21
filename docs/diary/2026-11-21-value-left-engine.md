@@ -156,3 +156,54 @@ The pins and least numbers that moved, each recounted from the tests' own output
 ### Future work
 
 - The engine's README, the todo, the merge of `main`, and the review: step 4.
+
+## Step 4: The README of the engine, the todo, the merge, the review, and the checks
+
+**Author:** value-left-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "8. [...] Merge `origin/main` again before you open your pull request. 9. Do not change `README.md` (root), `site/`, `docs/spec.md`, `docs/roadmap.md`. Update the engine's README. [...] Finish: `make test`, `make lint`, `make check-browser` pass; `make test-asan` for the packages whose fuzz tests you changed. Self-review against these requirements."
+**Interpretation:** A writer sub-agent for the README of the engine, the decisions in `docs/todo/slice-12.md`, a merge of `origin/main` (pull request #116, merged), the code-review skill over the branch, fixes, and every check.
+**Inferred intent:** A branch ready for the independent reviewer.
+
+### What I did
+
+- `/docs/todo/slice-12.md`: the group "Decisions of the engine step of slice 12", an open item on `listOrder`, and two items not built (mutation testing of the engine step and of the pass, and long fuzz runs).
+- A writer sub-agent, limited to `/internal/engine/README.md` in this worktree, added the section "A value on the left of a comparison" and the facts of slice 12 to the opening, "The stages", the rules, "The golden plans", "The rows read", "How it is tested", the planted bugs (nineteen now), and "Results"; I read its diff and wrote the paragraph of results. It reported older claims that it left: the default of `-length` is 48 where the README says 40, `-workload` takes `idle` too, the link of the known difference of a long literal points to `sql-front-end.md` where the text is in `slice-08.md`, the `listOrder` row of the table of results is not recounted, and the numbers of "read both ways" in `TestConn_differential` are not recounted. It also corrected the pinned excuses of `TestDifferential` in the README.
+- Merged `origin/main` (`9ae52f6`, the merge of #116 into `main`, the same tree as the branch of the pass): no conflict.
+- `code-review high origin/main...HEAD` found no bug in the engine and eight nits. Fixed: the driver check's `reachChange` did not count the values on the left of an update with a SET of a column that the table does not have, and passed the outcome of the change where the other calls pass the kind of the run; `turnedWhere` of `TestChooseAccess` did not know `!=` and `==` and now panics on an operator it cannot turn; a local `any` in `reachValueFirst` and a local `turned` in `checkChoice` hid the predeclared type and the package's map; the decision of the pass on `valueFirstRefusal` in the todo is in the past tense. Left, as recorded: `docs/roadmap.md` says slice 12 is not built, which the brief keeps out of this task, for the lead's sub-agent after the merge; the dropped and lowered least numbers, which follow the brief's rule after trying the rates; and `listOrder`'s seed 82, an open item in the todo.
+
+### Why
+
+The brief's finish.
+
+### What worked
+
+- `make lint` (0 issues), `make check-browser`, `make test` (the engine with `-short` in 148 s, beside other work on the machine), and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4`.
+- `make asan-test ASANPKGS=maragu.dev/s4ql/internal/engine` in the `golang` image of `go.mod`, since the fuzz targets of the engine changed: 287 s, where the engine of slice 11 took 269 s.
+- `TestDifferential` with 3,000 sequences from seed 1,000,000: no difference from SQLite, 183 s. `FuzzWhere` 72,503 executions in 1 min, `FuzzChanges` 84,773, and `FuzzIndexes` 18,342, on 4 workers: nothing found.
+- The new tests 20 times under `-race` (`TestEngine_valueFirst`, `TestValueFirst`, `TestChooseAccess`, `TestNewPlan`, `TestAccessOf_golden`), and the driver's `TestValueFirst` 50 times and 3 times under `-race`.
+
+### What didn't work
+
+- Two loops that waited on the output of a background run with `until` were wrong (a `grep -c` that gave two lines, and a test of an empty number), and printed errors until I stopped them. The notifications of the runs were enough.
+
+### What I learned
+
+The merge of #116 into `main` is a true merge of the branch of the pass, so the merge here changed nothing; a squash would have brought `valuefirst.go` back by the three-way merge, which the check after the merge would have shown.
+
+### What was tricky
+
+Nothing beyond the steps before.
+
+### What warrants review
+
+- The section "A value on the left of a comparison" and the planted bugs of `/internal/engine/README.md`.
+- `/docs/todo/slice-12.md`, the group of the engine step.
+
+### Future work
+
+- Mutation testing of the engine step of slice 12, and long fuzz runs, for a fresh builder.
+- The roadmap's slice 12, the status of the README, and the site, for the lead's sub-agent after the merge.
+- `listOrder` in `TestSimulation_plantedBugs`, with the work on the workloads of the planted bugs.
