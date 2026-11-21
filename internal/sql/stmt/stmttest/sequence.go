@@ -527,10 +527,15 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	q.store(table, shape, list, values)
 	if q.mistyped && r.IntN(8) == 0 {
 		// An integer of a column of INT or INTEGER as the real of its value, which the values of the
-		// conditions keep as the integer.
+		// conditions keep as the integer. The column of a value is the one that the list names in its
+		// place, which is another than the one of order where the list names another column.
 		var integers []int
 		for i, position := range order[:min(len(order), len(values))] {
-			if _, ok := values[i].(stmt.Integer); ok && kindOf(shape[position].Type) == stmt.TypeInt {
+			c := &shape[position]
+			if withList {
+				c = columnOfShape(shape, nameOf(list[i], 0).Fold())
+			}
+			if _, ok := values[i].(stmt.Integer); ok && c != nil && kindOf(c.Type) == stmt.TypeInt {
 				integers = append(integers, i)
 			}
 		}

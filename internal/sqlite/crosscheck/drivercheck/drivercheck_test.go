@@ -3366,10 +3366,11 @@ func TestGenerated(t *testing.T) {
 		// to 12, 3, 1, and 1, whose least numbers are a third of that, or 1.
 		// Since an update and a delete of the sequence bound the key on one side by a value of an insert
 		// for every third of the values that it keeps, on 2026-11-21, the run reaches the delete to an
-		// upper bound 2 times and the update of every row 3 times, and requires both again; the bound
-		// takes the place of the key equal to the value, which took "update WHERE that reads a get of
-		// one key ok, rows changed" to 7, whose least number is a third of that. The generator draws
-		// the same random numbers as without the bound, so the pins below did not move.
+		// upper bound 2 times and the update of every row 3 times, and requires both again, at least
+		// once each, a third of that or 1. The bound takes the place of the key equal to the value,
+		// which took "update WHERE that reads a get of one key ok, rows changed" to 7, whose least
+		// number is a third of that. The generator draws the same random numbers as without the bound,
+		// so the pins below did not move.
 		"update with WHERE ok, rows changed": 13, "update with WHERE ok, no row found": 48, "update without WHERE ok, rows changed": 10, "update without WHERE ok, no row found": 12,
 		"delete with WHERE ok, rows changed": 12, "delete with WHERE ok, no row found": 60, "delete without WHERE ok, rows changed": 9, "delete without WHERE ok, no row found": 15,
 		"update with WHERE attempt to write a readonly database": 7, "delete with WHERE attempt to write a readonly database": 11,
@@ -3383,8 +3384,8 @@ func TestGenerated(t *testing.T) {
 		"update with arguments that s4ql refuses not supported": 14, "update with arguments that s4ql refuses wrong number of arguments": 15,
 		"delete with arguments that s4ql refuses not supported": 8, "delete with arguments that s4ql refuses wrong number of arguments": 10,
 		"update WHERE that reads a get of one key ok, rows changed": 2, "delete WHERE that reads a get of one key ok, rows changed": 6,
-		"delete WHERE that reads a scan from a lower bound ok, rows changed": 1, "delete WHERE that reads a scan to an upper bound ok, rows changed": 2,
-		"update WHERE that reads a scan of every row ok, rows changed": 2,
+		"delete WHERE that reads a scan from a lower bound ok, rows changed": 1, "delete WHERE that reads a scan to an upper bound ok, rows changed": 1,
+		"update WHERE that reads a scan of every row ok, rows changed": 1,
 		"update WHERE that reads no row ok, no row found":              7,
 		"table read back after an update or a delete":                  165,
 	} {
