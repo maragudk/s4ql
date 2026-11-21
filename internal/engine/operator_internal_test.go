@@ -1553,6 +1553,7 @@ func TestBuild(t *testing.T) {
 			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
 			{name: "a table whose key takes NULL", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}, Nullable: true}}, PrimaryKey: []int{1}}, err: "a table whose key b takes NULL"},
 			{name: "an insert of a blob literal that is nil", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Blob{}}}}}, err: "a blob literal of no bytes that is nil"},
+			{name: "a table with a default of a blob literal that is nil", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}, Type: s4qlpb.Type_TYPE_BLOB, Default: &Blob{}}}, PrimaryKey: []int{0}}, err: "a blob literal of no bytes that is nil"},
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {

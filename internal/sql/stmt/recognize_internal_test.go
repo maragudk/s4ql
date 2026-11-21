@@ -198,6 +198,19 @@ func TestRecognize(t *testing.T) {
 		is.True(t, !s.(*CreateIndex).IfNotExists)
 	})
 
+	t.Run("should take a create table named by the bare word IF without IF NOT EXISTS, which the grammar reads as the clause", func(t *testing.T) {
+		// CREATE TABLE IF (v INT PRIMARY KEY) ..., from the tree of the statement with the clause
+		// without the clause, whose text has spaces in its place.
+		tree, _, err := parser.Parse("create table if not exists if (v int primary key) strict, without rowid")
+		is.NotError(t, err)
+		tree.Cmd.(*ast.CreateTable).IfNotExists = ast.IfNotExists{}
+		src := "create table               if (v int primary key) strict, without rowid"
+		s, nse := recognize(src, tree)
+		is.True(t, nse == nil)
+		is.Equal(t, "if", s.(*CreateTable).Table.Value)
+		is.True(t, !s.(*CreateTable).IfNotExists)
+	})
+
 	t.Run("should panic for a blob literal of an odd number of hex digits, which the tokenizer never gives", func(t *testing.T) {
 		// INSERT INTO t (v) VALUES (x'00'), where the tree holds the blob x'0'.
 		src := "insert into t (v) values (x'00')"

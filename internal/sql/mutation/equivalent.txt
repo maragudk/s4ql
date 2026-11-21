@@ -925,3 +925,55 @@ internal/core/tx.go Tx.spoolCommit condition: err != nil => false #4
 	format.CommitWriter keeps the first error of a write in its field err, and every later method and Close return it; so after a DropIndex that failed, Tx.spoolCommit fails at the next method of the writer or at its Close, with the same error, which fail classifies the same way, and publishes nothing. That holds for any error of the writer, of the spool file or a refusal.
 internal/core/tx.go Tx.spoolCommit remove statement: return nil, fail(err) => #2
 	format.CommitWriter keeps the first error of a write in its field err, and every later method and Close return it; so after a DropIndex that failed, Tx.spoolCommit fails at the next method of the writer or at its Close, with the same error, which fail classifies the same way, and publishes nothing. That holds for any error of the writer, of the spool file or a refusal.
+
+# IF NOT EXISTS and IF EXISTS of slice 10 in the engine, internal/engine.
+internal/engine/engine.go Conn.nothingToWrite condition: err != nil => false #2
+	buildSink and the builders it calls give a sink only with a nil error, and a nil sink with an error, and a nil sink is not nothing, so !ok holds whenever err does.
+internal/engine/operator.go nothing.run constant: return 0, nil => return 1, nil
+	Unreachable: Conn.write, Conn.writeIn, and Conn.nothingToWrite each return at doesNothing for a sink that is nothing, before its check and its run, and they are the only callers of a sink of a create or a drop; checkOutside builds only the sink of an insert.
+internal/engine/engine.go Conn.nothingToWrite element: replaceExisting: c.e.bugs.replaceExisting =>
+	The planted bug replaceExisting: a statement of its own then does nothing in the read transaction, so the bug is planted only in a transaction, where the simulation still finds it.
+internal/engine/tx.go Conn.writeIn remove statement: planted.replaceExisting = c.e.bugs.replaceExisting =>
+	The planted bug replaceExisting left out of a write in a transaction, which statements of their own find, as for skipUnique and convertReal.
+internal/engine/operator.go buildSink condition: existing != nil => true
+	The planted bug replaceExisting: it also replaces a table that does not exist, whose drop of the table of no name fails, so the statement fails where SQLite creates the table, and the bug is found either way.
+internal/engine/operator.go buildSink condition: p.IfNotExists => true
+	The planted bug replaceExisting: it also replaces the table of a create table without IF NOT EXISTS, where SQLite gives `already exists`, and the bug is found either way.
+internal/engine/operator.go buildSink condition: p.IfNotExists => !p.IfNotExists
+	The planted bug replaceExisting: it replaces the table of a create table without IF NOT EXISTS instead, where SQLite gives `already exists`, and the bug is found either way.
+internal/engine/operator.go replaceTable.run condition: err != nil => true
+	The planted bug replaceExisting: it drops the table and creates none, which differs from SQLite as replacing it does, and the bug is found either way.
+internal/engine/operator.go replaceTable.run condition: err != nil => false
+	The planted bug replaceExisting: the drop of a table that the transaction has just looked up fails only by a failure of the storage, after which the create fails too, or the transaction can only be rolled back.
+internal/engine/operator.go replaceTable.run operator: err != nil => err == nil
+	The planted bug replaceExisting: the statement fails after it dropped the table, which differs from SQLite as replacing it does, and the bug is found either way.
+internal/engine/operator.go replaceTable.run remove statement: return 0, err =>
+	The planted bug replaceExisting: the drop of a table that the transaction has just looked up fails only by a failure of the storage, after which the create fails too, or the transaction can only be rolled back.
+internal/engine/operator.go replaceTable.run constant: return 0, err => return 1, err
+	The planted bug replaceExisting: the count of a statement that fails is not read; Conn.write and Conn.writeIn give the result of a failed statement.
+
+# DEFAULT of slice 11 in the engine, internal/engine.
+internal/engine/operator.go buildSink condition: c.HasDefault() => true
+	The planted bug nullDefault: it also gives NULL to a left-out column without a default, which buildValues has given NULL already.
+internal/engine/operator.go buildSink remove statement: continue =>
+	checkLength then also measures the NULL and the defaults of the left-out columns. NULL has no length, and a default is never longer than the length limit: its literal, which is at least as long as its value, is in the table's statement in the cache, and the core holds no table whose statement is longer than the limit (conn.create refuses it at the create and at the replay).
+internal/engine/tx.go Conn.writeIn remove statement: planted.nullDefault = c.e.bugs.nullDefault =>
+	The planted bug nullDefault left out of a write in a transaction, which statements of their own find, as for skipUnique and convertReal.
+
+# DEFAULT of slice 11 in the core, internal/core.
+internal/core/cache.go cacheVersion constant: 4 => 5
+	The version is only compared with itself and written into a new cache; a cache of each earlier layout (1, 2, 3) is still refused, and no cache of version 5 exists.
+internal/core/default.go defaultSQL constant: -1 => -2
+	strconv.FormatFloat writes the shortest form for every negative precision (prec < 0 in internal/strconv/ftoa.go), as for -1.
+internal/core/default.go parseDefault constant: strconv.ParseFloat(sql, 64) => strconv.ParseFloat(sql, 65)
+	strconv.ParseFloat rounds to a float32 only for the bit size 32, and to a float64 for any other.
+internal/core/default.go parseDefault constant: strconv.ParseFloat(sql, 64) => strconv.ParseFloat(sql, 63)
+	strconv.ParseFloat rounds to a float32 only for the bit size 32, and to a float64 for any other.
+internal/core/default.go parseDefault remove statement: return nil, false =>
+	strconv.ParseInt gives 0 for a syntax error and the bound for a range error; the text of either differs from a text that does not parse, so the round trip at the end refuses it.
+internal/core/default.go parseDefault remove statement: return nil, false => #6
+	hex.DecodeString gives the bytes before the first bad digit, or before an odd last digit, whose hexadecimal differs from the text, so the round trip at the end refuses it.
+internal/core/default.go parseDefault remove statement: return nil, false => #7
+	v stays nil, for which defaultSQL writes null; a text null is read by the first case, so the round trip at the end refuses every other text.
+internal/core/default.go withoutNegativeZero condition: d.WhichKind() != s4qlpb.Value_Real_case => false
+	GetReal is 0 for a value of another kind, whose sign bit is clear, so the condition holds anyway.

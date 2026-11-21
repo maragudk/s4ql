@@ -254,12 +254,15 @@ func (r *recognizer) column(d *ast.ColumnDef, key bool) Column {
 // as 1 and 0; a DEFAULT in parentheses is an expression.
 func (r *recognizer) defaultValue(d *ast.DefaultConstraint, typ Type) Default {
 	start := r.at()
-	if d.Name.Present() && r.isNext(d.Name) && (isWord(d.Name, "true") || isWord(d.Name, "false")) {
+	// A name is the token after DEFAULT, which the caller has taken, and an absent one has no text.
+	if isWord(d.Name, "true") || isWord(d.Name, "false") {
 		r.reject("TRUE or FALSE")
 	}
-	if d.LParen.Present() || d.Name.Present() {
+	if d.LParen.Present() {
+		// Before value reads the expression inside, which may be a literal that it refuses for itself.
 		r.unexpected()
 	}
+	// Any other name is no literal, and value names it, the next token.
 	negative := false
 	if d.Sign.Present() {
 		r.sign(d.Sign, d.X)
@@ -940,8 +943,8 @@ func (r *recognizer) isCondition(e *ast.Is) Condition {
 
 // conditionColumn of a condition, the expression x on either side of its operator, which starts at the next
 // token: the bare name of a column. A literal or a parameter there, with a sign or without one, is
-// not supported as value, the name of that form; value is "" where the caller has read such a
-// value as the value of the condition.
+// not supported as value, the name of that form. Where the caller reads a value on the left as the
+// value of the condition, it calls this only for a left side that is no value, with value "".
 func (r *recognizer) conditionColumn(x ast.Expr, value string) Name {
 	ref, ok := x.(*ast.ColumnRef)
 	switch {
@@ -950,7 +953,7 @@ func (r *recognizer) conditionColumn(x ast.Expr, value string) Name {
 	case ok && isTrueOrFalse(ref):
 		// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
 		r.reject("TRUE or FALSE")
-	case value != "" && isValue(x):
+	case isValue(x):
 		r.reject(value)
 	case !ok:
 		r.unexpected()
