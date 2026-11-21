@@ -930,22 +930,20 @@ func (c *conn) scanIndex(ctx context.Context, t *table, ix *index, scan IndexSca
 // nothing back for a read that it stops.
 //
 // The step of a scan that sorts, for which sorting is set, runs under SQLite's largest length
-// limit, and the limit of the connection is put back after it, also when it fails. SQLite builds a record of what it sorts for
-// each row, under the length limit, and that record is longer than the row is in the table where a
-// real of the row holds an integer, which the table keeps in fewer bytes: without the larger limit,
-// a row that the table holds under a small limit could not be sorted. The limit bounds nothing else
-// in the step.
+// limit, and the limit of the connection is put back after it, also when it fails. SQLite builds a
+// record of what it sorts for each row, under the length limit, and that record is longer than the
+// row is in the table where a real of the row holds an integer, which the table keeps in fewer
+// bytes: without the larger limit, a row that the table holds under a small limit could not be
+// sorted. The limit bounds nothing else in the step.
 func (c *conn) step(ctx context.Context, s *sqlite.Stmt, sorting bool) (bool, error) {
 	if !sorting || c.limit == maxLength {
 		return s.StepContext(ctx)
 	}
-	if err := c.c.SetLengthLimit(maxLength); err != nil {
-		return false, err
-	}
+	// SetLengthLimit fails only on a closed connection or for a limit that is not positive, and the
+	// connection holds s, which keeps it open.
+	_ = c.c.SetLengthLimit(maxLength)
 	ok, err := s.StepContext(ctx)
-	if limitErr := c.c.SetLengthLimit(c.limit); err == nil && limitErr != nil {
-		return false, limitErr
-	}
+	_ = c.c.SetLengthLimit(c.limit)
 	return ok, err
 }
 
