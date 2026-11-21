@@ -345,6 +345,7 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	}()
 	planted := bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal, changeNothing: c.e.bugs.changeNothing, keepOldKey: c.e.bugs.keepOldKey}
 	planted.replaceExisting = c.e.bugs.replaceExisting
+	planted.nullDefault = c.e.bugs.nullDefault
 	s, err := buildSink(ctx, w, p, args, planted, c.e.db.lengthLimit(), c.e.reading(false))
 	if err != nil {
 		return Result{}, err

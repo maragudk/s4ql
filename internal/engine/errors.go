@@ -312,6 +312,17 @@ func indexTooBig(name, table, sql string, limit int) bool {
 	return rest+quoted(name)+quoted(table)+quoted(sql) >= limit
 }
 
+// tooLongForCache is s4ql's "not supported" for a table or an index, what, of the name, that SQLite
+// takes under the length limit and whose statement in the cache is longer than the limit, which the
+// storage refuses. The cache writes every name in double quotes, NOT NULL after every column outside
+// the key that does not take NULL, and each default in its canonical form, so its statement can be
+// longer than the text of the statement by an amount that grows with the columns and the defaults,
+// and a statement under the limit can meet it, where SQLite gives no error and creates the table or
+// the index.
+func tooLongForCache(what, name string) error {
+	return fmt.Errorf("%w: the %v %v, whose statement in the cache is longer than the length limit", stmt.ErrNotSupported, what, name)
+}
+
 // readOnlyDatabase is `attempt to write a readonly database`, which SQLite gives for a statement that
 // would write on a connection under `pragma query_only = 1`, when it steps the statement.
 func readOnlyDatabase() error {

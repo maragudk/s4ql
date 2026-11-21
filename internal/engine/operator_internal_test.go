@@ -579,7 +579,7 @@ func TestValues(t *testing.T) {
 	t.Run("should not build the values of a row of another number of values than its columns, an internal error", func(t *testing.T) {
 		row := []Expr{&Integer{Value: 1}, &Integer{Value: 2}}
 		for _, positions := range [][]int{{0}, {0, 1, 2}} {
-			_, _, err := buildValues(&Values{Rows: [][]Expr{row}}, nil, positions, 3)
+			_, _, err := buildValues(&Values{Rows: [][]Expr{row}}, nil, positions, make([]*s4qlpb.Column, 3))
 			is.True(t, errors.Is(err, ErrInternal), fmt.Sprint(positions))
 			is.Equal(t, fmt.Sprint("s4ql: internal error: a row of 2 values for ", len(positions), " columns"), err.Error())
 		}
@@ -1379,6 +1379,47 @@ func TestBuild(t *testing.T) {
 				is.NotError(t, s.check(t.Context()), src)
 				is.Equal(t, want, text(s.(*insert).src.data[0]), src)
 			}
+		}
+	})
+
+	t.Run("should give a column that the list leaves out its default, or NULL without one, the zero value only to one without a default with the planted bug zeroLeftOut, and NULL in place of its default with the planted bug nullDefault", func(t *testing.T) {
+		for _, c := range []struct {
+			src  string
+			b    bugs
+			want string
+		}{
+			{src: "insert into t (k) values (2)", want: "[7 2 null 'd']"},
+			{src: "insert into t (k, a, d) values (2, null, null)", want: "[null 2 null null]"},
+			{src: "insert into t values (1, 2, 3, 'x')", want: "[1 2 3 'x']"},
+			{src: "insert into t (k) values (2)", b: bugs{zeroLeftOut: true}, want: "[7 2 0 'd']"},
+			{src: "insert into t (k) values (2)", b: bugs{nullDefault: true}, want: "[null 2 null null]"},
+			{src: "insert into t (k, d) values (2, 'e')", b: bugs{nullDefault: true}, want: "[null 2 null 'e']"},
+			{src: "insert into t values (1, 2, 3, 'x')", b: bugs{nullDefault: true}, want: "[1 2 3 'x']"},
+		} {
+			f := newFake().with("t", []string{"a", "k", "c", "d"})
+			ct := f.tables["t"].ct
+			ct.SetPrimaryKey([]uint32{1})
+			for _, position := range []int{0, 2, 3} {
+				ct.GetColumns()[position].SetNullable(true)
+			}
+			ct.GetColumns()[0].SetDefault(integer(7))
+			ct.GetColumns()[3].SetType(s4qlpb.Type_TYPE_TEXT)
+			ct.GetColumns()[3].SetDefault(s4qlpb.Value_builder{Text: new("d")}.Build())
+			s, err := buildSink(t.Context(), fakeTx{f}, plan(c.src), nil, c.b, 1_000_000_000, reading{})
+			is.NotError(t, err, c.src)
+			is.NotError(t, s.check(t.Context()), c.src)
+			var values []string
+			for _, v := range s.(*insert).src.data[0] {
+				switch {
+				case v.HasNull():
+					values = append(values, "null")
+				case v.HasText():
+					values = append(values, "'"+v.GetText()+"'")
+				default:
+					values = append(values, fmt.Sprint(v.GetInteger()))
+				}
+			}
+			is.Equal(t, c.want, fmt.Sprint(values), c.src)
 		}
 	})
 

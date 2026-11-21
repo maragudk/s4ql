@@ -45,11 +45,13 @@ type CreateTable struct {
 }
 
 // ColumnDef is a column of a [CreateTable]. A column is NOT NULL unless it is Nullable, which a
-// column of the primary key never is.
+// column of the primary key never is. Default is the literal of its DEFAULT, a [*Null] for DEFAULT
+// NULL, or nil if it says none.
 type ColumnDef struct {
 	Name     stmt.Name
 	Type     s4qlpb.Type
 	Nullable bool
+	Default  Expr
 }
 
 // DropTable drops a table, which must exist, or, if IfExists, does nothing where no table of its
@@ -201,14 +203,19 @@ func (*Parameter) expr()   {}
 // NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
 // column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
 // NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
-// one without have the same plan. A select, an update, and a delete with WHERE read their rows
-// through a [*Filter] of the conditions, in the order of the text.
+// one without have the same plan. A column with DEFAULT has the literal of its DEFAULT as its
+// Default. A select, an update, and a delete with WHERE read their rows through a [*Filter] of the
+// conditions, in the order of the text.
 func NewPlan(s stmt.Statement) Plan {
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, IfNotExists: s.IfNotExists, PrimaryKey: []int{s.Key()}, SQL: s.SQL}
 		for _, c := range s.Columns {
-			p.Columns = append(p.Columns, ColumnDef{Name: c.Name, Type: columnType(c.Type), Nullable: !c.PrimaryKey && !c.NotNull})
+			column := ColumnDef{Name: c.Name, Type: columnType(c.Type), Nullable: !c.PrimaryKey && !c.NotNull}
+			if c.Default.Value != nil {
+				column.Default = term(stmt.Term{Value: c.Default.Value})
+			}
+			p.Columns = append(p.Columns, column)
 		}
 		return p
 	case *stmt.DropTable:
@@ -276,7 +283,8 @@ func term(t stmt.Term) Expr {
 
 // Format the plan p as text: a line for each statement and node, with the nodes that a node reads
 // from indented under it, and every name as the statement writes it. A column of a table that takes
-// NULL has NULL after its type, and every other column is NOT NULL.
+// NULL has NULL after its type, and every other column is NOT NULL; a column with a default has
+// DEFAULT and its literal after that.
 func Format(p Plan) string {
 	var b strings.Builder
 	switch p := p.(type) {
@@ -289,6 +297,9 @@ func Format(p Plan) string {
 			fmt.Fprint(&b, c.Name.Raw, " ", typeName(c.Type))
 			if c.Nullable {
 				b.WriteString(" NULL")
+			}
+			if c.Default != nil {
+				fmt.Fprint(&b, " DEFAULT ", formatExpr(c.Default))
 			}
 		}
 		b.WriteString(", primary key (")

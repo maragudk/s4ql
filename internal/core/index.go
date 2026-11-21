@@ -297,14 +297,15 @@ func (c *conn) indexNames() ([]string, error) {
 // createIndex ix of the table t in the cache, which builds it from the rows of the table. SQLite
 // keeps the statement in its schema, without the name of the schema, and a connection under the
 // length limit cannot load a schema with a longer text, so an index whose statement is longer than
-// the limit is refused before anything changes, with an error that wraps [ErrInvalid], as
+// the limit is refused before anything changes, with an error that wraps [ErrInvalid] and
+// [ErrTooLongForCache], as
 // [conn.create] refuses such a table. A statement within the limit runs as [conn.changeSchema]
 // says, since SQLite formats the statement that writes the index into its schema under the limit
 // too.
 func (c *conn) createIndex(t *table, ix *index) error {
 	sql := t.createIndexSQL(ix)
 	if kept := len(sql) - len("main."); kept > c.limit {
-		return invalidf("an index whose statement in the cache is %v bytes, where the limit is %v", kept, c.limit)
+		return fmt.Errorf("%w: %w: an index whose statement in the cache is %v bytes, where the limit is %v", ErrInvalid, ErrTooLongForCache, kept, c.limit)
 	}
 	return c.changeSchema(sql)
 }
@@ -340,7 +341,8 @@ func checkCreateIndex(ci *s4qlpb.CreateIndex, commitTime time.Time) error {
 // if an index has it, each compared as SQLite compares names, and then [ErrInvalid] for an index
 // that the database cannot hold: one without a name or without columns, with a column twice, with
 // more than 250 columns, with a column that the table does not have, or whose statement in the
-// cache is longer than the length limit. After each of these the transaction goes on.
+// cache is longer than the length limit, which wraps [ErrTooLongForCache] too. After each of these
+// the transaction goes on.
 func (tx *Tx) CreateIndex(ctx context.Context, ci *s4qlpb.CreateIndex) error {
 	const operation = "create index"
 	if err := tx.check(ctx, operation); err != nil {

@@ -12,13 +12,15 @@ import (
 )
 
 // TableColumn of a table as SQLite has it: its name as the table stores it, its declared type, such
-// as INT, whether it is the primary key, and whether it takes NULL, which the primary key never
-// does.
+// as INT, whether it is the primary key, whether it takes NULL, which the primary key never does,
+// and its default, the text of the literal of its DEFAULT as SQLite keeps it, which
+// pragma_table_info gives as dflt_value, or "" if it has none.
 type TableColumn struct {
 	Name       string
 	Type       string
 	PrimaryKey bool
 	Nullable   bool
+	Default    string
 }
 
 // Positions of the values of the insert in the table of the columns, in the order of the values:
@@ -67,8 +69,10 @@ func ColumnOf(columns []TableColumn, name stmt.Name) int {
 // would convert the value or give an error of its own. NULL has no type, so it is of no other type
 // than any column. The rule is "" where every value has the type of its column, and where SQLite
 // gives its own error first: for a name of the list that the table does not have, for another number
-// of values, and for NULL, given or for a column that the list leaves out, in a column that does not
-// take it, which gets SQLite's `NOT NULL constraint failed` before SQLite looks at a type.
+// of values, and for NULL, given or for a column that the list leaves out and whose default is NULL
+// or none, in a column that does not take it, which gets SQLite's `NOT NULL constraint failed`
+// before SQLite looks at a type. A column that the list leaves out gets its default, which is of the
+// type of its column.
 func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []any) string {
 	positions, ok := Positions(columns, insert)
 	if !ok || len(args) != insert.Parameters() {
@@ -76,7 +80,7 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 	}
 	values := valuesOf(columns, positions)
 	for position, i := range values {
-		if c := columns[position]; !takesNull(c) && (i < 0 || isNull(insert.Values[i], args)) {
+		if c := columns[position]; !takesNull(c) && (i < 0 && defaultIsNull(c) || i >= 0 && isNull(insert.Values[i], args)) {
 			return ""
 		}
 	}
@@ -309,6 +313,12 @@ func takesNull(c TableColumn) bool {
 	return c.Nullable && !c.PrimaryKey
 }
 
+// defaultIsNull reports whether the column c gets NULL where an insert leaves it out: it has no
+// default, or DEFAULT NULL, in any case of the letters.
+func defaultIsNull(c TableColumn) bool {
+	return c.Default == "" || strings.EqualFold(c.Default, "null")
+}
+
 // isNull reports whether the value of the term, a literal or the argument of args for its parameter,
 // is NULL.
 func isNull(term stmt.Term, args []any) bool {
@@ -364,13 +374,14 @@ func ValueKind(term stmt.Term, args []any) (kind, what string) {
 // Faults of the insert into the table of the columns, with the arguments args as for [TypeRule], by
 // kind, in the order in which SQLite and s4ql look for them: each name of the list that the table
 // does not have, "a column that the table does not have"; another number of values, "the wrong
-// number of values"; each column that the list leaves out and that does not take NULL, "a column
-// without a value"; each NULL that the insert gives for the key, "NULL in the key", or for another
-// column that does not take it, "NULL in a column that does not take it"; and each value of another
-// type than its column, "a value of another type in the key" or "a value of another type in another
-// column", which NULL never is. A column that takes NULL and that the list leaves out gets NULL,
-// which is no fault. A wrong number of values, and a name that the table does not have, leave out
-// the faults of the values.
+// number of values"; each column that the list leaves out, that does not take NULL, and whose
+// default is NULL or none, "a column without a value"; each NULL that the insert gives for the key,
+// "NULL in the key", or for another column that does not take it, "NULL in a column that does not
+// take it"; and each value of another type than its column, "a value of another type in the key" or
+// "a value of another type in another column", which NULL never is. A column that takes NULL and
+// that the list leaves out gets NULL or its default, and a column with a default that is not NULL
+// gets the default, which is no fault. A wrong number of values, and a name that the table does not
+// have, leave out the faults of the values.
 func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 	var faults []string
 	for _, name := range insert.Columns {
@@ -390,7 +401,7 @@ func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 		return faults
 	}
 	for position, i := range valuesOf(columns, positions) {
-		if c := columns[position]; i < 0 && !takesNull(c) {
+		if c := columns[position]; i < 0 && !takesNull(c) && defaultIsNull(c) {
 			faults = append(faults, "a column without a value")
 		}
 	}
@@ -412,7 +423,8 @@ func Faults(columns []TableColumn, insert *stmt.Insert, args []any) []string {
 // for a count of what a test reaches of NULL: each NULL that the insert gives, in the order of its
 // values, as "NULL literal into" or "NULL argument into" and "the key", "a column that takes NULL",
 // or "a column that does not take NULL"; "insert that leaves out a column that takes NULL" if its
-// list leaves one out; and "insert of NULL beside a value of another type" if it gives NULL and a
+// list leaves out one that gets NULL, whose default is NULL or none; and "insert of NULL beside a
+// value of another type" if it gives NULL and a
 // value of another type than its column, as [Faults] finds it. It is nil for an insert that SQLite
 // refuses for its names or its number of values, and for another number of arguments than
 // parameters.
@@ -437,13 +449,68 @@ func NullCases(columns []TableColumn, insert *stmt.Insert, args []any) []string 
 	}
 	given := len(cases) > 0
 	for position, i := range valuesOf(columns, positions) {
-		if i < 0 && takesNull(columns[position]) {
+		if i < 0 && takesNull(columns[position]) && defaultIsNull(columns[position]) {
 			cases = append(cases, "insert that leaves out a column that takes NULL")
 			break
 		}
 	}
 	if given && slices.ContainsFunc(Faults(columns, insert, args), func(f string) bool { return strings.HasPrefix(f, "a value of another type") }) {
 		cases = append(cases, "insert of NULL beside a value of another type")
+	}
+	return cases
+}
+
+// LongDefault is the length, in bytes, of the literal of a default from which [DefaultCases] calls
+// it long: a quarter of [LengthLimit].
+const LongDefault = LengthLimit / 4
+
+// DefaultCases of the insert into the table of the columns, with the arguments args as for
+// [TypeRule], for a count of what a test reaches of the defaults of slice 11. For each column that
+// the list leaves out and that has a default, in the order of the table: "insert that leaves out the
+// key with a default" for the key, whose default is not NULL; "insert that leaves out a column with a
+// default of integer" (of real, of text, or of blob) for another column whose default is not NULL;
+// and for DEFAULT NULL "insert that leaves out the key with DEFAULT NULL", "insert that leaves out a
+// column that takes NULL with DEFAULT NULL", or "insert that leaves out a column that does not take
+// NULL with DEFAULT NULL". Then "insert that leaves out a column with a long default" once, if the
+// literal of a default of a column that the list leaves out is [LongDefault] bytes or longer; and
+// for each NULL that the insert gives, as a literal or an argument, to a column with a default that
+// is not NULL, "NULL given for a column with a default, which takes NULL" or "NULL given for a column
+// with a default, which does not take NULL". It is nil for an insert that SQLite refuses for its
+// names or its number of values, and for another number of arguments than parameters.
+func DefaultCases(columns []TableColumn, insert *stmt.Insert, args []any) []string {
+	positions, ok := Positions(columns, insert)
+	if !ok || len(args) != insert.Parameters() {
+		return nil
+	}
+	var cases []string
+	long := false
+	for position, i := range valuesOf(columns, positions) {
+		c := columns[position]
+		if c.Default == "" {
+			continue
+		}
+		if i >= 0 {
+			if isNull(insert.Values[i], args) && !defaultIsNull(c) {
+				cases = append(cases, "NULL given for a column with a default, which "+map[bool]string{true: "takes NULL", false: "does not take NULL"}[takesNull(c)])
+			}
+			continue
+		}
+		long = long || len(c.Default) >= LongDefault
+		switch {
+		case defaultIsNull(c) && c.PrimaryKey:
+			cases = append(cases, "insert that leaves out the key with DEFAULT NULL")
+		case defaultIsNull(c) && takesNull(c):
+			cases = append(cases, "insert that leaves out a column that takes NULL with DEFAULT NULL")
+		case defaultIsNull(c):
+			cases = append(cases, "insert that leaves out a column that does not take NULL with DEFAULT NULL")
+		case c.PrimaryKey:
+			cases = append(cases, "insert that leaves out the key with a default")
+		default:
+			cases = append(cases, "insert that leaves out a column with a default of "+columnHolds[c.Type])
+		}
+	}
+	if long {
+		cases = append(cases, "insert that leaves out a column with a long default")
 	}
 	return cases
 }

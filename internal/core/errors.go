@@ -61,6 +61,12 @@ var (
 	// is not a local I/O failure, and the instance goes on.
 	ErrBusy = errors.New("the cache is busy")
 
+	// ErrTooLongForCache is wrapped, beside [ErrInvalid], by the error of [Tx.CreateTable] and of
+	// [Tx.CreateIndex] for a table or an index whose statement in the cache is longer than the length
+	// limit. The cache writes every name in double quotes and each default in its canonical form, so
+	// its statement can be longer than a text that SQLite takes under the same limit.
+	ErrTooLongForCache = errors.New("the statement in the cache is longer than the length limit")
+
 	// ErrReservedName is wrapped by the error of [Tx.CreateTable] and of [Tx.CreateIndex] for a
 	// table or an index whose name starts with "s4ql_" or "sqlite_", in any case of the letters.
 	ErrReservedName = errors.New("the name is reserved")
