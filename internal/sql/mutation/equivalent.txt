@@ -884,3 +884,17 @@ internal/core/index.go conn.scanIndex condition: err != nil => false #5
 	c.rest resets a statement whose last step succeeded, which gives no error, and finalizes it if its text is at rest already, which fails only for want of memory.
 internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #5
 	c.rest resets a statement whose last step succeeded, which gives no error, and finalizes it if its text is at rest already, which fails only for want of memory.
+internal/core/index.go conn.scanIndex condition: err != nil => false #6
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go conn.scanIndex remove statement: yield(nil, err) => #6
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go conn.scanIndex remove statement: return => #6
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go conn.scanIndex remove statement: _ = c.rest(sql, s) => #3
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go conn.scanIndex remove statement: s = nil => #3
+	readRow fails only for a value of a storage class other than the five of SQLite, which a column never gives.
+internal/core/index.go scanned condition: err != nil => false
+	The table comes from a lookup with its indexes, so t.index does not fail as checkIndexed would.
+internal/core/index.go scanned remove statement: return nil, err =>
+	The table comes from a lookup with its indexes, so t.index does not fail as checkIndexed would.
