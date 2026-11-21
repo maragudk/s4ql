@@ -856,3 +856,5 @@ internal/core/index.go applyDropIndex constant: return 1, c.dropIndex(ix) => ret
 	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
 internal/core/index.go scanConditions condition: key[len(scan.Equal)].Descending => true
 	The planted bug turnDescBound: the bounds change places on every column, also an ascending one, another wrong scan, and the bug is found by it.
+internal/core/index.go scanConditions condition: key[len(scan.Equal)].Descending => !key[len(scan.Equal)].Descending
+	The planted bug turnDescBound: the bounds change places on an ascending column and not on a descending one, another wrong scan, and the bug is found by it.
