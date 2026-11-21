@@ -7,3 +7,14 @@ create index t1_v2_v3 on t1 (v2, v3 desc)
 ## example
 select v1 from t1 where v2 = 'a' and v3 > 1.5
 access: index t1_v2_v3 (v2, v3 desc, v1), pins v2 = 'a', bounds 1.5 < v3
+
+## first example of slice 13
+select v1, v2 from t1 order by v2 desc, v1 limit 10
+access: every row
+order: sorted by v2 desc, v1
+
+## second example of slice 13
+select v1 from t1 where v2 > ? order by v1 limit ?
+args: 'a', 10
+access: every row
+order: delivered, forward
