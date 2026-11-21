@@ -799,6 +799,18 @@ func TestFilter(t *testing.T) {
 		}
 	})
 
+	t.Run("should not read the indexes of the table of a select without WHERE and ORDER BY, with a LIMIT or without", func(t *testing.T) {
+		for _, src := range []string{"select * from t", "select * from t limit 1", "select k from t limit 0"} {
+			f := newTable()
+			f.indexesFails = errors.New("the indexes fail")
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			_, err = buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, reading{})
+			is.NotError(t, err, src)
+			is.Equal(t, "[table t]", fmt.Sprint(f.calls), src)
+		}
+	})
+
 	t.Run("should pass on an error of the scan and of the get, and stop the scan at an early stop", func(t *testing.T) {
 		f := newTable()
 		f.tables["t"].ct.SetPrimaryKey([]uint32{1})

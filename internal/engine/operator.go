@@ -816,10 +816,9 @@ func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Lim
 			return nil, err
 		}
 	}
-	if f != nil {
-		if err := b.types(f, s, conditions); err != nil {
-			return nil, err
-		}
+	// Without a filter, there are no conditions, and types checks none.
+	if err := b.types(f, s, conditions); err != nil {
+		return nil, err
 	}
 	var n int64
 	if l != nil {
