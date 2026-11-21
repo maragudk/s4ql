@@ -778,3 +778,5 @@ internal/core/index.go conn.loadIndexes condition: position >= int64(len(t.colum
 	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.
 internal/core/index.go conn.loadIndexes operator: position >= int64(len(t.columns)) => position > int64(len(t.columns))
 	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.
+internal/core/index.go conn.lookUpIndex condition: err != nil => false
+	found is set only by the row of the query, and its LIMIT 1 ends the statement at that row without another read, so the query fails only before the row, found is false whenever err is not nil, and !found alone gives the error back.

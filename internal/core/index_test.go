@@ -816,6 +816,9 @@ func TestOpen_cache_indexes(t *testing.T) {
 			columns int
 			row     string
 			why     string
+			// reserved is the name of an index that the statement makes with a reserved name, which a
+			// call of an index by its name does not find, and which stops nothing.
+			reserved string
 		}{
 			{statement: "create unique index u on t1 (v)", table: "t1", index: "u", columns: 3, row: "1,1,1", why: `its table "t1" has the index "u", which is unique, partial, of a constraint, or of a reserved name`},
 			{statement: "create index p on t1 (v) where v > 1", table: "t1", index: "p", columns: 3, row: "1,1,1", why: `its table "t1" has the index "p", which is unique, partial`},
@@ -824,7 +827,7 @@ func TestOpen_cache_indexes(t *testing.T) {
 			{statement: "create index n on t1 (w collate nocase)", table: "t1", index: "n", columns: 3, row: "1,1,1", why: `the index "n" of its table "t1" has the collation "nocase"`},
 			{statement: "create index n on t1 (v, w collate rtrim desc)", table: "t1", index: "n", columns: 3, row: "1,1,1", why: `the index "n" of its table "t1" has the collation "rtrim"`},
 			{statement: "create index d on t1 (v, k, v)", table: "t1", index: "d", columns: 3, row: "1,1,1", why: `the index "d" of its table "t1" holds the column "v" twice`},
-			{statement: "create index s4ql_i on t1 (v)", table: "t1", columns: 3, row: "1,1,1", why: `its table "t1" has the index "s4ql_i", which is unique, partial, of a constraint, or of a reserved name`},
+			{statement: "create index s4ql_i on t1 (v)", table: "t1", columns: 3, row: "1,1,1", why: `its table "t1" has the index "s4ql_i", which is unique, partial, of a constraint, or of a reserved name`, reserved: "S4QL_I"},
 			{statement: "create table t9 (k int primary key, v int unique) strict, without rowid", table: "t9", columns: 2, why: `its table "t9" has the index "sqlite_autoindex_t9_2"`},
 			// A table with a rowid whose INTEGER PRIMARY KEY is the rowid has no index of its key.
 			{statement: "create table t8 (k integer primary key, v int) strict", table: "t8", columns: 2, why: `its table "t8" has no index of its primary key`},
@@ -876,6 +879,10 @@ func TestOpen_cache_indexes(t *testing.T) {
 						is.NotError(t, err, what)
 						is.True(t, slices.ContainsFunc(tables, func(ct *s4qlpb.CreateTable) bool { return ct.GetTable() == test.table }), what)
 					}
+					if test.reserved != "" {
+						_, err := r.Index(t.Context(), test.reserved)
+						is.Error(t, core.ErrNoIndex, err, what)
+					}
 					is.True(t, !isDone(d), what)
 
 					scanErr := func(rows iter.Seq2[[]*s4qlpb.Value, error]) error {
@@ -920,6 +927,25 @@ func TestOpen_cache_indexes(t *testing.T) {
 				}
 			}
 		}
+	})
+
+	t.Run("should stop for good at an index by its name when another process adds to the cache an index on a table of a reserved name", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"))
+		c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("create table s4ql_x (k int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("create index ix on s4ql_x (k)"))
+		is.NotError(t, c.Close())
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		_, err = tx.Index(t.Context(), "IX")
+		is.Error(t, core.ErrCacheVersion, err)
+		is.True(t, strings.Contains(err.Error(), `its index "IX" is on the table "s4ql_x", which cannot be found`), err.Error())
+		_ = tx.Rollback(t.Context())
+		is.True(t, isDone(d))
 	})
 }
 

@@ -235,7 +235,7 @@ func (c *conn) lookUpIndex(name string) (*table, *index, error) {
 	}
 	var owner string
 	var found bool
-	if err := c.query("select tbl_name from main.sqlite_schema where type = 'index' and name = ?1 collate nocase", func(s *sqlite.Stmt) error {
+	if err := c.query("select tbl_name from main.sqlite_schema where type = 'index' and name = ?1 collate nocase limit 1", func(s *sqlite.Stmt) error {
 		owner, found = s.ColumnText(0), true
 		return nil
 	}, name); err != nil || !found {
