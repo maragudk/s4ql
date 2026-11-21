@@ -61,7 +61,9 @@ type sink interface {
 // scan gives the rows of a table as its access reads them: every row in the order of the primary
 // key, or the rows that the access finds by the primary key or by an index, in the order of its key,
 // or in the reverse of either, or, for an access whose rows are sorted, in the order of its ORDER
-// BY. It ends with the error of the context when the context ends.
+// BY. It ends with the error of the context when the context ends: it looks at the context before
+// each row, and the cache stops a sort of the rows of the access, in which it reads every row
+// before it gives the first, when the context ends during it.
 type scan struct {
 	r     reader
 	table *s4qlpb.CreateTable
