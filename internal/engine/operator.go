@@ -799,6 +799,7 @@ func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Lim
 		}
 	}
 	b.order.limited = l != nil
+	b.order.turnMixed, b.order.ascendLast, b.order.skipGap = b.how.bugs.turnMixed, b.how.bugs.ascendLast, b.how.bugs.skipGap
 
 	if f != nil {
 		if err := b.values(f, conditions); err != nil {
@@ -837,7 +838,13 @@ func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Lim
 	if f != nil {
 		src = &filter{src: s, conditions: conditions}
 	}
-	if l != nil {
+	switch {
+	case l != nil && b.how.bugs.limitFirst && s.access.order == sorted && len(s.access.by) > 0:
+		// The planted bug limitFirst: the first rows of the access, unsorted, sorted after the LIMIT.
+		by := s.access.by
+		s.access.by = nil
+		src = &sortedAfter{src: &limit{src: src, n: n}, by: by}
+	case l != nil:
 		src = &limit{src: src, n: n}
 	}
 	return src, nil
@@ -998,6 +1005,11 @@ func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []c
 	indexes, err := b.r.indexes(ctx, t.GetTable())
 	if err != nil {
 		return access{}, err
+	}
+	if b.how.bugs.lastIndexWins {
+		// The planted bug lastIndexWins.
+		indexes = slices.Clone(indexes)
+		slices.Reverse(indexes)
 	}
 	if p.kind == pathIndex {
 		if a, ok, err := forcedAccess(t, indexes, conditions, o, p, b.how.bugs); err != nil || ok {

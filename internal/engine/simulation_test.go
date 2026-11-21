@@ -174,7 +174,8 @@ type attempt struct {
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
 	// typeRefused is set for an insert, or a select with WHERE, that the engine refused as "not
-	// supported" for a value of another type than its column.
+	// supported" for a value of another type than its column, and for a select with LIMIT that it
+	// refused so for the argument of the LIMIT, as [typeRule] says for both.
 	typeRefused bool
 	// reason why a statement failed: no lease, stopped, timeout, or canceled.
 	reason string
@@ -658,10 +659,10 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 		kind, failure := checkArguments(call, a.answer)
 		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
-		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
+		if kind == "" && supported && a.answer.err == "not supported" && (typeRefusal(a.src, a.answer.message) || strings.Contains(a.answer.message, ", for LIMIT, which takes ")) {
 			// The refusal of a value of another type than its column, after the insert or the select
-			// found its table and its columns, which [run.verify] checks against SQLite on the state that
-			// it saw.
+			// found its table and its columns, or of an argument of LIMIT, of slice 13, after those, which
+			// [run.verify] checks against SQLite on the state that it saw, by [typeRule].
 			kind, a.typeRefused = excusedType, true
 		}
 		if kind == "" && (supported || a.answer.err == wrongArguments) {
@@ -1694,7 +1695,7 @@ func (r *run) verify(ctx context.Context) {
 			if !a.query {
 				want.columns, want.rows = "", nil
 			}
-			if got := a.answer.String(); got != want.String() {
+			if got := a.answer.String(); differs(r.t, o, a, want) {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %v, and in SQLite %v", a.id, a.src, k, got, want)
 			}
 			if a.unchanged && want.err == "" && changes != 0 {
@@ -1868,7 +1869,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if !a.query {
 				want.columns, want.rows = "", nil
 			}
-			if got := a.answer.String(); got != want.String() {
+			if got := a.answer.String(); differs(r.t, o, a, want) {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
 			}
 			if s, _ := stmt.Check(a.src); a.state == succeeded && isChange(s) {
@@ -2339,6 +2340,18 @@ func tallyOf(s simulation) map[string]int {
 				counts["updates and deletes with SQLite's error"]++
 			}
 		}
+		if sel, ok := s.(*stmt.Select); ok && (sel.OrderBy != nil || sel.Limited()) {
+			what := map[bool]string{true: "selects with ORDER BY", false: "selects with LIMIT and without ORDER BY"}[sel.OrderBy != nil]
+			switch {
+			case a.state == succeeded && a.query && len(a.answer.rows) > 1:
+				counts[what+" that gave rows"]++
+			case a.state == sqliteFailed:
+				counts[what+" with SQLite's error"]++
+			}
+			if sel.Limited() && a.state == succeeded {
+				counts["selects with LIMIT that succeeded"]++
+			}
+		}
 		if hasValueFirst(s) {
 			counts["statements with a value on the left"]++
 			switch {
@@ -2436,6 +2449,20 @@ type simCell struct {
 	seeds   int
 }
 
+// differs reports whether the answer of the statement a of the simulation differs from want,
+// SQLite's answer on the database of o: for a query of a select with ORDER BY or LIMIT that both
+// answer with rows, as [ordered.compare] says, and otherwise by their texts, as [answer.String] gives
+// them.
+func differs(t testing.TB, o *oracle, a *attempt, want answer) bool {
+	t.Helper()
+	if s, _ := stmt.Check(a.src); a.query && a.answer.err == "" && want.err == "" {
+		if sel, ok := s.(*stmt.Select); ok && (sel.OrderBy != nil || sel.Limited()) {
+			return orderedOf(sel, oracleValues(a.args)).compare(t, o, a.answer, want) != ""
+		}
+	}
+	return a.answer.String() != want.String()
+}
+
 // simEnvironment is an environment of [TestSimulation]: see [simEnvironments].
 type simEnvironment struct {
 	name    string
@@ -2456,10 +2483,10 @@ type simEnvironment struct {
 // environment adds to what the environment reaches, and takes nothing from another cell.
 var simEnvironments = []simEnvironment{
 	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 34}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.07},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}}, 0.07},
 	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
 	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.06},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}}, 0.06},
 }
 
 // TestSimulation runs each environment of [simEnvironments], the default, the idle, and the hammer
@@ -2771,6 +2798,22 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the profile of the values on the left has its value there: 130 of 200 seeds find the bug, 92
 		// of them by its own violation.
 		{"unturnedBound", hammerWorkload, "hammer", stmttest.ValueFirst, []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
+		// A key delivers an ORDER BY of mixed directions as if each were in the direction of its first
+		// column, so a select gives its rows in another order than SQLite's where they tie in the first.
+		// The profile of the ORDER BY draws ORDER BY of the leading columns of the key of an index with
+		// the first or the second turned, over values that tie, [stmttest.Profile.Ties], and the hammer
+		// environment runs more statements on one instance than the default one, which it needs to find
+		// the bug in one seed in five: 49 of 200 seeds find the bug, each by its own violation, as many
+		// without crashes, as under the address sanitizer, since the environment has none. In the
+		// default one, whose seeds play out otherwise without crashes, CI's sanitizer found it in 1 of 100.
+		{"turnMixed", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
+		// A LIMIT takes the first rows of an access that is sorted, and sorts those, so a select gives
+		// other rows than SQLite's first: in the hammer environment, as for turnMixed, 82 of 200 seeds
+		// find the bug, each by its own violation.
+		{"limitFirst", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
+		// A sort by a descending last column of ORDER BY sorts it ascending: in the hammer environment,
+		// as for turnMixed, 118 of 200 seeds find the bug, each by its own violation.
+		{"ascendLast", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {

@@ -81,6 +81,13 @@ func (e *Engine) SetPath(p Path) {
 	e.path = p.path()
 }
 
+// Forced reports whether the engine e forces its statements to read by a path, as [Engine.SetPath]
+// and [Options.ScanAll] force one, other than the one that the rules choose, or to sort. A path that
+// forces only the direction of the scan reads as the rules choose.
+func (e *Engine) Forced() bool {
+	return e.path.kind != pathRules || e.path.sort
+}
+
 // Seed makes an engine of the options o draw the directions of the scans of its queries from the
 // sequence of the seed, and not from its host.
 func (o *Options) Seed(seed uint64) {
@@ -333,6 +340,11 @@ var plantable = map[string]func(b *bugs){
 	"pinByPlace":      func(b *bugs) { b.pinByPlace = true },
 	"replaceExisting": func(b *bugs) { b.replaceExisting = true },
 	"unturnedBound":   func(b *bugs) { b.unturnedBound = true },
+	"turnMixed":       func(b *bugs) { b.turnMixed = true },
+	"limitFirst":      func(b *bugs) { b.limitFirst = true },
+	"ascendLast":      func(b *bugs) { b.ascendLast = true },
+	"skipGap":         func(b *bugs) { b.skipGap = true },
+	"lastIndexWins":   func(b *bugs) { b.lastIndexWins = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

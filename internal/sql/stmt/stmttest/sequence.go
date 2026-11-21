@@ -75,9 +75,16 @@ type Sequence struct {
 	step uint64
 	// The streams of the areas that start anew at each statement, as [stepStream] says. The stream
 	// of an area that is off in the profile panics at a draw.
-	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers Rand
-	g                                                                                      *Generator
-	tables                                                                                 []string
+	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder Rand
+	g                                                                                              *Generator
+	// selected are the conditions of the WHERE of the select that the sequence writes, as
+	// [Sequence.where] gave them, for its ORDER BY.
+	selected []stmt.Condition
+	// aimed is the ORDER BY that [Sequence.aimedWhere] drew together with the WHERE of the select that
+	// the sequence writes, or nil, and aimedLimit whether the select has a LIMIT for it.
+	aimed      []orderColumn
+	aimedLimit bool
+	tables     []string
 	// columns are the spellings of the names of columns, folds the folds of their names, in the order
 	// that the spellings first have them, and spelled the spellings of each fold.
 	columns []string
@@ -273,6 +280,7 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	q := &Sequence{seed: seed, profile: p, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}, indexed: map[string][]sequenceIndex{}}
 	q.rPlan, q.rTables, q.rInserts, q.rSelects, q.rChanges = q.stream(areaPlan), q.stream(areaTables), q.stream(areaInserts), q.stream(areaSelects), q.stream(areaChanges)
 	q.rIndexes, q.rDefaults, q.rArguments, q.rOthers = q.stream(areaIndexes), q.stream(areaDefaults), q.stream(areaArguments), q.stream(areaOthers)
+	q.rOrder = q.stream(areaOrder)
 	r := q.entity(areaNames, "")
 	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
@@ -316,6 +324,9 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	q.g.Columns, q.g.Create, q.g.Insert, q.g.Select, q.g.Where = sequenceColumns, q.create, q.insert, q.selectList, q.where
 	q.g.Update, q.g.Delete, q.g.CreateIndex = q.update, q.delete, q.createIndex
 	q.g.Parameters, q.g.Exists, q.g.ValueFirst = p.Parameters, p.Exists, p.ValueFirst
+	if p.on(areaOrder) {
+		q.g.Order = q.order
+	}
 	return q, nil
 }
 
@@ -555,6 +566,14 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 			values = append(values, stmt.Null{})
 			continue
 		}
+		if c.PrimaryKey && q.profile.Keys > 0 && r.IntN(q.profile.Keys) == 0 {
+			values = append(values, keyOfStep(c.Type, q.step))
+			continue
+		}
+		if !c.PrimaryKey && q.profile.Ties > 0 && r.IntN(q.profile.Ties) == 0 {
+			values = append(values, tieValue(c.Type, r.IntN(2)))
+			continue
+		}
 		values = append(values, q.valueOf(r, c.Type))
 	}
 	if withList && leavesOutLong(shape, order) && d.IntN(2) == 0 {
@@ -628,6 +647,34 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	return list, values
 }
 
+// keyOfStep is a value of a key of the type t for the statement number step, which no other insert
+// of [keyOfStep] gives, and [Sequence.valueOf] gives only now and then, by [ValueOf], so that an
+// insert seldom meets a key that exists.
+func keyOfStep(t stmt.Type, step uint64) stmt.Value {
+	switch t {
+	case stmt.TypeReal:
+		return stmt.Real(float64(step) + 0.25)
+	case stmt.TypeText:
+		return stmt.Text(fmt.Sprint("k", step))
+	case stmt.TypeBlob:
+		return stmt.Blob(fmt.Sprint("k", step))
+	}
+	return stmt.Integer(100 + int64(step))
+}
+
+// tieValue is the value of the type t of the number n, 0 or 1, of the two values of [Profile.Ties].
+func tieValue(t stmt.Type, n int) stmt.Value {
+	switch t {
+	case stmt.TypeReal:
+		return stmt.Real(float64(n) + 0.5)
+	case stmt.TypeText:
+		return stmt.Text([]string{"a", "b"}[n])
+	case stmt.TypeBlob:
+		return stmt.Blob([]string{"a", "b"}[n])
+	}
+	return stmt.Integer(int64(n))
+}
+
 // store the values of an insert into table, whose shape is shape, with the list of columns list, or
 // nil for the order of the shape, among the values of its columns that a WHERE draws from: each that
 // is not NULL, for the column of its place, without a random number, so that the inserts draw as
@@ -691,8 +738,10 @@ var inverses = map[stmt.Operator]stmt.Operator{
 	stmt.OpLessOrEqual: stmt.OpGreater, stmt.OpGreater: stmt.OpLessOrEqual, stmt.OpIsNull: stmt.OpIsNotNull, stmt.OpIsNotNull: stmt.OpIsNull,
 }
 
-// where gives the conditions of the WHERE of a select of table, as [Generator.Where] gives them:
-// none for all but [Profile.Where] selects in four. Otherwise, where [Sequence.indexWhere] says so,
+// where gives the conditions of the WHERE of a select of table, as [Generator.Where] gives them: for
+// one select in [Profile.Aimed] of a table of which the sequence keeps an index, those that
+// [Sequence.aimedWhere] draws together with its ORDER BY. Otherwise none for all but [Profile.Where]
+// selects in four. Otherwise, where [Sequence.indexWhere] says so,
 // those that [Sequence.indexConditions] draws for an index of the table. Otherwise, one time in five,
 // a range of the key, a lower and an upper bound, each open or closed, in either order, of two values
 // as [Sequence.conditionValue] draws them, which change places three times in four where they compare
@@ -707,13 +756,335 @@ var inverses = map[stmt.Operator]stmt.Operator{
 // contradiction are faults, each a quarter as likely in a profile without the selects among
 // [Profile.Faults], as [Sequence.fault] says.
 func (q *Sequence) where(table stmt.Name) []stmt.Condition {
+	q.selected, q.aimed, q.aimedLimit = nil, nil, false
+	if p := q.profile; p.Aimed > 0 && len(q.indexed[table.Fold()]) > 0 && q.rOrder.IntN(p.Aimed) == 0 {
+		q.selected = q.aimedWhere(q.rOrder, table)
+		return q.selected
+	}
 	if q.rSelects.IntN(4) >= q.profile.Where {
 		return nil
 	}
 	if q.indexWhere(table) {
-		return q.indexConditions(table)
+		q.selected = q.indexConditions(table)
+	} else {
+		q.selected = q.conditions(q.rSelects, areaSelects, table)
 	}
-	return q.conditions(q.rSelects, areaSelects, table)
+	return q.selected
+}
+
+// order gives the ORDER BY and the LIMIT of a select of table, as [Generator.Order] gives them, after
+// the WHERE of the select: an ORDER BY for [Profile.Order] selects in four, as
+// [Sequence.orderColumns] draws it, and a LIMIT for one select in [Profile.Limit], and for every
+// select whose ORDER BY is aimed at an index beside one of a range: 0 one time in eight, from 1 to 4
+// one time in two, from 6 to 105 one time in four, which is mostly above the number of rows of a
+// table of the sequence, and else the largest integer of 64 bits.
+func (q *Sequence) order(table stmt.Name) ([]stmt.OrderColumn, stmt.Term) {
+	r, p := q.rOrder, q.profile
+	var columns []stmt.OrderColumn
+	aimed := false
+	switch {
+	case q.aimed != nil:
+		for _, c := range q.aimed {
+			columns = append(columns, stmt.OrderColumn{Name: stmt.Name{Raw: q.spell(r, c.fold)}, Descending: c.descending})
+		}
+		aimed = q.aimedLimit
+	case r.IntN(4) < p.Order:
+		columns, aimed = q.orderColumns(r, table)
+	}
+	var limit stmt.Term
+	if p.Limit > 0 && r.IntN(p.Limit) == 0 || aimed {
+		switch n := r.IntN(8); {
+		case n == 0:
+			limit.Value = stmt.Integer(0)
+		case n < 5:
+			limit.Value = stmt.Integer(1 + r.IntN(4))
+		case n < 7:
+			limit.Value = stmt.Integer(6 + r.IntN(100))
+		default:
+			limit.Value = stmt.Integer(math.MaxInt64)
+		}
+	}
+	return columns, limit
+}
+
+// orderColumn is a column of an ORDER BY that a [Sequence] draws: the fold of its name, and whether
+// it is descending.
+type orderColumn struct {
+	fold       string
+	descending bool
+}
+
+// orderColumns of the ORDER BY of a select of table, with the random numbers of r, and whether they
+// are aimed at an index beside one of a range. Two times in three for a table of which the sequence
+// keeps an index, as [Sequence.indexed] says, they are the columns of the key of one of them, the
+// index's columns and then those of the primary key that it lacks: where the WHERE of the select
+// pins the leading columns of the keys of two indexes, as many of each, and bounds the next column
+// of one of them, three times in four the columns after the pins of the other, so that with a LIMIT
+// the index that delivers the order wins over the one of the range, as goqite's receive reads by
+// goqite's index beside one on the queue and the timeout; and otherwise its leading columns. Of
+// these, from the first to all are taken, of which a column that the WHERE pins, with = or IS NULL,
+// is left out one time in two. They are in the directions of the key, or all turned one time in two.
+// But for those aimed at the index beside one of a range, one time in five they are the first column
+// of a key of three columns or more and the columns after a gap of one or more, if the sequence
+// keeps such an index; and three times in five two leading columns of the key or more, with no
+// column left out, of which the first or the second is turned again, so that the directions are
+// mixed. Otherwise, one time in six, the primary key, ascending or
+// descending; and else one column of the shape one time in two, and from one to all of them, each
+// once, in any order, else, each descending one time in two. Then, one time in four, a column that
+// the WHERE pins is put at any place, if the WHERE pins one that the columns lack. One time in
+// twelve, a name that the shape does not have is put at any place, a fault, a quarter as likely in a
+// profile without the order among [Profile.Faults], as [Sequence.fault] says.
+func (q *Sequence) orderColumns(r Rand, table stmt.Name) ([]stmt.OrderColumn, bool) {
+	shape := q.shapeOf(table)
+	var pinned, bounded []string
+	for _, c := range q.selected {
+		fold := nameOf(c.Column.Raw, 0).Fold()
+		switch {
+		case columnOfShape(shape, fold) == nil:
+		case c.Operator == stmt.OpEqual || c.Operator == stmt.OpIsNull:
+			pinned = append(pinned, fold)
+		case slices.Contains(bounds, c.Operator):
+			bounded = append(bounded, fold)
+		}
+	}
+	var columns []orderColumn
+	aimed := false
+	indexed := q.indexed[table.Fold()]
+	switch {
+	case len(indexed) > 0 && r.IntN(3) != 0:
+		keys := q.keysOf(table)
+		// The primary key is a candidate of the range too.
+		for _, c := range shape {
+			if c.PrimaryKey {
+				keys = append(keys, []orderColumn{{fold: c.Name.Value}})
+			}
+		}
+		// lead is the number of the leading columns of the key that the WHERE pins.
+		lead := func(key []orderColumn) int {
+			n := 0
+			for n < len(key) && slices.Contains(pinned, key[n].fold) {
+				n++
+			}
+			return n
+		}
+		var delivering [][]orderColumn
+		for i, key := range keys {
+			for j, other := range keys {
+				if n := lead(key); i != j && j < len(indexed) && n == lead(other) && n < len(key) && n < len(other) && slices.Contains(bounded, key[n].fold) && !slices.Contains(bounded, other[n].fold) {
+					delivering = append(delivering, other[n:])
+				}
+			}
+		}
+		key := keys[r.IntN(len(indexed))]
+		if len(delivering) > 0 && r.IntN(4) != 0 {
+			key, aimed = delivering[r.IntN(len(delivering))], true
+		}
+
+		skip := r.IntN(2) == 0
+		turned := r.IntN(2) == 0
+		taken := key[:1+r.IntN(len(key))]
+		var long [][]orderColumn
+		for _, k := range keys[:len(indexed)] {
+			if len(k) > 2 {
+				long = append(long, k)
+			}
+		}
+		// The shape of the ORDER BY: 0 for a gap, 1 to 3 for mixed directions, and 4 for neither.
+		form := 4
+		if !aimed {
+			form = r.IntN(5)
+		}
+		switch {
+		case form == 0 && len(long) > 0:
+			// The first column of a key of three columns or more, and the columns after a gap of one or
+			// more.
+			key = long[r.IntN(len(long))]
+			at := 1 + r.IntN(len(key)-2)
+			taken = append([]orderColumn{key[0]}, key[at+1:at+2+r.IntN(len(key)-at-1)]...)
+		case form == 0:
+			form = 4
+		case form < 4 && len(key) > 1:
+			// Two leading columns of the key at least, and no column left out, so that the directions
+			// are mixed among columns that the key could deliver.
+			taken, skip = key[:2+r.IntN(len(key)-1)], false
+		}
+		for _, k := range taken {
+			if skip && slices.Contains(pinned, k.fold) {
+				continue
+			}
+			columns = append(columns, orderColumn{k.fold, k.descending != turned})
+		}
+		if len(columns) > 1 && form > 0 && form < 4 {
+			// The first or the second column, so that the turn shows where the rows tie in the first.
+			c := &columns[r.IntN(2)]
+			c.descending = !c.descending
+		}
+	case r.IntN(6) == 0:
+		key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+		columns = []orderColumn{{key.Name.Value, r.IntN(2) == 0}}
+	default:
+		order := make([]int, len(shape))
+		for i := range order {
+			order[i] = i
+		}
+		shuffle(r, order)
+		n := 1
+		if r.IntN(2) == 0 {
+			n += r.IntN(len(order))
+		}
+		for _, position := range order[:n] {
+			columns = append(columns, orderColumn{shape[position].Name.Value, r.IntN(2) == 0})
+		}
+	}
+	var lacked []string
+	for _, fold := range pinned {
+		if !slices.ContainsFunc(columns, func(c orderColumn) bool { return c.fold == fold }) && !slices.Contains(lacked, fold) {
+			lacked = append(lacked, fold)
+		}
+	}
+	if len(lacked) > 0 && r.IntN(4) == 0 {
+		columns = slices.Insert(columns, r.IntN(len(columns)+1), orderColumn{lacked[r.IntN(len(lacked))], r.IntN(2) == 0})
+	}
+	var named []stmt.OrderColumn
+	for _, c := range columns {
+		named = append(named, stmt.OrderColumn{Name: stmt.Name{Raw: q.spell(r, c.fold)}, Descending: c.descending})
+	}
+	if q.fault(r, areaOrder, 12) {
+		raw := q.missing(r, shape)
+		named = slices.Insert(named, r.IntN(len(named)+1), stmt.OrderColumn{Name: stmt.Name{Raw: raw}, Descending: r.IntN(2) == 0})
+	}
+	return named, aimed
+}
+
+// keysOf the indexes that the sequence keeps of table, as [Sequence.indexed] says, in the order in
+// which it keeps them: for each, the columns of the index and then those of the primary key that it
+// lacks, as the key of the index is.
+func (q *Sequence) keysOf(table stmt.Name) [][]orderColumn {
+	shape := q.shapeOf(table)
+	var keys [][]orderColumn
+	for _, ix := range q.indexed[table.Fold()] {
+		var key []orderColumn
+		for _, c := range ix.columns {
+			key = append(key, orderColumn{c.Name.Value, c.Descending})
+		}
+		for _, c := range shape {
+			if c.PrimaryKey && !slices.ContainsFunc(key, func(k orderColumn) bool { return k.fold == c.Name.Value }) {
+				key = append(key, orderColumn{fold: c.Name.Value})
+			}
+		}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+// aimedWhere gives the conditions of the WHERE of a select of table, of which the sequence keeps an
+// index, with the random numbers of r, and sets the ORDER BY that they are drawn for,
+// [Sequence.aimed], as [Profile.Aimed] asks. Where two of the indexes begin with the same column,
+// which is not the primary key, and differ in the next, one time in two it is goqite's receive: that
+// first column pinned, the next column of one of the two bounded once or twice, each bound open or
+// closed, and an ORDER BY of the columns of the key of the other after its first, from one to all,
+// with a LIMIT, so that the index that delivers the order wins over the one that narrows a range.
+// Otherwise one column of the key of an index, not its last and not the primary key, is pinned, at
+// the start or in the middle of the key, and the ORDER BY is of the columns of the key around it, up
+// to the one after it at least, which the key delivers with the pinned column taken out of it; one
+// time in three the pinned column stays in the ORDER BY at its place, and the select has a LIMIT one
+// time in two. A pin at the start has, one time in two, a bound or two on the next column too, each
+// open or closed, which the scan bounds while it delivers the order. A pin is by =, with a value as [Sequence.conditionValue] draws it, or by IS NULL one
+// time in four for a column that takes NULL. The columns of the ORDER BY are in the directions of
+// the key, or all turned one time in two. The conditions are in any order one time in three. Where
+// no key has two columns, a pin of which leaves another, the select has no WHERE and no aim.
+func (q *Sequence) aimedWhere(r Rand, table stmt.Name) []stmt.Condition {
+	shape := q.shapeOf(table)
+	keys := q.keysOf(table)
+	inKey := func(fold string) bool {
+		c := columnOfShape(shape, fold)
+		return c != nil && c.PrimaryKey
+	}
+	typeOf := func(fold string) stmt.Type {
+		if c := columnOfShape(shape, fold); c != nil {
+			return c.Type
+		}
+		return anyType(r)
+	}
+	pin := func(fold string) stmt.Condition {
+		c := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, fold)}, Operator: stmt.OpEqual}
+		if column := columnOfShape(shape, fold); column != nil && !column.PrimaryKey && !column.NotNull && r.IntN(4) == 0 {
+			c.Operator = stmt.OpIsNull
+		} else {
+			c.Value.Value = q.conditionValue(r, areaIndexes, table, fold, typeOf(fold))
+		}
+		return c
+	}
+	turn := func(key []orderColumn) []orderColumn {
+		turned := r.IntN(2) == 0
+		var by []orderColumn
+		for _, k := range key {
+			by = append(by, orderColumn{k.fold, k.descending != turned})
+		}
+		return by
+	}
+	var pairs [][2]int
+	for i, a := range keys {
+		for j, b := range keys {
+			if i != j && len(a) > 1 && len(b) > 1 && a[0].fold == b[0].fold && a[1].fold != b[1].fold && !inKey(a[0].fold) {
+				pairs = append(pairs, [2]int{i, j})
+			}
+		}
+	}
+	var cs []stmt.Condition
+	if len(pairs) > 0 && r.IntN(2) == 0 {
+		pair := pairs[r.IntN(len(pairs))]
+		delivering, ranged := keys[pair[0]], keys[pair[1]]
+		cs = append(cs, pin(delivering[0].fold))
+		for range 1 + r.IntN(2) {
+			c := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, ranged[1].fold)}, Operator: bounds[r.IntN(len(bounds))]}
+			c.Value.Value = q.conditionValue(r, areaIndexes, table, ranged[1].fold, typeOf(ranged[1].fold))
+			cs = append(cs, c)
+		}
+		rest := delivering[1:]
+		q.aimed, q.aimedLimit = turn(rest[:1+r.IntN(len(rest))]), true
+	} else {
+		type place struct{ key, at int }
+		var places []place
+		for i, key := range keys {
+			for at := range len(key) - 1 {
+				if !inKey(key[at].fold) {
+					places = append(places, place{i, at})
+				}
+			}
+		}
+		if len(places) == 0 {
+			return nil
+		}
+		p := places[r.IntN(len(places))]
+		key := keys[p.key]
+		cs = append(cs, pin(key[p.at].fold))
+		if p.at == 0 && r.IntN(2) == 0 {
+			// A range of the column after the pin, which the scan of the key bounds while it delivers the
+			// order.
+			for range 1 + r.IntN(2) {
+				c := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, key[1].fold)}, Operator: bounds[r.IntN(len(bounds))]}
+				c.Value.Value = q.conditionValue(r, areaIndexes, table, key[1].fold, typeOf(key[1].fold))
+				cs = append(cs, c)
+			}
+		}
+		keep := r.IntN(3) == 0
+		var by []orderColumn
+		for i, k := range key {
+			if i != p.at || keep {
+				by = append(by, k)
+			}
+		}
+		least := p.at + 1
+		if keep {
+			least++
+		}
+		q.aimed, q.aimedLimit = turn(by[:least+r.IntN(len(by)-least+1)]), r.IntN(2) == 0
+	}
+	if r.IntN(3) == 0 {
+		shuffle(r, cs)
+	}
+	return cs
 }
 
 // conditions of a WHERE of a statement of table, one or more, as [Sequence.where] describes them for
@@ -817,6 +1188,22 @@ func (q *Sequence) createIndex(index, table stmt.Name) []stmt.IndexColumn {
 		descending := r.IntN(3) == 0
 		columns = append(columns, stmt.IndexColumn{Name: stmt.Name{Raw: q.spell(r, c.Name.Value)}, Descending: descending})
 		kept = append(kept, stmt.IndexColumn{Name: stmt.Name{Value: c.Name.Value}, Descending: descending})
+	}
+	if indexed := q.indexed[table.Fold()]; q.profile.Shared > 0 && len(indexed) > 0 && len(shape) > 1 && r.IntN(q.profile.Shared) == 0 {
+		// The first column of an index that the sequence keeps, and then another column, so that the
+		// two indexes pin as many columns where a WHERE pins the first, and one can deliver an order
+		// where the other narrows a range, as goqite's indexes do.
+		first := indexed[r.IntN(len(indexed))].columns[0]
+		var others []int
+		for i, c := range shape {
+			if c.Name.Value != first.Name.Value {
+				others = append(others, i)
+			}
+		}
+		next := shape[others[r.IntN(len(others))]]
+		descending := r.IntN(3) == 0
+		columns = []stmt.IndexColumn{{Name: stmt.Name{Raw: q.spell(r, first.Name.Value)}, Descending: first.Descending}, {Name: stmt.Name{Raw: q.spell(r, next.Name.Value)}, Descending: descending}}
+		kept = []stmt.IndexColumn{first, {Name: stmt.Name{Value: next.Name.Value}, Descending: descending}}
 	}
 	missing := ""
 	for range map[bool]int{true: 1, false: 0}[q.fault(r, areaIndexes, 12)] + map[bool]int{true: 1, false: 0}[q.fault(r, areaIndexes, 40)] {
@@ -1499,6 +1886,12 @@ func (q *Sequence) next() Call {
 	}
 	k = q.aim(r, k, p.Aim > 0 && r.IntN(4) < p.Aim)
 	src, s, args := q.g.CallOf(k)
+	if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 && q.fault(q.rOrder, areaOrder, 2) {
+		// An argument of the LIMIT that s4ql refuses: a negative integer, a real, text, a blob, or NULL,
+		// of which SQLite takes some as a number and refuses others.
+		r := q.rOrder
+		args[sel.Limit.Parameter-1] = []any{int64(-1 - r.IntN(3)), int64(math.MinInt64), 2.0, 1.5, "2", "x", []byte("2"), nil}[r.IntN(8)]
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		q.live[s.Table.Fold()] = true
