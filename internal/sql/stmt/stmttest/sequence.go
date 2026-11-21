@@ -275,10 +275,12 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 // defaultOf a column of the type t, for its DEFAULT: NULL one time in six, also for the key and a
 // column that does not take NULL, so that an insert that leaves the column out meets SQLite's NOT
 // NULL; for text and a blob one time in three a long value, of about [LengthLimit]/3 bytes of text
-// or [LengthLimit]/5 bytes of a blob, whose literal is twice as long, so that the record of a row
-// with it and another long value is too big; and otherwise a value as an insert gives the column one,
-// mostly from the small set, so that a default of the key meets a key that exists, but never longer
-// than [LengthLimit]/2 bytes, so that the create table fits the limit.
+// or [LengthLimit]/5 bytes of a blob, whose literal is twice as long for a blob, so that the record of
+// a row with it and another long value is too big; and otherwise a value as an insert gives the
+// column one, mostly from the small set, so that a default of the key meets a key that exists, but
+// never longer than [LengthLimit]/2 bytes. A shape with two or three long defaults can be too big for
+// the lowered limit, and its create table then gets `string or blob too big` in every create of the
+// sequence, which is one of the outcomes that the tests count.
 func (q *Sequence) defaultOf(t stmt.Type) stmt.Value {
 	r := q.r
 	if r.IntN(6) == 0 {

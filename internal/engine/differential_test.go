@@ -3015,10 +3015,10 @@ func TestDifferential_plantedBugs(t *testing.T) {
 	}
 }
 
-// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo.md, at the
-// length limit of 1000: the engine refuses the update of two rows whose second record is too long,
-// which SQLite stores on some platforms and refuses on others, and the comparison accepts either
-// only by an update of each row alone in SQLite.
+// TestPair_tooLongForCache pins the excuse of [pair.tooLongForCache] at the length limit of 1000: a
+// create table that SQLite takes and whose statement in the cache is longer than the limit is
+// excused, and [cacheStatementLength] measures that statement as the core does, byte for byte at
+// the limit, for every kind of default.
 func TestPair_tooLongForCache(t *testing.T) {
 	// 42 columns of a real with the default .5, whose canonical form 5e-01 is three bytes longer: SQLite
 	// takes the text under the limit of 1000, and the cache's statement is longer than the limit.
@@ -3087,6 +3087,10 @@ func TestPair_tooLongForCache(t *testing.T) {
 	})
 }
 
+// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo.md, at the
+// length limit of 1000: the engine refuses the update of two rows whose second record is too long,
+// which SQLite stores on some platforms and refuses on others, and the comparison accepts either
+// only by an update of each row alone in SQLite.
 func TestPair_recordSlips(t *testing.T) {
 	setup := []string{
 		"create table t (k int primary key, a text, b text not null) strict, without rowid",

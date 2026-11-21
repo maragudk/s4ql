@@ -2771,7 +2771,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// gives other rows than in SQLite, which runs the statements of the log, and so does the replay
 		// of the log into an empty cache, which writes its rows; where the column does not take NULL, the
 		// engine gives NOT NULL where SQLite stores the default, so a later statement can differ. Of the
-		// first 200 seeds, on 2026-11-21, 38 found the bug, 35 of them by its own violation.
+		// first 200 seeds, on 2026-11-21, 56 found the bug, 53 of them by its own violation. A write in a
+		// transaction plants it too.
 		{"nullDefault", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 	}
 	shard := testshard.Get(t)

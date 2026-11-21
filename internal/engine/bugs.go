@@ -52,7 +52,7 @@ type bugs struct {
 	// empty blob, in place of NULL.
 	zeroLeftOut bool
 	// nullDefault makes an insert with a list of columns give a column with a default that the list
-	// leaves out NULL in place of its default.
+	// leaves out NULL in place of its default, of its own and in a transaction.
 	nullDefault bool
 	// openBound makes a scan by one or two bounds of a key read a closed bound, of <= or >=, as
 	// open, so that it leaves out the row whose key is the bound, which the filter above it would
