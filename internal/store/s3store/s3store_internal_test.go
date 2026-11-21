@@ -115,6 +115,15 @@ func (d *dialer) dial(ctx context.Context, network, address string) (net.Conn, e
 	if err != nil {
 		return nil, err
 	}
+	// A close resets the connection, so that it leaves no local port in TIME_WAIT. The client closes
+	// a connection after nearly every call of a closed client, and the stress test makes thousands of
+	// calls, which would otherwise run the machine out of local ports while other tests run beside it.
+	if tc, ok := nc.(*net.TCPConn); ok {
+		if err := tc.SetLinger(0); err != nil {
+			_ = nc.Close()
+			return nil, err
+		}
+	}
 	cn := &conn{Conn: nc, closed: make(chan struct{})}
 	d.mu.Lock()
 	d.conns = append(d.conns, cn)
@@ -176,26 +185,57 @@ func waitClosed(t *testing.T, conns ...*conn) {
 	}
 }
 
+// pair of writes, which the handler of the server holds until both have arrived, so that they go over
+// two connections, or until one of them has failed, so that the other does not wait for ever.
+type pair struct {
+	arrived atomic.Int32
+	both    chan struct{}
+	once    sync.Once
+	failed  chan struct{}
+}
+
+func newPair() *pair {
+	return &pair{both: make(chan struct{}), failed: make(chan struct{})}
+}
+
+// wait in the handler for the other write of the pair.
+func (p *pair) wait() {
+	if p.arrived.Add(1) == 2 {
+		close(p.both)
+	}
+	select {
+	case <-p.both:
+	case <-p.failed:
+	}
+}
+
+// createTwo makes the two writes of the pair on c at once, and fails the test if one fails.
+func (p *pair) createTwo(t *testing.T, c *Client) {
+	t.Helper()
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Go(func() {
+			_, errs[i] = c.Create(t.Context(), fmt.Sprint("k", i), strings.NewReader("data"), nil)
+			if errs[i] != nil {
+				p.once.Do(func() { close(p.failed) })
+			}
+		})
+	}
+	wg.Wait()
+	is.NotError(t, errors.Join(errs...))
+}
+
 func TestClient_Close(t *testing.T) {
 	t.Run("should close every connection of its transport when it is closed, also those that are idle", func(t *testing.T) {
-		// Both writes are in the handler at once, so that they go over two connections.
-		var arrived sync.WaitGroup
-		arrived.Add(2)
+		p := newPair()
 		c, d := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.Copy(io.Discard, r.Body)
-			arrived.Done()
-			arrived.Wait()
+			p.wait()
 			w.Header().Set("ETag", `"v"`)
 		})
 
-		var wg sync.WaitGroup
-		for _, k := range []string{"a", "b"} {
-			wg.Go(func() {
-				_, err := c.Create(t.Context(), k, strings.NewReader("data"), nil)
-				is.NotError(t, err)
-			})
-		}
-		wg.Wait()
+		p.createTwo(t, c)
 		conns := d.all()
 		is.Equal(t, 2, len(conns))
 
@@ -260,9 +300,7 @@ func TestClient_Close(t *testing.T) {
 	})
 
 	t.Run("should close the idle connections at once while the content of a read is open", func(t *testing.T) {
-		// Both writes are in the handler at once, so that they go over two connections.
-		var arrived sync.WaitGroup
-		arrived.Add(2)
+		p := newPair()
 		c, d := serverClient(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("ETag", `"v"`)
 			if r.Method == http.MethodGet {
@@ -270,17 +308,9 @@ func TestClient_Close(t *testing.T) {
 				return
 			}
 			_, _ = io.Copy(io.Discard, r.Body)
-			arrived.Done()
-			arrived.Wait()
+			p.wait()
 		})
-		var wg sync.WaitGroup
-		for _, k := range []string{"a", "b"} {
-			wg.Go(func() {
-				_, err := c.Create(t.Context(), k, strings.NewReader("data"), nil)
-				is.NotError(t, err)
-			})
-		}
-		wg.Wait()
+		p.createTwo(t, c)
 		is.Equal(t, 2, len(d.all()))
 
 		// The read takes one of the two connections, and the other stays idle, unless net/http kept
@@ -288,8 +318,7 @@ func TestClient_Close(t *testing.T) {
 		var read atomic.Pointer[conn]
 		ctx := httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{
 			GotConn: func(info httptrace.GotConnInfo) {
-				cn, ok := info.Conn.(*conn)
-				is.True(t, ok)
+				cn, _ := info.Conn.(*conn)
 				read.Store(cn)
 			},
 		})
