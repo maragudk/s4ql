@@ -186,7 +186,8 @@ type condition struct {
 	op       stmt.Operator
 	value    *s4qlpb.Value
 	// valueFirst reports whether the statement writes the value on the left, as [Condition] says;
-	// op is the operator turned round then.
+	// op is the operator turned round then. It is read only by the planted bug unturnedBound and by
+	// tests: op is never to be turned round again from it.
 	valueFirst bool
 }
 
