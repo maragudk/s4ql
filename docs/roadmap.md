@@ -419,7 +419,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 11: `default` with a literal
 
-Status: agreed on 2026-11-20, not built.
+Status: built on 2026-11-21, with its generated checks; mutation testing is still to come. The statement pass, the commit format and storage core, the engine, and the `database/sql` driver run a `default` with a literal on a column of `create table`, and an `insert` with a list of columns gives each column that it leaves out its default, or null where the column has none. It is checked by table tests against SQLite, with goqite's schema among them as far as slices 1 to 11 take it. Generated sequences with defaults run in the engine's differential tests and in the driver's against mattn/go-sqlite3. The simulation finds a planted bug, `nullDefault`, and two independent reviews checked the branches.
 
 ```sql
 create table t1 (v1 int primary key, v2 int not null default 0, v3 text default 'a') strict, without rowid;
