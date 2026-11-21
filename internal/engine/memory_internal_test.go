@@ -163,7 +163,9 @@ func compareNullable(a, b *s4qlpb.Value) int {
 // scan the rows of the table as the storage core does, by a way of its own: it sorts every row by
 // the key of the index, each column in its direction, and then keeps the rows whose leading columns
 // are equal to the pinned values, NULL to NULL, and whose next column is not NULL and within the
-// bounds.
+// bounds. For a scan with an order, it then sorts those rows by the columns of the order, and the
+// rows that tie by the primary key, or by its reverse for a scan backward, and counts every one of
+// them as read before it gives the first, as the core does.
 func (x *memTx) scan(_ context.Context, name string, scan core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		t := x.tables[fold(name)]
@@ -206,6 +208,7 @@ func (x *memTx) scan(_ context.Context, name string, scan core.IndexScan) iter.S
 		if scan.Backward {
 			slices.Reverse(rows)
 		}
+		var within [][]*s4qlpb.Value
 	rows:
 		for _, row := range rows {
 			for i, v := range scan.Equal {
@@ -229,7 +232,34 @@ func (x *memTx) scan(_ context.Context, name string, scan core.IndexScan) iter.S
 					}
 				}
 			}
+			if len(scan.Order) > 0 {
+				within = append(within, row)
+				continue
+			}
 			x.read++
+			if !yield(row, nil) {
+				return
+			}
+		}
+		primary := int(t.ct.GetPrimaryKey()[0])
+		slices.SortFunc(within, func(a, b []*s4qlpb.Value) int {
+			for _, o := range scan.Order {
+				c := compareNullable(a[o.Position], b[o.Position])
+				if o.Descending {
+					c = -c
+				}
+				if c != 0 {
+					return c
+				}
+			}
+			c := compareValues(a[primary], b[primary])
+			if scan.Backward {
+				c = -c
+			}
+			return c
+		})
+		x.read += int64(len(within))
+		for _, row := range within {
 			if !yield(row, nil) {
 				return
 			}

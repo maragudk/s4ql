@@ -856,6 +856,7 @@ footer ul {
               <li>Columns that are <code>not null</code>, and columns that take null.</li>
               <li><code>insert</code> of one row, with literals and arguments, with or without a list of columns. A column that the list leaves out gets its default.</li>
               <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>. A comparison may have its value on either side. Rows without <code>order by</code> come in a varying order.</li>
+              <li><code>order by</code> of one or more columns, each ascending or descending, and <code>limit</code> with a number or <code>?</code>, on <code>select</code>.</li>
               <li><code>update</code> and <code>delete</code>, with or without that <code>where</code>. An update may change the primary key, and <code>RowsAffected</code> is what SQLite reports.</li>
               <li><code>create index</code> and <code>drop index</code>, on one or more columns, each ascending or descending, not unique. The engine picks the index for a <code>where</code> by fixed rules.</li>
               <li><code>if not exists</code> on <code>create table</code> and <code>create index</code>, and <code>if exists</code> on <code>drop table</code> and <code>drop index</code>.</li>
@@ -871,11 +872,11 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p><code>or</code> and other expressions in a <code>where</code>, <code>order by</code> and <code>limit</code>, more than one row per <code>insert</code>, and a statement while rows of the same transaction are open.</p></td>
+          <td><p><code>or</code> and other expressions in a <code>where</code>, <code>offset</code>, more than one row per <code>insert</code>, and a statement while rows of the same transaction are open.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Mutation testing of slices 10 to 12, then the engine step of slice 13 (<code>order by</code> and <code>limit</code>), whose statement pass is in. After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>The generated checks of <code>order by</code> and <code>limit</code>, then mutation testing of the newest slices. After that comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -984,10 +985,10 @@ footer ul {
         <div><h3>Slice 12: a value on the left of a comparison</h3><p>In a <code>where</code>, a comparison may have a literal or <code>?</code> on the left and the column on the right, such as <code>? &gt;= timeout</code>. The primary key and the indexes are used as for the other order, and the commit format stays as it is. The statements run, and generated sequences check them against SQLite. Mutation testing is still to come.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 13: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Where the engine sorts, rows that tie come in an order that varies from query to query. The commit format stays as it is.</p></div>
-        <span class="where caps">Agreed</span>
+        <div><h3>Slice 13: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Where the engine sorts, rows that tie come in an order that varies from query to query. The commit format stays as it is. The statements run; engine in, generated checks next.</p></div>
+        <span class="where caps">Built</span>
       </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>

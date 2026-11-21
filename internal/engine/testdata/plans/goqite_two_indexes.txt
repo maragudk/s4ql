@@ -5,6 +5,24 @@ create table goqite (id text primary key, created text not null, updated text no
 create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)
 create index goqite_queue_timeout on goqite (queue, timeout)
 
+## receive in order
+select id from goqite where queue = ? and timeout <= ? and received < ? order by priority desc, created limit 1
+args: 'default', '2026-11-20T12:00:00.000Z', 3
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'
+order: delivered, forward
+
+## receive in order as goqite writes it
+select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1
+args: 'default', '2026-11-20T12:00:00.000Z', 3
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'
+order: delivered, forward
+
+## receive in order without a limit
+select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created
+args: 'default', '2026-11-20T12:00:00.000Z', 3
+access: index goqite_queue_timeout (queue, timeout, id), pins queue = 'default', bounds timeout <= '2026-11-20T12:00:00.000Z'
+order: sorted by priority desc, created
+
 ## receive
 select id from goqite where queue = ? and timeout <= ? and received < ?
 args: 'default', '2026-11-20T12:00:00.000Z', 3

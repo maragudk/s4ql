@@ -607,6 +607,9 @@ func applyDropIndex(c *conn, name string) (int, error) {
 // scan lets through, and Upper the largest, also for a column that the index holds in descending
 // order. A row whose value in the bounded column is NULL is within no bound, as in SQL, and a
 // column is pinned to NULL by a NULL in Equal, which finds the rows whose value is NULL.
+//
+// A scan with Order sorts the rows that it reads, and gives them in the order of the columns of
+// Order, and not in the order of the key: see [IndexScan.Order].
 type IndexScan struct {
 	// Index is the name of the index, or empty for the primary key.
 	Index string
@@ -616,8 +619,18 @@ type IndexScan struct {
 	// Lower and Upper bound the column of the key after those of Equal. A bound without a value
 	// bounds nothing.
 	Lower, Upper Bound
-	// Backward gives the rows in the reverse of the order of the key.
+	// Backward gives the rows in the reverse of the order of the key. For a scan with Order, it turns
+	// the order of the rows that are equal in every column of Order: see there.
 	Backward bool
+	// Order, if it is not empty, makes the cache sort the rows of the scan: by the value of the first
+	// column of Order, and among rows that are equal in it by the next, each ascending, or descending
+	// if it says so, as SQLite orders the values of a column: NULL before every value ascending, and
+	// after every value descending. Rows that are equal in every column of Order come in the order of
+	// the primary key, or in its reverse if Backward, so the order of the rows is total. The cache
+	// reads every row within Equal and the bounds before it gives the first, and sorts them outside
+	// the memory of Go, in files of its own once they are many: see [ReadTx.ScanIndex]. A scan by the
+	// primary key whose Equal pins the whole key reads one row at most, and nothing is sorted.
+	Order []KeyColumn
 }
 
 // checkScan of the table by the given key: Equal pins no more columns than the key has, with a
@@ -644,6 +657,14 @@ func (t *table) checkScan(key []KeyColumn, scan IndexScan, limit int) error {
 		}
 		if err := t.checkValue(key[len(scan.Equal)].Position, b.Value, limit); err != nil {
 			return err
+		}
+	}
+	if len(scan.Order) > len(t.columns) {
+		return invalidf("a scan in the order of %v columns of the table %q, which has %v", len(scan.Order), t.name, len(t.columns))
+	}
+	for _, c := range scan.Order {
+		if c.Position < 0 || c.Position >= len(t.columns) {
+			return invalidf("a scan in the order of the column at %v of the table %q, which has %v columns", c.Position, t.name, len(t.columns))
 		}
 	}
 	return nil
@@ -698,6 +719,9 @@ func scanConditions(names []string, key []KeyColumn, scan IndexScan, bugs bugs) 
 // SQLite reads the index, so it sorts nothing: unless those columns are more than 63, which is the
 // most that SQLite compares with the order of an index, and it then reads the same rows and sorts
 // them.
+//
+// A scan with Order orders by the terms of [table.sortTerms] instead, which SQLite sorts by,
+// whatever the index.
 func (t *table) scanSQL(ix *index, scan IndexScan, bugs bugs) (string, []any, error) {
 	if err := t.checkIndexed(); err != nil {
 		return "", nil, err
@@ -712,7 +736,7 @@ func (t *table) scanSQL(ix *index, scan IndexScan, bugs bugs) (string, []any, er
 		by = ix.name
 	}
 	conditions, args := scanConditions(names, key, scan, bugs)
-	sql := fmt.Sprint("select * from main.", quote(t.name), " indexed by ", quote(by))
+	sql := fmt.Sprint("select ", t.sortColumns(scan), " from main.", quote(t.name), " indexed by ", quote(by))
 	if len(conditions) > 0 {
 		sql += " where " + strings.Join(conditions, " and ")
 	}
@@ -724,18 +748,104 @@ func (t *table) scanSQL(ix *index, scan IndexScan, bugs bugs) (string, []any, er
 		}
 		order = append(order, term)
 	}
+	if len(scan.Order) > 0 {
+		order = t.sortTerms(scan)
+	}
 	if len(order) > 0 {
 		sql += " order by " + strings.Join(order, ", ")
 	}
 	return sql, args, nil
 }
 
+// sortTerms of the ORDER BY of the statement of a scan with Order: a term for each column of Order,
+// in its direction, and then one for each column of the primary key that Order does not name,
+// ascending, or descending for a scan backward, so that no two rows are equal in all of them. A
+// column that Order names orders the rows already, so a further term for it would order nothing,
+// and the statement has no more terms than the table has columns, which SQLite takes.
+//
+// Each term of a column of Order is the column after a unary plus, which is no column of an index
+// to SQLite. So SQLite sorts the rows of every such statement in one sort of all of them, also
+// where the index holds the rows in the order of some or all of the terms, and reads every row of
+// the scan before it gives the first: a scan with Order costs a sort, and what it reads does not
+// depend on how much of it is consumed. The one exception is a scan by the primary key that pins
+// the whole key: SQLite knows that it reads one row at most, and sorts nothing. A plus changes
+// neither the value nor, in a table whose columns have no collation, the order of the values.
+func (t *table) sortTerms(scan IndexScan) []string {
+	var terms []string
+	for _, c := range scan.Order {
+		term := t.sortColumn(c.Position)
+		if c.Descending {
+			term += " desc"
+		}
+		terms = append(terms, term)
+	}
+	for _, position := range t.key {
+		if slices.ContainsFunc(scan.Order, func(c KeyColumn) bool { return c.Position == position }) {
+			continue
+		}
+		term := quote(t.columns[position].name)
+		if scan.Backward {
+			term += " desc"
+		}
+		terms = append(terms, term)
+	}
+	return terms
+}
+
+// sortColumn is the term by which the statement of a scan with Order orders by the column at the
+// position, and which it selects for the column: the column after a unary plus.
+func (t *table) sortColumn(position int) string {
+	return "+" + quote(t.columns[position].name)
+}
+
+// sortColumns is the select list of the statement of a scan: every column of the table, in the
+// order of the table, which is `*` for a scan without Order. For a scan with Order, each column of
+// Order is selected as the term by which the statement orders by it, as [table.sortColumn] gives
+// it, which has the value of the column. SQLite then keeps the value once in what it sorts, as the
+// ordering term and the selected column at once, and not twice, so what it sorts for a row is no
+// longer than the row is in the table, but for a real that holds an integer, which the table keeps
+// in fewer bytes.
+func (t *table) sortColumns(scan IndexScan) string {
+	if len(scan.Order) == 0 {
+		return "*"
+	}
+	columns := make([]string, len(t.columns))
+	for position, c := range t.columns {
+		columns[position] = quote(c.name)
+		if slices.ContainsFunc(scan.Order, func(o KeyColumn) bool { return o.Position == position }) {
+			columns[position] = t.sortColumn(position)
+		}
+	}
+	return strings.Join(columns, ", ")
+}
+
+// countSQL is the statement that counts the rows of the scan of [table.scanSQL], by the same
+// conditions on the same index, with the arguments of its parameters, which are the same.
+func (t *table) countSQL(ix *index, scan IndexScan, bugs bugs) (string, []any) {
+	key := t.scanKey(ix, bugs)
+	names := make([]string, len(key))
+	for i, c := range key {
+		names[i] = quote(t.columns[c.Position].name)
+	}
+	by := t.primary
+	if ix != nil {
+		by = ix.name
+	}
+	conditions, args := scanConditions(names, key, scan, bugs)
+	sql := fmt.Sprint("select count(*) from main.", quote(t.name), " indexed by ", quote(by))
+	if len(conditions) > 0 {
+		sql += " where " + strings.Join(conditions, " and ")
+	}
+	return sql, args
+}
+
 // scanIndex reads the rows of the table by its index ix, or by its primary key if ix is nil, as
 // scan says, which [table.checkScan] has accepted, in the order of the key or its reverse. It adds
-// one to read, if that is not nil, for each row that the cache gives. The statement is given back
-// also when a panic or [runtime.Goexit] in the loop over the scan unwinds through it: a statement
-// that stays stepped would hold its transaction's snapshot and locks, and the connection could not
-// close.
+// one to read, if that is not nil, for each row that the cache gives. A scan with Order has read
+// every row within its bounds when it gives its first row, and still adds one for each row that it
+// gives: [conn.unread] counts the rest. The statement is given back also when a panic or
+// [runtime.Goexit] in the loop over the scan unwinds through it: a statement that stays stepped
+// would hold its transaction's snapshot and locks, and the connection could not close.
 func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		sql, args, err := t.scanSQL(ix, scan, c.bugs)
@@ -759,8 +869,11 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 				_ = c.rest(sql, s)
 			}
 		}()
+		// sorting is set until the first step of a scan with Order, in which SQLite sorts.
+		sorting := len(scan.Order) > 0
 		for {
-			ok, err := s.Step()
+			ok, err := c.step(s, sorting)
+			sorting = false
 			if err != nil {
 				_ = s.Finalize()
 				s = nil
@@ -792,6 +905,48 @@ func (c *conn) scanIndex(t *table, ix *index, scan IndexScan, read *int64) iter.
 	}
 }
 
+// step the statement s of a scan, and report whether it has a row. A step in which SQLite sorts, the
+// first of a scan with Order, runs under SQLite's largest length limit, and the limit of the
+// connection is put back after it. SQLite builds a record of what it sorts for each row, under the
+// length limit, and that record is longer than the row is in the table where a real of the row
+// holds an integer, which the table keeps in fewer bytes: without the larger limit, a row that the
+// table holds under a small limit could not be sorted. The limit bounds nothing else in the step.
+func (c *conn) step(s *sqlite.Stmt, sorting bool) (bool, error) {
+	if !sorting || c.limit == maxLength {
+		return s.Step()
+	}
+	if err := c.c.SetLengthLimit(maxLength); err != nil {
+		return false, err
+	}
+	ok, err := s.Step()
+	if limitErr := c.c.SetLengthLimit(c.limit); err == nil && limitErr != nil {
+		return false, limitErr
+	}
+	return ok, err
+}
+
+// unread is the number of rows that a scan of the table read and did not give, when the loop over
+// it stopped after it had given the given number: for a scan with Order, the rows of the scan, which
+// the cache counts by the same conditions on the same index, in the same transaction, less those,
+// and for every other scan none. The cache read them all to sort them, and does not say how many
+// they were, and to step through the rest would cost a call for each. The statement of the scan is
+// at rest when it is called. A count that fails gives its error, and no rows.
+func (c *conn) unread(t *table, ix *index, scan IndexScan, given int64) (int64, error) {
+	if len(scan.Order) == 0 {
+		return 0, nil
+	}
+	sql, args := t.countSQL(ix, scan, c.bugs)
+	var rows int64
+	err := c.query(sql, func(s *sqlite.Stmt) error {
+		rows = s.ColumnInt64(0)
+		return nil
+	}, args...)
+	if err != nil {
+		return 0, err
+	}
+	return max(rows-given, 0), nil
+}
+
 // scanned is the table with the given name and its index that scan names, or nil for the primary
 // key, for a scan that [table.checkScan] accepts on a connection with the given limit. Its error
 // wraps [ErrNoIndex] if the table has no such index, and [ErrInvalid] or [ErrTooBig] as checkScan
@@ -818,8 +973,17 @@ func scanned(t *table, scan IndexScan, limit int, bugs bugs) (*index, error) {
 // loop over the sequence that stops early has still read them all. The sequence ends with an error
 // that wraps [ErrNoTable] if there is no such table, [ErrNoIndex] if the table has no such index,
 // [ErrInvalid] for a scan that pins more columns than the key has, for a bound after the last
-// column of the key or that is NULL, and for a value that the column does not hold, and
-// [ErrTooBig] for a text or a blob that is longer than SQLite takes.
+// column of the key or that is NULL, for a value that the column does not hold, and for a column
+// of Order that the table does not have, and [ErrTooBig] for a text or a blob that is longer than
+// SQLite takes.
+//
+// A scan with Order gives the same rows in the order of the columns of Order: see
+// [IndexScan.Order]. SQLite sorts them, in one sort of every row within the bounds, which it reads
+// before it gives the first, whatever the index: [table.sortTerms] writes the statement so. The
+// sort is SQLite's, outside the memory of Go: it holds the rows in memory up to the size of its
+// page cache, and in temporary files beyond that, so a scan of any number of rows needs no more
+// memory of Go than one row at a time. RowsRead counts every row that the sort read, also when the
+// loop over the sequence stops early.
 func (r *ReadTx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return r.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
 		ix, err := scanned(t, scan, r.c.limit, r.c.bugs)
@@ -877,6 +1041,8 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 			yield(nil, err)
 			return
 		}
+		var given int64
+		stopped := false
 		for row, err := range r.c.scanIndex(t, ix, scan, &r.read) {
 			if err == nil {
 				// A read that is running when the instance stops is aborted.
@@ -886,9 +1052,19 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 				yield(nil, r.d.cacheError(ctx, operation, err))
 				return
 			}
-			if !yield(row, nil) {
-				return
+			if given++; !yield(row, nil) {
+				// The loop over the scan stopped early, and the statement of the scan is at rest once
+				// this loop has ended.
+				stopped = true
+				break
 			}
+		}
+		if stopped && ctx.Err() == nil {
+			// The sequence has ended, so an error of the count cannot be given through it. A local
+			// failure stops the instance all the same.
+			unread, err := r.c.unread(t, ix, scan, given)
+			r.read += unread
+			_ = r.d.cacheError(ctx, operation, err)
 		}
 	}
 }
@@ -906,6 +1082,13 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 // sorts its rows, as [table.scanSQL] says, and reads every row within the bounds of the scan
 // before it gives the first. A loop over such a scan that stops early has made SQLite read them
 // all, and RowsRead counts only the rows that the loop stepped to.
+//
+// A scan with [IndexScan.Order] is sorted too, and RowsRead counts every row that it read to sort,
+// which is every row within its bounds, however early the loop over it stops: once the scan has
+// given its first row, or has ended without one. When the loop stops early, the cache counts the
+// rows of the scan once more, by the index alone, to know how many those were. It does not count
+// them when the loop ends by a panic, or after the context has ended: RowsRead then has the rows
+// that the loop stepped to.
 func (r *ReadTx) RowsRead() int64 {
 	return r.read
 }
@@ -913,7 +1096,8 @@ func (r *ReadTx) RowsRead() int64 {
 // ScanIndex is [Tx.Scan] by an index of the table, or by its primary key, as the transaction sees
 // the rows, and as [ReadTx.ScanIndex] reads and fails, also where SQLite sorts the rows and so
 // reads every row within the bounds before it gives the first. The transaction must not create or
-// drop an index or a table while it scans.
+// drop an index or a table while it scans. A loop over a scan with Order that writes rows of the
+// table and then stops early makes [Tx.RowsRead] count the rows as they are when it stops.
 func (tx *Tx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return tx.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
 		ix, err := scanned(t, scan, tx.c.limit, tx.c.bugs)
@@ -941,6 +1125,8 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 			yield(nil, err)
 			return
 		}
+		var given int64
+		stopped := false
 		for row, err := range tx.c.scanIndex(t, ix, scan, &tx.read) {
 			if err != nil {
 				yield(nil, tx.fail(ctx, operation, err))
@@ -952,17 +1138,28 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 				yield(nil, tx.Lost())
 				return
 			}
-			if !yield(row, nil) {
-				return
+			if given++; !yield(row, nil) {
+				// The loop over the scan stopped early, and the statement of the scan is at rest once
+				// this loop has ended.
+				stopped = true
+				break
 			}
+		}
+		if stopped && ctx.Err() == nil {
+			// The sequence has ended, so an error of the count cannot be given through it. It fails
+			// the transaction as an error of the scan does.
+			unread, err := tx.c.unread(t, ix, scan, given)
+			tx.read += unread
+			_ = tx.fail(ctx, operation, err)
 		}
 	}
 }
 
 // RowsRead is the number of rows that the transaction has read from the cache so far for its
 // caller: by its scans and by [Tx.Get], and not by its writes or its commit. It counts them as
-// [ReadTx.RowsRead] does, also for a scan whose rows SQLite sorts, of which it counts only the rows
-// that the loop stepped to.
+// [ReadTx.RowsRead] does, also for a scan whose rows SQLite sorts: of a scan with
+// [IndexScan.Order] it counts every row within the bounds, and of one whose key SQLite cannot
+// compare with the order of an index only the rows that the loop stepped to.
 func (tx *Tx) RowsRead() int64 {
 	return tx.read
 }

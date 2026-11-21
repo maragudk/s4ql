@@ -1068,6 +1068,8 @@ type transaction struct {
 	// query, and sFirst and oFirst are the first row of each, which is read, as [firstRow] gives it.
 	sRows, oRows           *sql.Rows
 	opened, sFirst, oFirst string
+	// openedArgs are the arguments of the query of the rows that are left open.
+	openedArgs []any
 	// wrote is set once an insert succeeded in the transaction, failed once a call failed in it, and
 	// created and dropped once a create table or a drop table succeeded in it.
 	wrote, failed, created, dropped bool
@@ -1235,7 +1237,10 @@ func (p *pair) openRows(src string, args []any, compared outcome) string {
 		}
 		return ""
 	}
-	if !slices.Contains(compared.pairs(), got) {
+	t.openedArgs = args
+	if sel := orderedSelect(src); sel == nil && !slices.Contains(compared.pairs(), got) {
+		// The first row of a select with ORDER BY or LIMIT is checked with the rest, in its place, as
+		// [pair.closeRows] does: one with LIMIT and without ORDER BY can give other rows each time.
 		return fmt.Sprintf("%q: the first row of s4ql's rows that are left open is\n%v\nwhich is none of the rows that the query gave:\n%v", src, got, compared.full())
 	}
 	if p.y != nil {
@@ -1270,9 +1275,10 @@ func typedRow(tb testing.TB, rows *sql.Rows) (row, scan string) {
 
 // closeRows that [callQueryOpen] left open in the open transaction, on both sides, after reading the
 // rest of each. The first row of each side and its rest, each row with its scan, must be the same
-// rows the same number of times, in any order: the calls between the first row and the rest changed
-// nothing, since s4ql refuses a statement of the transaction while its rows are open. It gives what
-// differs, or "", also where no rows are open.
+// rows the same number of times, in any order, or, for a select with ORDER BY or LIMIT, as
+// [pair.orderedDiffers] says: the calls between the first row and the rest changed nothing, since
+// s4ql refuses a statement of the transaction while its rows are open. It gives what differs, or "",
+// also where no rows are open.
 func (p *pair) closeRows() string {
 	tb := p.tb
 	tb.Helper()
@@ -1294,6 +1300,12 @@ func (p *pair) closeRows() string {
 	t.sRows, t.oRows = nil, nil
 	if sErr != nil {
 		return fmt.Sprintf("%q: the rest of s4ql's rows that were left open fails with %v", t.opened, sErr)
+	}
+	if sel := orderedSelect(t.opened); sel != nil {
+		if failure := p.orderedDiffers(sel, t.openedArgs, got, want, true, inTx{Tx: t.o, outer: p.o}); failure != "" {
+			return fmt.Sprintf("%q: s4ql's rows that were left open, the first and then the rest: %v", t.opened, failure)
+		}
+		return ""
 	}
 	slices.Sort(got)
 	slices.Sort(want)
@@ -1578,6 +1590,20 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 			got.affected, want.affected = "", ""
 		}
 	}
+	if sel, ok := s.(*stmt.Select); ok && (sel.OrderBy != nil || sel.Limited()) && got.failed == "" && want.failed == "" &&
+		got.columns == want.columns && got.types == want.types && len(got.rows) == len(want.rows) && len(got.rows) > 0 {
+		// The rows of a select with ORDER BY are in an order, and those of one with LIMIT are a part of
+		// the rows of the select without it, so they are compared as [pair.orderedDiffers] says, and the
+		// rest of the outcome as for every other text. A QueryRow gives the first row of the select.
+		gotRows, wantRows := got.rows, want.rows
+		if len(got.scans) > 0 {
+			gotRows, wantRows = got.pairs(), want.pairs()
+		}
+		if failure := p.orderedDiffers(sel, mattnRuns[0], gotRows, wantRows, len(got.scans) > 0, o); failure != "" {
+			return fmt.Sprintf("%q with the arguments %#v: %v", src, runs, failure)
+		}
+		want.rows, want.scans = got.rows, got.scans
+	}
 	if c == callQueryRow && got.failed == "" && want.failed == "" && !slices.Equal(got.rows, want.rows) {
 		// A QueryRow gives the row that comes first, and each side reads in an order of its own, so
 		// the two rows need not be the same row: s4ql's must be one of the rows that SQLite gives for
@@ -1612,6 +1638,91 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		return ""
 	}
 	return fmt.Sprintf("%q with the arguments %#v: s4ql gives\n%v\nand SQLite\n%v", src, runs, got.full(), want.full())
+}
+
+// orderedSelect is the select of the text src if it is one with ORDER BY or LIMIT, and nil otherwise.
+func orderedSelect(src string) *stmt.Select {
+	s, _ := stmt.Check(src)
+	if sel, ok := s.(*stmt.Select); ok && (sel.OrderBy != nil || sel.Limited()) {
+		return sel
+	}
+	return nil
+}
+
+// orderedDiffers says how the rows got that s4ql gives for the select sel with ORDER BY or LIMIT,
+// with the arguments args, in the order in which they came, differ from the rows want that SQLite
+// gives for it on o, or "" if they do not. Each row is as [rowText] gives it, or, if scans, with its
+// scan as [outcome.pairs] has it. Rows that tie under ORDER BY come in an order that is not
+// specified, and a LIMIT without ORDER BY may give any of the rows, so the rows are compared with
+// those of the select without its LIMIT, which SQLite gives in its order, each with its dense rank
+// under the ORDER BY, from a second query, whose ranks at each place do not depend on the order in
+// which SQLite gives rows that tie:
+//
+//   - The number of rows is SQLite's.
+//   - With ORDER BY, the row of s4ql at each place must be a row of the rank that SQLite has at that
+//     place: where no rows tie, that is the same row at the same place, and the rows of a rank are
+//     compared as a multiset, of which a LIMIT that cuts a rank leaves any part.
+//   - Without ORDER BY, the rows are rows of the select without its LIMIT, each no more often than
+//     that select gives it.
+func (p *pair) orderedDiffers(sel *stmt.Select, args []any, got, want []string, scans bool, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	if len(got) != len(want) {
+		return fmt.Sprintf("s4ql gives %v rows, %q, and SQLite %v, %q", len(got), got, len(want), want)
+	}
+	var by []string
+	for _, c := range sel.OrderBy {
+		term := stmttest.Quote(c.Name.Value)
+		if c.Descending {
+			term += " desc"
+		}
+		by = append(by, term)
+	}
+	orderBy := ""
+	if by != nil {
+		orderBy = " order by " + strings.Join(by, ", ")
+	}
+	src, bound := stmttest.SelectText(sel, args, orderBy)
+	all := run(tb, o, callQuery, src, [][]any{bound}, mattnText)
+	if all.failed != "" {
+		tb.Fatalf("%q: SQLite gives %v", src, all)
+	}
+	rows := all.rows
+	if scans {
+		rows = all.pairs()
+	}
+	ranks := make([]string, len(rows))
+	if by != nil {
+		text, _ := stmttest.SelectText(&stmt.Select{Table: sel.Table, Where: sel.Where}, args, orderBy)
+		rest, ok := strings.CutPrefix(text, "select *")
+		if !ok {
+			tb.Fatalf("%q does not start with select *", text)
+		}
+		rankSrc := "select dense_rank() over (" + strings.TrimPrefix(orderBy, " ") + ")" + rest
+		ranked := run(tb, o, callQuery, rankSrc, [][]any{bound}, mattnText)
+		if ranked.failed != "" || len(ranked.rows) != len(rows) {
+			tb.Fatalf("%q: SQLite gives %v, for %v rows", rankSrc, ranked, len(rows))
+		}
+		ranks = ranked.rows
+	}
+	if len(got) > len(rows) {
+		return fmt.Sprintf("s4ql gives %v rows, and the select without its LIMIT has %v in SQLite", len(got), len(rows))
+	}
+	for start := 0; start < len(got); {
+		end := start
+		left := map[string]int{}
+		for end < len(rows) && ranks[end] == ranks[start] {
+			left[rows[end]]++
+			end++
+		}
+		for n := start; n < min(end, len(got)); n++ {
+			if left[got[n]]--; left[got[n]] < 0 {
+				return fmt.Sprintf("s4ql gives the row %v at the place %v, where SQLite has the rows %q; s4ql's rows are %q", got[n], n, rows[start:end], got)
+			}
+		}
+		start = end
+	}
+	return ""
 }
 
 // checkQuoted s4ql's outcome got of src, which holds the statement s, run where SQLite runs on o,
@@ -1682,15 +1793,6 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 	tb := p.tb
 	tb.Helper()
 	s, err := stmt.Check(src)
-	if sel, ok := s.(*stmt.Select); ok && (sel.OrderBy != nil || sel.Limited()) {
-		// A select with ORDER BY or LIMIT, of slice 13, which the pass supports, the engine refuses as
-		// not supported until it runs it, with the "not supported" that the pass gave before, when it
-		// runs; Prepare checks the text with the pass alone, and takes it.
-		if !strings.HasPrefix(got.err, "s4ql: not supported: ORDER BY clause ") && !strings.HasPrefix(got.err, "s4ql: not supported: LIMIT clause ") {
-			return fmt.Sprintf("%q: s4ql gives %v, where the engine refuses ORDER BY and LIMIT", src, got)
-		}
-		return ""
-	}
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got, o)
 	}
@@ -1850,7 +1952,7 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 		}
 		table = s.Table
 	case *stmt.Select:
-		if s.Where == nil {
+		if s.Where == nil && s.Limit.Parameter == 0 {
 			return ""
 		}
 		table = s.Table
@@ -1876,7 +1978,10 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 	}
 	switch s := s.(type) {
 	case *stmt.Select:
-		return stmttest.ConditionRule(name, columns, s, bound)
+		if rule := stmttest.ConditionRule(name, columns, s, bound); rule != "" {
+			return rule
+		}
+		return limitRefusal(columns, s, bound)
 	case *stmt.Delete:
 		return stmttest.DeleteRule(name, columns, s, bound)
 	case *stmt.Update:
@@ -1897,6 +2002,41 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 		})
 	}
 	return stmttest.TypeRule(name, columns, s.(*stmt.Insert), bound)
+}
+
+// limitRefusal of the select s of the table with the columns, in the order of the table, with the
+// arguments args, each as SQLite binds it: the engine's "not supported" of the argument of its
+// LIMIT, if that is a parameter whose argument is no integer from 0, which the engine gives after
+// SQLite's errors of the names, also those of ORDER BY, or "". SQLite would convert a real or text
+// that holds an integer, refuse the others with `datatype mismatch`, and read a negative integer as
+// no limit.
+func limitRefusal(columns []stmttest.TableColumn, s *stmt.Select, args []any) string {
+	if s.Limit.Parameter == 0 || len(args) != s.Parameters() {
+		return ""
+	}
+	if _, missing := stmttest.MissingColumn(columns, s); missing ||
+		slices.ContainsFunc(s.OrderBy, func(c stmt.OrderColumn) bool { return stmttest.ColumnOf(columns, c.Name) < 0 }) {
+		return ""
+	}
+	var which string
+	switch v := args[s.Limit.Parameter-1].(type) {
+	case int64:
+		if v >= 0 {
+			return ""
+		}
+		which = "a negative integer"
+	case nil:
+		which = "NULL"
+	case float64:
+		which = "a real"
+	case string:
+		which = "text"
+	case []byte:
+		which = "a blob"
+	default:
+		return ""
+	}
+	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", s.Limit.Parameter, which)
 }
 
 // columnsIn of the table with the name, as SQLite compares names, in SQLite on o, in the order of
@@ -2272,9 +2412,10 @@ var sequences = map[string][]step{
 		{callExecArgument, "drop table", "exec with an argument: exec failed with 1/1: incomplete input"},
 		{callExecArgument, "selec", `exec with an argument: exec failed with 1/1: near "selec": syntax error`},
 		{callExecArgument, "select v1 from t1 where", "exec with an argument: exec failed with 1/1: incomplete input"},
-		{callExecArgument, "select * from t1 order by v1", "exec with an argument: exec failed with s4ql: not supported: ORDER BY clause (at offset 17)"},
+		{callExecArgument, "select * from t1 group by v1", "exec with an argument: exec failed with s4ql: not supported: GROUP BY clause (at offset 17)"},
 		{callExecArgument, "select * from t1 where v1 = 1 or v1 = 2", "exec with an argument: exec failed with s4ql: not supported: OR (at offset 30)"},
 		{callExecArgument, "select * from t1 where v1 = 1", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
+		{callExecArgument, "select * from t1 order by v1 limit 1", "exec with an argument: exec failed with s4ql: wrong number of arguments: 1 for a statement with 0 parameters"},
 		{callExecArgument, "insert into t1 (v1) values (? ?)", `exec with an argument: exec failed with 1/1: near "?": syntax error`},
 		{callExecArgument, "insert into t1 (v1) values (?)", "exec with an argument: exec failed with 1/1: no such table: t1"},
 		{callExecArgument, " ; -- nothing", "exec with an argument: exec failed with s4ql: not supported: a text that holds no statement"},
@@ -2316,6 +2457,46 @@ var sequences = map[string][]step{
 		{callQuery, "select v1 from t1 where v1 > 2", `query: columns "v1" of types "INT", rows ["int64:3"] ["int64:4"]`},
 		{callRollback, "", "rollback"},
 		{callQuery, "select v1 from t1 where v1 > 2", `query: columns "v1" of types "INT", rows ["int64:3"]`},
+	},
+	"selects with ORDER BY and LIMIT, with ties, through each call, in transactions, and with rows left open": {
+		// The outcomes hold the rows of a query in the order of their texts, so "" leaves their order,
+		// and which rows that tie a LIMIT keeps, to the comparison with SQLite.
+		{callExec, t4, "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t4 values (1, 'a', 1.5, null)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (2, null, 1.5, 3)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (3, 'a', 0.5, 3)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (4, 'b', 2.5, null)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (5, null, 0.5, 1)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t4 values (6, 'a', -0.0, 1)", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select * from t4 order by v2, v3 desc", ""},
+		{callQuery, "select v1, v2 from t4 order by v4 desc, v1", ""},
+		{callQuery, "select v1 from t4 order by v2 limit 3", ""},
+		{callQuery, "select v1 from t4 limit 2", ""},
+		{callQuery, "select v1 from t4 order by v1 desc limit 0", `query: columns "v1" of types "INT", rows `},
+		{callQueryRow, "select v1 from t4 order by v3 desc", `query row: row ["int64:4"]`},
+		{callQueryRow, "select v2 from t4 order by v2 desc limit 1", `query row: row ["string:b"]`},
+		{callQueryRow, "select v1 from t4 order by v4 limit 0", "query row: scan failed with no rows"},
+		{callQueryRow, "select v1 from t4 order by v2", ""},
+		{callQueryArgument, "select v1 from t4 order by v3 limit ?", `query with an argument: columns "v1" of types "INT", rows ["int64:6"]`},
+		{callPrepareQuery, "select v1 from t4 where v4 is not null order by v4, v1 desc limit 100", ""},
+		{callExecArgument, "select v1 from t4 limit ?", ""},
+		{callPrepareExecRuns, "select v1 from t4 order by v2 limit ?", ""},
+		{callQuery, "select v1 from t4 order by x", "query: query failed with 1/1: no such column: x"},
+		{callPrepareQuery, "select v1 from t4 order by v2, nope limit 1", "prepare, query: query failed with 1/1: no such column: nope"},
+		{callBegin, "", "begin"},
+		{callExec, "insert into t4 values (7, 'a', 9.5, 2)", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select v1 from t4 order by v2 limit 4", ""},
+		{callQueryOpen, "select v1 from t4 order by v2 limit 4", ""},
+		{callQuery, "select * from t4 order by v3 desc limit 2", ""},
+		{callQueryOpen, "select v1 from t4 limit 3", ""},
+		{callStmtQuery, "select v1, v3 from t4 order by v3 limit 3", ""},
+		{callCommit, "", "commit"},
+		{callBeginReadOnly, "", "begin read-only"},
+		{callQueryRow, "select v1 from t4 order by v3 desc, v1", `query row: row ["int64:7"]`},
+		{callStmtQuery, "select v1, v3 from t4 order by v3 limit 3", ""},
+		{callQueryOpen, "select v1 from t4 order by v2 desc limit 2", ""},
+		{callBeside, "select v1 from t4 order by v4 desc limit 3", ""},
+		{callRollback, "", "rollback"},
 	},
 	"a prepared statement with a parameter, run several times, and a query with an argument": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
@@ -3014,6 +3195,45 @@ func TestPair(t *testing.T) {
 		_, err = c.ExecContext(t.Context(), "insert into t1 (v1) values (1)")
 		is.Equal(t, "5/5: database is locked", mattnText(t, err))
 		p.close()
+	})
+
+	t.Run("should take the engine's refusal of an argument of LIMIT that is no integer from 0 by the rule, after the errors of the names, and run one that is", func(t *testing.T) {
+		w := newWorld(t)
+		for _, pinned := range []bool{true, false} {
+			p := newPair(t, w, pinned, nil)
+			for _, src := range []string{t4, "insert into t4 values (1, 'a', 1.5, null)", "insert into t4 values (2, null, 0.5, 3)", "insert into t4 values (3, 'a', 0.5, 3)"} {
+				_, failure := p.step(src, callExec, false)
+				is.Equal(t, "", failure)
+			}
+			for _, c := range []struct {
+				src  string
+				args []any
+				want string
+			}{
+				{src: "select v1 from t4 order by v2 limit ?", args: []any{nil}, want: "NULL"},
+				{src: "select * from t4 limit ?", args: []any{2.0}, want: "a real"},
+				{src: "select v1 from t4 order by v3 desc limit ?", args: []any{"2"}, want: "text"},
+				{src: "select v1 from t4 order by v3 desc limit ?", args: []any{[]byte("2")}, want: "a blob"},
+				{src: "select v1 from t4 where v1 > ? order by v4 limit ?", args: []any{int64(0), int64(-1)}, want: "a negative integer"},
+				{src: "select v1 from t4 where v1 > ? order by v4 limit ?", args: []any{int64(0), int(-2)}, want: "a negative integer"},
+				// The errors of the names and the type of a condition come first.
+				{src: "select v1 from t4 order by x limit ?", args: []any{nil}},
+				{src: "select x from t4 order by v1 limit ?", args: []any{2.0}},
+				{src: "select v1 from t4 where v1 > ? limit ?", args: []any{"a", nil}},
+				// An integer from 0 runs.
+				{src: "select v1 from t4 order by v3, v1 desc limit ?", args: []any{int64(2)}},
+				{src: "select v1 from t4 where v1 > ? order by v2 desc limit ?", args: []any{int64(1), uint8(0)}},
+			} {
+				got, failure := p.stepRuns(c.src, callQuery, false, [][]any{c.args})
+				is.Equal(t, "", failure, c.src)
+				if c.want != "" {
+					is.Equal(t, fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", len(c.args), c.want), got.err, c.src)
+				} else {
+					is.True(t, !strings.Contains(got.err, "for LIMIT"), c.src, got.err)
+				}
+			}
+			p.close()
+		}
 	})
 }
 

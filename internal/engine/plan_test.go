@@ -52,6 +52,13 @@ func TestNewPlan(t *testing.T) {
 		{src: `DROP INDEX "I 1"`, want: "drop index \"I 1\"\n"},
 		// A condition with its value on the left is the condition with its column first.
 		{src: "select v1 from t1 where 1 < v1 and ? >= v2 and null = v3 and v2 = ?", want: "query\n  project v1\n    filter v1 > 1 and v2 <= ?1 and v3 = null and v2 = ?2\n      scan t1\n"},
+		// The order is over the filter, and the limit over the order, with the parameter of LIMIT
+		// numbered after those of WHERE.
+		{src: "select v1, v2 from t1 order by v2 desc, v1 limit 10", want: "query\n  project v1, v2\n    limit 10\n      order by v2 desc, v1\n        scan t1\n"},
+		{src: "select v1 from t1 where v2 > ? order by v1 limit ?", want: "query\n  project v1\n    limit ?2\n      order by v1\n        filter v2 > ?1\n          scan t1\n"},
+		{src: `select * from t1 order by "V1" ASC, v2 DESC`, want: "query\n  project *\n    order by \"V1\", v2 desc\n      scan t1\n"},
+		{src: "select * from t1 limit 0", want: "query\n  project *\n    limit 0\n      scan t1\n"},
+		{src: "select v1 from t1 where v1 is null limit 9223372036854775807", want: "query\n  project v1\n    limit 9223372036854775807\n      filter v1 IS NULL\n        scan t1\n"},
 		{src: "update t1 set v1 = ? where ? <> v2", want: "update t1 set v1 = ?1\n  filter v2 != ?2\n    scan t1\n"},
 		{src: "create table t (k int default - /* c */ 1 primary key, a integer not null default 00012, b real default .5, c real default -0.0, d text default 'it''s', e blob default X'aBcD', f int default NULL, g text not null default null, h int) strict, without rowid",
 			want: "create table t (k INT DEFAULT -1, a INTEGER DEFAULT 12, b REAL NULL DEFAULT 0.5, c REAL NULL DEFAULT -0.0, d TEXT NULL DEFAULT 'it''s', e BLOB NULL DEFAULT x'abcd', f INT NULL DEFAULT null, g TEXT DEFAULT null, h INT NULL, primary key (k))\n"},

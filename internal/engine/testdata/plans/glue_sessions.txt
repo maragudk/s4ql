@@ -27,3 +27,14 @@ access: index sessions_expiry_idx (expiry, token), bounds 1763640000.0 <= expiry
 update sessions set expiry = ? where token = ?
 args: 1763650000.5, 'abc'
 access: get, token = 'abc'
+
+## the sessions that expire first
+select token from sessions order by expiry limit 10
+access: index sessions_expiry_idx (expiry, token)
+order: delivered, forward
+
+## the sessions that expire last
+select token from sessions where expiry > ? order by expiry desc limit ?
+args: 1763640000.5, 10
+access: index sessions_expiry_idx (expiry, token), bounds 1763640000.5 < expiry
+order: delivered, backward
