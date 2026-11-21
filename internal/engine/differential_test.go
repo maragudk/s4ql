@@ -3484,6 +3484,54 @@ func TestPair_recordSlips(t *testing.T) {
 	}
 }
 
+func TestPair_sortTooBig(t *testing.T) {
+	// The measure of the engine builder of slice 13, in docs/todo/slice-13.md: under a length limit of
+	// 1,000 bytes, SQLite refuses a select that it sorts where the record of what it sorts of the
+	// longest row that both take is longer than the limit, with a real that holds an integer at 8
+	// bytes.
+	setup := []string{
+		"create table l (k int primary key, a text, b text, c real, d real) strict, without rowid",
+		"insert into l values (1, '', '" + strings.Repeat("x", 990) + "', 4.0, 5.0)",
+	}
+	newSetUp := func(t *testing.T) (*pair, tally) {
+		t.Helper()
+		y := tally{}
+		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), y)
+		for _, src := range setup {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		return p, y
+	}
+
+	t.Run("should excuse a sorted select that SQLite refuses for the length of what it sorts, and count it", func(t *testing.T) {
+		p, y := newSetUp(t)
+		for _, src := range []string{"select * from l order by b", "select b from l order by c", "select * from l order by a limit 1"} {
+			is.Equal(t, tooBig, p.o.run(t, src).err, src)
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Query: true, Supported: true}), src)
+		}
+		is.Equal(t, 3, y["excused: "+excusedSortTooBig])
+	})
+
+	t.Run("should excuse nothing where SQLite gives the rows", func(t *testing.T) {
+		p, y := newSetUp(t)
+		for _, src := range []string{"select k from l order by b", "select * from l order by k desc"} {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Query: true, Supported: true}), src)
+		}
+		is.Equal(t, 0, y["excused: "+excusedSortTooBig])
+	})
+
+	t.Run("should not excuse rows that are not SQLite's without the limit, nor a select without ORDER BY", func(t *testing.T) {
+		p, _ := newSetUp(t)
+		got := p.i.queryValues("select * from l order by b", nil)
+		is.Equal(t, "", got.err)
+		is.True(t, p.sortTooBig("select * from l order by b", nil, got))
+		wrong := got
+		wrong.rows = []string{strings.Replace(got.rows[0], "1", "2", 1)}
+		is.True(t, !p.sortTooBig("select * from l order by b", nil, wrong))
+		is.True(t, !p.sortTooBig("select * from l", nil, p.i.queryValues("select * from l", nil)))
+	})
+}
+
 func TestPair_orderBy(t *testing.T) {
 	// run the calls on the pair, each of which must give what SQLite or s4ql's rule gives.
 	run := func(t *testing.T, p *pair, calls []stmttest.Call) {

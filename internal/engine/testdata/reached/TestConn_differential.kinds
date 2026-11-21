@@ -55,3 +55,12 @@
 # and a value on the left on a table that a create table if not exists found.
 2	reached: insert that leaves out a column with a default that an index holds ok
 16	reached: value on the left on a table that a create table if not exists found
+# The kinds of the ORDER BY and LIMIT of slice 13, from a third of their totals on 2026-11-21.
+7	reached: ORDER BY that gives rows in a write transaction after a change of rows
+92	reached: select without ORDER BY whose rows came in the order of the key of its access
+105	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+7	reached: chosen every row, sorted
+167	reached: path that sorts
+46	reached: path that delivers the order
+3	reached: LIMIT that cuts
+8	reached: LIMIT by an argument ok
