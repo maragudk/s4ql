@@ -2729,8 +2729,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// so does the replay of the log into an empty cache, which writes its rows. No check of a value
 		// that is not NULL finds it: the zero value has the type of its column, and no column that
 		// takes NULL is the key. An update or a delete whose WHERE meets the zero value changes another
-		// number of rows than in SQLite, and then the statements after it can differ.
-		{"zeroLeftOut", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
+		// number of rows than in SQLite, and then the statements after it can differ. Since the shapes
+		// of the sequence have defaults, on 2026-11-21, the bug meets only a column without one, and
+		// the default workload found it in 6 of the first 200 seeds, where it found it in 39; the hammer
+		// workload, which runs more statements, finds it in 18, 15 of them by its own violation.
+		{"zeroLeftOut", hammerWorkload, "hammer", []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as some engines
