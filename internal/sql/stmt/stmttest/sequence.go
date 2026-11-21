@@ -117,7 +117,8 @@ func (q *Sequence) Profile() *Profile {
 
 // Stream of random numbers of the name for the test that runs the sequence, such as the stream of
 // its transactions or of its restarts: the same numbers for the same seed and name, whatever the
-// sequence and the other streams draw, so that what a test draws for itself moves no statement.
+// sequence and the other streams draw, so that what a test draws for itself moves no statement. Each
+// call gives the stream from its first number, so a test takes a stream once and keeps it.
 func (q *Sequence) Stream(name string) Rand {
 	return newStream(q.seed, "test", name)
 }
