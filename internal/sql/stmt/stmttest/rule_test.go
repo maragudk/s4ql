@@ -350,6 +350,10 @@ func TestWhereCases(t *testing.T) {
 		{src: "select * from t where k >= 3 and k <= 3", want: "[>= on the key comparison with literal integer <= on the key comparison with literal integer WHERE that tests a column more than once WHERE that reads a scan between two bounds]", access: "a scan between two bounds"},
 		{src: "select * from t where k < 3 and k >= 3", want: "[< on the key comparison with literal integer >= on the key comparison with literal integer WHERE that tests a column more than once WHERE with contradicting conditions WHERE that reads a scan between two bounds that hold no key]", access: "a scan between two bounds that hold no key"},
 		{src: "select * from t where a is null and a is not null", want: "[IS NULL on another column IS NOT NULL on another column WHERE that tests a column more than once WHERE with contradicting conditions WHERE that reads a scan of every row]", access: "a scan of every row"},
+		// SQLite's error of a column of ORDER BY that the table does not have comes before the rule of
+		// the type of a value, and a real and an integer of the key compare by their value.
+		{src: "select * from t where k > 1.0 and ? >= k order by x", args: []any{int64(1)}, want: "[> on the key comparison with literal real <= on the key comparison with argument int64 WHERE that tests a column more than once WHERE with contradicting conditions WHERE that reads ]"},
+		{src: "select * from t where k < 9007199254740993 and k >= 9007199254740992.0 order by x", want: "[< on the key comparison with literal integer >= on the key comparison with literal real WHERE that tests a column more than once WHERE that reads ]"},
 		{src: "select * from t where b != 1.5 and k is not null", want: "[!= on another column comparison with literal real IS NOT NULL on the key WHERE that reads a scan of every row]", access: "a scan of every row"},
 		// A comparison with NULL, and IS NULL of the key, are never true.
 		{src: "select * from t where k > 1 and a = ?", args: []any{nil}, want: "[> on the key comparison with literal integer = on another column comparison with argument nil WHERE that reads no row]", access: "no row"},
@@ -457,7 +461,98 @@ func TestChosenAccess(t *testing.T) {
 		})
 	}
 
+	t.Run("should choose for an ORDER BY and a LIMIT as the agreed rules of slice 13 rank the candidates", func(t *testing.T) {
+		// The table r (k int primary key, a int not null, b text, c real, d blob) of the README of the
+		// engine, with the indexes rk on (k desc), ra on (a), rb on (b), rbc on (b, c desc), and rd on
+		// (d), created in that order, and the cases of its table of examples with ORDER BY.
+		columns := []stmttest.TableColumn{
+			{Name: "k", Type: "INT", PrimaryKey: true},
+			{Name: "a", Type: "INT"},
+			{Name: "b", Type: "TEXT", Nullable: true},
+			{Name: "c", Type: "REAL", Nullable: true},
+			{Name: "d", Type: "BLOB", Nullable: true},
+		}
+		indexes := []stmttest.TableIndex{
+			{Name: "rk", Columns: []stmttest.IndexKeyColumn{{Position: 0, Descending: true}}},
+			{Name: "ra", Columns: []stmttest.IndexKeyColumn{{Position: 1}}},
+			{Name: "rb", Columns: []stmttest.IndexKeyColumn{{Position: 2}}},
+			{Name: "rbc", Columns: []stmttest.IndexKeyColumn{{Position: 2}, {Position: 3, Descending: true}}},
+			{Name: "rd", Columns: []stmttest.IndexKeyColumn{{Position: 4}}},
+		}
+		cases := []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{src: "select * from r order by k", want: "a scan of every row, delivered forward"},
+			{src: "select * from r order by k desc limit 3", want: "a scan of every row, delivered backward"},
+			{src: "select * from r order by a", want: "a scan of the index ra, delivered forward"},
+			{src: "select * from r order by c", want: "a scan of every row, sorted"},
+			{src: "select * from r order by c desc, k limit 5", want: "a scan of every row, sorted"},
+			{src: "select * from r order by b desc", want: "a scan of the index rb, delivered backward"},
+			{src: "select * from r order by b desc, c limit 2", want: "a scan of the index rbc, delivered backward"},
+			{src: "select * from r order by b, c", want: "a scan of every row, sorted"},
+			{src: "select * from r where b = 'x' order by c desc", want: `a scan of the index rbc with 1 pinned []interface {}{"x"}, delivered forward`},
+			{src: "select * from r where b is null order by b desc, c, k desc", want: "a scan of the index rbc with 1 pinned []interface {}{interface {}(nil)}, delivered backward"},
+			{src: "select * from r where k > 3 order by a", want: "a scan from a lower bound (3, sorted"},
+			{src: "select * from r where k > 3 order by a limit 1", want: "a scan of the index ra, delivered forward"},
+			{src: "select * from r where a >= ? order by a desc limit ?", args: []any{int64(1), int64(2)}, want: "a scan of the index ra from a lower bound [1, delivered backward"},
+			{src: "select * from r where b = 'x' order by a limit 1", want: `a scan of the index rb with 1 pinned []interface {}{"x"}, sorted`},
+			{src: "select * from r order by a, k, b", want: "a scan of every row, sorted"},
+			{src: "select * from r where k = 3 order by c limit 1", want: "a get of one key []interface {}{3}, delivered forward"},
+			{src: "select * from r where c > null order by d", want: "no row, delivered forward"},
+			{src: "select * from r where b = 'x' and c > 1.5 limit 1", want: `a scan of the index rbc with 1 pinned []interface {}{"x"} from a lower bound (1.5`},
+			// A pinned column is taken out of the key wherever it is, and out of the ORDER BY.
+			{src: "select * from r where c = 1.5 order by b", want: "a scan of the index rb, delivered forward"},
+			{src: "select * from r where a = 1 order by a desc, k desc", want: "a scan of the index ra with 1 pinned []interface {}{1}, delivered backward"},
+			{src: "select * from r where a = 1 order by a desc", want: "a scan of the index ra with 1 pinned []interface {}{1}, delivered forward"},
+			// IS NULL of a column that does not take NULL pins nothing.
+			{src: "select * from r where a is null order by a desc, k", want: "a scan of every row, sorted"},
+			// A LIMIT without ORDER BY changes nothing in the choice.
+			{src: "select * from r where k > 3 limit 1", want: "a scan from a lower bound (3"},
+		}
+		for _, c := range cases {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			a, ok := stmttest.ChosenAccess(columns, indexes, s.(*stmt.Select), c.args)
+			is.True(t, ok, c.src)
+			is.Equal(t, c.want, a.String(), c.src)
+		}
+	})
+
+	t.Run("should choose goqite's index for its receive with a LIMIT, and the index of the range without one", func(t *testing.T) {
+		columns := []stmttest.TableColumn{
+			{Name: "id", Type: "TEXT", PrimaryKey: true},
+			{Name: "queue", Type: "TEXT"},
+			{Name: "timeout", Type: "TEXT"},
+			{Name: "received", Type: "INT"},
+			{Name: "priority", Type: "INT"},
+			{Name: "created", Type: "TEXT"},
+		}
+		indexes := []stmttest.TableIndex{
+			{Name: "goqite_queue_priority_created_idx", Columns: []stmttest.IndexKeyColumn{{Position: 1}, {Position: 4, Descending: true}, {Position: 5}}},
+			{Name: "goqite_queue_timeout", Columns: []stmttest.IndexKeyColumn{{Position: 1}, {Position: 2}}},
+		}
+		args := []any{"q", "t", int64(3)}
+		for src, want := range map[string]string{
+			"select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1": `a scan of the index goqite_queue_priority_created_idx with 1 pinned []interface {}{"q"}, delivered forward`,
+			"select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created":         `a scan of the index goqite_queue_timeout with 1 pinned []interface {}{"q"} to an upper bound "t"], sorted`,
+		} {
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			a, ok := stmttest.ChosenAccess(columns, indexes, s.(*stmt.Select), args)
+			is.True(t, ok, src)
+			is.Equal(t, want, a.String(), src)
+		}
+	})
+
 	t.Run("should report false for a select that SQLite or s4ql refuses", func(t *testing.T) {
+		for src, args := range map[string][]any{"select * from t order by x": nil, "select * from t order by a limit ?": {int64(-1)}, "select * from t where a = 1 limit ?": {"2"}} {
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			_, ok := stmttest.ChosenAccess(columns, indexes, s.(*stmt.Select), args)
+			is.True(t, !ok, src)
+		}
 		for _, src := range []string{"select * from t where x = 1", "select * from t where a = 'x'", "select * from t where a = ?"} {
 			s, err := stmt.Check(src)
 			is.NotError(t, err)

@@ -403,3 +403,61 @@
 # and a value on the left on a table that a create table if not exists found.
 15	reached: insert that leaves out a column with a default that an index holds ok
 48	reached: value on the left on a table that a create table if not exists found
+# The kinds of the ORDER BY and LIMIT of slice 13, from a third of their totals on 2026-11-21.
+25	reached: chosen every row, delivered forward
+21	reached: chosen every row, delivered backward
+76	reached: chosen every row, sorted
+15	reached: chosen every row of a table of several indexes, sorted
+13	reached: chosen an index with 0 pinned, delivered forward
+13	reached: chosen an index with 0 pinned, delivered backward
+11	reached: chosen an index with 0 pinned of a table of several indexes, delivered forward
+13	reached: chosen an index with 0 pinned of a table of several indexes, delivered backward
+4	reached: chosen an index with 1 pinned, delivered forward
+4	reached: chosen an index with 1 pinned and a range, delivered forward
+6	reached: chosen the primary key with 0 pinned and a range, delivered forward
+6	reached: chosen the primary key with 0 pinned and a range, delivered backward
+10	reached: chosen the primary key with 0 pinned and a range, sorted
+10	reached: chosen a get, delivered forward
+8	reached: chosen no row, delivered forward
+204	reached: path that delivers the order
+881	reached: path that sorts
+308	reached: ORDER BY run by every path
+180	reached: LIMIT run by every path
+150	reached: ORDER BY of 1 columns ok
+103	reached: ORDER BY of 2 columns ok
+55	reached: ORDER BY of 3 columns ok
+120	reached: ORDER BY ascending ok
+110	reached: ORDER BY descending ok
+78	reached: ORDER BY of mixed directions ok
+140	reached: ORDER BY without WHERE ok
+87	reached: ORDER BY of a column of type INT ok
+108	reached: ORDER BY of a column of type INTEGER ok
+120	reached: ORDER BY of a column of type REAL ok
+111	reached: ORDER BY of a column of type TEXT ok
+94	reached: ORDER BY of a column of type BLOB ok
+155	reached: ORDER BY of a column that takes NULL ok
+38	reached: ORDER BY over rows with NULL in its columns
+70	reached: ORDER BY of a column that the WHERE pins ok
+27	reached: ORDER BY of a column that the table does not have no such column
+10	reached: ORDER BY or LIMIT with arguments that s4ql refuses wrong number of arguments
+24	reached: LIMIT 0
+53	reached: LIMIT above the number of rows
+8	reached: LIMIT of the number of rows
+17	reached: LIMIT that cuts
+1	reached: LIMIT that cuts a group of rows that tie
+38	reached: LIMIT by an argument ok
+12	reached: LIMIT with an argument that is a negative integer not supported
+9	reached: LIMIT with an argument that is a real not supported
+11	reached: LIMIT with an argument that is text not supported
+5	reached: LIMIT with an argument that is a blob not supported
+7	reached: LIMIT with an argument that is NULL not supported
+9	reached: ORDER BY with LIMIT read by an index that delivers the order beside one that narrows a range
+180	reached: select without ORDER BY whose rows came in the order of the key of its access
+175	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+2	reached: sorted select whose rows that tie came in the order of the primary key
+4	reached: sorted select whose rows that tie came in the reverse of the order of the primary key
+4	reached: delivered select whose rows that tie came in the order of the key of its access
+1505	reached: select read by the access that the model chooses
+30	reached: ORDER BY delivered around a pinned column
+5	reached: ORDER BY of the key of an index with a gap, over rows that the gap orders
+6	reached: ORDER BY with LIMIT read by an index that delivers the order with a pin beside an index that narrows a range

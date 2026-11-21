@@ -171,7 +171,7 @@ func (q ordered) compare(t testing.TB, o *oracle, got, want answer) string {
 	if q.by != "" {
 		all += " order by " + q.by
 	}
-	ranked := o.run(t, all, args...)
+	ranked := o.unlimited(t, all, args...)
 	if ranked.err != "" {
 		t.Fatalf("%v: SQLite gives %v", all, ranked.err)
 	}

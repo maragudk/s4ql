@@ -440,3 +440,13 @@
 # and a value on the left on a table that a create table if not exists found.
 6	reached: insert that leaves out a column with a default that an index holds ok
 20	reached: value on the left on a table that a create table if not exists found
+# The kinds of the ORDER BY and LIMIT of slice 13 that the driver can tell, from a third of their
+# totals on 2026-11-21.
+19	reached: ORDER BY that gives two rows or more
+4	reached: LIMIT that cuts
+12	reached: LIMIT by an argument ok
+7	reached: LIMIT with an argument that is a negative integer not supported
+3	reached: LIMIT with an argument that is a real not supported
+5	reached: LIMIT with an argument that is text not supported
+3	reached: LIMIT with an argument that is NULL not supported
+2	reached: LIMIT with an argument that is a blob not supported
