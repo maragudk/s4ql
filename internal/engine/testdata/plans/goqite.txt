@@ -8,6 +8,11 @@ select id from goqite where queue = ? and timeout <= ? and received < ?
 args: 'default', '2026-11-20T12:00:00.000Z', 3
 access: every row
 
+## receive as goqite writes it
+select id from goqite where queue = ? and ? >= timeout and received < ?
+args: 'default', '2026-11-20T12:00:00.000Z', 3
+access: every row
+
 ## by id
 select body from goqite where id = ?
 args: 'm_0001'

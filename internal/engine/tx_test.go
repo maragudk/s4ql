@@ -526,6 +526,21 @@ func TestConn_differential(t *testing.T) {
 			"insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed in a write transaction": 1,
 			"create table with a default on the key attempt to write a readonly database in a read-only transaction":                      11,
 			"insert that leaves out a column with a default of integer attempt to write a readonly database in a read-only transaction":   3,
+			// The statements with a value on the left of slice 12 in transactions, which [pair.reach]
+			// counts again by the kind of the transaction, a third of what the run gave on 2026-11-21,
+			// or 1: in a write transaction, a select that finds rows and one that finds none, an update
+			// and a delete that change rows, and an update refused for a value of another type; in a
+			// read-only one, a select that finds rows and one that finds none, and the refusal of an
+			// update and a delete.
+			"select with a value on the left ok, rows found in a write transaction":                           1,
+			"select with a value on the left ok, no row found in a write transaction":                         3,
+			"update with a value on the left ok, rows changed in a write transaction":                         1,
+			"delete with a value on the left ok, rows changed in a write transaction":                         1,
+			"update with a value on the left a value of another type in a write transaction":                  3,
+			"select with a value on the left ok, rows found in a read-only transaction":                       1,
+			"select with a value on the left ok, no row found in a read-only transaction":                     1,
+			"update with a value on the left attempt to write a readonly database in a read-only transaction": 2,
+			"delete with a value on the left attempt to write a readonly database in a read-only transaction": 2,
 		} {
 			if y["reached: "+kind] < least {
 				t.Errorf("the run reaches %q %v times, and at least %v were expected", kind, y["reached: "+kind], least)

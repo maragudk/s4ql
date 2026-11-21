@@ -185,6 +185,10 @@ type condition struct {
 	position int
 	op       stmt.Operator
 	value    *s4qlpb.Value
+	// valueFirst reports whether the statement writes the value on the left, as [Condition] says;
+	// op is the operator turned round then. It is read only by the planted bug unturnedBound and by
+	// tests: op is never to be turned round again from it.
+	valueFirst bool
 }
 
 func (f *filter) columns() []Column {
@@ -762,7 +766,7 @@ func (b build) conditions(f *Filter, src source) (*scan, []condition, error) {
 		default:
 			return nil, nil, internalError("a condition with the operator %v", int(c.Operator))
 		}
-		conditions[i] = condition{position: position, op: c.Operator}
+		conditions[i] = condition{position: position, op: c.Operator, valueFirst: c.ValueFirst}
 	}
 	if missing != nil {
 		return nil, nil, noSuchResultColumn(*missing)

@@ -71,6 +71,11 @@ type bugs struct {
 	// replaceExisting makes a create table with IF NOT EXISTS of a table that exists drop that table
 	// and create the table of the statement, where SQLite does nothing.
 	replaceExisting bool
+	// unturnedBound makes the fitting of the conditions to the key of an index or of the primary key
+	// bound a column by a condition with its value on the left, of slice 12, with the operator as the
+	// text writes it, and not turned round, so that `5 < a` bounds a from above, and the scan reads
+	// the rows below 5, of which the filter above it gives none.
+	unturnedBound bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.

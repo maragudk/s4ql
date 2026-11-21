@@ -275,6 +275,15 @@ func TestUpdateRule(t *testing.T) {
 		is.Equal(t, `select 1 from "t" limit 1`, src)
 		is.Equal(t, 0, len(bound))
 	})
+
+	t.Run("should write a condition with its value on the left so, with the operator as the text writes it, and bind the values in the order of the text", func(t *testing.T) {
+		s, err := stmt.Check(`select * from t where ? < k and a = ? and 1.5 >= b and x'01' <> c and null = a`)
+		is.NotError(t, err)
+		sel := s.(*stmt.Select)
+		src, bound := stmttest.SelectText(sel, []any{int64(1), "x"}, " order by k")
+		is.Equal(t, `select * from "t" where ? < "k" and "a" = ? and ? >= "b" and ? != "c" and ? = "a" order by k`, src)
+		is.Equal(t, `[1 x 1.5 [1] <nil>]`, fmt.Sprint(bound))
+	})
 }
 
 func TestWhereCases(t *testing.T) {
@@ -317,6 +326,10 @@ func TestWhereCases(t *testing.T) {
 		// SQLite's error of the select list comes first, and another number of arguments.
 		{src: "select x from t where y = 1"},
 		{src: "select * from t where k = ?"},
+		// A value on the left is the comparison turned round.
+		{src: "select * from t where 1 <= k and 'x' > a", want: "[>= on the key comparison with literal integer < on another column comparison with literal text WHERE that reads a scan from a lower bound]", access: "a scan from a lower bound"},
+		{src: "select * from t where ? = k", args: []any{int64(1)}, want: "[= on the key comparison with argument int64 WHERE that reads a get of one key]", access: "a get of one key"},
+		{src: "select * from t where 1 = x", want: "[WHERE with a column that the table does not have in a comparison, alone]"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {
@@ -331,6 +344,29 @@ func TestWhereCases(t *testing.T) {
 			if sel.Where != nil {
 				is.Equal(t, c.access, stmttest.KeyAccess(columns, sel, c.args))
 			}
+		})
+	}
+}
+
+func TestValueFirstCases(t *testing.T) {
+	cases := []struct {
+		src  string
+		args []any
+		want string
+	}{
+		{src: "select * from t where k = 1 and a > 'x'", want: "[]"},
+		{src: "select * from t where 1 < k", want: "[value on the left of <]"},
+		{src: "select * from t where 1 = k and ? >= a and b <= 2 and c is null and x'00' != d", args: []any{int64(1)}, want: "[value on the left of = value on the left of >= value on the left of !=]"},
+		{src: "select * from t where null > k and ? <> a", args: []any{nil}, want: "[value on the left of > value on the left compared with NULL value on the left of != value on the left compared with NULL]"},
+		// With too few arguments, whether a parameter is NULL is not known.
+		{src: "select * from t where ? > k", want: "[value on the left of >]"},
+		{src: "select * from t where 5 = nope", want: "[value on the left of =]"},
+	}
+	for _, c := range cases {
+		t.Run(c.src, func(t *testing.T) {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err)
+			is.Equal(t, c.want, fmt.Sprint(stmttest.ValueFirstCases(s.(*stmt.Select), c.args)))
 		})
 	}
 }
@@ -367,6 +403,12 @@ func TestChosenAccess(t *testing.T) {
 		{src: "select * from t where b != 'x'", want: "a scan of every row"},
 		{src: "select * from t where c = null", want: "no row"},
 		{src: "select * from t where k is null and a = 1", want: "no row"},
+		// A value on the left chooses the access of the comparison turned round.
+		{src: "select * from t where 1 = k and 2 = a", want: "a get of one key []interface {}{1}"},
+		{src: "select * from t where 10 = a and 'x' < b", want: `a scan of the index iab with 1 pinned []interface {}{10} from a lower bound ("x"`},
+		{src: "select * from t where ? < k and 1.5 > c", args: []any{int64(3)}, want: "a scan from a lower bound (3"},
+		{src: "select * from t where 1.5 >= c and c > ?", args: []any{0.5}, want: "a scan of the index ic from a lower bound (0.5 to an upper bound 1.5]"},
+		{src: "select * from t where null = c", want: "no row"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {

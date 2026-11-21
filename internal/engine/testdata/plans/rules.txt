@@ -109,3 +109,20 @@ access: index ra (a, k), pins a = 1, bounds k <= 10
 ## a delete of no row
 delete from r where k is null
 access: no row
+
+## a value on the left bounds its column as the operator turned round
+select a from r where 3 < k and 9 >= k
+access: primary key (k), bounds 3 < k <= 9
+
+## a value on the left pins and bounds an index
+select k from r where 'x' = b and ? > c
+args: 9.5
+access: index rbc (b, c desc, k), pins b = 'x', bounds c < 9.5
+
+## a get by a value on the left
+update r set a = 2 where 3 = k
+access: get, k = 3
+
+## no row for null on the left
+delete from r where null <= a
+access: no row
