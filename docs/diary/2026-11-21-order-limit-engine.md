@@ -138,3 +138,80 @@ Three sub-builders work from the branch in worktrees of their own: one on the ge
 
 - The generated checks, by the next builder: the model of `delivers` and of the ranking, planted bugs in them, `Generator.OrderBy` in the sequences, the fuzz targets.
 - What `/docs/todo/performance.md` lists.
+
+## Step 3: The sub-builders' tests, the review, and what it found
+
+**Author:** order-limit-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "6. Driver: `Query` with `order by` and `limit`, with the `limit` as an argument of each Go type the driver passes; `Prepare` accepted such a text already and refused it at the first run: now it runs. Remove the temporary `orderLimitRefusal` (`internal/engine/orderby.go`) and the exceptions the statement pass put into three tests for it [...] 7. [...] Hand tests run a set of shapes through every candidate that can serve them (all five types, null in ordered columns, descending columns, several columns, ties, pins plus order, `limit` 0, 1, some, more than all) and compare with SQLite in order. [...] Finish: `make test`, `make lint`, `make check-browser`, and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` pass; `make test-asan` for the packages whose fuzz tests or binding you changed. Self-review against these requirements."
+**Interpretation:** Merge the three sub-builders' branches, have two reviewers read the whole diff, fix what they find that matters, and run the finish.
+**Inferred intent:** A branch that an independent reviewer can read without finding what a self-review should have found.
+
+### What I did
+
+Merged `origin/main` (the spec's new sentence on rows that tie, and fault tests in `/internal/core/index_test.go`, which conflicted with mine at the end of the file; both sides are kept).
+
+Merged the three sub-builders' branches, and removed their worktrees and branches:
+
+- **The READMEs** (a writer): `/internal/engine/README.md` and `/internal/core/README.md`, section by section. I added the paragraphs on the sub-builders' tests and on the review's fixes afterwards.
+- **The driver** (a builder): `TestOrderBy` in `/conn_test.go`, with an oracle on the binding in `/s4ql_test.go`; the four tests of the root package that used ORDER BY as their statement that is not supported use `group by`; in `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go` the exception of `checkNotSupported` is gone, and `orderedDiffers` and `limitRefusal` compare a select with ORDER BY or LIMIT. The driver itself needed no change.
+- **The engine's generated machinery and the tests through every path** (a builder): in `/internal/engine/differential_test.go`, `orderedOrLimited` is gone, `ordered.compare` is the one comparison in order, `pair.bothWays` compares by the number of rows where a LIMIT may cut, `typeRule` has `limitRule`, `everyPath` runs a `Sort` variant of every path, and `wantPlans` expects the sort row; `TestEngine_orderBy_paths` in `/internal/engine/orderby_test.go` makes 1,948 runs of 107 queries, and `TestPair_orderBy` runs them through `pair.step`.
+
+Had two reviewers read `git diff origin/main...order-limit-engine`, each told that it competes with the other, one on the rule `delivers` and one on the path of a query through the engine and the core. Then fixed:
+
+- `/internal/core/index.go`: `table.sortColumns` selects each column of `Order` as its ordering term, and `conn.step` runs the step in which SQLite sorts under SQLite's largest length limit. `ReadTx.scan` and `Tx.scan` skip the count of the unread rows once the context has ended. The docs say that a scan that pins the whole primary key is not sorted, and what `RowsRead` holds after a panic.
+- `/internal/engine/access.go`: `orderBy.sort` takes the table, and a scan by the primary key that pins the whole key delivers every order.
+- `/internal/core/index_test.go`: two subtests of `TestScanIndex_order`, the longest row that a table takes under a limit of 1,000 bytes sorted by each column, and the statement text and the plan of a scan that pins the whole primary key. The constant `sortStep` is inline.
+- `/internal/engine/export_test.go`: `ChooseOrderedAccess` and `Delivers` are removed, since nothing used them. `checkPlanOf` calls `wantPlans`, and the setup of `TestEngine_orderBy` is a local of the test.
+- `/docs/todo/slice-13.md`: the sort under a length limit, the difference from SQLite that is left, the whole-key scan, the driver's table of arguments, and the exceptions that are gone.
+
+### Why
+
+The sub-builders' tasks were the three pieces that did not depend on each other and that would each have filled a large part of my context: the differential test is 4,400 lines, the READMEs 385 KB.
+
+The fix of the sort has two parts because the bug has two causes. The value of an ordered column was in SQLite's sorter record twice, as `+"c"` and as `"c"`, which fails for a value of more than about half the limit: selecting the term fixes that, for every limit. And a real that holds an integer is 8 bytes in the sorter record and 1 in the table, which fails for a row within a few bytes of the limit: only a larger limit for that one step fixes that. The limit bounds nothing else in the step.
+
+### What worked
+
+- Both reviewers found the sort that failed, independently, with the same statement shape. One reproduced it through the engine (`select * from big order by a` with `a` of 300 bytes and `b` of 600 under a limit of 1,000: `sqlite: string or blob too big (code 18)`), the other with the shell on the statement of the cache.
+- The reviewer of `delivers` ran a throwaway differential of 60 random schemas by 150 queries by about 15 paths through `ordered.differs`, and found no difference.
+- The differential sub-builder planted three bugs for its tests and reverted them: tied rows in the wrong direction, one row too many for a LIMIT, and a delivered order read backward. Its tests caught all three.
+- After the fix, the new subtest of `TestScanIndex_order` passes, and the whole of `TestScanIndex_order` passes in the browser build of core as well, with the spill and the fault of the temporary files (`GOOS=js GOARCH=wasm go test -tags s4ql_browser -exec <the runner of internal/sqlite/browser> -run TestScanIndex_order ./internal/core`).
+- `make test` exit 0, `make lint` 0 issues in every part, `make check-browser` passed, `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` printed `the 4 shards hold each of the 37 fuzz tests of FUZZGROUP 'c' exactly once`, and `FuzzSQL_core` and `FuzzSequence` for 30 s, `FuzzSQL` for 20 s, and `FuzzScanIndex` for 15 s passed on the merged branch. The sub-builder ran each of the 15 fuzz targets of the engine for 30 s.
+- Under the address sanitizer, in the Go image of Docker, since the fuzz targets' machinery and a fuzz seed changed: `make asan-test ASANPKGS="maragu.dev/s4ql/internal/engine maragu.dev/s4ql/internal/core"` gave `ok` for both (304 s and 253 s), and with `ASANPKGS="maragu.dev/s4ql/internal/sqlite/crosscheck/drivercheck maragu.dev/s4ql"` `ok` for both (36 s and 8 s).
+- The short run of the engine's package takes 59 s on this machine, where it took 52 s before the slice, and the new tests of it 4 s.
+- `go test . -count=1` without `-short` fails only `TestOpen_realBucket`, which needs the credentials of a real bucket, and this worktree has none.
+
+### What didn't work
+
+- The first version of the sorted scan, `select * ... order by +"c"`: see above. My own tests had no row near a length limit.
+- With `sortColumns` alone, the new test still failed for the longest row: `Expected nil error, but got "sqlite: string or blob too big (code 18)"`. A throwaway test showed which: with reals of 4.0 and 5.0 the longest text of a row is 990 bytes, and 7 of 8 orders failed; with 4.5 and 5.5 it is 976 bytes, and all 8 passed. So the residue was the reals, and `conn.step` followed.
+- `conn.unread` first gave 0 for a count that failed, inside `conn.scanIndex`, where nothing could handle the error. It moved to the scans of the transactions before the review, in Step 2.
+- `TestForcedAccess_orderBy` had pinned `primary = 1 sorted` for the path `Primary` on `where k = 1 order by b`. SQLite sorts nothing there, so the plan of the cache had no sort row for an access that said sorted. It is `primary = 1 delivered forward` now.
+- `git worktree remove --force` of the differential sub-builder's worktree: `fatal: cannot remove a locked working tree, lock reason: claude agent [...]`, while the agent still had a background task. Removed after it ended.
+
+### What I learned
+
+- SQLite keeps an ORDER BY term that is the same expression as a result column once in its sorter record, and a term that differs from the column by a unary plus twice.
+- SQLite does not sort a statement whose WHERE pins a whole primary key, whatever its ORDER BY, and does sort one that pins the whole key of an index.
+- Under a length limit SQLite refuses its own sorted selects where the sorter record of a row is over the limit: measured, `select * from l order by b` and `select b from l order by c` fail with 18/18 for a row with `b` of 990 bytes and reals of 4.0 and 5.0 under a limit of 1,000, and `select k from l order by b` and `select * from l order by k desc` give the row. The engine gives the row for all of them.
+- SQLite's planner, measured with `explain query plan` on an index `(a, b)`: for `where b = 5 order by a, k` it sorts the last term, so it does not take a pinned column out of the middle of a key, as `delivers` does. The engine's statement to the cache has no `where b = 5`, since the filter is the engine's, and scans in the order of the whole key.
+
+### What was tricky
+
+- Three agents wrote tests at once from one base while I changed the engine under them. The fix of the whole-key scan moved the differential sub-builder's pins (1,955 runs to 1,948), which it re-pinned after merging my branch; I told it of the two fixes by a message.
+- A reviewer that works in the builder's worktree sees uncommitted work: both reported my half-made fix as "someone else editing".
+
+### What warrants review
+
+- `conn.step` in `/internal/core/index.go`: the length limit of the connection is raised for one step and put back, also when the step fails. Between the two calls nothing else runs on the connection.
+- The difference from SQLite that is left under a length limit, in `/docs/todo/slice-13.md`: is "s4ql gives the rows" the right answer, or should the engine model SQLite's sorter record? I think the first, since SQLite's refusal depends on SQLite's plan.
+- `pair.bothWays` compares two instances by the number of rows only where a LIMIT may cut; each instance's rows are still compared with SQLite.
+- The widened rule of `delivers`, as in Step 2.
+
+### Future work
+
+- The generated checks, as in Step 2, and with them an excuse for SQLite's refusal of a sorted select near the length limit, if the generated rows come that near.
+- `Generator.OrderBy` is off in every generated test, and no exception is left for it.

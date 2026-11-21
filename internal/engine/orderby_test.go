@@ -205,29 +205,28 @@ func (q ordered) compare(t testing.TB, o *oracle, got, want answer) string {
 	return ""
 }
 
-// orderSetup is the table of the tests of ORDER BY and LIMIT, with a column of each type, rows that
-// tie in each column but the key, NULL in the columns that take it, and 0.0 and -0.0, and three
-// indexes, of which tac holds a column descending.
-var orderSetup = []string{
-	"create table t (k int primary key, a int not null, b text, c real, d blob) strict, without rowid",
-	"insert into t values (1, 1, 'm', 1.5, x'01')",
-	"insert into t values (2, 2, null, 2.5, x'02')",
-	"insert into t values (3, 0, 'a', null, null)",
-	"insert into t values (4, 1, 'z', 0.5, x'')",
-	"insert into t values (5, 2, 'm', 2.5, x'ff')",
-	"insert into t values (6, 0, null, -0.0, x'00')",
-	"insert into t values (7, 1, 'b', 1.5, null)",
-	"insert into t values (8, 2, 'a', 0.0, x'0100')",
-	"insert into t values (9, 0, 'z', null, x'01')",
-	"insert into t values (10, 1, null, 3.5, x'7f')",
-	"insert into t values (11, 2, 'b', -1.5, x'80')",
-	"insert into t values (12, 0, 'm', 2.5, x'02')",
-	"create index ta on t (a)",
-	"create index tb on t (b)",
-	"create index tac on t (a, c desc)",
-}
-
 func TestEngine_orderBy(t *testing.T) {
+	// orderSetup is the table of the tests of ORDER BY and LIMIT, with a column of each type, rows that
+	// tie in each column but the key, NULL in the columns that take it, and 0.0 and -0.0, and three
+	// indexes, of which tac holds a column descending.
+	orderSetup := []string{
+		"create table t (k int primary key, a int not null, b text, c real, d blob) strict, without rowid",
+		"insert into t values (1, 1, 'm', 1.5, x'01')",
+		"insert into t values (2, 2, null, 2.5, x'02')",
+		"insert into t values (3, 0, 'a', null, null)",
+		"insert into t values (4, 1, 'z', 0.5, x'')",
+		"insert into t values (5, 2, 'm', 2.5, x'ff')",
+		"insert into t values (6, 0, null, -0.0, x'00')",
+		"insert into t values (7, 1, 'b', 1.5, null)",
+		"insert into t values (8, 2, 'a', 0.0, x'0100')",
+		"insert into t values (9, 0, 'z', null, x'01')",
+		"insert into t values (10, 1, null, 3.5, x'7f')",
+		"insert into t values (11, 2, 'b', -1.5, x'80')",
+		"insert into t values (12, 0, 'm', 2.5, x'02')",
+		"create index ta on t (a)",
+		"create index tb on t (b)",
+		"create index tac on t (a, c desc)",
+	}
 	// start an instance and SQLite with the statements of orderSetup.
 	start := func(t *testing.T, options engine.Options) (*instance, *oracle) {
 		t.Helper()
