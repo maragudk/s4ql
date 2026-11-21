@@ -402,6 +402,8 @@ func TestEngine_report(t *testing.T) {
 					_, _ = c.Exec(t.Context(), src)
 				}
 				directions = append(directions, r.events[len(r.events)-1][attrDirection])
+				// Every statement of the transaction reads by an access, which its event names.
+				is.True(t, r.events[len(r.events)-1][attrAccess] != "", src)
 			}
 			is.NotError(t, c.Rollback(t.Context()))
 			is.Equal(t, "[ forward  backward]", fmt.Sprint(directions), fmt.Sprint("read-only: ", readOnly))

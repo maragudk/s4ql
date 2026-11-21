@@ -700,8 +700,6 @@ internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, 
 	max is commutative.
 internal/engine/telemetry.go report.end condition: r.access != "" => true #2
 	drew sets the direction only for a query that buildQuery built, and every such query reads its rows by a scan, whose access reads records before, so the direction is never set without the access.
-internal/engine/tx.go Conn.writeIn boolean: false => true
-	The sink of a write in a read-only transaction is built and checked, and never run, so the direction that it then draws reads no row, and the event does not record a direction for a write.
 internal/engine/operator.go buildCreateIndex swap arguments: indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) => indexTooBig(t.GetTable(), p.Index.Value, p.SQL, limit)
 	indexTooBig adds the quoted lengths of the name, the table, and the text alike, so their order does not change the sum.
 internal/engine/operator.go buildCreateIndex swap arguments: indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) => indexTooBig(p.Index.Value, p.SQL, t.GetTable(), limit)
