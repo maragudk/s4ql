@@ -178,7 +178,7 @@ func classify(err error) errorKind {
 // stopped for ctx fails: see [conn.step].
 func ended(ctx context.Context, err error) bool {
 	ctxErr := ctx.Err()
-	return err != nil && ctxErr != nil && errors.Is(err, ctxErr)
+	return ctxErr != nil && errors.Is(err, ctxErr)
 }
 
 // isTooBig reports whether err is SQLite's SQLITE_TOOBIG, "string or blob too big".
