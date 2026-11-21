@@ -1,0 +1,434 @@
+# What each profile of TestGenerated of the driver check must reach: see stmttest.Reached.
+# A kind on a line. A kind that no run reaches three times fails the test. The texts that the
+# test excuses from the comparison, the kinds that begin with "excused: ", are pinned exactly
+# and are not listed here.
+
+# Each kind of statement by its outcome, and each call, with arguments and without.
+createtable ok
+createtable already exists
+createtable no rows
+createtable wrong number of arguments
+insert ok
+insert UNIQUE constraint failed
+insert has no column named
+insert no such table
+insert no rows
+insert wrong number of arguments
+insert with a parameter ok
+insert with a parameter UNIQUE constraint failed
+insert with a parameter no such table
+insert with a parameter wrong number of arguments
+insert with a parameter argument of a type not supported
+insert with a parameter named argument
+select ok
+select ok with rows
+select no such table
+select no rows
+select wrong number of arguments
+droptable ok
+droptable no such table
+other not supported
+other syntax error
+other incomplete input
+begin ok
+call exec
+call query
+call prepare, exec
+call prepare, query
+call query row
+call begin
+call prepare, exec several times
+call exec with arguments
+call query with arguments
+call prepare, exec with arguments
+call prepare, query with arguments
+call query row with arguments
+call prepare, exec several times with arguments
+
+# Write transactions that commit and that roll back, on a pinned connection and through the
+# pool, after a failed call, an insert, a create table, and a drop table, and while rows of
+# theirs are open.
+write transaction begin ok
+call begin in a transaction
+write transaction commit ok on a pinned connection
+write transaction commit ok through the pool
+write transaction rollback ok on a pinned connection
+write transaction rollback ok through the pool
+write transaction commit ok after a failed call
+write transaction rollback ok after a failed call
+write transaction commit ok after an insert
+write transaction rollback ok after an insert
+write transaction commit ok after a create table
+write transaction rollback ok after a create table
+write transaction commit ok after a drop table
+write transaction rollback ok after a drop table
+write transaction commit ok while rows are open
+write transaction rollback ok while rows are open
+
+# Each call in a write transaction, with arguments, and what it gives.
+write transaction: call exec with arguments
+write transaction: call query with arguments
+write transaction: call query row with arguments
+write transaction: call prepare, exec with arguments
+write transaction: call prepare, query with arguments
+write transaction: call prepare, exec several times with arguments
+write transaction: call prepare outside, exec in the transaction with arguments
+write transaction: call prepare outside, query in the transaction with arguments
+write transaction: call query, rows left open
+write transaction: call query beside the transaction
+write transaction: insert ok
+write transaction: insert with a parameter ok
+write transaction: insert UNIQUE constraint failed
+write transaction: insert no such table
+write transaction: createtable ok
+write transaction: createtable already exists
+write transaction: droptable ok
+write transaction: droptable no such table
+write transaction: other syntax error
+write transaction: insert with a parameter wrong number of arguments
+write transaction: insert with a parameter argument of a type not supported
+write transaction: select ok with rows after a write of the transaction
+write transaction: rows left open
+write transaction: insert while rows are open
+write transaction: select while rows are open
+
+# Through the pool, a query outside a write transaction, which must not see its changes.
+beside a write transaction: select ok with rows
+
+# Read-only transactions: their queries, and their writes, which are refused, also an insert
+# with a parameter and without one while rows of the transaction are open.
+read-only transaction begin ok
+read-only transaction commit ok on a pinned connection
+read-only transaction commit ok through the pool
+read-only transaction rollback ok on a pinned connection
+read-only transaction rollback ok through the pool
+read-only transaction: select ok with rows
+read-only transaction: rows left open
+read-only transaction: insert attempt to write a readonly database
+read-only transaction: insert with a parameter attempt to write a readonly database
+read-only transaction: createtable attempt to write a readonly database
+read-only transaction: droptable attempt to write a readonly database
+read-only transaction: insert no such table
+read-only transaction: createtable already exists
+read-only transaction: call prepare outside, exec in the transaction
+read-only transaction: call prepare outside, query in the transaction
+read-only transaction: call prepare, exec several times with arguments
+call begin read-only in a transaction
+read-only transaction: insert while rows are open
+read-only transaction: insert with a parameter while rows are open
+
+# Each type as a key, with an insert that succeeds, meets a key that exists, has a value of
+# another type, and is refused in a read-only transaction; each kind of literal and of
+# argument, also those that no column holds.
+reached: insert into INT ok
+reached: insert into INTEGER ok
+reached: insert into REAL ok
+reached: insert into TEXT ok
+reached: insert into BLOB ok
+reached: insert into INT UNIQUE constraint failed
+reached: insert into INTEGER UNIQUE constraint failed
+reached: insert into REAL UNIQUE constraint failed
+reached: insert into TEXT UNIQUE constraint failed
+reached: insert into BLOB UNIQUE constraint failed
+reached: insert into INT a value of another type
+reached: insert into INTEGER a value of another type
+reached: insert into REAL a value of another type
+reached: insert into TEXT a value of another type
+reached: insert into BLOB a value of another type
+reached: insert into INT attempt to write a readonly database
+reached: insert into INTEGER attempt to write a readonly database
+reached: insert into REAL attempt to write a readonly database
+reached: insert into TEXT attempt to write a readonly database
+reached: insert into BLOB attempt to write a readonly database
+reached: literal integer
+reached: literal real
+reached: literal real -0.0
+reached: literal text
+reached: literal empty text
+reached: literal blob
+reached: literal empty blob
+reached: argument int64
+reached: argument int
+reached: argument int32
+reached: argument uint64
+reached: argument float64
+reached: argument float64 -0.0
+reached: argument float32
+reached: argument string
+reached: argument empty string
+reached: argument []uint8
+reached: argument empty []byte
+reached: argument NaN
+reached: argument infinite float64
+reached: argument float32 that is not finite
+reached: argument string that is not valid UTF-8
+reached: argument string with NUL
+reached: argument nil
+reached: argument nil []byte
+reached: argument bool
+reached: argument time.Time
+reached: argument uint64 above int64
+reached: argument named
+
+# Slice 5: inserts into tables of several columns, without a list and with one, with each
+# fault and with two, also in a read-only transaction, and selects of * of each number of
+# columns, of names, and of a name that the table does not have.
+reached: insert without a list ok
+reached: insert with a list ok
+reached: insert without a list UNIQUE constraint failed
+reached: insert with a list UNIQUE constraint failed
+reached: insert with a list attempt to write a readonly database
+reached: insert without a list attempt to write a readonly database
+reached: insert with a column that the table does not have: has no column named
+reached: insert with a column without a value: NOT NULL constraint failed
+reached: insert with the wrong number of values: values were supplied
+reached: insert with the wrong number of values:  values for 
+reached: insert with a value of another type in the key: a value of another type
+reached: insert with a value of another type in another column: a value of another type
+reached: insert with two faults: NOT NULL constraint failed
+reached: insert with two faults: a value of another type
+reached: insert with two faults: has no column named
+reached: insert with a column without a value: attempt to write a readonly database
+reached: select * of 1 columns ok
+reached: select * of 2 columns ok
+reached: select * of 3 columns ok
+reached: select of names ok
+reached: select of a name that the table does not have no such column
+
+# Slice 6: NULL as a literal and as each kind of nil that database/sql hands the driver as nil,
+# in a column that takes it, also beside a key that exists and in a read-only transaction, and
+# in the key and in a column that does not take it; each kind of a nil []byte, which s4ql
+# refuses; a column that takes NULL left out of a list; NULL beside a value of another type in
+# another column; and a select of * and of names with NULL among its values.
+reached: literal null
+reached: argument NULL as *int64
+reached: argument NULL as *float64
+reached: argument NULL as *string
+reached: argument NULL as *[]uint8
+reached: argument NULL as *sql.NullString
+reached: argument NULL as sql.NullInt64
+reached: argument NULL as sql.NullFloat64
+reached: argument NULL as sql.NullString
+reached: argument NULL as sql.Null[[]uint8]
+reached: argument nil []byte as *[]uint8
+reached: argument nil []byte as sql.Null[[]uint8]
+reached: NULL literal into a column that takes NULL ok
+reached: NULL argument into a column that takes NULL ok
+reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+reached: NULL literal into a column that takes NULL a value of another type
+reached: NULL literal into the key NOT NULL constraint failed
+reached: NULL argument into the key NOT NULL constraint failed
+reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+reached: insert that leaves out a column that takes NULL ok
+reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+reached: insert that leaves out a column that takes NULL a value of another type
+reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+reached: insert with NULL in the key: NOT NULL constraint failed
+reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+reached: insert of NULL beside a value of another type NOT NULL constraint failed
+reached: insert of NULL beside a value of another type a value of another type
+reached: select * with NULL ok
+reached: select of names with NULL ok
+reached: NULL literal into a column that takes NULL attempt to write a readonly database
+
+# Slice 7: each operator on the key and on another column; each way that the plan reads rows;
+# a select that gives no row, some rows, and every row of a table with rows; each kind of
+# value, by literal and by argument, NULL by both; and the faults: a column that the table
+# does not have, in a comparison and under IS NULL or IS NOT NULL, alone, before, and after
+# other conditions, and in double quotes; a value of another type; arguments that s4ql
+# refuses; a column tested twice; and contradicting conditions.
+reached: = on the key ok
+reached: != on the key ok
+reached: < on the key ok
+reached: <= on the key ok
+reached: > on the key ok
+reached: >= on the key ok
+reached: IS NULL on the key ok
+reached: IS NOT NULL on the key ok
+reached: = on another column ok
+reached: != on another column ok
+reached: < on another column ok
+reached: <= on another column ok
+reached: > on another column ok
+reached: >= on another column ok
+reached: IS NULL on another column ok
+reached: IS NOT NULL on another column ok
+reached: WHERE that reads no row ok
+reached: WHERE that reads a get of one key ok
+reached: WHERE that reads a scan from a lower bound ok
+reached: WHERE that reads a scan to an upper bound ok
+reached: WHERE that reads a scan between two bounds ok
+reached: WHERE that reads a scan between two bounds that hold no key ok
+reached: WHERE that reads a scan of every row ok
+reached: WHERE that gives no row of a table with rows
+reached: WHERE that gives some rows of a table
+reached: WHERE that gives every row of a table with rows
+reached: comparison with literal integer ok
+reached: comparison with literal real ok
+reached: comparison with literal real -0.0 ok
+reached: comparison with literal text ok
+reached: comparison with literal empty text ok
+reached: comparison with literal blob ok
+reached: comparison with literal empty blob ok
+reached: comparison with literal null ok
+reached: comparison with argument int64 ok
+reached: comparison with argument float64 ok
+reached: comparison with argument float64 -0.0 ok
+reached: comparison with argument string ok
+reached: comparison with argument empty string ok
+reached: comparison with argument []uint8 ok
+reached: comparison with argument empty []byte ok
+reached: comparison with argument nil ok
+reached: WHERE with a column that the table does not have in a comparison, alone no such column
+reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
+reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
+reached: WHERE with a column in double quotes that the table does not have no such column
+reached: WHERE with a value of another type a value of another type
+reached: WHERE with arguments that s4ql refuses not supported
+reached: WHERE with arguments that s4ql refuses wrong number of arguments
+reached: WHERE that tests a column more than once ok
+reached: WHERE with contradicting conditions ok
+
+# Slice 8: updates and deletes, each with and without WHERE, that change rows and that find
+# none; refused in a read-only transaction; a change of the key that succeeds, meets a key
+# that exists, and gets NULL; NULL for a column that does not take it; a column of SET or of
+# WHERE that the table does not have, also in double quotes, which mattn's SQLite reads as a
+# string; a value of another type in SET and in WHERE; arguments that s4ql refuses; ways that
+# the scan reads the rows; and each table that an update or a delete changed, read back on
+# both sides.
+reached: update with WHERE ok, rows changed
+reached: update with WHERE ok, no row found
+reached: update without WHERE ok, rows changed
+reached: update without WHERE ok, no row found
+reached: delete with WHERE ok, rows changed
+reached: delete with WHERE ok, no row found
+reached: delete without WHERE ok, rows changed
+reached: delete without WHERE ok, no row found
+reached: update with WHERE attempt to write a readonly database
+reached: delete with WHERE attempt to write a readonly database
+reached: SET of the key ok, rows changed
+reached: SET of the key UNIQUE constraint failed
+reached: SET of the key NOT NULL constraint failed
+reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+reached: SET of NULL for a column that does not take it ok, no row found
+reached: SET of a column that the table does not have no such column
+reached: SET of a column in double quotes that the table does not have no such column
+reached: SET with a value of another type a value of another type
+reached: SET with argument nil ok, no row found
+reached: update WHERE with a column in double quotes that the table does not have no such column
+reached: delete WHERE with a column in double quotes that the table does not have no such column
+reached: update WHERE with a value of another type a value of another type
+reached: delete WHERE with a value of another type a value of another type
+reached: update with arguments that s4ql refuses not supported
+reached: update with arguments that s4ql refuses wrong number of arguments
+reached: delete with arguments that s4ql refuses not supported
+reached: delete with arguments that s4ql refuses wrong number of arguments
+reached: update WHERE that reads a get of one key ok, rows changed
+reached: delete WHERE that reads a get of one key ok, rows changed
+reached: delete WHERE that reads a scan from a lower bound ok, rows changed
+reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+reached: update WHERE that reads a scan of every row ok, rows changed
+reached: update WHERE that reads no row ok, no row found
+reached: table read back after an update or a delete
+reached: SET with literal null ok, rows changed
+
+# Slice 9: each outcome of a create index, of a drop index, and of a create table that meets
+# an index, by the kind of the statement and of the error, also in a read-only transaction,
+# which refuses both.
+createindex ok
+createindex no such table
+createindex already exists
+createindex there is already a table named
+createindex no such column
+createindex attempt to write a readonly database
+dropindex ok
+dropindex no such index
+dropindex attempt to write a readonly database
+createtable there is already an index named
+
+# Slice 10: each of the four statements with IF NOT EXISTS or IF EXISTS that did its work,
+# that did nothing for each reason of stmttest.ExistsRule, and that gave each error, as
+# pair.reachExists counts them, also in a read-only transaction, which refuses one that
+# would write.
+reached: create table if not exists did its work
+reached: create table if not exists did nothing: a table of the name exists
+reached: create table if not exists duplicate column name
+reached: create table if not exists there is already an index named
+reached: create table if not exists attempt to write a readonly database
+reached: drop table if exists did its work
+reached: drop table if exists did nothing: no table of the name exists
+reached: drop table if exists did nothing: no table of the name exists, and an index has it
+reached: drop table if exists attempt to write a readonly database
+reached: create index if not exists did its work
+reached: create index if not exists did nothing: an index of the name exists
+reached: create index if not exists no such table
+reached: create index if not exists there is already a table named
+reached: create index if not exists no such column
+reached: create index if not exists attempt to write a readonly database
+reached: drop index if exists did its work
+reached: drop index if exists did nothing: no index of the name exists
+reached: drop index if exists did nothing: no index of the name exists, and a table has it
+
+# Slice 11: inserts that leave out a column and store its default of each type, also of the
+# key, and DEFAULT NULL in a column that takes NULL; NOT NULL from a DEFAULT NULL in a column
+# that does not take NULL and in the key; UNIQUE from a default of the key; the refusal of a
+# read-only transaction before the default; and an explicit NULL for a column with a default.
+# The driver check runs under SQLite's default length limit, so a record that a long default
+# makes too long is required of TestDifferential of the engine only.
+reached: insert that leaves out a column with a default of integer ok
+reached: insert that leaves out a column with a default of real ok
+reached: insert that leaves out a column with a default of text ok
+reached: insert that leaves out a column with a default of blob ok
+reached: insert that leaves out the key with a default ok
+reached: insert that leaves out the key with a default UNIQUE constraint failed
+reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok
+reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed
+reached: insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed
+reached: insert that leaves out a column with a default of integer attempt to write a readonly database
+reached: NULL given for a column with a default, which takes NULL ok
+reached: NULL given for a column with a default, which does not take NULL NOT NULL constraint failed
+
+# Slice 12, as reachValueFirst counts them: each operator with its value on the left, by
+# whether its statement finds rows or none, and by each refusal that a comparison of it meets;
+# NULL on the left; and a write refused in a read-only transaction.
+reached: value on the left of = finds rows
+reached: value on the left of < finds rows
+reached: value on the left of <= finds rows
+reached: value on the left of > finds rows
+reached: value on the left of >= finds rows
+reached: value on the left of = finds no row
+reached: value on the left of != finds no row
+reached: value on the left of < finds no row
+reached: value on the left of <= finds no row
+reached: value on the left of > finds no row
+reached: value on the left of >= finds no row
+reached: value on the left of = a value of another type
+reached: value on the left of != a value of another type
+reached: value on the left of < a value of another type
+reached: value on the left of <= a value of another type
+reached: value on the left of > a value of another type
+reached: value on the left of >= a value of another type
+reached: value on the left of = no such column
+reached: value on the left of != no such column
+reached: value on the left of < no such column
+reached: value on the left of <= no such column
+reached: value on the left of > no such column
+reached: value on the left of >= no such column
+reached: value on the left of = not supported
+reached: value on the left of != not supported
+reached: value on the left of < not supported
+reached: value on the left of <= not supported
+reached: value on the left of > not supported
+reached: value on the left of >= not supported
+reached: value on the left of = wrong number of arguments
+reached: value on the left of != wrong number of arguments
+reached: value on the left of < wrong number of arguments
+reached: value on the left of <= wrong number of arguments
+reached: value on the left of > wrong number of arguments
+reached: value on the left of >= wrong number of arguments
+reached: value on the left compared with NULL finds no row
+reached: value on the left of = attempt to write a readonly database
