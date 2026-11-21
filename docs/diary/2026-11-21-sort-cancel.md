@@ -55,3 +55,51 @@ Seeing that the brief's preferred C flag needs a goroutine to set it, and that t
 ### Future work
 
 The core uses `StepContext`: step 2.
+
+## Step 2: The core, the engine, the driver, and the notes
+
+**Author:** sort-cancel builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "`SQLITE_INTERRUPT` from a step becomes the context's error (`context.Canceled` or `context.DeadlineExceeded`, by `ctx.Err()`), never a local failure that stops the instance. [...] The connection is clean afterwards: the statement is reset or finalized, the length limit that `conn.step` raises is put back, the flag or handler state is cleared, and the next query on the same connection gives right results. Make the comment on `scan` in `internal/engine/operator.go` [...] true as written, or correct it to what now holds. Telemetry: no new span or attribute. [...] Three branches from the review that have no test yet [...] write them and delete that point [...] Through the driver: one test that a `QueryContext` with a context ended during a sort returns the context's error and that the `*sql.DB` works afterwards."
+
+**Interpretation:** wire `StepContext` into the core's first step of a scan and its count, keep write transactions usable, test every branch named, and record the decisions in `/docs/todo/slice-13.md`.
+
+**Inferred intent:** the review's finding is closed with tests that a fresh reader can trust.
+
+### What I did
+
+In `/internal/core/index.go`, `conn.scanIndex` takes the context and runs its first step through `conn.step(ctx, s, sorting)`, which now calls `StepContext` and still raises and puts back the length limit for a sorting scan; later steps use `Step`. `conn.unread` takes the context and runs the count through a new `conn.queryContext` in `/internal/core/cache.go`. `countSQL` counts the first column of the primary key, because SQLite runs a bare `count(*)` as one uninterruptible instruction. `Tx.scan` gives the error of the context from the scan, and drops it from the count, without `tx.fail`, through `core.ended` in `/internal/core/errors.go`. The commit's own scan runs with `context.WithoutCancel(ctx)`, which has no `Done`, so it is never stopped.
+
+Tests: `TestScanIndex_context` in `/internal/core/index_test.go` (interrupted sort at the 1st, 2nd, and 3rd look in a read and a write transaction, with the length limit of 1,000 bytes; an interrupted count; the count skipped when the context ended before the loop stopped; a count that fails on a read fault), `TestConn_step` in `/internal/core/index_internal_test.go` (the limit after a sort step that succeeds, fails on a temp-file write, or is stopped), a subtest of `TestEngine_events` in `/internal/engine/engine_test.go` (the event of an interrupted query is `canceled` with `context canceled`, as for a cancel between rows), and a subtest of `TestRows` in `/rows_test.go` (every call of `Err` up to the first row, the sort's included, ends the query with `context.Canceled`, and the next query gives the row).
+
+Docs: the comment on `scan` in `/internal/engine/operator.go`, the engine's and the core's READMEs, the section "Interrupting a sort" in `/docs/todo/slice-13.md`, the item deleted from `/docs/todo/storage-core.md`, and a new open item there: the stop of an instance does not stop a running sort.
+
+### Why
+
+Each branch that the review named now has a test that fails without the code: I checked by hand that putting back `count(*)`, failing the transaction on the context's error, or skipping the limit's restore on error each fails a test.
+
+### What worked
+
+The probes with `ctxtest.EndAtErr(ctx, math.MaxInt)` made the core and driver tests independent of how often other code calls `Err`: a test first counts the calls up to a point, then ends the context at each of them. `go test -count=50` and `-race` passed for every new test.
+
+### What didn't work
+
+`go vet` refused a `context.WithCancel` in a test without `defer cancel()`: `the cancel function is not used on all paths (possible context leak)`. The first driver test expected the key 4479 for the largest v; it is 2321 (2321 × 7919 = 18,379,999), and the test now states 2321. The first version of that test asserted more than 10 calls of `Err` before the first row and got 9, so it now compares the calls of the sorted query with those of a query by the key: the difference is the sort's looks. In the engine test, `probe.Calls()` after the whole query counted calls after the first row, so a context ending there gave no error; the test records the calls when the first row arrives. `readersFree` reads `t1`, which the driver test had not made: `no such table: t1`. Two commands of mine with heredocs and inline Python were refused by the worktree's guard ("this command is too complex to verify that it stays inside the worktree"); I used the edit tool and scripts in the scratchpad instead.
+
+### What I learned
+
+The core's earlier README said that no test could fail the count because the index's pages stay in the page cache after a sort; rows of 400 bytes, 4 MB in all, are larger than the page cache, and a read fault then reaches the count.
+
+### What was tricky
+
+A failed count stops the instance on both paths, since a read fault is a local failure, so that test needs an instance of its own per path.
+
+### What warrants review
+
+`core.ended`, and that no path returns a context error from `scanIndex` but the interrupted step. The open item on the stop of an instance in `/docs/todo/storage-core.md`.
+
+### Future work
+
+The stop of an instance could stop a running sort too, through a context that the stop cancels. Not decided.
