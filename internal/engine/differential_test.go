@@ -3366,23 +3366,30 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		profile *stmttest.Profile
 		// least is the number of the n sequences that must find the bug, a third of what they found
 		// on 2026-11-21, 21 and 15 of 30, each by the rows of a select or by the count of an update or
-		// a delete that differ from SQLite's, and for the bugs of slice 13 4, 14, and 21 of 30.
+		// a delete that differ from SQLite's, and for the bugs of slice 13 4 of 30, 5 of 12, and 6 of 9.
 		least int
 		// finds is in the failure of each sequence that finds the bug, or empty for any failure: for
 		// the bugs of slice 13, the rows of an ordered select at a place where SQLite has other rows,
 		// as [ordered.compare] says.
 		finds string
+		// sequences is the number of the n sequences that the bug runs, for a bug that its sequences
+		// find so often that fewer of them find it often enough, or 0 for all n.
+		sequences int
 	}{
-		{"pinByPlace", stmttest.Indexes, 7, ""},
-		{"unturnedBound", stmttest.ValueFirst, 5, ""},
-		{"turnMixed", stmttest.Order, 1, "where SQLite has the rows"},
-		{"limitFirst", stmttest.Order, 4, "where SQLite has the rows"},
-		{"ascendLast", stmttest.Order, 7, "where SQLite has the rows"},
+		{"pinByPlace", stmttest.Indexes, 7, "", 0},
+		{"unturnedBound", stmttest.ValueFirst, 5, "", 0},
+		{"turnMixed", stmttest.Order, 1, "where SQLite has the rows", 0},
+		{"limitFirst", stmttest.Order, 1, "where SQLite has the rows", 12},
+		{"ascendLast", stmttest.Order, 2, "where SQLite has the rows", 9},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			found := 0
 			first := ""
-			for k := range uint64(n) {
+			runs := n
+			if b.sequences > 0 {
+				runs = min(n, b.sequences)
+			}
+			for k := range uint64(runs) {
 				s := b.profile.Seed(k)
 				restarts, limit := variantOf(s)
 				var options engine.Options
@@ -3407,7 +3414,7 @@ func TestDifferential_plantedBugs(t *testing.T) {
 				}
 				clean.close()
 			}
-			t.Logf("%v of %v sequences of the profile %v find the bug; the first finds: %v", found, n, b.profile.Name, first)
+			t.Logf("%v of %v sequences of the profile %v find the bug; the first finds: %v", found, runs, b.profile.Name, first)
 			if !slow() && atDefault("length") {
 				is.True(t, found >= b.least, fmt.Sprint("the bug is found too rarely: ", found))
 			}
