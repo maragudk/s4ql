@@ -11,8 +11,7 @@ import (
 // meet. A sequence has the profile of its seed, as [ProfileOf] gives it.
 //
 // An area that is off in a profile draws no random number in a sequence of the profile, so a change
-// of its generator does not change such a sequence: the tests pin a digest of the first statements
-// of each profile, and run each with a stream that panics for every area that it has off.
+// of its generator does not change such a sequence: the stream of such an area panics at a draw.
 type Profile struct {
 	Name string
 	// slot of the profile among the [Slots] of the seeds.
@@ -64,14 +63,16 @@ type Profile struct {
 	// integer beyond 2^53 the real is a neighbour of it, and SQLite refuses ±2^63, the real of the
 	// limits of 64 bits. The values that the conditions of a WHERE draw from keep the integer.
 	Mistyped int
-	// Transactions is for the test that runs the sequence: one turn in Transactions outside a
-	// transaction begins one, where the test has transactions.
+	// Transactions is the odds of a transaction, which a sequence does not write itself: what runs
+	// the calls of a sequence in transactions begins one at one call in Transactions of those outside
+	// a transaction.
 	Transactions int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
 // the slot of the seed modulo Slots. It is more than the profiles, so that a profile that is added
-// takes a slot that no test ran, and the seeds of the others keep their profiles.
+// takes a slot of its own, and the seeds of the others keep their profiles. A seed of a slot that
+// no profile has is of [Mixed], until a profile takes the slot.
 const Slots = 32
 
 // The profiles. See [Profiles].
@@ -88,7 +89,7 @@ var (
 	// Changes weighs the update and the delete of slice 8.
 	Changes = &Profile{Name: "changes", Faults: []string{areaChanges}, Aim: 3, Weights: weights(2, 12, 3, 1, 9, 3, 0, 0), Where: 2, Parameters: 3, Transactions: 4}
 	// Indexes weighs the create index and the drop index of slice 9, and the WHERE that an index
-	// serves, by which the rules choose an access.
+	// serves.
 	Indexes = &Profile{Name: "indexes", Faults: []string{areaIndexes}, Aim: 3, Weights: weights(2, 8, 8, 1, 3, 2, 4, 2), Where: 3, Indexes: 2, Columns: 2, Parameters: 3, Transactions: 4}
 	// Exists weighs the IF NOT EXISTS and IF EXISTS of slice 10, on tables and indexes that are there
 	// and that are not.
@@ -181,10 +182,6 @@ const (
 	areaText = "text"
 )
 
-// areas of the generator, for the tests.
-var areas = []string{areaNames, areaPlan, areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaExists, areaDefaults,
-	areaValueFirst, areaArguments, areaOthers, areaText}
-
 // on reports whether the area is on in the profile: whether a sequence of the profile may draw
 // from the streams of the area.
 func (p *Profile) on(area string) bool {
@@ -270,8 +267,8 @@ func (s *stepStream) Uint64() uint64 {
 	return s.r.Uint64()
 }
 
-// offStream is the stream of an area that is off in the profile of a sequence, with the test's
-// permission to fail: a draw from it panics.
+// offStream is the stream of an area that is off in the profile of a sequence: a draw from it
+// panics, since such an area draws nothing.
 type offStream struct {
 	area, profile string
 }

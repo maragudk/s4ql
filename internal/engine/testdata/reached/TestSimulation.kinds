@@ -36,9 +36,6 @@ fault: write applied after a crash
 fault: write applied after its caller gave up
 fault: write stuck in the network
 indexes dropped while the rows of a query that read by them were open
-integrity checks after a crash
-integrity checks after the replay
-integrity checks at the end
 kept transactions ended for the lease
 pending
 query not read to its end

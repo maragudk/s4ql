@@ -33,7 +33,8 @@ func TestProfileOf(t *testing.T) {
 				is.Equal(t, 0, p.Weights[KindCreateIndex]+p.Weights[KindDropIndex], p.Name)
 			}
 		}
-		for _, area := range areas {
+		for _, area := range []string{areaNames, areaPlan, areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaExists, areaDefaults,
+			areaValueFirst, areaArguments, areaOthers, areaText} {
 			is.True(t, Mixed.on(area), area)
 		}
 	})

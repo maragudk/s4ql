@@ -2721,10 +2721,12 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 
 // checkReached checks what the runs of the test reached, by the name of each, against the file of
 // the test in testdata/reached, or writes the file with S4QL_RECOUNT=1, as [stmttest.Reached]
-// says, for the kinds of the file of the test with the ending .kinds there. The kinds whose name begins with "excused: " are pinned exactly, since they tell how much
-// of a test escapes the comparison with SQLite, but for [excusedRecordSlip], whose count depends on
-// the allocator of the platform and which is left out.
-func checkReached(t *testing.T, doc string, names []string, runs map[string]tally) {
+// says, for the kinds of the file of the test with the ending .kinds there. With least, it checks
+// the least numbers alone, as [stmttest.Reached.Least] does, for runs of more sequences than those
+// of the file. The kinds whose name begins with "excused: " are pinned exactly, since they tell how
+// much of a test escapes the comparison with SQLite, but for [excusedRecordSlip], whose count
+// depends on the allocator of the platform and which is left out.
+func checkReached(t *testing.T, doc string, names []string, runs map[string]tally, least bool) {
 	t.Helper()
 	counts := map[string]map[string]int{}
 	for name, y := range runs {
@@ -2733,11 +2735,32 @@ func checkReached(t *testing.T, doc string, names []string, runs map[string]tall
 	}
 	path := filepath.Join("testdata", "reached", t.Name())
 	reached := stmttest.Reached{Kinds: path + ".kinds", Counts: path + ".tsv", Doc: doc, Exact: func(kind string) bool { return strings.HasPrefix(kind, "excused: ") }}
-	failures, err := reached.Check(names, counts)
+	check := reached.Check
+	if least {
+		noRecount(t)
+		check = reached.Least
+	}
+	failures, err := check(names, counts)
 	is.NotError(t, err)
 	for _, failure := range failures {
 		t.Error(failure)
 	}
+}
+
+// noRecount fails the test if S4QL_RECOUNT=1 asks for a count that the run cannot give, since it is
+// not the full run with the default flags that the counts are of.
+func noRecount(t *testing.T) {
+	t.Helper()
+	if stmttest.Recounting() {
+		t.Errorf("%v=1 needs the full run of the test: without -short, the race detector, and the address sanitizer, with the default flags and seeds, and with every subtest", stmttest.RecountVariable)
+	}
+}
+
+// flagSet reports whether the flag of the name was given to the test binary, whatever its value.
+func flagSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }
 
 // TestDifferential runs random sequences of statements of each profile of [stmttest.Profiles] on
@@ -2751,11 +2774,13 @@ func checkReached(t *testing.T, doc string, names []string, runs map[string]tall
 // the calls that are excused because s4ql refuses their arguments by its rule, each is checked
 // against the rule instead. After a change of the generator, S4QL_RECOUNT=1 writes the file again.
 //
-// With the flag -seed, the test runs the sequences of that seed and those after it, each with the
-// profile of its seed, and checks no count.
+// With the flag -seed, also -seed 0, the test runs -sequences sequences from that seed, each with
+// the profile of its seed, and checks no count. With more -sequences than the default, it runs that
+// many of each profile, those of the full run among them, and checks the least numbers alone.
 func TestDifferential(t *testing.T) {
+	replayed := flagSet("seed")
 	n := *sequences
-	if slow() {
+	if slow() && !replayed {
 		n /= 10
 	}
 	total := tally{}
@@ -2770,7 +2795,7 @@ func TestDifferential(t *testing.T) {
 		restarts, limit := variantOf(s)
 		differential(t, s, *length, restarts, limit, runs[p.Name])
 	}
-	if !atDefault("seed") {
+	if replayed {
 		for s := range uint64(n) {
 			run(*seed + s)
 		}
@@ -2781,6 +2806,9 @@ func TestDifferential(t *testing.T) {
 			}
 		}
 	}
+	if len(names) == 0 {
+		t.Fatal("no sequence ran: -sequences is 0, or below 10 under -short, the race detector, or the address sanitizer")
+	}
 	for _, name := range names {
 		t.Logf("%v, %v statements in each sequence: %v", name, *length, runs[name])
 		for kind, count := range runs[name] {
@@ -2788,20 +2816,26 @@ func TestDifferential(t *testing.T) {
 		}
 	}
 	t.Logf("%v calls ran in SQLite, and were compared with it", total[comparedWithSQLite])
-	if !slow() && atDefault("seed", "sequences", "length") {
-		checkReached(t, "What each profile of TestDifferential of the engine reaches in its full run.", names, runs)
-		// On the one sequence of all areas, before the profiles, 300 sequences ran 12,108 calls in
-		// SQLite.
-		is.True(t, total[comparedWithSQLite] >= 12108, "the calls that run in SQLite are not fewer than before the profiles")
+	const doc = "What each profile of TestDifferential of the engine reaches in its full run."
+	switch full := !slow() && !replayed && atDefault("length"); {
+	case full && atDefault("sequences"):
+		checkReached(t, doc, names, runs, false)
+		// A floor under the calls that run in SQLite: the 12,108 of the run of 2026-11-20.
+		is.True(t, total[comparedWithSQLite] >= 12108, "the calls that run in SQLite")
 		if total["excused: "+excusedLong] == 0 {
 			t.Errorf("no literal is longer than the length limit")
 		}
+	case full && n > flagDefault("sequences"):
+		// More sequences of each profile, those of the full run among them.
+		checkReached(t, doc, names, runs, true)
+	default:
+		noRecount(t)
 	}
 	// The outcomes of a parameter that every run must reach, also the tenth of the sequences of a slow
 	// run: an insert through a parameter that succeeds, that meets a key that exists, and that the
 	// rule for arguments refuses, and an argument for a statement without a parameter; and the errors
 	// of the names of slice 5.
-	if atDefault("seed") {
+	if !replayed {
 		for _, kind := range []string{
 			"insert with a parameter ok", "insert with a parameter UNIQUE constraint failed", "insert with a parameter wrong number of arguments",
 			"insert with a parameter not supported", "insert wrong number of arguments", "select wrong number of arguments",
@@ -2812,6 +2846,15 @@ func TestDifferential(t *testing.T) {
 			}
 		}
 	}
+}
+
+// flagDefault is the default value of the flag of the name, which is a number.
+func flagDefault(name string) int {
+	n, err := strconv.Atoi(flag.Lookup(name).DefValue)
+	if err != nil {
+		panic(err)
+	}
+	return n
 }
 
 // TestDifferential_plantedBugs runs the first sequences of a profile of [TestDifferential] with each
@@ -2830,8 +2873,7 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		profile *stmttest.Profile
 		// least is the number of the n sequences that must find the bug, a third of what they found
 		// on 2026-11-21, 21 and 15 of 30, each by the rows of a select or by the count of an update or
-		// a delete that differ from SQLite's. Of the first 60 sequences of the one sequence before the
-		// profiles, 11 and 6 found them.
+		// a delete that differ from SQLite's.
 		least int
 	}{
 		{"pinByPlace", stmttest.Indexes, 7},

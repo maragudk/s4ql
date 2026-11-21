@@ -103,7 +103,8 @@ type Sequence struct {
 	// statement, as [Sequence.aim] says.
 	pools [][]string
 	// live are the folds of the names of the tables for which the sequence wrote a create table, and
-	// since then no drop table, whether SQLite took the statement or not.
+	// since then no drop table, whether SQLite took the statement or not. The texts of [Others] are
+	// not followed, of which one creates a table and one drops one.
 	live map[string]bool
 }
 
@@ -117,8 +118,8 @@ func (q *Sequence) Profile() *Profile {
 	return q.profile
 }
 
-// Stream of random numbers of the name for the test that runs the sequence, such as the stream of
-// its transactions or of its restarts: the same numbers for the same seed and name, whatever the
+// Stream of random numbers of the name, for what runs the sequence and draws for itself: the same
+// numbers for the same seed and name, whatever the
 // sequence and the other streams draw, so that what a test draws for itself moves no statement. Each
 // call gives the stream from its first number, so a test takes a stream once and keeps it.
 func (q *Sequence) Stream(name string) Rand {

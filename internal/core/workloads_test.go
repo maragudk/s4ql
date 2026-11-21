@@ -620,6 +620,11 @@ func TestSimulation(t *testing.T) {
 			t.Logf("hash of all traces: %x", all.Sum(nil))
 			is.Equal(t, 0, differing)
 			is.Equal(t, int(n), len(hashes), "two seeds gave the same trace")
+			for name, least := range test.reaches {
+				if least < 1 {
+					t.Errorf("the minimum of %q is %v, so it checks nothing: raise it or drop it, and say where the kind is still required", name, least)
+				}
+			}
 			// The seeds are 0 to n-1, so more seeds than the default run reach at least as much.
 			if n < uint64(test.seeds) {
 				t.Logf("NOT CHECKED: what the workload reached, because %v seeds are fewer than the %v of the default run", n, test.seeds)
@@ -628,9 +633,6 @@ func TestSimulation(t *testing.T) {
 			reached := y.reached()
 			var short bool
 			for _, name := range slices.Sorted(maps.Keys(test.reaches)) {
-				if test.reaches[name] < 1 {
-					t.Errorf("the minimum of %q is %v, so it checks nothing: raise it or drop it, and say where the kind is still required", name, test.reaches[name])
-				}
 				if least := test.reaches[name]; reached[name] < least {
 					short = true
 					t.Errorf("the workload reached %q %v times, and must reach it %v times at least", name, reached[name], least)

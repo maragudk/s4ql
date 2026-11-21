@@ -144,8 +144,9 @@ jobs:
   # The generated checks of the engine on more sequences and seeds of each profile than CI's jobs
   # run, for breadth: TestDifferential with ten times the sequences, each compared with SQLite
   # statement by statement, and TestSimulation with 100 seeds of each cell of each environment. Both
-  # then check no count, since the counts of testdata/reached are those of CI's run: a sequence or a
-  # seed that fails prints the flag or the command that replays it.
+  # then check the least numbers of testdata/reached alone, which are those of CI's run, whose
+  # sequences and seeds are among these. A sequence that fails prints its seed, which the flag -seed
+  # replays, and a seed of the simulation the command that replays it.
   generated-engine:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -160,12 +161,13 @@ jobs:
           cache: sql
 
       - name: Run the differential test of the engine on many sequences of each profile
-        run: go test -count=1 -run '^TestDifferential$' -timeout 60m ./internal/engine/ -sequences 400
+        run: go test -count=1 -run '^TestDifferential$' -timeout 40m ./internal/engine/ -sequences 400
 
       - name: Run the simulation of the engine on many seeds of each cell
+        if: ${{ !cancelled() }}
         env:
           S4QL_ENGINE_SIM_SEEDS: "100"
-        run: go test -count=1 -run '^TestSimulation$' -timeout 60m ./internal/engine/
+        run: go test -count=1 -run '^TestSimulation$' -timeout 40m ./internal/engine/
 
   # Opens an issue when a job above failed, or comments on the open one, so that a failure at night
   # is seen in the morning.

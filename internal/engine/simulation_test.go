@@ -2223,13 +2223,15 @@ func (s simulation) violations() []string {
 	return v
 }
 
-// simSeeds is n, or the number in the environment variable S4QL_ENGINE_SIM_SEEDS.
+// simSeeds is n, or the number in the environment variable S4QL_ENGINE_SIM_SEEDS, which is 1 at
+// least.
 func simSeeds(t *testing.T, n int) uint64 {
 	t.Helper()
 	if v := os.Getenv("S4QL_ENGINE_SIM_SEEDS"); v != "" {
 		var err error
 		n, err = strconv.Atoi(v)
 		is.NotError(t, err)
+		is.True(t, n >= 1, "S4QL_ENGINE_SIM_SEEDS is a number of seeds, 1 at least")
 	}
 	return uint64(n)
 }
@@ -2434,73 +2436,102 @@ type simCell struct {
 	seeds   int
 }
 
-// simEnvironments are the environments of [TestSimulation], each with the profiles that it runs and
-// the number of seeds of each, and the largest share of its statements that may be refused for want
-// of the lease, about twice what the first 1,000 seeds of the one sequence before the profiles
-// gave. Each profile runs in an environment at least, and the mixed profile in each. A cell that is
-// added to an environment adds to what the environment reaches, and takes nothing from it.
-var simEnvironments = []struct {
+// simEnvironment is an environment of [TestSimulation]: see [simEnvironments].
+type simEnvironment struct {
 	name    string
 	w       workload
+	first   uint64
 	cells   []simCell
 	noLease float64
-}{
-	{"default", defaultWorkload, []simCell{{stmttest.Mixed, 12}, {stmttest.Tables, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6},
-		{stmttest.Defaults, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.15},
-	{"idle", idleWorkload, []simCell{{stmttest.Mixed, 16}, {stmttest.Transactions, 12}, {stmttest.Indexes, 12}, {stmttest.Changes, 10}}, 0.15},
-	{"hammer", hammerWorkload, []simCell{{stmttest.Mixed, 12}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Indexes, 10}, {stmttest.ValueFirst, 10},
-		{stmttest.Transactions, 6}}, 0.12},
+}
+
+// simEnvironments are the environments of [TestSimulation], each with the number of the first seed
+// of each profile that it runs, so that no two environments, and neither [TestDifferential] nor the
+// planted bugs, run the same sequences; its cells, each a profile and the number of its seeds; and
+// the largest share of its statements that may be refused for want of the lease, about twice what
+// its seeds gave on 2026-11-21, 0.034, 0.106, and 0.032. Each profile runs in the default and in the
+// hammer environment, and the idle one, whose kinds are those of the lease, runs five. A cell that
+// is added to an environment adds to what the environment reaches, and takes nothing from another
+// cell.
+var simEnvironments = []simEnvironment{
+	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 12}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.07},
+	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 16}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
+	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 12}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}}, 0.06},
 }
 
 // TestSimulation runs each environment of [simEnvironments], the default, the idle, and the hammer
 // workload, on seeds of the profiles of its cells, and the first seed of each cell twice, whose
-// traces must be the same. What the seeds of an environment must reach together is in
-// testdata/reached/TestSimulation.tsv, as [stmttest.Reached] says: every kind of outcome, of fault
-// of the store, and of event of testdata/reached/TestSimulation.kinds, which [tallyOf] counts, at
-// least a third as often as when the file was written, so that the test fails when a kind stops
-// happening. S4QL_RECOUNT=1 writes the file again.
-// And at most the share noLease of the statements of an environment may be refused for want of the
-// lease, so that the test fails when most statements no longer reach a transaction. The seeds are
-// the same in every run, so the counts are too. With S4QL_ENGINE_SIM_SEEDS, each cell runs that many
-// seeds in place of its own, for breadth, and the test checks no count. With the flag -replay, it
-// replays that one seed instead: see [replaySeed].
+// traces must be the same. What must be reached is in testdata/reached/TestSimulation.tsv, as
+// [stmttest.Reached] says: by the seeds of each cell, and by those of each environment together,
+// every kind of outcome, of fault of the store, and of event of
+// testdata/reached/TestSimulation.kinds, which [tallyOf] counts, at least a third as often as when
+// the file was written, so that the test fails when a kind stops happening; and the integrity checks
+// of the caches exactly, since every seed runs each. S4QL_RECOUNT=1 writes the file again. And at
+// most the share noLease of the statements of an environment may be refused for want of the lease,
+// so that the test fails when most statements no longer reach a transaction. The seeds are the same
+// in every run, so the counts are too.
+//
+// With S4QL_ENGINE_SIM_SEEDS, each cell runs that many seeds in place of its own, for breadth, and
+// the test checks the least numbers alone, if each cell runs as many seeds as its own at least, and
+// so those of the file among them. Under -short, the race detector, or the address sanitizer, a cell
+// runs a tenth of its seeds, one at least, the first seed of three cells of each environment runs
+// twice, and the test checks no count. With the flag -replay, it replays that one seed instead: see
+// [replaySeed].
 func TestSimulation(t *testing.T) {
 	if *replay != "" {
 		replaySeed(t)
 		return
 	}
-	counted := os.Getenv("S4QL_ENGINE_SIM_SEEDS") == "" && !slow()
+	for _, p := range stmttest.Profiles {
+		if !slices.ContainsFunc(simEnvironments, func(e simEnvironment) bool {
+			return slices.ContainsFunc(e.cells, func(c simCell) bool { return c.profile == p })
+		}) {
+			t.Fatalf("no environment runs the profile %v", p.Name)
+		}
+	}
 	runs := map[string]map[string]int{}
 	var names []string
+	// ran is the number of environments whose subtest ran, and more reports whether each cell ran as
+	// many seeds as its own at least.
+	ran, more := 0, true
 	for _, c := range simEnvironments {
 		counts := map[string]int{}
 		runs[c.name], names = counts, append(names, c.name)
+		for _, cell := range c.cells {
+			name := c.name + "/" + cell.profile.Name
+			runs[name], names = map[string]int{}, append(names, name)
+		}
 		t.Run(c.name, func(t *testing.T) {
+			ran++
 			seeds := 0
 			for i, cell := range c.cells {
+				of := runs[c.name+"/"+cell.profile.Name]
 				n := simSeeds(t, cell.seeds)
 				if slow() {
-					n = 1
+					n = max(n/10, 1)
 				}
+				more = more && n >= uint64(cell.seeds)
 				for k := range n {
-					seed := cell.profile.Seed(k)
+					seed := cell.profile.Seed(c.first + k)
 					seeds++
 					s := simulate(t, seed, c.w)
 					if v := s.violations(); len(v) > 0 {
 						t.Fatalf("seed %v: %v\nreplay it with: %v", seed, strings.Join(v, "\n"), replayCommand(seed, "-workload", c.name))
 					}
-					for k, v := range tallyOf(s) {
-						counts[k] += v
+					for kind, v := range tallyOf(s) {
+						counts[kind] += v
+						of[kind] += v
 					}
-					counts["trace lines"] += len(s.lines)
-					if k == 0 && (i == 0 || !slow()) {
+					if k == 0 && (i < 3 || !slow()) {
 						again := simulate(t, seed, c.w)
 						is.True(t, slices.Equal(s.lines, again.lines), fmt.Sprint("seed ", seed, " gives two traces; replay it with: ", replayCommand(seed, "-workload", c.name)))
 					}
 				}
 			}
 			t.Logf("%v seeds: %v", seeds, counts)
-			if !counted {
+			if slow() {
 				return
 			}
 			if share := float64(counts["failed: no lease"]) / float64(counts["statements"]); share > c.noLease {
@@ -2508,12 +2539,22 @@ func TestSimulation(t *testing.T) {
 			}
 		})
 	}
-	if !counted || t.Failed() {
-		return
-	}
 	path := filepath.Join("testdata", "reached", "TestSimulation")
-	reached := stmttest.Reached{Kinds: path + ".kinds", Counts: path + ".tsv", Doc: "What the seeds of each environment of TestSimulation of the engine reach together."}
-	failures, err := reached.Check(names, runs)
+	reached := stmttest.Reached{Kinds: path + ".kinds", Counts: path + ".tsv", Doc: "What the seeds of each environment of TestSimulation of the engine, and of each of its cells, reach.",
+		Exact: func(kind string) bool { return strings.HasPrefix(kind, "integrity checks ") }}
+	check := reached.Check
+	switch {
+	case t.Failed():
+		return
+	case slow() || ran < len(simEnvironments) || !more:
+		t.Logf("NOT CHECKED: what the seeds reach, in a run of a part of the seeds")
+		noRecount(t)
+		return
+	case os.Getenv("S4QL_ENGINE_SIM_SEEDS") != "":
+		noRecount(t)
+		check = reached.Least
+	}
+	failures, err := check(names, runs)
 	is.NotError(t, err)
 	for _, failure := range failures {
 		t.Error(failure)

@@ -502,10 +502,12 @@ func TestConn_differential(t *testing.T) {
 		}
 	}
 	t.Logf("%v calls ran in SQLite, and were compared with it", total[comparedWithSQLite])
-	if !slow() {
-		checkReached(t, "What each profile of TestConn_differential of the engine reaches in its full run.", names, runs)
-		// On the one sequence of all areas, before the profiles, 60 sequences ran 2,998 calls in SQLite.
-		is.True(t, total[comparedWithSQLite] >= 2998, "the calls that run in SQLite are not fewer than before the profiles")
+	if slow() {
+		noRecount(t)
+	} else {
+		checkReached(t, "What each profile of TestConn_differential of the engine reaches in its full run.", names, runs, false)
+		// A floor under the calls that run in SQLite: the 2,998 of the run of 2026-11-20.
+		is.True(t, total[comparedWithSQLite] >= 2998, "the calls that run in SQLite")
 		for _, kind := range []string{"update attempt to write a readonly database", "update with a parameter attempt to write a readonly database", "delete attempt to write a readonly database"} {
 			if total[kind] == 0 {
 				t.Errorf("no statement has the outcome %q", kind)
