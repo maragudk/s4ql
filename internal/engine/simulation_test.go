@@ -2764,7 +2764,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// with updates and deletes in it, 18 there; and on 2026-11-20, with indexes in it, which take
 		// turns of the inserts, 8 there, and the second of them is seed 59. Since the sequence of the
 		// hammer workload gives whole reals for INT and INTEGER columns, [stmttest.Sequence.Mistyped],
-		// 81 there, and with the clauses of slice 10 and the defaults of slice 11 too, 67.
+		// 81 there, and with the clauses of slice 10 and slices 11 and 12 too, 59.
 		{"convertReal", hammerWorkload, "hammer", []string{"stores a value of another type than its column", "and the rule for the type of a value"}},
 		// A row that holds its values in other columns than its statement names: the replay of the log
 		// into an empty cache, which writes the rows, differs from SQLite, which runs the statements; a
@@ -2793,7 +2793,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// sequence, 32 found the bug there and 8 in the default workload; on 2026-11-20, with indexes
 		// in it, 27 there; and with the bounds of the key of updates and deletes, and the whole reals of
 		// [stmttest.Sequence.Mistyped], 24, and with the clauses of slice 10 and the defaults of slice
-		// 11 too, 12.
+		// 11 and the values on the left of slice 12 too, 10.
 		{"openBound", hammerWorkload, "hammer", []string{", and in SQLite", "which began at commit"}},
 		// A scan that pins a column of the key of an index, or of the primary key, to the value of a
 		// condition on another column. Where the value is of another type than the column, or NULL in
@@ -2802,7 +2802,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// changes other rows, after which the statements can differ. Of the first 200 seeds, on
 		// 2026-11-20, with the sequence of every second seed indexed, 19 found the bug, each by the
 		// refusal of the core, and the second of them is seed 23; with the bounds of the key of updates
-		// and deletes, 22, and with the clauses of slice 10 and the defaults of slice 11 too, 21.
+		// and deletes, 22, and with the clauses of slice 10 and slices 11 and 12 too, 15.
 		{"pinByPlace", defaultWorkload, "default", []string{"the storage core refused a call that the engine had checked", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 		// An update or a delete that changes nothing and says so: of its own, it is in no commit, and
 		// SQLite, which runs it on the state that it saw, changes rows; in a transaction, SQLite gives
