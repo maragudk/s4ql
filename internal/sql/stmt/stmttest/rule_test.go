@@ -339,4 +339,62 @@ func TestIndexRule(t *testing.T) {
 		is.NotError(t, err, c.src)
 		is.Equal(t, c.want, stmttest.IndexRule(tables, indexes, s), c.src)
 	}
+
+	t.Run("should give nothing for a statement of IF NOT EXISTS or IF EXISTS that does nothing, and the plain statement's error otherwise", func(t *testing.T) {
+		for _, c := range []struct{ src, want string }{
+			{"create index if not exists I on u (nosuch)", ""},
+			{"create index if not exists i on nosuch (a)", "no such table: main.nosuch"},
+			{"create index if not exists t on t (a)", "there is already a table named t"},
+			{"create index if not exists j on t (z)", "no such column: z"},
+			{"drop index if exists j", ""},
+			{"drop index if exists t", ""},
+		} {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err, c.src)
+			is.Equal(t, c.want, stmttest.IndexRule(tables, indexes, s), c.src)
+		}
+	})
+}
+
+func TestExistsRule(t *testing.T) {
+	tables := map[string][]stmttest.TableColumn{
+		"t": {{Name: "k", Type: "INT", PrimaryKey: true}, {Name: "a", Type: "INT"}},
+		"u": {{Name: "v", Type: "TEXT", PrimaryKey: true}},
+	}
+	indexes := map[string]bool{"i": true}
+	for _, c := range []struct{ src, want string }{
+		{"create table if not exists T (x blob primary key, x int) strict, without rowid", "a table of the name exists"},
+		{"create table t (k int primary key) strict, without rowid", ""},
+		{"create table if not exists i (k int primary key) strict, without rowid", ""},
+		{"create table if not exists w (k int primary key) strict, without rowid", ""},
+		{"drop table if exists w", "no table of the name exists"},
+		{"drop table if exists I", "no table of the name exists, and an index has it"},
+		{"drop table if exists U", ""},
+		{"drop table w", ""},
+		{"create index if not exists i on u (v)", "an index of the name exists"},
+		{`create index if not exists "I" on t (a, nosuch)`, "an index of the name exists, and the table lacks a column of the statement"},
+		{"create index if not exists i on nosuch (a)", ""},
+		{"create index if not exists t on t (a)", ""},
+		{"create index if not exists j on t (a)", ""},
+		{"create index i on t (a)", ""},
+		{"drop index if exists j", "no index of the name exists"},
+		{"drop index if exists T", "no index of the name exists, and a table has it"},
+		{"drop index if exists i", ""},
+		{"drop index j", ""},
+		{"select * from t", ""},
+	} {
+		s, err := stmt.Check(c.src)
+		is.NotError(t, err, c.src)
+		is.Equal(t, c.want, stmttest.ExistsRule(tables, indexes, s), c.src)
+	}
+
+	t.Run("should follow the tables and the indexes that it is given, as a drop table leaves them without the indexes of its table", func(t *testing.T) {
+		after := map[string][]stmttest.TableColumn{"u": tables["u"]}
+		s, err := stmt.Check("create index if not exists i on t (a)")
+		is.NotError(t, err)
+		is.Equal(t, "", stmttest.ExistsRule(after, map[string]bool{}, s))
+		s, err = stmt.Check("drop index if exists i")
+		is.NotError(t, err)
+		is.Equal(t, "no index of the name exists", stmttest.ExistsRule(after, map[string]bool{}, s))
+	})
 }

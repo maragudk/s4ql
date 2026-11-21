@@ -842,7 +842,7 @@ footer ul {
   <div class="wrap">
     <div class="block-head">
       <h2 id="status-h">Status</h2>
-      <p>As of 20 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
+      <p>As of 21 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
     </div>
     <table class="status-table">
       <tbody>
@@ -858,6 +858,7 @@ footer ul {
               <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>. Rows without <code>order by</code> come in a varying order.</li>
               <li><code>update</code> and <code>delete</code>, with or without that <code>where</code>. An update may change the primary key, and <code>RowsAffected</code> is what SQLite reports.</li>
               <li><code>create index</code> and <code>drop index</code>, on one or more columns, each ascending or descending, not unique. The engine picks the index for a <code>where</code> by fixed rules.</li>
+              <li><code>if not exists</code> on <code>create table</code> and <code>create index</code>, and <code>if exists</code> on <code>drop table</code> and <code>drop index</code>.</li>
               <li>Arguments for a plain <code>?</code>, directly and through prepared statements.</li>
               <li>Transactions, also read-only ones.</li>
               <li>Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.</li>
@@ -874,7 +875,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Mutation testing of indexes, then slice 10 (<code>if not exists</code> and <code>if exists</code>). After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>Mutation testing of indexes and of slice 10, then slice 11 (<code>default</code>). After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -968,10 +969,10 @@ footer ul {
         <div><h3>Slice 9: indexes</h3><p><code>create index</code> on one or more columns, each <code>asc</code> or <code>desc</code>, and <code>drop index</code>. The log holds only the definition, and the cache holds a real SQLite index. s4ql picks the index by fixed rules, so the choice is the same on every instance, and rows without <code>order by</code> come in an order that varies from query to query. The statements run, and generated queries run through every path that can serve them. Mutation testing is still to come.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 10: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not. A statement that does nothing writes nothing to the log.</p></div>
-        <span class="where caps">Agreed</span>
+        <div><h3>Slice 10: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not, and the same for indexes. A statement that does nothing writes nothing to the log. The statements run, and generated sequences check them against SQLite. Mutation testing is still to come.</p></div>
+        <span class="where caps">Built</span>
       </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>
