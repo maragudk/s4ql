@@ -62,7 +62,8 @@ func parseDefault(sql string, typ s4qlpb.Type) (*s4qlpb.Value, bool) {
 		}
 		v = s4qlpb.Value_builder{Real: new(r)}.Build()
 	case typ == s4qlpb.Type_TYPE_TEXT:
-		if len(sql) < 2 || sql[0] != '\'' || sql[len(sql)-1] != '\'' {
+		// The quotes are checked with the rest of the spelling at the end.
+		if len(sql) < 2 {
 			return nil, false
 		}
 		text := strings.ReplaceAll(sql[1:len(sql)-1], "''", "'")
@@ -71,7 +72,8 @@ func parseDefault(sql string, typ s4qlpb.Type) (*s4qlpb.Value, bool) {
 		}
 		v = s4qlpb.Value_builder{Text: new(text)}.Build()
 	case typ == s4qlpb.Type_TYPE_BLOB:
-		if len(sql) < 3 || !strings.HasPrefix(sql, "x'") || sql[len(sql)-1] != '\'' {
+		// The x and the quotes are checked with the rest of the spelling at the end.
+		if len(sql) < 3 {
 			return nil, false
 		}
 		b, err := hex.DecodeString(sql[2 : len(sql)-1])
