@@ -381,6 +381,32 @@ func TestEngine_report(t *testing.T) {
 			_, ok := r.events[0][attrDirection]
 			is.True(t, !ok, src)
 		}
+
+		// In a write transaction and in a read-only one, a query draws, and an update and a delete
+		// draw none, so the queries take the draws in turn.
+		for _, readOnly := range []bool{false, true} {
+			r := &recorder{}
+			h := &drawHost{Host: host.New(), draws: []uint64{2, 7}}
+			c := newEngine(newTable(), h, Options{Logger: slog.New(r)}).Conn()
+			begin := map[bool]func(context.Context) error{false: c.Begin, true: c.BeginReadOnly}[readOnly]
+			is.NotError(t, begin(t.Context()))
+			var directions []string
+			for _, src := range []string{"update t set w = 30 where k = 1", "select * from t where w = 20", "delete from t where k = 2", "select * from t"} {
+				if strings.HasPrefix(src, "select") {
+					rows, err := c.Query(t.Context(), src)
+					is.NotError(t, err)
+					for _, err := range rows.All() {
+						is.NotError(t, err)
+					}
+				} else {
+					_, _ = c.Exec(t.Context(), src)
+				}
+				directions = append(directions, r.events[len(r.events)-1][attrDirection])
+			}
+			is.NotError(t, c.Rollback(t.Context()))
+			is.Equal(t, "[ forward  backward]", fmt.Sprint(directions), fmt.Sprint("read-only: ", readOnly))
+			is.Equal(t, 2, h.drawn)
+		}
 	})
 }
 
