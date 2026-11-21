@@ -1399,7 +1399,8 @@ func TestStmt_StepContext(t *testing.T) {
 		s, err := c.Prepare("select 1")
 		is.NotError(t, err)
 		is.NotError(t, s.Finalize())
-		_, err = s.StepContext(t.Context())
+		ok, err := s.StepContext(t.Context())
+		is.True(t, !ok)
 		is.Equal(t, codeMisuse, code(t, err))
 	})
 

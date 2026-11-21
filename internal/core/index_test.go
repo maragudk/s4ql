@@ -2575,6 +2575,34 @@ func TestScanIndex_context(t *testing.T) {
 			}
 		})
 
+		t.Run(fmt.Sprint("should not count the rows of a sort of a few rows, which SQLite would count before it looks at the context, when the context has ended before the loop over it stops, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			transact(t, d, createWith(tableOf("few", 1, "k", "v")), upsert("few", 1, 3), upsert("few", 2, 2), upsert("few", 3, 1))
+			var s bigScanner
+			if read {
+				r, err := startRead(t, d)
+				is.NotError(t, err)
+				defer func() { _ = r.Close(t.Context()) }()
+				s = r
+			} else {
+				tx, err := d.Begin(t.Context())
+				is.NotError(t, err)
+				defer func() { _ = tx.Rollback(t.Context()) }()
+				s = tx
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			before := s.RowsRead()
+			for _, err := range s.ScanIndex(ctx, "few", core.IndexScan{Order: orderOf(1)}) {
+				is.NotError(t, err)
+				cancel()
+				break
+			}
+			is.Equal(t, int64(1), s.RowsRead()-before)
+		})
+
 		t.Run(fmt.Sprint("should stop the instance as for a local failure, count none of the rows, and fail a write transaction, when the count of the rows that a sort read and did not give cannot read the cache, in a read transaction ", read), func(t *testing.T) {
 			vfs, err := faultvfs.New()
 			is.NotError(t, err)
