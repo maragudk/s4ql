@@ -98,3 +98,61 @@ Making every path run both orders without more statements: the paths of the upda
 ### Future work
 
 - The generated checks, their tallies, the planted bug in the simulation, and the documents: the next steps.
+
+## Step 3: The generated checks, their tallies, the fuzz targets, and the planted bug in the simulation
+
+**Author:** value-left-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "4. Generated checks: turn on `Generator.ValueFirst` in `stmttest.Sequence`, so that `TestDifferential`, `TestConn_differential`, the driver check, the simulation, and the fuzz targets write conditions of both orders, run through every path as slice 9's checks do [...] with tallies that count conditions with the value on the left by operator and by outcome [...] One planted bug [...] 6. [...] when a tallied kind gets rarer, first try the generator's rates; lower a least number only to a third of its recounted value and never to a number that rounds to zero at the test's seed count [...] never drop a tally without writing beside it where the kind is still required."
+**Interpretation:** One comparison in some number of the sequence with its value first, a rule in `stmttest` that names such comparisons, tallies by operator and outcome in every generated check with least numbers, the paths run in the form of the text, the hand-built fuzz targets taught the form, and `unturnedBound` in the simulation.
+**Inferred intent:** A generator that stops writing a value on the left, or an engine that reads it wrongly on some path, fails a test.
+
+### What I did
+
+- `/internal/sql/stmt/stmttest/sequence.go`: `Generator.ValueFirst` is 3 in `NewSequence`, so one comparison in three of a WHERE of a select, an update, or a delete is written with its value first, the hooks' conditions too.
+- `/internal/sql/stmt/stmttest/rule.go`: `ValueFirstCases` names each comparison with its value first, by its operator as the text writes it, and those with NULL, a literal or a nil argument (`TestValueFirstCases`). `whereText`, which `SelectText`, `FoundQuery`, and `RowQueries` use, writes a condition with `ValueFirst` as the text did, `? op' column`, so that `pair.everyPath` runs every path of a WHERE in the form that it came from; before, it wrote every condition with its column first, and the paths would never have seen the form. `TestWhereCases` and `TestChosenAccess` have cases with a value on the left, and a subtest pins the text of `SelectText`.
+- `/internal/engine/differential_test.go`: `reachValueFirst`, called from `reachWhere` and `reachChange`, counts each case by itself with the outcome of any kind ("finds rows", "finds no row", or the refusal), after the kind of the statement with its own outcome, and once per statement; `pair.reach` counts the statements with a value on the left again by the kind of the transaction; `checkChoice` counts "chosen ... by a value on the left" when the model chooses another access with `!=` in place of the operator of each condition with its value on the left, which pins and bounds nothing; `pair.everyPath` counts the WHERE with a value on the left run by every path and its paths with a range. Least numbers of slice 12 in `reachedDifferential`, in `TestConn_differential`, and in `TestGenerated` of the driver check (`/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`, its own `reachValueFirst`), a third of the run or 1.
+- `FuzzWhere`, `FuzzChanges`, and `FuzzIndexes`: `fuzzBytes.typedConditions` writes a comparison with its value first when the highest bit of its operator's byte is set, and `fuzzBytes.pins` a pin when bit 2 of its byte is set and each bound by bits 16 and 32 of the bounds' byte. The operator a byte chooses is the same as before, so a seed that had the bit set now runs the same condition in the other order. New seeds for `FuzzWhere` and two for each type of `FuzzIndexes`; `TestFuzzIndexes_seeds` requires that they reach the choices and the paths by a value on the left. The fuzz targets that take their statements from `Sequence` (`FuzzDifferential`, `FuzzSQL`'s seeds, the driver check's `FuzzSequence` seeds) write the form now too.
+- `/internal/engine/simulation_test.go`: `tallyOf` counts the statements with a value on the left, those that found rows, those with SQLite's error, and those read by the primary key or an index (`hasValueFirst`), with least numbers in the three workloads, a quarter of the first 1,000 seeds. `unturnedBound` in `TestSimulation_plantedBugs`, in the hammer workload.
+- `TestDifferential_plantedBugs` plants `unturnedBound` too.
+- `internal/sql/stmt/README.md`: the engine and the driver run slice 12 since 2026-11-21; the sentence about the engine's refusal is gone.
+
+### Why
+
+- The rate 3: a value on the left costs the other kinds nothing, since a condition is the same condition in either order, but the generator draws a number for each comparison, which moves every later statement. I tried 2, 3, 4, and 5 in `TestDifferential`: 2 took six least numbers below their numbers, three of them to 0; 3 four; 4 five; 5 six. 3 it is.
+- `!=` in place of the operator to tell whether a value on the left decided the access: removing the condition would renumber the parameters, which `stmttest.ChosenAccess` refuses, and `!=` keeps a comparison with NULL never true, so only pins and bounds can change.
+
+### What worked
+
+- No generated check found a difference from SQLite or from mattn's build, and no path gave other rows: `TestDifferential` ran 497 WHERE with a value on the left by every path, 195 on a table with an index. The simulation ran 1,000 seeds of each workload without a violation (225 s).
+- The planted bug is found by the property that should find it, rows that differ from SQLite's: in the simulation 33 of the first 200 seeds of the hammer workload find it, 26 by ", and in SQLite", and 11 of the default workload, 6 by it; the default run finds it the second time at seed 24. In `TestDifferential_plantedBugs` 3 of 60 sequences find it, each by the rows of a select of its WHERE as the rules choose it. Each seed that finds it finds nothing without it. Every other planted bug of the simulation is still found twice by its own violation within the limit of 100 seeds; `listOrder` now needs 83 seeds for its second.
+
+### What didn't work
+
+- My first tallies split "finds rows" from "rows changed", which left each operator with a handful of either; one outcome of any kind, "finds rows" or "finds no row", counts both.
+- My first `checkChoice` count removed the conditions with a value on the left, and `stmttest.ChosenAccess` then refused every statement with a parameter among them for its number of arguments.
+- The seeds of `FuzzWhere` first chose the operator with 128 plus its number, which modulo the ten operators is another one, two of them a test for NULL; 130 plus the number is the operator.
+- A Python here-doc with `\n` in it was refused by the permission system; the scripts in the scratchpad worked.
+
+### What I learned
+
+The least numbers moved by chance, as every slice's do: the generator draws one more number per comparison.
+
+### What was tricky
+
+The pins and least numbers that moved, each recounted from the tests' own output, with the value before taken from a run with `ValueFirst` 0:
+- `TestDifferential`: "!= on the key a value of another type" 15 to 6 (least 11 to 2), "> on the key a value of another type" 26 to 11 (least 12 to 3), "delete WHERE that tests a column more than once ok, rows changed" 12 to 5 (least 7 to 1), and "delete WHERE that reads a scan between two bounds ok, rows changed" 5 to 1, dropped, with the select's and the update's kinds and `TestEngine_paths` named beside it. The excuses went from 13, 816, 278, 530, 4, 4, 0, and 0 to 26, 817, 263, 540, 2, 2, 2, and 0; the 2 of `excusedLongCondition` are selects with a long literal on the left of its column, for which SQLite gives rows as for one on the right, and which the rule decides.
+- The driver check: "insert that leaves out a column that takes NULL a value of another type" 7 to 4 (least 7 to 1); "NULL literal into a column that takes NULL attempt to write a readonly database" 10 to 1, dropped, with "read-only transaction: insert attempt to write a readonly database" named beside it; and "write transaction rollback ok while rows are open" 1 to 0, dropped from the kinds that must be reached, with the commit while rows are open, which is still required, and a subtest of `TestTx_databaseSQL` named beside it. Its excuses went from 1715, 7, 679, 338, 384, 100, 24, 53, 97, and 129 to 1632, 14, 611, 345, 347, 99, 22, 41, 96, and 113.
+- The simulation: no least number fell; "statements with a value on the left that found rows" of the idle workload has none, since a quarter of the 34 of 1,000 seeds is less than one in 50.
+- `TestDifferential_plantedBugs`: `pinByPlace` went from about 7 of 60 to 11, which its least number of 3 allows.
+
+### What warrants review
+
+- `whereText` writing the form of the text, since `FoundQuery` and `RowQueries` use it for SQLite's side of the checks of updates.
+- The dropped least numbers and the reasons beside them.
+
+### Future work
+
+- The engine's README, the todo, the merge of `main`, and the review: step 4.

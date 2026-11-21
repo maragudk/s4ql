@@ -794,8 +794,10 @@ func (p *pair) reachWhere(sel *stmt.Select, runs [][]any, got outcome, o runner,
 		if i >= len(runs) {
 			break
 		}
+		query := got.call == callQuery || got.call == callPrepareQuery || got.call == callStmtQuery
 		if !reachesSelect(sel, runs[i]) {
 			count("WHERE with arguments that s4ql refuses " + kind(out))
+			reachValueFirst(sel, nil, kind(out), -1, count)
 			continue
 		}
 		var bound []any
@@ -808,7 +810,8 @@ func (p *pair) reachWhere(sel *stmt.Select, runs [][]any, got outcome, o runner,
 		for _, what := range stmttest.WhereCases(columns, sel, bound) {
 			count(what + " " + kind(out))
 		}
-		if out.failed != "" || got.call != callQuery && got.call != callPrepareQuery && got.call != callStmtQuery {
+		reachValueFirst(sel, bound, kind(out), map[bool]int{true: len(out.rows), false: -1}[query], count)
+		if out.failed != "" || !query {
 			continue
 		}
 		table, _ := p.columnsIn(o, sel.Table.Value)
@@ -860,6 +863,7 @@ func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner
 		count(statement + map[bool]string{true: " with WHERE ", false: " without WHERE "}[where != nil] + outcome)
 		if len(runs[i]) != s.Parameters() || argumentRefusal(runs[i]) != "" {
 			count(statement + " with arguments that s4ql refuses " + outcome)
+			reachValueFirst(&stmt.Select{Where: where}, nil, outcome, -1, count)
 			continue
 		}
 		var bound []any
@@ -885,6 +889,26 @@ func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner
 				count(statement + " " + what + " " + outcome)
 			}
 		}
+		rows := -1
+		if out.affected != "" {
+			rows = map[bool]int{true: 0, false: 1}[out.affected == "0"]
+		}
+		reachValueFirst(sel, selArgs, kind(out), rows, count)
+	}
+}
+
+// reachValueFirst counts with count each case of [stmttest.ValueFirstCases] of the select sel, whose
+// arguments are args, or nil where they are not known, after the outcome of its run: the comparisons
+// with the value on the left of slice 12, by their operator as the text writes it, and those with
+// NULL. An outcome "ok" is "finds rows" or "finds no row" by the number of rows, the rows of a query
+// or those that an update or a delete changed, and "ok" where it is -1, for a run whose rows the
+// check does not count.
+func reachValueFirst(sel *stmt.Select, args []any, outcome string, rows int, count func(string)) {
+	if outcome == "ok" && rows >= 0 {
+		outcome = map[bool]string{true: "finds no row", false: "finds rows"}[rows == 0]
+	}
+	for _, what := range stmttest.ValueFirstCases(sel, args) {
+		count(what + " " + outcome)
 	}
 }
 
@@ -3165,7 +3189,12 @@ func TestGenerated(t *testing.T) {
 		"write transaction commit ok after an insert", "write transaction rollback ok after an insert",
 		"write transaction commit ok after a create table", "write transaction rollback ok after a create table",
 		"write transaction commit ok after a drop table", "write transaction rollback ok after a drop table",
-		"write transaction commit ok while rows are open", "write transaction rollback ok while rows are open",
+		// A roll back while rows are open is left out: when the sequence wrote the values on the left of
+		// slice 12, on 2026-11-21, it drew other random numbers, which took it from 1 to 0. A commit
+		// while rows are open is still required here, and the subtest "should close the rows of the
+		// transaction before its commit or its roll back, which then ends it" of TestTx_databaseSQL of the driver
+		// rolls back while rows are open.
+		"write transaction commit ok while rows are open",
 		// Each call in a write transaction, with arguments, and what it gives.
 		"write transaction: call " + string(callExec) + " with arguments", "write transaction: call " + string(callQuery) + " with arguments",
 		"write transaction: call " + string(callQueryRow) + " with arguments", "write transaction: call " + string(callPrepareExec) + " with arguments",
@@ -3250,11 +3279,19 @@ func TestGenerated(t *testing.T) {
 		"argument nil []byte as *[]uint8": 5, "argument nil []byte as sql.Null[[]uint8]": 4,
 		"NULL literal into a column that takes NULL ok": 20, "NULL argument into a column that takes NULL ok": 8,
 		"NULL literal into a column that takes NULL UNIQUE constraint failed": 7, "NULL argument into a column that takes NULL UNIQUE constraint failed": 1,
-		"NULL literal into a column that takes NULL attempt to write a readonly database": 4, "NULL literal into a column that takes NULL a value of another type": 3,
-		"NULL literal into the key NOT NULL constraint failed": 17, "NULL argument into the key NOT NULL constraint failed": 7,
+		// "NULL literal into a column that takes NULL attempt to write a readonly database" is left
+		// out: when the sequence wrote the values on the left of slice 12, on 2026-11-21, it drew other
+		// random numbers, which took it from 10 to 1. The refusal of an insert in a read-only
+		// transaction, which does not look at its values, is still required as "read-only
+		// transaction: insert attempt to write a readonly database" above.
+		"NULL literal into a column that takes NULL a value of another type": 3,
+		"NULL literal into the key NOT NULL constraint failed":               17, "NULL argument into the key NOT NULL constraint failed": 7,
 		"NULL literal into a column that does not take NULL NOT NULL constraint failed": 4, "NULL argument into a column that does not take NULL NOT NULL constraint failed": 2,
 		"insert that leaves out a column that takes NULL ok": 28, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 8,
-		"insert that leaves out a column that takes NULL a value of another type": 7, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 7,
+		// When the sequence wrote the values on the left of slice 12, it drew other random numbers,
+		// which took "insert that leaves out a column that takes NULL a value of another type" from 7
+		// to 4, whose least number is a third now.
+		"insert that leaves out a column that takes NULL a value of another type": 1, "insert that leaves out a column that takes NULL NOT NULL constraint failed": 7,
 		"insert with NULL in the key: NOT NULL constraint failed": 9, "insert with NULL in a column that does not take it: NOT NULL constraint failed": 5,
 		"insert of NULL beside a value of another type NOT NULL constraint failed": 1, "insert of NULL beside a value of another type a value of another type": 3,
 		"select * with NULL ok": 6, "select of names with NULL ok": 4,
@@ -3404,6 +3441,32 @@ func TestGenerated(t *testing.T) {
 		}
 	}
 
+	// Slice 12, a third of what the run gave on 2026-11-21 when one comparison in three of the
+	// sequence had its value on the left, or 1, as [reachValueFirst] counts them: each operator as the
+	// text writes it, by whether its statement finds rows or none, and by each refusal that a
+	// comparison of it meets, of a value of another type, of a column that the table does not have, of
+	// the arguments, by their number and by what they are; NULL on the left; and a write refused in a
+	// read-only transaction.
+	for kind, least := range map[string]int{
+		"value on the left of = finds rows": 4, "value on the left of != finds rows": 1, "value on the left of < finds rows": 1,
+		"value on the left of <= finds rows": 1, "value on the left of > finds rows": 1, "value on the left of >= finds rows": 2,
+		"value on the left of = finds no row": 31, "value on the left of != finds no row": 6, "value on the left of < finds no row": 7,
+		"value on the left of <= finds no row": 9, "value on the left of > finds no row": 11, "value on the left of >= finds no row": 7,
+		"value on the left of = a value of another type": 14, "value on the left of != a value of another type": 1, "value on the left of < a value of another type": 5,
+		"value on the left of <= a value of another type": 2, "value on the left of > a value of another type": 3, "value on the left of >= a value of another type": 5,
+		"value on the left of = no such column": 4, "value on the left of != no such column": 5, "value on the left of < no such column": 6,
+		"value on the left of <= no such column": 5, "value on the left of > no such column": 5, "value on the left of >= no such column": 4,
+		"value on the left of = not supported": 4, "value on the left of != not supported": 2, "value on the left of < not supported": 1,
+		"value on the left of <= not supported": 2, "value on the left of > not supported": 4, "value on the left of >= not supported": 3,
+		"value on the left of = wrong number of arguments": 7, "value on the left of != wrong number of arguments": 1, "value on the left of < wrong number of arguments": 1,
+		"value on the left of <= wrong number of arguments": 2, "value on the left of > wrong number of arguments": 2, "value on the left of >= wrong number of arguments": 2,
+		"value on the left compared with NULL finds no row": 3, "value on the left of = attempt to write a readonly database": 4,
+	} {
+		if y["reached: "+kind] < least {
+			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
+		}
+	}
+
 	// The texts that each kind of excuse lets through, by kind: those that the comparison accepts
 	// where SQLite and s4ql differ, and the calls that s4ql refuses by its rule, which are checked
 	// against the rule instead of SQLite. Every other kind is pinned at 0. Each number counts calls:
@@ -3489,10 +3552,14 @@ func TestGenerated(t *testing.T) {
 	// for the defaults of its shapes and the text of each DEFAULT, which moves every count, the calls
 	// and the transactions too; and of its own an insert leaves out a column with a default one time
 	// in two, and so has fewer values, fewer parameters, and fewer arguments around them, which took
-	// excusedArguments and excusedArgument down. No count is of a default.
+	// excusedArguments and excusedArgument down. No count is of a default. When one comparison in
+	// three of the sequence had its value on the left, of slice 12, on 2026-11-21, they went from
+	// 1715, 7, 679, 338, 384, 100, 24, 53, 97, and 129 to 1632, 14, 611, 345, 347, 99, 22, 41, 96,
+	// and 113: the generator draws a number for each comparison, which moves every count, the calls
+	// and the transactions too. A value on the left is excused as the same value on the right is.
 	want := map[string]int{
-		excusedPrepare: 1715, excusedStartedTable: 7, excusedArguments: 679, excusedArgument: 338, excusedType: 384,
-		excusedLevel: 100, excusedRowsOpen: 24, excusedTxOpen: 53, excusedOutside: 97, excusedQuoted: 129,
+		excusedPrepare: 1632, excusedStartedTable: 14, excusedArguments: 611, excusedArgument: 345, excusedType: 347,
+		excusedLevel: 99, excusedRowsOpen: 22, excusedTxOpen: 41, excusedOutside: 96, excusedQuoted: 113,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {
