@@ -783,14 +783,14 @@ const (
 	// excusedLongChange is an update or a delete with a literal longer than the length limit, in SET
 	// or in a condition, which s4ql refuses with SQLite's `string or blob too big` after the errors of
 	// the names, whether the statement finds a row or not, where SQLite gives the error only when it
-	// changes a row, and turns a blob literal into NULL: the known difference of docs/todo.md. See
+	// changes a row, and turns a blob literal into NULL: the known difference of docs/todo/sql-front-end.md. See
 	// [pair.checkLength].
 	excusedLongChange = "an update or a delete with a literal longer than the length limit, checked against s4ql's rule"
 	// excusedRecordSlip is an update of two rows or more that s4ql refuses with SQLite's `string or
 	// blob too big` for a record of a row, longer than the length limit by SQLite's measure of that row
 	// alone, with no error of an earlier row, which SQLite stores where its allocator leaves room: the
 	// known difference of
-	// docs/todo.md. See [pair.recordSlips]. Its count depends on the platform, so no test pins it.
+	// docs/todo/sql-front-end.md. See [pair.recordSlips]. Its count depends on the platform, so no test pins it.
 	excusedRecordSlip = "an update of rows of which SQLite does not measure every record, checked by an update of each row alone"
 	// excusedLongCondition is a select with a literal in a condition that is longer than the length
 	// limit, which s4ql refuses with SQLite's `string or blob too big`, and for which SQLite gives
@@ -2382,7 +2382,7 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 // recordSlips reports whether the update u, with the arguments args as SQLite binds them, which the
 // engine refused with `string or blob too big` for the record of a row, and which SQLite ran without
 // that error, succeeding or failing with `UNIQUE constraint failed`, is the known difference of a
-// record that is too long in docs/todo.md: it finds two rows or more, and when the rows change one at
+// record that is too long in docs/todo/sql-front-end.md: it finds two rows or more, and when the rows change one at
 // a time in the order of the key, as the engine changes them, each by an update of that row alone
 // in SQLite, in a savepoint that is rolled back, the first error is `string or blob too big` for the
 // record of a row with the values of its SET. SQLite's `OP_MakeRecord` checks the
@@ -2465,7 +2465,7 @@ func (p *pair) longChange(src string) (kind, in string) {
 // checked, as an insert does. SQLite gives the same for a string literal, which it evaluates once
 // before it reads a row, but for one on the upper bound of the key whose search reaches no row, and
 // turns a blob literal into NULL, so that the select gives no rows: the known difference of
-// docs/todo.md.
+// docs/todo/sql-front-end.md.
 func (p *pair) longCondition(src string) bool {
 	s, _ := stmt.Check(src)
 	sel, ok := s.(*stmt.Select)
@@ -3087,7 +3087,7 @@ func TestPair_tooLongForCache(t *testing.T) {
 	})
 }
 
-// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo.md, at the
+// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo/sql-front-end.md, at the
 // length limit of 1000: the engine refuses the update of two rows whose second record is too long,
 // which SQLite stores on some platforms and refuses on others, and the comparison accepts either
 // only by an update of each row alone in SQLite.

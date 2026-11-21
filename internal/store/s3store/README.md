@@ -9,7 +9,7 @@ What the client does is in the code:
 - the doc comments of `guard` and `body` in `content.go`
 - the event of a request, and the names of its attributes, in `telemetry.go`
 
-This file holds how to run the tests against a real bucket, what was measured on Tigris, why a write cannot go out twice, and what rests on AWS's documentation alone. The project has no AWS credentials, so nothing here was checked against AWS. What is still open is in the todo, under [The S3 client and S3's checksums](../../../docs/todo.md#the-s3-client-and-s3s-checksums).
+This file holds how to run the tests against a real bucket, what was measured on Tigris, why a write cannot go out twice, and what rests on AWS's documentation alone. The project has no AWS credentials, so nothing here was checked against AWS. What is still open is in the todo, under [The S3 client and S3's checksums](../../../docs/todo/s3-client.md).
 
 ## The integration tests
 

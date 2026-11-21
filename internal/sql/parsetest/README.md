@@ -2,7 +2,7 @@
 
 `internal/sql/parsetest` compares a SQL parser under test with SQLite, through the oracle in [`internal/sql/oracle`](../oracle/README.md). It compares three things: whether the first statement of a text parses, the exact message and byte offset of a syntax error, and where the statement ends. It also makes texts for such tests: one-token [mutants](#mutants) of a text, and random [sentences of SQLite's grammar](#sentences-of-the-grammar).
 
-s4ql's own parser in [`internal/sql/parser`](../parser/README.md) is tested with this package, in the first of the four checks that [docs/todo.md](../../../docs/todo.md) lists. [What the parser must match](../oracle/README.md#what-the-parser-must-match) in the oracle's README lists the facts about SQLite that are easy to get wrong.
+s4ql's own parser in [`internal/sql/parser`](../parser/README.md) is tested with this package, in the first of the four checks that [docs/todo/sql-front-end.md](../../../docs/todo/sql-front-end.md) lists. [What the parser must match](../oracle/README.md#what-the-parser-must-match) in the oracle's README lists the facts about SQLite that are easy to get wrong.
 
 ## Testing a parser
 

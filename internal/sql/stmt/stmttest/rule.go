@@ -264,7 +264,7 @@ func boundValue(term stmt.Term, args []any) any {
 // arguments of its parameters but the last, which is the offset. The updates of one row each, in the
 // order of the offsets, change the rows as u changes them, one at a time in the order of the key,
 // and each measures the record of its row afresh, as a statement that changes many rows does not in
-// every build of SQLite: see the known difference of a record that is too long in docs/todo.md.
+// every build of SQLite: see the known difference of a record that is too long in docs/todo/sql-front-end.md.
 func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs []any, one string, oneArgs []any) {
 	conditions, bound := whereText(u.Where, args)
 	table := Quote(u.Table.Value)

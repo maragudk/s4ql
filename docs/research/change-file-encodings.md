@@ -10,7 +10,7 @@ Method: specifications and documentation read on the web. Library facts from the
 
 ## 1. What the format must carry
 
-From `docs/spec.md` and the "Storage formats" item in `docs/todo.md`:
+From `docs/spec.md` and the "Storage formats" item in `docs/todo/storage-formats.md`:
 
 - A format version, the name of the previous change file, the row changes (full rows inserted or changed, keys of deleted rows), schema changes, and, as evidence only, the SQL statements with their non-deterministic inputs.
 - Values of STRICT tables: 64-bit signed integers, 64-bit floats, text, blobs, and NULL. An `ANY` column can hold any of these per row, so the type belongs to each value, not only to the column. [I]
