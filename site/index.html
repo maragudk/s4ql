@@ -851,10 +851,10 @@ footer ul {
           <td>
             <p>Through <code>database/sql</code>, with the package <code>maragu.dev/s4ql</code> as the driver:</p>
             <ul>
-              <li><code>create table</code> and <code>drop table</code> of a strict table with one or more columns, exactly one of them the primary key.</li>
+              <li><code>create table</code> and <code>drop table</code> of a strict table with one or more columns, exactly one of them the primary key, and a <code>default</code> with a literal on a column.</li>
               <li>The column types <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, and <code>blob</code>. A value must have the exact type of its column.</li>
               <li>Columns that are <code>not null</code>, and columns that take null.</li>
-              <li><code>insert</code> of one row, with literals and arguments, with or without a list of columns.</li>
+              <li><code>insert</code> of one row, with literals and arguments, with or without a list of columns. A column that the list leaves out gets its default.</li>
               <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>. Rows without <code>order by</code> come in a varying order.</li>
               <li><code>update</code> and <code>delete</code>, with or without that <code>where</code>. An update may change the primary key, and <code>RowsAffected</code> is what SQLite reports.</li>
               <li><code>create index</code> and <code>drop index</code>, on one or more columns, each ascending or descending, not unique. The engine picks the index for a <code>where</code> by fixed rules.</li>
@@ -871,11 +871,11 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Not built</th>
-          <td><p><code>or</code> and other expressions in a <code>where</code>, <code>order by</code> and <code>limit</code>, more than one row per <code>insert</code>, defaults, and a statement while rows of the same transaction are open.</p></td>
+          <td><p><code>or</code> and other expressions in a <code>where</code>, <code>order by</code> and <code>limit</code>, more than one row per <code>insert</code>, and a statement while rows of the same transaction are open.</p></td>
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>Mutation testing of indexes and of slice 10, then slice 11 (<code>default</code>). After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>Mutation testing of slices 9 to 11, then slice 12 (a value on the left of a comparison). After it comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -974,10 +974,10 @@ footer ul {
         <div><h3>Slice 10: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not, and the same for indexes. A statement that does nothing writes nothing to the log. The statements run, and generated sequences check them against SQLite. Mutation testing is still to come.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 11: <code>default</code> with a literal</h3><p>A column may carry <code>default</code> with a literal or <code>null</code>, and an <code>insert</code> that leaves the column out stores it. The commit format changes: a column carries its default.</p></div>
-        <span class="where caps">Agreed</span>
+        <div><h3>Slice 11: <code>default</code> with a literal</h3><p>A column may carry <code>default</code> with a literal or <code>null</code>, and an <code>insert</code> that leaves the column out stores it. The commit format changes: a column carries its default. The statements run, and generated sequences check them against SQLite. Mutation testing is still to come.</p></div>
+        <span class="where caps">Built</span>
       </li>
       <li class="agreed">
         <span class="glyph" aria-hidden="true"></span>

@@ -4,7 +4,7 @@
 
 `oracle.Judge(src)` judges the first statement of `src` and returns a `Verdict`: whether the statement parses in the vendored SQLite 3.54.1, SQLite's syntax error and its byte offset if it does not, and where the statement ends. Any bytes are allowed, NUL bytes and invalid UTF-8 included, and the verdict is the same on every call. `Judge` prepares the text with `sqlite3_prepare_v2`, through `Conn.PrepareFirst` of the binding in [`internal/sqlite`](../../sqlite/README.md), and never steps it.
 
-This serves the first of the four checks of the parser that [docs/todo.md](../../../docs/todo.md) lists: agreement with SQLite on acceptance and on the exact message and byte offset of a syntax error. The check of the shape of the tree, in [`internal/sql/shapetest`](../shapetest/README.md), asks the oracle too, about the text that it prints from the tree.
+This serves the first of the four checks of the parser that [docs/todo/sql-front-end.md](../../../docs/todo/sql-front-end.md) lists: agreement with SQLite on acceptance and on the exact message and byte offset of a syntax error. The check of the shape of the tree, in [`internal/sql/shapetest`](../shapetest/README.md), asks the oracle too, about the text that it prints from the tree.
 
 SQLite's parser runs the actions of its grammar while it parses. Some actions raise errors that are not about syntax, such as `unknown table option`, and such an error can stop the parse before the statement's end. SQLite has then said nothing about the syntax of the rest. The oracle never guesses: a `Parses` or a `SyntaxError` is a fact about SQLite's grammar, and every other outcome is `NotSaid`. The doc comments in `oracle.go` hold the details of what follows.
 

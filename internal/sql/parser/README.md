@@ -4,7 +4,7 @@
 
 The grammar is SQLite's own `src/parse.y`, with the compile options of the binding in [`internal/sqlite`](../../sqlite/README.md). The parser is a hand-written recursive descent for that grammar. Every non-trivial function names the rules of `parse.y` that it reads.
 
-The parser keeps everything as written. It rejects only what SQLite's grammar rejects. The pass after the parser, [`internal/sql/stmt`](../stmt/README.md), rejects what s4ql does not support. It is built for slice 1 of the roadmap. It does not yet raise the errors that SQLite's grammar actions raise. [docs/todo.md](../../../docs/todo.md) lists what of that pass is not built, and the four checks of the parser, of which the first three are built: agreement with SQLite, the ownership of every token, and the shape of the tree, which [`internal/sql/shapetest`](../shapetest/README.md) compares with SQLite.
+The parser keeps everything as written. It rejects only what SQLite's grammar rejects. The pass after the parser, [`internal/sql/stmt`](../stmt/README.md), rejects what s4ql does not support. It is built for slice 1 of the roadmap. It does not yet raise the errors that SQLite's grammar actions raise. [docs/todo/sql-front-end.md](../../../docs/todo/sql-front-end.md) lists what of that pass is not built, and the four checks of the parser, of which the first three are built: agreement with SQLite, the ownership of every token, and the shape of the tree, which [`internal/sql/shapetest`](../shapetest/README.md) compares with SQLite.
 
 SQLite's verdicts come from the oracle in [`internal/sql/oracle`](../oracle/README.md), through the harness in [`internal/sql/parsetest`](../parsetest/README.md).
 

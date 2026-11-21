@@ -511,6 +511,21 @@ func TestConn_differential(t *testing.T) {
 			"create index if not exists did nothing: an index of the name exists in a read-only transaction": 1,
 			"create index if not exists attempt to write a readonly database in a read-only transaction":     2,
 			"drop index if exists did nothing: no index of the name exists in a read-only transaction":       1,
+			// The defaults of slice 11 in transactions, which [pair.reach] counts again by the kind of
+			// the transaction, a third of what the run gave on 2026-11-21, or 1: in a write transaction,
+			// a create table with a default, an insert that stores a default, of the key too, and an
+			// explicit NULL, UNIQUE from the default of the key, and NOT NULL from a DEFAULT NULL; in a
+			// read-only one, the refusal of a create table with a default and of an insert that would
+			// store one.
+			"create table with a default on the key ok in a write transaction":                                                            11,
+			"insert that leaves out a column with a default of integer ok in a write transaction":                                         2,
+			"insert that leaves out the key with a default ok in a write transaction":                                                     2,
+			"insert that leaves out a column that takes NULL with DEFAULT NULL ok in a write transaction":                                 1,
+			"NULL given for a column with a default, which takes NULL ok in a write transaction":                                          2,
+			"insert that leaves out the key with a default UNIQUE constraint failed in a write transaction":                               1,
+			"insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed in a write transaction": 1,
+			"create table with a default on the key attempt to write a readonly database in a read-only transaction":                      11,
+			"insert that leaves out a column with a default of integer attempt to write a readonly database in a read-only transaction":   3,
 		} {
 			if y["reached: "+kind] < least {
 				t.Errorf("the run reaches %q %v times, and at least %v were expected", kind, y["reached: "+kind], least)
@@ -601,7 +616,7 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		if failure := p.step(c); failure != "" {
 			fail("%v", failure)
 		}
-		if s, _ := checkText(c.Src); open == "write" && p.last.err == "" && i.changes > 0 && changesRows(c.Src) {
+		if s, _ := stmt.Check(c.Src); open == "write" && p.last.err == "" && i.changes > 0 && changesRows(c.Src) {
 			_, isInsert := s.(*stmt.Insert)
 			changed = changed || !isInsert
 		}

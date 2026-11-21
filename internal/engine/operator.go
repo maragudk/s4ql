@@ -837,12 +837,14 @@ func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []c
 
 // buildValues: the source of the rows of v, with args for their parameters, and the expressions of
 // each row. The value at the index i of a row of v is for the column at positions[i] of a table of
-// width columns, and each row that it gives has a value for each column of the table, in the order
-// of the table, with NULL for a column that positions do not name, as SQLite gives a column that an
-// insert leaves out, whose default is NULL. Its expression is nil.
-func buildValues(v *Values, args []*s4qlpb.Value, positions []int, width int) (*values, [][]Expr, error) {
+// the columns, and each row that it gives has a value for each column of the table, in the order of
+// the table, with the default of a column that positions do not name, as SQLite gives a column that
+// an insert leaves out, or NULL if the column has none. Its expression is nil. A NULL that the
+// statement gives is NULL, whatever the default of its column.
+func buildValues(v *Values, args []*s4qlpb.Value, positions []int, columns []*s4qlpb.Column) (*values, [][]Expr, error) {
 	src := &values{}
 	var exprs [][]Expr
+	width := len(columns)
 	for _, row := range v.Rows {
 		if len(row) != len(positions) {
 			return nil, nil, internalError("a row of %v values for %v columns", len(row), len(positions))
@@ -856,7 +858,11 @@ func buildValues(v *Values, args []*s4qlpb.Value, positions []int, width int) (*
 			data[positions[i]], es[positions[i]] = value, e
 		}
 		for position, value := range data {
-			if value == nil {
+			switch c := columns[position]; {
+			case value != nil:
+			case c.HasDefault():
+				data[position] = c.GetDefault()
+			default:
 				data[position] = null()
 			}
 		}
@@ -962,6 +968,15 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 				// Only when it is true, as the storage gives the table back.
 				column.Nullable = new(true)
 			}
+			if c.Default != nil {
+				// The literal of the DEFAULT, which the pass gives only of the type of its column, or
+				// NULL. The storage keeps a -0.0 as 0.0, which is what SQLite stores for it.
+				v, err := eval(c.Default, nil)
+				if err != nil {
+					return nil, err
+				}
+				column.Default = v
+			}
 			ct.Columns = append(ct.Columns, column.Build())
 		}
 		create := createTable{w: w, ct: ct.Build()}
@@ -1041,21 +1056,31 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		case n != len(p.Columns):
 			return nil, valuesForColumns(n, len(p.Columns))
 		}
-		src, exprs, err := buildValues(v, args, positions, width)
+		src, exprs, err := buildValues(v, args, positions, t.GetColumns())
 		if err != nil {
 			return nil, err
 		}
-		if b.zeroLeftOut && p.Columns != nil {
-			// The planted bug: a column that takes NULL and that the list leaves out gets the zero
-			// value of its type.
+		if p.Columns != nil {
 			for position, c := range t.GetColumns() {
-				if !named[position] && c.GetNullable() {
+				switch {
+				case named[position]:
+				case b.zeroLeftOut && c.GetNullable() && !c.HasDefault():
+					// The planted bug: a column that takes NULL, has no default, and that the list leaves
+					// out gets the zero value of its type.
 					src.data[0][position] = zeroOf(c.GetType())
+				case b.nullDefault && c.HasDefault():
+					// The planted bug: a column with a default that the list leaves out gets NULL.
+					src.data[0][position] = null()
 				}
 			}
 		}
-		for _, row := range src.data {
-			for _, v := range row {
+		// SQLite checks the length of a value that the statement gives, a literal or an argument, when
+		// it binds it. A default is only in the record of the row, which the storage measures.
+		for n, row := range src.data {
+			for position, v := range row {
+				if exprs[n][position] == nil {
+					continue
+				}
 				if err := checkLength(v, limit); err != nil {
 					return nil, err
 				}

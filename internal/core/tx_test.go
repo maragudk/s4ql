@@ -2722,7 +2722,9 @@ func TestTx_tooBig(t *testing.T) {
 		} {
 			tx, err := d.Begin(ctx)
 			is.NotError(t, err)
-			is.Error(t, core.ErrInvalid, tx.CreateTable(ctx, long))
+			err = tx.CreateTable(ctx, long)
+			is.Error(t, core.ErrInvalid, err)
+			is.Error(t, core.ErrTooLongForCache, err)
 			is.NotError(t, tx.CreateTable(ctx, tableOf("u", 1, "k")), "the transaction goes on")
 			is.NotError(t, tx.Commit(ctx))
 			transact(t, d, func(t *testing.T, tx *core.Tx) {
@@ -2746,7 +2748,9 @@ func TestTx_tooBig(t *testing.T) {
 		d := w.serve(t, "a", options)
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
-		is.Error(t, core.ErrInvalid, tx.CreateTable(t.Context(), tableOf(strings.Repeat("t", n+1), 1, "k")))
+		err = tx.CreateTable(t.Context(), tableOf(strings.Repeat("t", n+1), 1, "k"))
+		is.Error(t, core.ErrInvalid, err)
+		is.Error(t, core.ErrTooLongForCache, err)
 		is.NotError(t, tx.CreateTable(t.Context(), tableOf(strings.Repeat("t", n), 1, "k")))
 		is.NotError(t, tx.Commit(t.Context()))
 		is.NotError(t, d.Close(t.Context()))
@@ -2802,7 +2806,9 @@ func TestTx_tooBig(t *testing.T) {
 		transact(t, d, func(t *testing.T, tx *core.Tx) {
 			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t", 1, "k", "v")))
 			is.NotError(t, tx.Upsert(t.Context(), "t", row(1, 2)))
-			is.Error(t, core.ErrInvalid, tx.CreateIndex(t.Context(), indexOf(long, "t", 1)))
+			err := tx.CreateIndex(t.Context(), indexOf(long, "t", 1))
+			is.Error(t, core.ErrInvalid, err)
+			is.Error(t, core.ErrTooLongForCache, err)
 			is.NotError(t, tx.CreateIndex(t.Context(), indexOf(long[1:], "t", 1)), "the transaction goes on")
 			is.NotError(t, tx.DropIndex(t.Context(), long[1:]))
 			is.NotError(t, tx.CreateIndex(t.Context(), indexOf(fits, "t", 1)))

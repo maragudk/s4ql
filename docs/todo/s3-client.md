@@ -1,0 +1,8 @@
+# The S3 client and S3's checksums
+
+Status: built in `internal/store/s3store` on 2026-11-13. It passes the conformance suite against the project's Tigris bucket. What was found about Tigris, and what rests on AWS's documentation alone, is in [internal/store/s3store/README.md](../../internal/store/s3store/README.md). This item holds what is still open.
+
+Markus asked: "Maybe S3 already knows the hash of its objects?" It does. On upload, the client signs the request with the commit object's SHA-256 as the hash of its payload and sends it as the object's checksum, and the store refuses content that does not match it.
+
+- **Open: the check on download is not the one that was agreed.** The agreed bullet was: "On download, the client compares the checksum that S3 returns with the name, before it reads the body." The builder of the client did not add a checksum to `store.Store.Get`. The client asks the store for the checksum that it holds, and the SDK compares it with the content as it is read, so a read of content that does not match it fails at its end. A comparison with the name before the body would need the name in the interface, and it would only catch an object stored with another checksum, which the check on upload rules out for every object that s4ql writes. The reader of a commit object reads to the end and checks the name anyway. Markus decides whether that is enough.
+- **Not checked: AWS, and other stores than Tigris.** There are no AWS credentials. The spec asks three things of a store, and checksums are not among them, so a store that does not check the payload's hash still works, without the second guard.

@@ -468,7 +468,8 @@ func checkCreateTable(ct *s4qlpb.CreateTable, commitTime time.Time) error {
 // CreateTable from its name, its columns, and its primary key. It fails with an error that wraps
 // [ErrTableExists] if a table has the name, and [ErrIndexExists] if an index has it, compared as
 // SQLite compares names, with [ErrReservedName] for a name that starts with "s4ql_" or "sqlite_",
-// and with [ErrInvalid] for a table that the database cannot hold.
+// and with [ErrInvalid] for a table that the database cannot hold, also with [ErrTooLongForCache]
+// for one whose statement in the cache is longer than the length limit.
 func (tx *Tx) CreateTable(ctx context.Context, ct *s4qlpb.CreateTable) error {
 	const operation = "create table"
 	if err := tx.check(ctx, operation); err != nil {

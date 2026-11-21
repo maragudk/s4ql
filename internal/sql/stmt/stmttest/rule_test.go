@@ -2,6 +2,8 @@ package stmttest_test
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"maragu.dev/is"
@@ -93,6 +95,73 @@ func TestTypeRule(t *testing.T) {
 		is.Equal(t, "null", kind)
 		kind, _ = stmttest.ValueKind(insert.Values[1], []any{[]byte(nil)})
 		is.Equal(t, "blob", kind)
+	})
+}
+
+func TestDefaultCases(t *testing.T) {
+	// The table t (k int primary key default 7, a text default 'x', b real not null default -0.0,
+	// c blob default null, d int not null default NULL, e text not null default '<long>', f int), as
+	// SQLite has it.
+	long := "'" + strings.Repeat("l", stmttest.LongDefault) + "'"
+	columns := []stmttest.TableColumn{
+		{Name: "k", Type: "INT", PrimaryKey: true, Default: "7"},
+		{Name: "a", Type: "TEXT", Nullable: true, Default: "'x'"},
+		{Name: "b", Type: "REAL", Default: "-0.0"},
+		{Name: "c", Type: "BLOB", Nullable: true, Default: "null"},
+		{Name: "d", Type: "INT", Default: "NULL"},
+		{Name: "e", Type: "TEXT", Default: long},
+		{Name: "f", Type: "INT", Nullable: true},
+	}
+	for _, c := range []struct {
+		src    string
+		args   []any
+		rule   string
+		faults string
+		cases  string
+		nulls  string
+	}{
+		{src: "insert into t (d) values (1)", faults: "[]",
+			cases: "[insert that leaves out the key with a default insert that leaves out a column with a default of text insert that leaves out a column with a default of real insert that leaves out a column that takes NULL with DEFAULT NULL insert that leaves out a column with a default of text insert that leaves out a column with a long default]",
+			nulls: "[insert that leaves out a column that takes NULL]"},
+		{src: "insert into t (k, a, b, c, d, e, f) values (1, null, ?, null, 1, 'e', 2)", args: []any{nil}, faults: "[NULL in a column that does not take it]",
+			cases: "[NULL given for a column with a default, which takes NULL NULL given for a column with a default, which does not take NULL]",
+			nulls: "[NULL literal into a column that takes NULL NULL argument into a column that does not take NULL NULL literal into a column that takes NULL]"},
+		// A default NULL in a column that does not take NULL is SQLite's NOT NULL, before a value of
+		// another type.
+		{src: "insert into t (k, f) values (1, 'x')", faults: "[a column without a value a value of another type in another column]",
+			cases: "[insert that leaves out a column with a default of text insert that leaves out a column with a default of real insert that leaves out a column that takes NULL with DEFAULT NULL insert that leaves out a column that does not take NULL with DEFAULT NULL insert that leaves out a column with a default of text insert that leaves out a column with a long default]",
+			nulls: "[insert that leaves out a column that takes NULL]"},
+		// A default of the type of its column is never refused for its type.
+		{src: "insert into t (d, f) values (1, 'x')", rule: "s4ql: not supported: a string literal for the column t.f of type INT", faults: "[a value of another type in another column]",
+			cases: "[insert that leaves out the key with a default insert that leaves out a column with a default of text insert that leaves out a column with a default of real insert that leaves out a column that takes NULL with DEFAULT NULL insert that leaves out a column with a default of text insert that leaves out a column with a long default]",
+			nulls: "[insert that leaves out a column that takes NULL]"},
+		{src: "insert into t (k, d, f) values (?, 1, 2)", args: []any{nil}, faults: "[NULL in the key]",
+			cases: "[NULL given for a column with a default, which does not take NULL insert that leaves out a column with a default of text insert that leaves out a column with a default of real insert that leaves out a column that takes NULL with DEFAULT NULL insert that leaves out a column with a default of text insert that leaves out a column with a long default]",
+			nulls: "[NULL argument into the key insert that leaves out a column that takes NULL]"},
+		{src: "insert into t values (1, 'a', 1.5, x'00', 2, 'e', 3)", faults: "[]", cases: "[]", nulls: "[]"},
+		// SQLite's errors of the names and the number of values come first, and so does the error of
+		// the number of arguments.
+		{src: "insert into t (x) values (1)", faults: "[a column that the table does not have]", cases: "[]", nulls: "[]"},
+		{src: "insert into t (d) values (1, 2)", faults: "[the wrong number of values]", cases: "[]", nulls: "[]"},
+		{src: "insert into t (d) values (?)", faults: "[]", cases: "[]", nulls: "[]"},
+	} {
+		s, err := stmt.Check(c.src)
+		is.NotError(t, err)
+		insert := s.(*stmt.Insert)
+		is.Equal(t, c.rule, stmttest.TypeRule("t", columns, insert, c.args), c.src)
+		is.Equal(t, c.faults, fmt.Sprint(stmttest.Faults(columns, insert, c.args)), c.src)
+		is.Equal(t, c.cases, fmt.Sprint(stmttest.DefaultCases(columns, insert, c.args)), c.src)
+		is.Equal(t, c.nulls, fmt.Sprint(stmttest.NullCases(columns, insert, c.args)), c.src)
+	}
+
+	t.Run("should call a default long from LongDefault bytes of its literal", func(t *testing.T) {
+		s, err := stmt.Check("insert into t (k) values (1)")
+		is.NotError(t, err)
+		for _, n := range []int{stmttest.LongDefault - 1, stmttest.LongDefault} {
+			columns := []stmttest.TableColumn{{Name: "k", Type: "INT", PrimaryKey: true}, {Name: "v", Type: "BLOB", Nullable: true, Default: "x'" + strings.Repeat("0", n-3) + "'"}}
+			cases := stmttest.DefaultCases(columns, s.(*stmt.Insert), nil)
+			is.Equal(t, n >= stmttest.LongDefault, slices.Contains(cases, "insert that leaves out a column with a long default"), fmt.Sprint(n))
+		}
 	})
 }
 

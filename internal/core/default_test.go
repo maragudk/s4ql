@@ -275,6 +275,7 @@ func TestTx_CreateTable_defaults(t *testing.T) {
 				err = tx.CreateTable(t.Context(), shape(n))
 				if err != nil {
 					is.Error(t, core.ErrInvalid, err, name)
+					is.Error(t, core.ErrTooLongForCache, err, name)
 					is.True(t, strings.Contains(err.Error(), fmt.Sprint("where the limit is ", limit)), err.Error())
 				}
 				return err == nil

@@ -50,6 +50,8 @@ func TestNewPlan(t *testing.T) {
 		{src: `CREATE INDEX "I 1" ON t1 (v2 DESC, "V1" asc, v3)`, want: "create index \"I 1\" on t1 (v2 desc, \"V1\", v3)\n"},
 		{src: "create index i on t (v)", want: "create index i on t (v)\n"},
 		{src: `DROP INDEX "I 1"`, want: "drop index \"I 1\"\n"},
+		{src: "create table t (k int default - /* c */ 1 primary key, a integer not null default 00012, b real default .5, c real default -0.0, d text default 'it''s', e blob default X'aBcD', f int default NULL, g text not null default null, h int) strict, without rowid",
+			want: "create table t (k INT DEFAULT -1, a INTEGER DEFAULT 12, b REAL NULL DEFAULT 0.5, c REAL NULL DEFAULT -0.0, d TEXT NULL DEFAULT 'it''s', e BLOB NULL DEFAULT x'abcd', f INT NULL DEFAULT null, g TEXT DEFAULT null, h INT NULL, primary key (k))\n"},
 		{src: "create index i on t (a, b desc)", want: "create index i on t (a, b desc)\n"},
 		{src: "drop index I", want: "drop index I\n"},
 		{src: `CREATE TABLE If Not Exists "t" (v int primary key) strict, without rowid`, want: "create table if not exists \"t\" (v INT, primary key (v))\n"},

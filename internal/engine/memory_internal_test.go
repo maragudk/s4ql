@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 
+	"google.golang.org/protobuf/proto"
+
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
@@ -260,7 +262,14 @@ func (x *memTx) dropIndex(_ context.Context, name string) error {
 	return nil
 }
 
+// createTable keeps a default of -0.0 as 0.0, as the core does, which is what SQLite stores for it.
 func (x *memTx) createTable(_ context.Context, ct *s4qlpb.CreateTable) error {
+	ct = proto.CloneOf(ct)
+	for _, c := range ct.GetColumns() {
+		if d := c.GetDefault(); d.HasReal() && d.GetReal() == 0 {
+			c.SetDefault(s4qlpb.Value_builder{Real: new(0.0)}.Build())
+		}
+	}
 	x.tables[fold(ct.GetTable())] = &memTable{ct: ct, rows: map[string][]*s4qlpb.Value{}}
 	return nil
 }
@@ -369,6 +378,9 @@ func (m *memory) state(text func(*s4qlpb.Value) string) string {
 			column := c.GetName() + " " + typeName(c.GetType())
 			if c.GetNullable() {
 				column += " NULL"
+			}
+			if c.HasDefault() {
+				column += " DEFAULT " + text(c.GetDefault())
 			}
 			columns = append(columns, column)
 		}

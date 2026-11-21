@@ -4,7 +4,7 @@ Date: 2026-11-10. Tags: **[V]** = read the primary source in this run (source fi
 
 Question: what do comparable systems tell the client, and what does the node do, when a commit is durable in the authoritative place and the local apply then fails?
 
-For s4ql: after the S3 manifest swap (the commit) succeeds and the local SQLite cache commit fails with an I/O error, what should `Commit` return, and what should the handle do? The proposal under review was that `Commit` returns success, the handle goes into a terminal stopped state, and a reopen catches the cache up from the log. The design agreed afterwards is in [../todo.md](../todo.md#local-io-failure-handling) until it is built.
+For s4ql: after the S3 manifest swap (the commit) succeeds and the local SQLite cache commit fails with an I/O error, what should `Commit` return, and what should the handle do? The proposal under review was that `Commit` returns success, the handle goes into a terminal stopped state, and a reopen catches the cache up from the log. The design agreed afterwards is in [../todo.md](../todo.md) until it is built.
 
 Source: the raw source files fetched for grepping (not published). Links to the originals are given below.
 

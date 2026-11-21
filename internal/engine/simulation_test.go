@@ -21,6 +21,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"google.golang.org/protobuf/proto"
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
@@ -366,9 +367,11 @@ type run struct {
 	ways map[string]string
 	// events of the run that are not statements: crashes, closes, and restarts, by kind.
 	events map[string]int
-	// wide is the number of rows of tables of several columns in the log, and nulls the number of
-	// NULL values in its rows, as [run.verifyRows] counts them.
-	wide, nulls int
+	// wide is the number of rows of tables of several columns in the log, nulls the number of NULL
+	// values in its rows, defaults the number of values in its rows that are the default of their
+	// column, NULL apart, and defaultTables the number of its create tables with a default, as
+	// [run.verifyRows] counts them.
+	wide, nulls, defaults, defaultTables int
 	// endedForLease are the numbers of the run's clock of events at which an instance ended a write
 	// transaction because it lost its lease, by the node and the generation of its engine, as the
 	// event of the storage core says: see [run.verifyOverlaps].
@@ -545,7 +548,7 @@ var idPattern = regexp.MustCompile(`/\* id (\d+) \*/`)
 // withID puts the comment of the ID into the text of a statement that the pass supports, after its
 // first token, where the annotation keeps it.
 func withID(src string, id uint64) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		return src
 	}
@@ -571,7 +574,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	}
 	a.src = withID(call.Src, a.id)
 	call.Src = a.src
-	if s, _ := checkText(a.src); s != nil {
+	if s, _ := stmt.Check(a.src); s != nil {
 		_, isSelect := s.(*stmt.Select)
 		a.write = !isSelect
 	}
@@ -628,7 +631,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	switch {
 	case err == nil:
 		a.state, a.answer = succeeded, got
-		if s, _ := checkText(a.src); res.SetsChanges && isChange(s) {
+		if s, _ := stmt.Check(a.src); res.SetsChanges && isChange(s) {
 			a.changes, a.unchanged = res.Changes, res.Changes == 0
 		}
 		// A write of a transaction is acknowledged by its commit, and a statement that did nothing wrote
@@ -657,7 +660,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 		// the generator, and every other that the pass supports, with the arguments that it takes must
 		// run.
 		kind, failure := checkArguments(call, a.answer)
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
 		if kind == "" && supported && a.answer.err == "not supported" && typeRefusal(a.src, a.answer.message) {
 			// The refusal of a value of another type than its column, after the insert or the select
@@ -1412,15 +1415,19 @@ type logCommit struct {
 // the table, in the order of the table, and each value has the type of its column, or is NULL in a
 // column that takes NULL. The replay of the
 // log in SQLite runs its statements, and not its rows, so it does not see a row that holds the
-// values of a statement in other columns. It gives the number of rows of tables of several columns,
-// and the number of NULL values in the rows.
-func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide, nulls int) {
+// values of a statement in other columns. It counts the rows of tables of several columns, the NULL
+// values in the rows, the values that are the default of their column, which is not NULL, and the
+// create tables with a default, of slice 11, in r.
+func (r *run) verifyRows(ctx context.Context, log []logCommit) {
 	tables := map[string]*s4qlpb.CreateTable{}
 	for k, c := range log {
 		for _, ch := range c.changes {
 			switch {
 			case ch.HasCreateTable():
 				tables[fold(ch.GetCreateTable().GetTable())] = ch.GetCreateTable()
+				if slices.ContainsFunc(ch.GetCreateTable().GetColumns(), (*s4qlpb.Column).HasDefault) {
+					r.defaultTables++
+				}
 			case ch.HasDropTable():
 				delete(tables, fold(ch.GetDropTable().GetTable()))
 			case ch.HasUpsertRows():
@@ -1446,11 +1453,14 @@ func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide, nulls int)
 						continue
 					}
 					if len(columns) > 1 {
-						wide++
+						r.wide++
 					}
 					for i, v := range values {
+						if d := columns[i].GetDefault(); columns[i].HasDefault() && !d.HasNull() && proto.Equal(d, v) {
+							r.defaults++
+						}
 						if v.HasNull() {
-							nulls++
+							r.nulls++
 							// NULL has no type. The core refuses it for a column that does not take
 							// it, so this finds a fault of the engine and of the core together.
 							if !columns[i].GetNullable() {
@@ -1466,7 +1476,6 @@ func (r *run) verifyRows(ctx context.Context, log []logCommit) (wide, nulls int)
 			}
 		}
 	}
-	return wide, nulls
 }
 
 // holds reports whether a column of the type t holds the value v: an integer for INT and INTEGER, a
@@ -1525,7 +1534,7 @@ func fold(name string) string {
 //     the cache of a node after its crash or at the end of the workload: see [run.checkCache].
 func (r *run) verify(ctx context.Context) {
 	log := readLog(r.store)
-	r.wide, r.nulls = r.verifyRows(ctx, log)
+	r.verifyRows(ctx, log)
 	index := map[string]int{format.EmptyLog.String(): 0}
 	inLog := map[uint64]int{}
 	txInLog := map[uint64]int{}
@@ -1713,7 +1722,7 @@ func (r *run) verify(ctx context.Context) {
 				if m := idPattern.FindStringSubmatch(note); m != nil {
 					id, _ := strconv.ParseUint(m[1], 10, 64)
 					if a := r.attempts[id]; a != nil && a.tx == nil && a.state == succeeded && a.write {
-						if s, _ := checkText(a.src); isChange(s) {
+						if s, _ := stmt.Check(a.src); isChange(s) {
 							if a.changes != changes {
 								r.violate(ctx, "commit %v, %q, changes %v rows in SQLite, and its caller was told %v", k+1, note, changes, a.changes)
 							}
@@ -1859,7 +1868,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if got := a.answer.String(); got != want.String() {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
 			}
-			if s, _ := checkText(a.src); a.state == succeeded && isChange(s) {
+			if s, _ := stmt.Check(a.src); a.state == succeeded && isChange(s) {
 				if want.err == "" && a.changes != changes {
 					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, changes %v rows in SQLite, and its caller was told %v", a.id, a.src, tx.id, kind, at, changes, a.changes)
 				}
@@ -1913,7 +1922,7 @@ func (r *run) way(a *attempt) string {
 // event of the run if it is a select with WHERE: by where it ran, of their own or in a transaction,
 // and, for a query that succeeded, by whether it gave rows.
 func (r *run) countWhere(a *attempt, where string) {
-	s, _ := checkText(a.src)
+	s, _ := stmt.Check(a.src)
 	if sel, ok := s.(*stmt.Select); !ok || sel.Where == nil {
 		return
 	}
@@ -1934,7 +1943,7 @@ func (r *run) countWhere(a *attempt, where string) {
 
 // tableOf the statement of src, which the pass supports, folded as SQLite compares names.
 func tableOf(src string) string {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err != nil {
 		panic(err)
 	}
@@ -2143,7 +2152,15 @@ func coreState(ctx context.Context, d *core.DB) (string, error) {
 	for _, ct := range tables {
 		var columns []string
 		for _, c := range ct.GetColumns() {
-			columns = append(columns, columnText(c.GetName(), declType(c.GetType()), c.GetNullable()))
+			var dflt string
+			if c.HasDefault() {
+				text, ok := valueString(c.GetDefault())
+				if !ok {
+					return "", fmt.Errorf("the column %v.%v has the default %v", ct.GetTable(), c.GetName(), text)
+				}
+				dflt = text
+			}
+			columns = append(columns, columnText(c.GetName(), declType(c.GetType()), c.GetNullable(), dflt))
 		}
 		var rows []string
 		for row, err := range r.Scan(ctx, ct.GetTable()) {
@@ -2268,7 +2285,7 @@ func tallyOf(s simulation) map[string]int {
 		if a.typeRefused {
 			counts["refused for the type"]++
 		}
-		s, _ := checkText(a.src)
+		s, _ := stmt.Check(a.src)
 		var kind string
 		switch s.(type) {
 		case *stmt.CreateIndex:
@@ -2331,6 +2348,8 @@ func tallyOf(s simulation) map[string]int {
 	counts["commits"] = len(log)
 	counts["rows of several columns"] = r.wide
 	counts["NULL values in the log"] = r.nulls
+	counts["values of a default in the log"] = r.defaults
+	counts["create tables with a default in the log"] = r.defaultTables
 	for _, c := range log {
 		if slices.ContainsFunc(c.params, func(ps []*s4qlpb.Value) bool { return len(ps) > 0 }) {
 			counts["commits with a parameter"]++
@@ -2441,11 +2460,12 @@ func TestSimulation(t *testing.T) {
 			"NULL values in the log": 0.27,
 			// The selects with WHERE that the checks compare with SQLite, of their own and in a transaction: those
 			// on an engine that reads every row, on one that forces an index path, and those read by an index,
-			// and those that give rows.
+			// and those that give rows. The selects of their own read by an index have no least number here,
+			// since a quarter of what the first 1,000 seeds give is less than one in 50 seeds; the hammer
+			// workload requires them.
 			"selects with WHERE of their own compared with SQLite":                                             0.6,
 			"selects with WHERE of their own compared with SQLite, on an engine that reads every row":          0.094,
 			"selects with WHERE of their own compared with SQLite, on an engine that forces an index path":     0.1,
-			"selects with WHERE of their own compared with SQLite, read by an index":                           0.014,
 			"selects with WHERE of their own that give rows, compared with SQLite":                             0.037,
 			"selects with WHERE in a transaction compared with SQLite":                                         0.88,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row":      0.15,
@@ -2482,6 +2502,10 @@ func TestSimulation(t *testing.T) {
 			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.98, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.54,
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.76, "statements that do nothing, compared with SQLite": 0.41,
 			"statements that do nothing in a transaction, compared with SQLite": 0.57,
+			// The defaults of slice 11, which the shapes of the sequence have since 2026-11-21: the create
+			// tables of the log with a default, and the values of its rows that are the default of their
+			// column, NULL apart, which [run.verifyRows] counts.
+			"create tables with a default in the log": 0.34, "values of a default in the log": 0.3,
 		}, 0.15},
 		// The ends of transactions for the lease, which only this workload reaches.
 		{"idle", idleWorkload, map[string]float64{
@@ -2499,32 +2523,25 @@ func TestSimulation(t *testing.T) {
 			"selects with WHERE of their own compared with SQLite":                                             0.51,
 			"selects with WHERE of their own compared with SQLite, on an engine that reads every row":          0.086,
 			"selects with WHERE of their own compared with SQLite, on an engine that forces an index path":     0.081,
-			"selects with WHERE of their own compared with SQLite, read by an index":                           0.003,
-			"selects with WHERE of their own that give rows, compared with SQLite":                             0.0032,
 			"selects with WHERE in a transaction compared with SQLite":                                         0.57,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row":      0.095,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path": 0.085,
-			"selects with WHERE in a transaction compared with SQLite, read by an index":                       0.0052,
-			"selects with WHERE in a transaction that give rows, compared with SQLite":                         0.0052,
 			"updates and deletes": 2.4, "updates and deletes that succeeded and changed rows": 0.043,
 			"updates and deletes with SQLite's error":                                             0.93,
 			"updates and deletes that change no row, compared with SQLite":                        0.052,
-			"updates and deletes of their own whose count of changes is compared with SQLite":     0.012,
 			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.14,
 			"create index: ok": 0.14, "create index: 1/1: index … already exists": 0.089,
 			"create index: 1/1: no such column: …": 0.039, "create index: 1/1: no such table: …": 0.87,
 			"create index: 1/1: there is already a table named …":     0.091,
 			"create index: 8/8: attempt to write a readonly database": 0.036, "drop index: ok": 0.02,
-			"drop index: 1/1: no such index: …": 0.23, "drop index: 8/8: attempt to write a readonly database": 0.0025,
-			"selects read by an index": 0.013, "updates read by an index": 0.008, "deletes read by an index": 0.0044,
-			"statements on an engine that forces an index path":     1.4,
-			"statements read by the index that their engine forces": 0.02,
-			"crash, then an empty cache, of a log with an index":    0.0052, "replays of a log with an index": 0.038,
-			"indexes dropped while the rows of a query that read by them were open": 0.0035,
-			"integrity checks after a crash":                                        1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
+			"drop index: 1/1: no such index: …":                 0.23,
+			"statements on an engine that forces an index path": 1.4,
+			"replays of a log with an index":                    0.038,
+			"integrity checks after a crash":                    1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
 			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.31, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.25,
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.43, "statements that do nothing, compared with SQLite": 0.068,
 			"statements that do nothing in a transaction, compared with SQLite": 0.24,
+			"create tables with a default in the log":                           0.1, "values of a default in the log": 0.055,
 		}, 0.15},
 		// The least number of the selects with WHERE in a transaction read by an index is a quarter of
 		// the 186 that the first 1,000 seeds gave on 2026-11-20, where it was 0.06, since the sequence
@@ -2534,7 +2551,11 @@ func TestSimulation(t *testing.T) {
 			"failed: timeout": 2.9, "query not read to its end": 0.96, "acknowledged writes": 5.9, "commits": 4.2,
 			"commits with a parameter": 1.2,
 			"fault: lost request":      0.23, "fault: lost response": 0.21, "fault: no answer": 0.25, "fault: conflict": 0.14,
-			"fault: slow way": 0.45, "fault: broken read": 0.02, "fault: cut-off": 0.058, "fault: outage": 0.026,
+			// The broken reads have no least number here: the first 1,000 seeds gave 81 on 2026-11-21, a
+			// quarter of which is less than one in 50 seeds, and the first 50 give none, since the sequence
+			// writes defaults and draws other random numbers. The default and idle workloads require 12
+			// each.
+			"fault: slow way": 0.45, "fault: cut-off": 0.058, "fault: outage": 0.026,
 			"fault: write applied after its caller gave up": 0.079, "fault: write stuck in the network": 0.41,
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4.2,
 			"transactions rolled back": 1.5, "transactions not committed": 0.15, "transactions unknown": 0.1,
@@ -2562,6 +2583,7 @@ func TestSimulation(t *testing.T) {
 			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 1.9, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.92,
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 1.4, "statements that do nothing, compared with SQLite": 0.81,
 			"statements that do nothing in a transaction, compared with SQLite": 1.1,
+			"create tables with a default in the log":                           0.49, "values of a default in the log": 0.6,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2585,7 +2607,11 @@ func TestSimulation(t *testing.T) {
 				return
 			}
 			for kind, least := range c.reached {
-				if want := int(least * float64(n)); counts[kind] < want {
+				want := int(least * float64(n))
+				if least > 0 && want == 0 {
+					t.Errorf("%v seeds require none of %q at its least number %v, so it checks nothing: raise it or drop it, and say where the kind is still required", n, kind, least)
+				}
+				if counts[kind] < want {
 					t.Errorf("%v seeds give %v of %q, and at least %v were expected: something that the workload did stopped happening", n, counts[kind], kind, want)
 				}
 			}
@@ -2712,8 +2738,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// so does the replay of the log into an empty cache, which writes its rows. No check of a value
 		// that is not NULL finds it: the zero value has the type of its column, and no column that
 		// takes NULL is the key. An update or a delete whose WHERE meets the zero value changes another
-		// number of rows than in SQLite, and then the statements after it can differ.
-		{"zeroLeftOut", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
+		// number of rows than in SQLite, and then the statements after it can differ. Since the shapes
+		// of the sequence have defaults, on 2026-11-21, the bug meets only a column without one, and
+		// the default workload found it in 6 of the first 200 seeds, where it found it in 39; the hammer
+		// workload, which runs more statements, finds it in 18, 15 of them by its own violation.
+		{"zeroLeftOut", hammerWorkload, "hammer", []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as some engines
@@ -2750,6 +2779,13 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// SQLite, which runs the statement and does nothing; and the rows that the table lost make later
 		// statements differ.
 		{"replaceExisting", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
+		// An insert that leaves out a column with a default and stores NULL there: a query of the row
+		// gives other rows than in SQLite, which runs the statements of the log, and so does the replay
+		// of the log into an empty cache, which writes its rows; where the column does not take NULL, the
+		// engine gives NOT NULL where SQLite stores the default, so a later statement can differ. Of the
+		// first 200 seeds, on 2026-11-21, 56 found the bug, 53 of them by its own violation. A write in a
+		// transaction plants it too.
+		{"nullDefault", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {

@@ -14,20 +14,23 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, and 10 that meet at a few tables and columns, each
+// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, 10, and 11 that meet at a few tables and columns, each
 // named in several spellings that SQLite takes for one name and in some that it takes for others,
 // with values from a small set so that keys repeat, and with statements that are not supported and
 // texts that SQLite refuses mixed in.
 //
 // Each name of a table has a shape of the sequence's own: from one to [sequenceColumns] columns,
 // each with a name and one of the five types, of which two often have the same type, the primary
-// key at any position, and of the other columns none, all, or some that take NULL. Nine create
-// tables of the name in ten declare that shape, its names in any of their spellings, and one of
-// these in ten gives one column any type, and one in ten turns whether one column takes NULL; the
-// tenth has columns at random, whose names can repeat, which SQLite refuses. An insert into a table
-// of the name names the columns of the shape in a list in any order, or one time in three without a
-// list, in the order of the shape, with a value of the type of each column, or NULL now and then for
-// a column that takes NULL, which a list also leaves out now and then. Now and then it leaves any
+// key at any position, of the other columns none, all, or some that take NULL, and of all its
+// columns none, all, or some with a DEFAULT, as [Sequence.defaultOf] draws it. Nine create tables of
+// the name in ten declare that shape, its names in any of their spellings, and one of these in ten
+// gives one column any type, one in ten turns whether one column takes NULL, and one in ten gives one
+// column another default or none; the tenth has columns at random, whose names can repeat, which
+// SQLite refuses, each with a default one time in four. An insert into a table of the name names the
+// columns of the shape in a list in any order, or one time in three without a list, in the order of
+// the shape, with a value of the type of each column, or NULL now and then for a column that takes
+// NULL, which a list also leaves out now and then, as it leaves out a column with a default one time
+// in two, and the key with a default one time in four. Now and then it leaves any
 // column out of its list, names a column that the shape may not have, has a value more or less, has
 // a value of any type, which is mostly another than its column, for one column or for two, or has
 // NULL for any column, also the key; so some inserts have two faults. A select names * or columns
@@ -37,8 +40,8 @@ import (
 // values hold keys that SQLite takes for one, such as 0.0 and -0.0, so that every type meets a key
 // that exists. An update sets some columns of the shape, as [Sequence.update] draws it, and an
 // update three times in four and a delete four times in five have a WHERE, as [Sequence.changeConditions]
-// draws one: mostly as a select has one, one time in three the key equal to a value of an insert,
-// and one time in six the key bounded on one side by one.
+// draws one: mostly as a select has one, and one time in three the key equal to a value of an
+// insert, or, for every third of those values, bounded on one side by it.
 // A create index names an index from a few names in several spellings, or now and then a name of a
 // table, on a table of the sequence, and the columns of its shape, as [Sequence.createIndex] draws
 // them; a drop index names one of those names, or now and then a name of a table; and a create table
@@ -269,8 +272,51 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 	for i := range shape {
 		shape[i].NotNull = !shape[i].PrimaryKey && (nulls == 0 || nulls == 2 && r.IntN(2) == 0)
 	}
+	// Of all the columns, none has a default, every one has, or each one time in two.
+	defaults := r.IntN(3)
+	for i := range shape {
+		if defaults == 1 || defaults == 2 && r.IntN(2) == 0 {
+			shape[i].Default.Value = q.defaultOf(shape[i].Type)
+		}
+	}
 	q.shapes[name] = shape
 	return shape
+}
+
+// defaultOf a column of the type t, for its DEFAULT: NULL one time in six, also for the key and a
+// column that does not take NULL, so that an insert that leaves the column out meets SQLite's NOT
+// NULL; for text and a blob one time in three a long value, of about [LengthLimit]/3 bytes of text
+// or [LengthLimit]/5 bytes of a blob, whose literal is twice as long for a blob, so that the record of
+// a row with it and another long value is too big; and otherwise a value as an insert gives the
+// column one, mostly from the small set, so that a default of the key meets a key that exists, but
+// never longer than [LengthLimit]/2 bytes. A shape with two or three long defaults can be too big for
+// the lowered limit, and its create table then gets `string or blob too big` in every create of the
+// sequence, which is one of the outcomes that the tests count.
+func (q *Sequence) defaultOf(t stmt.Type) stmt.Value {
+	r := q.r
+	if r.IntN(6) == 0 {
+		return stmt.Null{}
+	}
+	switch {
+	case t == stmt.TypeText && r.IntN(3) == 0:
+		return stmt.Text(strings.Repeat("d", LengthLimit/3-10+r.IntN(20)))
+	case t == stmt.TypeBlob && r.IntN(3) == 0:
+		return stmt.Blob(strings.Repeat("d", LengthLimit/5+r.IntN(20)))
+	}
+	switch v := q.valueOf(t).(type) {
+	case stmt.Text:
+		if len(v) > LengthLimit/2 {
+			return stmt.Text(strings.ToValidUTF8(string(v[:LengthLimit/4]), ""))
+		}
+		return v
+	case stmt.Blob:
+		if len(v) > LengthLimit/5 {
+			return v[:LengthLimit/10]
+		}
+		return v
+	default:
+		return v
+	}
 }
 
 // spell the name of a column of the fold in one of its spellings.
@@ -284,11 +330,35 @@ func (q *Sequence) anyType() stmt.Type {
 	return Types[q.r.IntN(len(Types))]
 }
 
+// leavesOutLong reports whether a list of the positions order of the columns of the shape leaves out
+// a column whose default is text or a blob of [LengthLimit]/5 bytes or more, as [Sequence.defaultOf]
+// gives a long one.
+func leavesOutLong(shape []stmt.Column, order []int) bool {
+	for position, c := range shape {
+		if slices.Contains(order, position) {
+			continue
+		}
+		switch v := c.Default.Value.(type) {
+		case stmt.Text:
+			if len(v) >= LengthLimit/5 {
+				return true
+			}
+		case stmt.Blob:
+			if len(v) >= LengthLimit/5 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // create gives the columns of a create table of table, as [Generator.Create] does: those of its
-// shape, in any of their spellings, and one time in ten with one column of any type, and one time
-// in ten with one column that takes NULL where the shape's does not or the other way round, which
-// is no change for the key; or one time in ten columns at random, whose names can repeat, of which
-// each outside the key takes NULL one time in two.
+// shape, in any of their spellings, and one time in ten with one column of any type, whose default,
+// if it has one, is then one of that type, one time in ten with one column that takes NULL where the
+// shape's does not or the other way round, which is no change for the key, and one time in ten with
+// one column whose default is another or none, so that a table that is created again can have other
+// defaults; or one time in ten columns at random, whose names can repeat, of which each outside the
+// key takes NULL one time in two, and each has a default one time in four.
 func (q *Sequence) create(table stmt.Name) []stmt.Column {
 	r := q.r
 	shape := q.shapeOf(table)
@@ -303,24 +373,40 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 		columns := make([]stmt.Column, n)
 		for i := range columns {
 			columns[i] = stmt.Column{Name: stmt.Name{Raw: q.columns[r.IntN(len(q.columns))]}, Type: q.anyType(), PrimaryKey: i == key, NotNull: r.IntN(2) == 0}
+			if r.IntN(4) == 0 {
+				columns[i].Default.Value = q.defaultOf(columns[i].Type)
+			}
 		}
 		return columns
 	}
-	retyped, renulled := -1, -1
+	retyped, renulled, redefaulted := -1, -1, -1
 	if r.IntN(10) == 0 {
 		retyped = r.IntN(len(shape))
 	}
 	if r.IntN(10) == 0 {
 		renulled = r.IntN(len(shape))
 	}
+	if r.IntN(10) == 0 {
+		redefaulted = r.IntN(len(shape))
+	}
 	var columns []stmt.Column
 	for i, c := range shape {
 		c.Name = stmt.Name{Raw: q.spell(c.Name.Value)}
 		if i == retyped {
 			c.Type = q.anyType()
+			if _, null := c.Default.Value.(stmt.Null); c.Default.Value != nil && !null {
+				// A default of another type than its column is not supported.
+				c.Default.Value = q.defaultOf(c.Type)
+			}
 		}
 		if i == renulled {
 			c.NotNull = !c.NotNull
+		}
+		if i == redefaulted {
+			c.Default.Value = nil
+			if r.IntN(3) != 0 {
+				c.Default.Value = q.defaultOf(c.Type)
+			}
 		}
 		columns = append(columns, c)
 	}
@@ -333,8 +419,10 @@ func (q *Sequence) create(table stmt.Name) []stmt.Column {
 // time in three. One list in eight leaves a column out, one in twelve has a name in place of one of
 // its own that is no other of the list, one insert in sixteen has a value more and one a value less,
 // one in ten has a value of any type, and one in three of these a second, and one in twelve has NULL
-// for any column, also the key. After [Sequence.Mistyped], one insert in eight also gives an integer
-// of a column of INT or INTEGER as a real.
+// for any column, also the key. A list that leaves out a column with a long default has, one time in
+// two, a value of 85 hundredths of [LengthLimit] bytes for its first column of text or a blob.
+// After [Sequence.Mistyped], one insert in eight also gives an integer of a column of INT or
+// INTEGER as a real.
 func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	r := q.r
 	shape := q.shapeOf(table)
@@ -350,11 +438,25 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 				order[i], order[j] = order[j], order[i]
 			}
 		}
-		// A column that takes NULL is left out one time in three, and gets NULL.
+		// A column that takes NULL is left out one time in three, and gets NULL or its default; a
+		// column with a default is left out one time in two, and the key with a default one time in
+		// four, and gets its default.
 		order = slices.DeleteFunc(order, func(position int) bool {
 			c := shape[position]
-			return !c.PrimaryKey && !c.NotNull && r.IntN(3) == 0
+			switch {
+			case !c.PrimaryKey && !c.NotNull && r.IntN(3) == 0:
+				return true
+			case c.Default.Value == nil:
+				return false
+			case c.PrimaryKey:
+				return r.IntN(4) == 0
+			}
+			return r.IntN(2) == 0
 		})
+		if len(order) == 0 {
+			// A list names a column at least: the key.
+			order = []int{slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })}
+		}
 		if len(order) > 1 && r.IntN(8) == 0 {
 			at := r.IntN(len(order))
 			order = slices.Delete(order, at, at+1)
@@ -372,6 +474,22 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 			continue
 		}
 		values = append(values, q.valueOf(c.Type))
+	}
+	if withList && leavesOutLong(shape, order) && r.IntN(2) == 0 {
+		// Beside a long default that the list leaves out, one time in two, a value of 85 hundredths of
+		// the length limit for the first column of text or a blob of the list, which fits a row alone,
+		// so that the default makes the record of the row too big.
+		for i, position := range order {
+			switch shape[position].Type {
+			case stmt.TypeText:
+				values[i] = stmt.Text(strings.Repeat("v", 85*LengthLimit/100))
+			case stmt.TypeBlob:
+				values[i] = stmt.Blob(strings.Repeat("v", 85*LengthLimit/100))
+			default:
+				continue
+			}
+			break
+		}
 	}
 	if withList && r.IntN(12) == 0 {
 		seen := map[string]bool{}
@@ -794,22 +912,24 @@ func (q *Sequence) delete(table stmt.Name) []stmt.Condition {
 	return q.changeConditions(table)
 }
 
-// changeConditions of the WHERE of an update or a delete of table, if an insert gave the key a value:
-// one time in three the one condition that the key is such a value, which finds the row of the key if
-// it is there, and one time in six the one condition that bounds the key on one side by such a value,
-// with <, <=, >, or >=, which finds the rows on that side, since most WHERE that
-// [Sequence.conditions] draws find no row of a table of a few rows; and otherwise as
-// [Sequence.conditions] draws them.
+// changeConditions of the WHERE of an update or a delete of table: one time in three, if an insert
+// gave the key a value, the one condition on the key with the i-th of the values that the sequence
+// keeps for it, which finds the row of the key if it is there, since most WHERE that
+// [Sequence.conditions] draws find no row of a table of a few rows. The condition is that the key is
+// the value, or, for every third i from the third on, that the key is on one side of it, with <,
+// <=, >, and >= in turn, which finds the rows on that side; the operator comes from i, so that the
+// sequence draws the same random numbers as for the key equal to the value. Otherwise the
+// conditions are as [Sequence.conditions] draws them.
 func (q *Sequence) changeConditions(table stmt.Name) []stmt.Condition {
 	shape := q.shapeOf(table)
 	key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
-	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 {
-		switch n := q.r.IntN(6); {
-		case n < 2:
-			return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[q.r.IntN(len(stored))]}}}
-		case n == 4:
-			return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: bounds[q.r.IntN(len(bounds))], Value: stmt.Term{Value: stored[q.r.IntN(len(stored))]}}}
+	if stored := q.stored[[2]string{table.Fold(), key.Name.Value}]; len(stored) > 0 && q.r.IntN(3) == 0 {
+		i := q.r.IntN(len(stored))
+		op := stmt.OpEqual
+		if i%3 == 2 {
+			op = bounds[i/3%len(bounds)]
 		}
+		return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(key.Name.Value)}, Operator: op, Value: stmt.Term{Value: stored[i]}}}
 	}
 	if q.indexWhere() {
 		if cs := q.indexConditions(table); cs != nil {

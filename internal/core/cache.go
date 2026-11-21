@@ -1065,16 +1065,16 @@ func (c *conn) delete(t *table, key []*s4qlpb.Value) (bool, error) {
 
 // create the table in the cache.
 //
-// It fails with an error that wraps [ErrInvalid] for a table whose statement is longer than the
-// length limit as SQLite keeps it in its schema, without "main.", since a connection under the
-// limit cannot read a schema that holds a longer text.
+// It fails with an error that wraps [ErrInvalid] and [ErrTooLongForCache] for a table whose
+// statement is longer than the length limit as SQLite keeps it in its schema, without "main.", since
+// a connection under the limit cannot read a schema that holds a longer text.
 func (c *conn) create(t *table) error {
 	sql, err := t.createSQL()
 	if err != nil {
 		return err
 	}
 	if kept := len(sql) - len("main."); kept > c.limit {
-		return invalidf("a table whose statement in the cache is %v bytes, where the limit is %v", kept, c.limit)
+		return fmt.Errorf("%w: %w: a table whose statement in the cache is %v bytes, where the limit is %v", ErrInvalid, ErrTooLongForCache, kept, c.limit)
 	}
 	return c.changeSchema(sql)
 }

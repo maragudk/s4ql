@@ -641,7 +641,7 @@ func (y tally) add(scope, src string, got outcome, runs [][]any) {
 // statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
 // with a parameter if it has one, or "other".
 func statementKind(src string) string {
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	if s == nil {
 		return "other"
 	}
@@ -657,7 +657,8 @@ func statementKind(src string) string {
 // before it runs there. For an insert: each argument by its kind, as [argumentKind] names it, each
 // literal by its kind, as [stmttest.LiteralKind] names it, and, for an insert into a table that
 // SQLite has, the outcome of each run by the type of the key column; of each run that reaches the
-// instance, by what it reaches of NULL, as [stmttest.NullCases] gives it; and for a table of several
+// instance, by what it reaches of NULL, as [stmttest.NullCases] gives it, and of defaults, as
+// [stmttest.DefaultCases] gives them; and for a table of several
 // columns by the form of the insert, without a list or with one, and by its faults, as
 // [stmttest.Faults] gives them, one or two. For a select of a table that SQLite has, the outcome of
 // each run by its form: * by the number of columns, names, and a name that the table does not have;
@@ -681,7 +682,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		}
 		return "ok"
 	}
-	s, _ := checkText(src)
+	s, _ := stmt.Check(src)
 	switch s.(type) {
 	case *stmt.Update, *stmt.Delete:
 		p.reachChange(s, runs, got, o, kind, count)
@@ -754,6 +755,9 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			bound = append(bound, converted(a))
 		}
 		for _, what := range stmttest.NullCases(columns, insert, bound) {
+			count(what + " " + kind(o))
+		}
+		for _, what := range stmttest.DefaultCases(columns, insert, bound) {
 			count(what + " " + kind(o))
 		}
 		if len(columns) < 2 {
@@ -1139,7 +1143,7 @@ func (p *pair) where(c call, src string) (runner, runner, string) {
 		// The statements of a sql.Conn run in its transaction.
 		return p.s, p.o, t.kind()
 	}
-	if s, _ := checkText(src); s != nil {
+	if s, _ := stmt.Check(src); s != nil {
 		if _, ok := s.(*stmt.Select); ok {
 			return p.s, p.o, "beside a " + t.kind()
 		}
@@ -1489,7 +1493,7 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	// gives before it binds the arguments, so that it runs there without them, or the outcome of a
 	// statement that s4ql ran, which must have had an argument that s4ql supports for each
 	// parameter in each run, and which runs there with them.
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	byText := err != nil || s == nil
 	mattnRuns := runs
 	if byText {
@@ -1640,7 +1644,7 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]any, got outcome) string {
 	tb := p.tb
 	tb.Helper()
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	if err == nil && s != nil {
 		return p.checkRefused(src, s, runs, got)
 	}
@@ -1774,23 +1778,10 @@ func converted(a any) any {
 	return a
 }
 
-// checkText src as the driver checks a text at Prepare: as [stmt.Check] does, and with the "not
-// supported" of [engine.Check] for a statement with DEFAULT of slice 11 that the pass supports and
-// the engine does not run yet, which the tests take for a text that is not supported.
-func checkText(src string) (stmt.Statement, error) {
-	s, err := stmt.Check(src)
-	if err == nil && s != nil {
-		if err := engine.Check(src, s.Parameters()); errors.Is(err, stmt.ErrNotSupported) {
-			return nil, err
-		}
-	}
-	return s, err
-}
-
 // reaches reports whether s4ql takes src with args to the instance: the text holds a statement that
 // s4ql supports, with one argument for each parameter, each one that s4ql supports.
 func reaches(src string, args []any) bool {
-	s, err := checkText(src)
+	s, err := stmt.Check(src)
 	return err == nil && s != nil && len(args) == s.Parameters() && argumentRefusal(args) == ""
 }
 
@@ -1876,7 +1867,7 @@ func (p *pair) columns(name string) (string, []stmttest.TableColumn) {
 func (p *pair) columnsIn(o runner, name string) (string, []stmttest.TableColumn) {
 	tb := p.tb
 	tb.Helper()
-	rows, err := o.QueryContext(tb.Context(), `select m.name, p.name, p.type, p.pk, p."notnull" from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase order by p.cid`, name)
+	rows, err := o.QueryContext(tb.Context(), `select m.name, p.name, p.type, p.pk, p."notnull", coalesce(p.dflt_value, '') from sqlite_schema m, pragma_table_info(m.name) p where m.type = 'table' and m.name = ? collate nocase order by p.cid`, name)
 	is.NotError(tb, err)
 	defer func() { is.NotError(tb, rows.Close()) }()
 	var table string
@@ -1884,7 +1875,8 @@ func (p *pair) columnsIn(o runner, name string) (string, []stmttest.TableColumn)
 	for rows.Next() {
 		var c stmttest.TableColumn
 		var pk, notNull int
-		is.NotError(tb, rows.Scan(&table, &c.Name, &c.Type, &pk, &notNull))
+		// A column without DEFAULT has the dflt_value NULL, and the text of a literal is never empty.
+		is.NotError(tb, rows.Scan(&table, &c.Name, &c.Type, &pk, &notNull, &c.Default))
 		// The key of a table WITHOUT ROWID never takes NULL, also when SQLite reports it without NOT
 		// NULL.
 		c.PrimaryKey = pk == 1
@@ -2028,7 +2020,7 @@ func (p *pair) compareChanged(src string, s, o runner) string {
 	tb := p.tb
 	tb.Helper()
 	var table stmt.Name
-	switch st, _ := checkText(src); st := st.(type) {
+	switch st, _ := stmt.Check(src); st := st.(type) {
 	case *stmt.Update:
 		table = st.Table
 	case *stmt.Delete:
@@ -3223,7 +3215,7 @@ func TestGenerated(t *testing.T) {
 		"insert into INT a value of another type": 8, "insert into INTEGER a value of another type": 20, "insert into REAL a value of another type": 15,
 		"insert into TEXT a value of another type": 12, "insert into BLOB a value of another type": 12,
 		"insert into INT attempt to write a readonly database": 10, "insert into INTEGER attempt to write a readonly database": 12,
-		"insert into REAL attempt to write a readonly database": 6, "insert into TEXT attempt to write a readonly database": 13,
+		"insert into REAL attempt to write a readonly database": 6, "insert into TEXT attempt to write a readonly database": 4,
 		"insert into BLOB attempt to write a readonly database": 14,
 		"literal integer": 270, "literal real": 120, "literal real -0.0": 20, "literal text": 120, "literal empty text": 20, "literal blob": 100, "literal empty blob": 25,
 		"argument int64": 150, "argument int": 1, "argument int32": 3, "argument uint64": 5, "argument float64": 70, "argument float64 -0.0": 10,
@@ -3257,7 +3249,7 @@ func TestGenerated(t *testing.T) {
 		"argument NULL as sql.NullFloat64": 6, "argument NULL as sql.NullString": 4, "argument NULL as sql.Null[[]uint8]": 5,
 		"argument nil []byte as *[]uint8": 5, "argument nil []byte as sql.Null[[]uint8]": 4,
 		"NULL literal into a column that takes NULL ok": 20, "NULL argument into a column that takes NULL ok": 8,
-		"NULL literal into a column that takes NULL UNIQUE constraint failed": 7, "NULL argument into a column that takes NULL UNIQUE constraint failed": 4,
+		"NULL literal into a column that takes NULL UNIQUE constraint failed": 7, "NULL argument into a column that takes NULL UNIQUE constraint failed": 1,
 		"NULL literal into a column that takes NULL attempt to write a readonly database": 4, "NULL literal into a column that takes NULL a value of another type": 3,
 		"NULL literal into the key NOT NULL constraint failed": 17, "NULL argument into the key NOT NULL constraint failed": 7,
 		"NULL literal into a column that does not take NULL NOT NULL constraint failed": 4, "NULL argument into a column that does not take NULL NOT NULL constraint failed": 2,
@@ -3277,7 +3269,7 @@ func TestGenerated(t *testing.T) {
 		"= on the key ok": 10, "!= on the key ok": 12, "< on the key ok": 18, "<= on the key ok": 19, "> on the key ok": 22, ">= on the key ok": 15,
 		"IS NULL on the key ok": 10, "IS NOT NULL on the key ok": 8,
 		"= on another column ok": 6, "!= on another column ok": 5, "< on another column ok": 6, "<= on another column ok": 5, "> on another column ok": 7,
-		">= on another column ok": 2, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 5,
+		">= on another column ok": 8, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 5,
 		"WHERE that reads no row ok": 17, "WHERE that reads a get of one key ok": 6, "WHERE that reads a scan from a lower bound ok": 8,
 		"WHERE that reads a scan to an upper bound ok": 9, "WHERE that reads a scan between two bounds ok": 9,
 		"WHERE that reads a scan between two bounds that hold no key ok": 7, "WHERE that reads a scan of every row ok": 23,
@@ -3285,13 +3277,13 @@ func TestGenerated(t *testing.T) {
 		"comparison with literal integer ok": 35, "comparison with literal real ok": 14, "comparison with literal real -0.0 ok": 2, "comparison with literal text ok": 12,
 		"comparison with literal empty text ok": 5, "comparison with literal blob ok": 12, "comparison with literal empty blob ok": 2, "comparison with literal null ok": 6,
 		"comparison with argument int64 ok": 16, "comparison with argument float64 ok": 7, "comparison with argument float64 -0.0 ok": 1,
-		"comparison with argument string ok": 9, "comparison with argument empty string ok": 2, "comparison with argument []uint8 ok": 4,
-		"comparison with argument empty []byte ok": 2, "comparison with argument nil ok": 1,
+		"comparison with argument string ok": 9, "comparison with argument empty string ok": 1, "comparison with argument []uint8 ok": 4,
+		"comparison with argument empty []byte ok": 2, "comparison with argument nil ok": 3,
 		"WHERE with a column that the table does not have in a comparison, alone no such column":                                6,
 		"WHERE with a column that the table does not have in a comparison, before other conditions no such column":              13,
 		"WHERE with a column that the table does not have in a comparison, after other conditions no such column":               7,
 		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column":                   1,
-		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column": 4,
+		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column": 1,
 		"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column":  2,
 		"WHERE with a column in double quotes that the table does not have no such column":                                      21,
 		"WHERE with a value of another type a value of another type":                                                            23, "WHERE with arguments that s4ql refuses not supported": 11,
@@ -3317,28 +3309,32 @@ func TestGenerated(t *testing.T) {
 		// least number 1 and so was reached 1 to 3 times, so it is left out. When the sequence pinned a
 		// column of an index that takes NULL by IS NULL one time in three, on 2026-11-21, the other random
 		// numbers that it drew took "update WHERE that reads a scan of every row ok, rows changed" from 1,
-		// its least number, to 0, so it is left out too; TestDifferential of the engine still requires
-		// it. Since an update and a delete of the sequence bound the key on one side by a value of an
-		// insert one time in six, on 2026-11-21, the run reaches the delete to an upper bound 7 times and
-		// the update of every row once, and requires both again; the other random numbers that the
-		// generator draws after such a bound took "comparison with argument nil ok", ">= on another
-		// column ok", and the update and the delete with a column in double quotes in WHERE that the
-		// table does not have to 1, 6, 7, and 7, of which the least numbers are a third, or 1.
+		// its least number, to 0, so it was left out too, and TestDifferential of the engine still
+		// requires it. When the sequence wrote the defaults of slice 11, on 2026-11-21, the other
+		// random numbers that it drew took "SET with literal null ok, rows changed" from 1, its least number, to 0, so
+		// it is left out, and TestDifferential of the engine still requires it; and "insert into TEXT
+		// attempt to write a readonly database", "NULL argument into a column that takes NULL UNIQUE
+		// constraint failed", "comparison with argument empty string ok", and "WHERE with a column that
+		// the table does not have under IS NULL or IS NOT NULL, before other conditions no such column"
+		// to 12, 3, 1, and 1, whose least numbers are a third of that, or 1.
+		// Since an update and a delete of the sequence bound the key on one side by a value of an insert
+		// for every third of the values that it keeps, on 2026-11-21, the run reaches the delete to an
+		// upper bound 7 times and the update of every row 8 times, and requires both again.
 		"update with WHERE ok, rows changed": 13, "update with WHERE ok, no row found": 48, "update without WHERE ok, rows changed": 10, "update without WHERE ok, no row found": 12,
 		"delete with WHERE ok, rows changed": 12, "delete with WHERE ok, no row found": 60, "delete without WHERE ok, rows changed": 9, "delete without WHERE ok, no row found": 15,
 		"update with WHERE attempt to write a readonly database": 7, "delete with WHERE attempt to write a readonly database": 11,
 		"SET of the key ok, rows changed": 8, "SET of the key UNIQUE constraint failed": 9, "SET of the key NOT NULL constraint failed": 3,
 		"SET of NULL for a column that does not take it NOT NULL constraint failed": 5, "SET of NULL for a column that does not take it ok, no row found": 9,
 		"SET of a column that the table does not have no such column": 27, "SET of a column in double quotes that the table does not have no such column": 14,
-		"SET with a value of another type a value of another type": 23, "SET with literal null ok, rows changed": 1, "SET with argument nil ok, no row found": 3,
-		"update WHERE with a column in double quotes that the table does not have no such column": 2,
-		"delete WHERE with a column in double quotes that the table does not have no such column": 2,
+		"SET with a value of another type a value of another type": 23, "SET with argument nil ok, no row found": 3,
+		"update WHERE with a column in double quotes that the table does not have no such column": 8,
+		"delete WHERE with a column in double quotes that the table does not have no such column": 12,
 		"update WHERE with a value of another type a value of another type":                       16, "delete WHERE with a value of another type a value of another type": 11,
 		"update with arguments that s4ql refuses not supported": 14, "update with arguments that s4ql refuses wrong number of arguments": 15,
 		"delete with arguments that s4ql refuses not supported": 8, "delete with arguments that s4ql refuses wrong number of arguments": 10,
 		"update WHERE that reads a get of one key ok, rows changed": 9, "delete WHERE that reads a get of one key ok, rows changed": 6,
 		"delete WHERE that reads a scan from a lower bound ok, rows changed": 1, "delete WHERE that reads a scan to an upper bound ok, rows changed": 2,
-		"update WHERE that reads a scan of every row ok, rows changed": 1,
+		"update WHERE that reads a scan of every row ok, rows changed": 2,
 		"update WHERE that reads no row ok, no row found":              7,
 		"table read back after an update or a delete":                  165,
 	} {
@@ -3382,6 +3378,30 @@ func TestGenerated(t *testing.T) {
 		"create index if not exists no such column": 3, "create index if not exists attempt to write a readonly database": 3,
 		"drop index if exists did its work": 2, "drop index if exists did nothing: no index of the name exists": 27,
 		"drop index if exists did nothing: no index of the name exists, and a table has it": 8,
+	} {
+		if y["reached: "+kind] < least {
+			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
+		}
+	}
+
+	// Slice 11, a third of what the run gave on 2026-11-21 when the sequence wrote defaults, or 1:
+	// inserts that leave out a column and store its default of each type, also of the key, and
+	// DEFAULT NULL in a column that takes NULL; NOT NULL from a DEFAULT NULL in a column that does not
+	// take NULL and in the key; UNIQUE from a default of the key; the refusal of a read-only
+	// transaction before the default; and an explicit NULL for a column with a default, kept as NULL
+	// in a column that takes NULL and refused by NOT NULL in one that does not. The driver check runs
+	// under SQLite's default length limit, so a record that a long default makes too long is required
+	// of TestDifferential of the engine only.
+	for kind, least := range map[string]int{
+		"insert that leaves out a column with a default of integer ok": 17, "insert that leaves out a column with a default of real ok": 8,
+		"insert that leaves out a column with a default of text ok": 9, "insert that leaves out a column with a default of blob ok": 8,
+		"insert that leaves out the key with a default ok": 5, "insert that leaves out the key with a default UNIQUE constraint failed": 4,
+		"insert that leaves out a column that takes NULL with DEFAULT NULL ok":                                 1,
+		"insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed": 16,
+		"insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed":                          4,
+		"insert that leaves out a column with a default of integer attempt to write a readonly database":       5,
+		"NULL given for a column with a default, which takes NULL ok":                                          9,
+		"NULL given for a column with a default, which does not take NULL NOT NULL constraint failed":          17,
 	} {
 		if y["reached: "+kind] < least {
 			t.Errorf("the run reaches %q %v times, and at least %v were expected: the generator stopped reaching it", kind, y["reached: "+kind], least)
@@ -3467,14 +3487,20 @@ func TestGenerated(t *testing.T) {
 	// index that takes NULL by IS NULL one time in three, where it was one time in eight, on
 	// 2026-11-21, they went from 1713, 12, 687, 351, 327, 85, 24, 46, 91, and 106 to 1693, 10, 693,
 	// 360, 338, 83, 22, 45, 97, and 101: the generator draws other random numbers after the first such
-	// pin, which moves every count, and none of these kinds is of the pin. When an update and a
-	// delete of the sequence bounded the key on one side by a value of an insert one time in six, on
-	// 2026-11-21, they went from 1693, 10, 693, 360, 338, 83, 22, 45, 97, and 101 to 1701, 11, 680,
-	// 360, 316, 99, 13, 48, 89, and 92: the generator draws other random numbers after the first such
-	// bound, which moves every count.
+	// pin, which moves every count, and none of these kinds is of the pin. When the sequence wrote the
+	// defaults of slice 11, on 2026-11-21, they went from 1693, 10, 693, 360, 338, 83, 22, 45, 97, and
+	// 101 to 1715, 7, 679, 338, 384, 100, 24, 53, 97, and 129: the sequence draws other random numbers
+	// for the defaults of its shapes and the text of each DEFAULT, which moves every count, the calls
+	// and the transactions too; and of its own an insert leaves out a column with a default one time
+	// in two, and so has fewer values, fewer parameters, and fewer arguments around them, which took
+	// excusedArguments and excusedArgument down. No count is of a default. When an update and a
+	// delete of the sequence bounded the key on one side by a value of an insert for every third of
+	// the values that it keeps, they went from 1715, 7, 679, 338, 384, 100, 24, 53, 97, and 129 to
+	// 1696, 8, 685, 348, 374, 104, 21, 51, 96, and 123: the generator draws the same random numbers,
+	// and the rows that such a bound changes or deletes move the outcomes of the statements after it.
 	want := map[string]int{
-		excusedPrepare: 1701, excusedStartedTable: 11, excusedArguments: 680, excusedArgument: 360, excusedType: 316,
-		excusedLevel: 99, excusedRowsOpen: 13, excusedTxOpen: 48, excusedOutside: 89, excusedQuoted: 92,
+		excusedPrepare: 1696, excusedStartedTable: 8, excusedArguments: 685, excusedArgument: 348, excusedType: 374,
+		excusedLevel: 104, excusedRowsOpen: 21, excusedTxOpen: 51, excusedOutside: 96, excusedQuoted: 123,
 	}
 	kinds := slices.Collect(maps.Keys(want))
 	for name := range y {

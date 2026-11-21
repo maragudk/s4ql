@@ -194,7 +194,7 @@ func TestSequence_delete(t *testing.T) {
 		is.True(t, none > 650 && none < 950, "one delete in five without WHERE")
 	})
 
-	t.Run("should give, of a WHERE, the key equal to a value of an insert one time in three, and bounded on one side by one one time in six", func(t *testing.T) {
+	t.Run("should give, of a WHERE, one time in three the key equal to a value of an insert, or bounded on one side by every third of those values", func(t *testing.T) {
 		q, err := NewSequence(rand.New(rand.NewPCG(13, 14)))
 		is.NotError(t, err)
 		table := stmt.Name{Raw: "t", Value: "t"}
@@ -216,13 +216,13 @@ func TestSequence_delete(t *testing.T) {
 			counts[where[0].Operator]++
 		}
 		t.Log(counts)
-		is.True(t, counts[stmt.OpEqual] > 1200, "the key equal to a value of an insert one time in three")
+		is.True(t, counts[stmt.OpEqual] > 800, "the key equal to a value of an insert two times in nine")
 		bounded := 0
 		for _, op := range bounds {
-			is.True(t, counts[op] > 100, fmt.Sprint("the key bounded by ", op))
+			is.True(t, counts[op] > 80, fmt.Sprint("the key bounded by ", op))
 			bounded += counts[op]
 		}
-		is.True(t, bounded > 600 && bounded < 900, "the key bounded on one side one time in six")
+		is.True(t, bounded > 400 && bounded < 800, "the key bounded on one side one time in nine, and by the conditions of a select now and then")
 	})
 }
 
@@ -267,7 +267,7 @@ func TestSequence_insert(t *testing.T) {
 		with := wholeReals(q, table)
 		t.Log(without, with)
 		is.True(t, without < 150, "few whole reals of a value of any type")
-		is.True(t, with > without+300, "one insert in eight more")
+		is.True(t, with > without+150, "one insert in eight more, of those that give the column an integer")
 	})
 }
 
