@@ -1807,6 +1807,22 @@ func TestOperator_String(t *testing.T) {
 	})
 }
 
+func TestOperator_Swapped(t *testing.T) {
+	t.Run("should swap < and >, <= and >=, keep = and !=, and give no operator for a test for NULL or no operator", func(t *testing.T) {
+		var got []string
+		for o := stmt.Operator(0); o <= stmt.OpIsNotNull+1; o++ {
+			got = append(got, o.Swapped().String())
+		}
+		is.Equal(t, fmt.Sprint([]string{"", "=", "!=", ">", ">=", "<", "<=", "", "", ""}), fmt.Sprint(got))
+	})
+
+	t.Run("should give the operator back when swapped twice", func(t *testing.T) {
+		for o := stmt.OpEqual; o <= stmt.OpGreaterOrEqual; o++ {
+			is.Equal(t, o, o.Swapped().Swapped())
+		}
+	})
+}
+
 func TestCreateTable_Key(t *testing.T) {
 	t.Run("should give the index of the primary key", func(t *testing.T) {
 		s := &stmt.CreateTable{Columns: []stmt.Column{{NotNull: true}, {PrimaryKey: true}, {NotNull: true}}}

@@ -9,7 +9,8 @@ import (
 // the "not supported" that the pass gave such a statement before it supported it, and nil for any
 // other statement. The pass named the first such comparison at the start of its value, its sign
 // included. A text that the pass refuses for another token after the value, such as a hex literal
-// in a later condition, gets the pass's error for that token, which it did not get before.
+// in a later condition, gets the pass's error for that token, which it did not get before. The pass
+// gives the name no more, so the vocabulary in the README of the pass does not list it.
 func valueFirstRefusal(s stmt.Statement) error {
 	var where []stmt.Condition
 	switch s := s.(type) {
