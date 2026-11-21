@@ -1526,6 +1526,7 @@ func TestScanIndex(t *testing.T) {
 		{name: "that pins a column to no value", table: "t", scan: core.IndexScan{Index: "i", Equal: []*s4qlpb.Value{nil}}, cause: core.ErrInvalid},
 		{name: "that pins a column to a value of no kind", table: "t", scan: core.IndexScan{Index: "i", Equal: []*s4qlpb.Value{{}}}, cause: core.ErrInvalid},
 		{name: "with a bound of another storage class", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1), Lower: closed(1)}, cause: core.ErrInvalid, why: `in the column "c2"`},
+		{name: "with a valid lower bound and an upper bound of another storage class", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1), Lower: closed("a"), Upper: closed(1)}, cause: core.ErrInvalid, why: `in the column "c2"`},
 		{name: "with a bound that is text with the character NUL", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1), Upper: closed("a\x00")}, cause: core.ErrInvalid, why: "NUL"},
 		{name: "with a bound of no kind", table: "t", scan: core.IndexScan{Index: "i", Upper: core.Bound{Value: &s4qlpb.Value{}}}, cause: core.ErrInvalid},
 		{name: "that pins a column to text that is longer than SQLite takes", table: "t", scan: core.IndexScan{Index: "i", Equal: row(1, strings.Repeat("x", 1001))}, cause: core.ErrTooBig},
