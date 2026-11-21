@@ -825,7 +825,6 @@ func TestOpen_cache_indexes(t *testing.T) {
 			{statement: "create index n on t1 (v, w collate rtrim desc)", table: "t1", index: "n", columns: 3, row: "1,1,1", why: `the index "n" of its table "t1" has the collation "rtrim"`},
 			{statement: "create index d on t1 (v, k, v)", table: "t1", index: "d", columns: 3, row: "1,1,1", why: `the index "d" of its table "t1" holds the column "v" twice`},
 			{statement: "create index s4ql_i on t1 (v)", table: "t1", columns: 3, row: "1,1,1", why: `its table "t1" has the index "s4ql_i", which is unique, partial, of a constraint, or of a reserved name`},
-			{statement: "create table t9 (k int primary key, v int unique) strict, without rowid", table: "t9", columns: 2, why: `its table "t9" has the index "sqlite_autoindex_t9_2"`},
 		} {
 			for _, write := range []bool{false, true} {
 				// A get, a table, and the tables read no index, so they answer. Every other call on the

@@ -6,9 +6,12 @@ import (
 	"iter"
 	"math"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"maragu.dev/is"
 
@@ -427,4 +430,352 @@ func TestScanRange(t *testing.T) {
 		_ = d.Close(t.Context())
 		is.NotError(t, vfs.Close())
 	})
+}
+
+func TestOpen_cache_foreign(t *testing.T) {
+	// made is a cache with the table t1 of the columns k and v, with the row 1,1 and the index i1 on
+	// v, that the instance closed. It returns the world and the path of the cache.
+	made := func(t *testing.T) (*world, string) {
+		t.Helper()
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 1), createIndex("i1", "t1", 1))
+		is.NotError(t, d.Close(t.Context()))
+		return w, filepath.Join(w.dir, "a.db")
+	}
+	// change the cache at path with plain SQLite, by the statements of statements, which a semicolon
+	// and a line break separate, and return its main file after.
+	change := func(t *testing.T, path, statements string) []byte {
+		t.Helper()
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		for statement := range strings.SplitSeq(statements, ";\n") {
+			is.NotError(t, c.Exec(statement), statement)
+		}
+		is.NotError(t, c.Close())
+		before, err := os.ReadFile(path)
+		is.NotError(t, err)
+		return before
+	}
+	// unchanged fails the test if the main file of the cache at path is not before.
+	unchanged := func(t *testing.T, path string, before []byte, what string) {
+		t.Helper()
+		after, err := os.ReadFile(path)
+		is.NotError(t, err)
+		is.True(t, string(before) == string(after), "the instance changed the main file of the cache", what)
+	}
+	const advice = "something other than s4ql has changed the cache, so open the database with a new cache"
+
+	t.Run("should refuse at the open a cache that holds a view, a trigger, a table of a reserved name, or an index on one, or another table s4ql_cache, and leave it as it is", func(t *testing.T) {
+		for _, test := range []struct {
+			statement string
+			why       string
+		}{
+			{statement: "create view v as select 1", why: `it holds the view "v" on the table "v", which s4ql does not make`},
+			{statement: "create view t2 as select * from t1", why: `it holds the view "t2"`},
+			{statement: "create trigger tr after insert on t1 begin select 1; end", why: `it holds the trigger "tr" on the table "t1"`},
+			{statement: "create trigger tr before delete on s4ql_cache begin select 1; end", why: `it holds the trigger "tr" on the table "s4ql_cache"`},
+			{statement: "create table s4ql_other (a int)", why: `it holds the table "s4ql_other"`},
+			{statement: "create table S4QL_x (a int primary key) strict, without rowid", why: `it holds the table "S4QL_x"`},
+			{statement: "create index s on s4ql_cache (head)", why: `it holds the index "s" on the table "s4ql_cache"`},
+			{statement: `create table saved as select * from s4ql_cache;
+drop table s4ql_cache;
+create table s4ql_cache (id integer primary key, version integer not null, head text not null, database text not null) strict;
+insert into s4ql_cache select * from saved;
+drop table saved`, why: `its table "s4ql_cache" is not declared as s4ql declares it`},
+		} {
+			w, path := made(t)
+			before := change(t, path, test.statement)
+
+			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+			is.Error(t, core.ErrCacheVersion, err, test.statement)
+			is.True(t, strings.Contains(err.Error(), test.why), err.Error())
+			is.True(t, strings.Contains(err.Error(), advice), err.Error())
+			unchanged(t, path, before, test.statement)
+		}
+	})
+
+	t.Run("should accept at the open a table of SQLite's own, such as sqlite_stat1", func(t *testing.T) {
+		w, path := made(t)
+		change(t, path, "analyze")
+		d := w.serve(t, "a", core.Options{})
+		is.Equal(t, "t1(k*0,v) +i1(1): 1,1", read(t, d))
+	})
+
+	t.Run("should refuse at the first look-up a table that s4ql does not make, stop for good, and leave the cache as it is", func(t *testing.T) {
+		for _, test := range []struct {
+			// statement that makes the table t9 with the columns k and v, of type int, and the key k,
+			// which pragma_table_info reports as a table that s4ql makes, so that only the text of the
+			// statement tells it from one.
+			statement string
+		}{
+			{statement: `create table t9 (k int primary key not null, v int default 1) strict`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null) strict`},
+			{statement: `create table "t9" ("k" text primary key collate nocase, "v" int not null) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null, "g" int generated always as ("v" + 1)) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null, "g" int as ("v" + 1) stored) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null check ("v" > 0)) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null, check ("v" > 0)) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null default (1)) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null) without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null references "t1" ("k")) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null, foreign key ("v") references "t1") strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key on conflict replace, "v" int not null) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key desc, "v" int not null) strict, without rowid`},
+			{statement: `create table "t9" ("k" int, "v" int not null, primary key ("k")) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null unique) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null collate nocase) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null constraint c) strict, without rowid`},
+			{statement: `create table t9 (k int primary key, v int not null) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null)  strict, without rowid`},
+			{statement: `create table "t9" ("k" INT primary key, "v" int not null) strict, without rowid`},
+			{statement: `create table "t9" ("k" int PRIMARY KEY, "v" int not null) strict, without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null) strict,without rowid`},
+			{statement: `create table "t9" ("k" int primary key, "v" int not null) without rowid, strict`},
+			{statement: `create table if not exists "t9" ("k" int primary key, "v" int not null) strict, without rowid /* a comment */`},
+		} {
+			w, path := made(t)
+			change(t, path, test.statement)
+			d := w.serve(t, "a", core.Options{})
+			// The instance has opened the cache, and a read of t1 still answers.
+			is.Equal(t, "t1(k*0,v) +i1(1)", func() string {
+				r, err := startRead(t, d)
+				is.NotError(t, err)
+				defer func() { is.NotError(t, r.Close(t.Context())) }()
+				ct, err := r.Table(t.Context(), "t1")
+				is.NotError(t, err)
+				indexes, err := r.Indexes(t.Context(), "t1")
+				is.NotError(t, err)
+				return describe(ct) + describeIndexes(indexes)
+			}(), test.statement)
+			is.NotError(t, d.Close(t.Context()))
+			before, err := os.ReadFile(path)
+			is.NotError(t, err)
+
+			for _, write := range []bool{false, true} {
+				d := w.serve(t, "a", core.Options{})
+				var err error
+				if write {
+					tx, beginErr := d.Begin(t.Context())
+					is.NotError(t, beginErr)
+					_, err = tx.Get(t.Context(), "T9", row(1))
+					_ = tx.Rollback(t.Context())
+				} else {
+					r, readErr := startRead(t, d)
+					is.NotError(t, readErr)
+					_, err = r.Get(t.Context(), "T9", row(1))
+					_ = r.Close(t.Context())
+				}
+				is.Error(t, core.ErrCacheVersion, err, test.statement)
+				is.Error(t, core.ErrLocal, err, test.statement)
+				is.True(t, strings.Contains(err.Error(), `its table "t9" is not declared as s4ql declares a table of its columns`), err.Error())
+				is.True(t, strings.Contains(err.Error(), advice), err.Error())
+				is.True(t, isDone(d), test.statement)
+				_ = d.Close(t.Context())
+				unchanged(t, path, before, test.statement)
+			}
+		}
+	})
+
+	t.Run("should refuse a table that gets a trigger while the instance runs, at its first look-up in the next transaction", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 1))
+		is.Equal(t, "t1(k*0,v): 1,1", read(t, d))
+		change(t, filepath.Join(w.dir, "a.db"), "create trigger tr after insert on t1 begin select 1; end")
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		_, err = tx.Get(t.Context(), "t1", row(1))
+		is.Error(t, core.ErrCacheVersion, err)
+		is.True(t, strings.Contains(err.Error(), `the table "t1" has the trigger "tr"`), err.Error())
+		_ = tx.Rollback(t.Context())
+		is.True(t, isDone(d))
+	})
+
+	t.Run("should refuse at the first scan an index that s4ql does not make, stop for good, and leave the cache as it is", func(t *testing.T) {
+		for _, test := range []struct {
+			statement string
+			// why, unless the reason is that the index is not declared as s4ql declares it.
+			why string
+		}{
+			{statement: `create index "i9" on "t1" ("v" collate binary)`, why: `the index "i9" of its table "t1" has the collation "binary"`},
+			{statement: `create index "i9" on "t1" ("v" asc)`},
+			{statement: `create index "i9" on "T1" ("v")`},
+			{statement: `create index i9 on t1 (v)`},
+			{statement: `create index "i9" on "t1" ("v", "k")  `},
+			{statement: `create index "i9" on "t1"("v")`},
+			{statement: `create index "i9" on "t1" ("V")`},
+		} {
+			statement, why := test.statement, test.why
+			if why == "" {
+				why = `the index "i9" of its table "t1" is not declared as s4ql declares an index of its columns`
+			}
+			w, path := made(t)
+			before := change(t, path, statement)
+			d := w.serve(t, "a", core.Options{})
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			got, err := r.Get(t.Context(), "t1", row(1))
+			is.NotError(t, err, statement)
+			is.Equal(t, "1,1", text(got), statement)
+			_, err = r.Indexes(t.Context(), "t1")
+			is.Error(t, core.ErrCacheVersion, err, statement)
+			is.True(t, strings.Contains(err.Error(), why), err.Error())
+			is.True(t, strings.Contains(err.Error(), advice), err.Error())
+			_ = r.Close(t.Context())
+			is.True(t, isDone(d), statement)
+			_ = d.Close(t.Context())
+			unchanged(t, path, before, statement)
+		}
+	})
+
+	t.Run("should accept every table and index that the core makes, of random shapes and names, after a close and an open and after a replay into an empty cache", func(t *testing.T) {
+		rounds := 100
+		if testing.Short() {
+			rounds = 15
+		}
+		for round := range rounds {
+			rng := rand.New(rand.NewPCG(uint64(round), 11))
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			// taken holds the folded names of the tables and indexes, which share their names.
+			taken := map[string]bool{}
+			for range 1 + rng.IntN(3) {
+				write(t, d, func(tx *core.Tx) {
+					for range 1 + rng.IntN(4) {
+						ct := randomTable(rng, randomName(rng, taken))
+						is.NotError(t, tx.CreateTable(t.Context(), ct), describe(ct))
+						for range rng.IntN(5) {
+							is.NotError(t, tx.Upsert(t.Context(), ct.GetTable(), randomValues(rng, ct)), describe(ct))
+						}
+						for range rng.IntN(4) {
+							ci := randomTableIndex(rng, randomName(rng, taken), ct)
+							is.NotError(t, tx.CreateIndex(t.Context(), ci), describeIndex(ci))
+						}
+					}
+				})
+			}
+			want := read(t, d)
+			is.NotError(t, d.Close(t.Context()))
+			again := w.serve(t, "a", core.Options{})
+			is.Equal(t, want, read(t, again), "after a close and an open, in round", round)
+			is.NotError(t, again.Close(t.Context()))
+			replayed := w.serve(t, "b", core.Options{})
+			is.Equal(t, want, read(t, replayed), "after a replay, in round", round)
+			is.NotError(t, replayed.Close(t.Context()))
+		}
+	})
+}
+
+// randomName of a table or an index that taken, the folded names that are in use, does not hold:
+// one of [hostile], or random characters, which it adds to taken. The names that start with "s4ql_"
+// or "sqlite_" are the core's and SQLite's, and are never drawn.
+func randomName(rng *rand.Rand, taken map[string]bool) string {
+	for {
+		var name string
+		if rng.IntN(2) == 0 {
+			name = hostile[rng.IntN(len(hostile))]
+		} else {
+			name = randomText(rng, 1+rng.IntN(12))
+		}
+		if folded := foldName(name); !taken[folded] && !strings.HasPrefix(folded, "s4ql_") && !strings.HasPrefix(folded, "sqlite_") {
+			taken[folded] = true
+			return name
+		}
+	}
+}
+
+// randomText of n characters, valid UTF-8 without NUL: mostly printable ASCII, the quotes among it,
+// and now and then a control character, a character of several bytes, or the largest one.
+func randomText(rng *rand.Rand, n int) string {
+	var b strings.Builder
+	for range n {
+		switch rng.IntN(10) {
+		case 0:
+			b.WriteRune(rune(1 + rng.IntN(31)))
+		case 1:
+			b.WriteRune([]rune{'é', '日', '🥪', 0x10ffff, 0x200b, '"', '\''}[rng.IntN(7)])
+		default:
+			b.WriteRune(rune(' ' + rng.IntN(95)))
+		}
+	}
+	s := b.String()
+	if !utf8.ValidString(s) {
+		panic("not valid UTF-8")
+	}
+	return s
+}
+
+// randomTable of the given name: one to six columns of random names and types, a primary key of
+// some of them in any order, and columns outside it that take NULL or not, each with a default of
+// its type, a default of NULL, or none.
+func randomTable(rng *rand.Rand, name string) *s4qlpb.CreateTable {
+	types := []s4qlpb.Type{s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER, s4qlpb.Type_TYPE_REAL, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_BLOB}
+	columns := 1 + rng.IntN(6)
+	taken := map[string]bool{}
+	ct := s4qlpb.CreateTable_builder{Table: new(name)}
+	for range columns {
+		column := s4qlpb.Column_builder{Name: new(randomName(rng, taken)), Type: new(types[rng.IntN(len(types))])}
+		ct.Columns = append(ct.Columns, column.Build())
+	}
+	positions := rng.Perm(columns)
+	for _, position := range positions[:1+rng.IntN(columns)] {
+		ct.PrimaryKey = append(ct.PrimaryKey, uint32(position))
+	}
+	built := ct.Build()
+	for i, c := range built.GetColumns() {
+		if !slices.Contains(built.GetPrimaryKey(), uint32(i)) && rng.IntN(2) == 0 {
+			c.SetNullable(true)
+		}
+		switch rng.IntN(4) {
+		case 0:
+			c.SetDefault(row(nil)[0])
+		case 1, 2:
+			c.SetDefault(randomValue(rng, c.GetType()))
+		}
+	}
+	return built
+}
+
+// randomValue of the type: one of its [edges], or for a real now and then random bits that are a
+// number.
+func randomValue(rng *rand.Rand, typ s4qlpb.Type) *s4qlpb.Value {
+	if typ == s4qlpb.Type_TYPE_REAL && rng.IntN(2) == 0 {
+		for {
+			if r := math.Float64frombits(rng.Uint64()); !math.IsNaN(r) && !math.IsInf(r, 0) {
+				return row(r)[0]
+			}
+		}
+	}
+	pool := edges[typ]
+	return pool[rng.IntN(len(pool))]
+}
+
+// randomValues of a row of the table, with NULL now and then in a column that takes it.
+func randomValues(rng *rand.Rand, ct *s4qlpb.CreateTable) []*s4qlpb.Value {
+	values := make([]*s4qlpb.Value, len(ct.GetColumns()))
+	for i, c := range ct.GetColumns() {
+		if c.GetNullable() && rng.IntN(4) == 0 {
+			values[i] = row(nil)[0]
+		} else {
+			values[i] = randomValue(rng, c.GetType())
+		}
+	}
+	return values
+}
+
+// randomTableIndex with the given name on the table: some of its columns, in any order, each in
+// either direction.
+func randomTableIndex(rng *rand.Rand, name string, ct *s4qlpb.CreateTable) *s4qlpb.CreateIndex {
+	positions := rng.Perm(len(ct.GetColumns()))
+	ci := s4qlpb.CreateIndex_builder{Index: new(name), Table: new(ct.GetTable())}
+	for _, position := range positions[:1+rng.IntN(len(positions))] {
+		column := s4qlpb.IndexColumn_builder{Column: new(uint32(position))}
+		if rng.IntN(2) == 0 {
+			column.Descending = new(true)
+		}
+		ci.Columns = append(ci.Columns, column.Build())
+	}
+	return ci.Build()
 }

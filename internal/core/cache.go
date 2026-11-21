@@ -265,7 +265,60 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 	if err != nil {
 		return err
 	}
-	return r.check(identity)
+	if err := r.check(identity); err != nil {
+		return err
+	}
+	return c.checkObjects()
+}
+
+// checkObjects of the schema of the cache: each is one that this package makes or that SQLite makes
+// itself, and anything else is refused with [ErrCacheVersion]. A table of the database and its
+// indexes are checked here only by their kind and their name, since [conn.load] and
+// [conn.loadIndexes] check them in full when a transaction first looks the table up, before it
+// reads or writes a row of it. What it accepts:
+//   - the table s4ql_cache, declared exactly as [conn.make] declares it;
+//   - a table whose name is not reserved, which is a table of the database;
+//   - an index on such a table, which is an index of the database or SQLite's index of its key;
+//   - a table whose name starts with "sqlite_", which only SQLite makes, such as sqlite_stat1.
+//
+// It refuses everything else: a view, a trigger, a table under another name that starts with
+// "s4ql_", and an index on a table with a reserved name.
+func (c *conn) checkObjects() error {
+	return c.query("select type, name, tbl_name, sql from main.sqlite_schema", func(s *sqlite.Stmt) error {
+		typ, name, owner := s.ColumnText(0), s.ColumnText(1), s.ColumnText(2)
+		switch {
+		case typ == "table" && name == "s4ql_cache":
+			if s.ColumnText(3) != kept(cacheTableSQL) {
+				return foreign("its table %q is not declared as s4ql declares it", name)
+			}
+			return nil
+		case typ == "table" && strings.HasPrefix(fold(name), "sqlite_"):
+			return nil
+		case typ == "table" && !reserved(name):
+			return nil
+		case typ == "index" && !reserved(owner):
+			return nil
+		}
+		return foreign("it holds the %v %q on the table %q, which s4ql does not make", typ, name, owner)
+	})
+}
+
+// foreign is the error that wraps [ErrCacheVersion] for a cache that holds what this package does
+// not make there, with the reason that format and args give, and the advice for it.
+func foreign(format string, args ...any) error {
+	return fmt.Errorf("%w: %v; something other than s4ql has changed the cache, so open the database with a new cache, or delete this one, with its files -wal and -shm", ErrCacheVersion, fmt.Sprintf(format, args...))
+}
+
+// kept is the text that SQLite keeps in sqlite_schema for sql, a statement of this package that
+// creates a table or an index in the schema main: "CREATE TABLE " or "CREATE INDEX ", and then the
+// statement from the name of the table or the index on, as it was written.
+func kept(sql string) string {
+	for _, prefix := range []string{"create table main.", "create index main."} {
+		if rest, ok := strings.CutPrefix(sql, prefix); ok {
+			return strings.ToUpper(strings.TrimSuffix(prefix, "main.")) + rest
+		}
+	}
+	panic("core: no statement that creates a table or an index in main: " + sql)
 }
 
 // wal puts the cache into the journal mode wal, or finds it there.
@@ -310,6 +363,14 @@ func (c *conn) made() (bool, error) {
 	return n > 0, err
 }
 
+// cacheTableSQL is the statement that makes the table s4ql_cache.
+const cacheTableSQL = `create table main.s4ql_cache (
+			id integer primary key check (id = 1),
+			version integer not null,
+			head text not null,
+			database text not null
+		) strict`
+
 // make the table s4ql_cache with its one row, which records the identity, if the cache has no such
 // table, inside a transaction that holds the write lock. A cache that has tables and no table
 // s4ql_cache is not one that this package made, and giving it a position would be a guess.
@@ -325,13 +386,7 @@ func (c *conn) make(identity string) error {
 	if tables > 0 {
 		return fmt.Errorf("%w: it records no position, and holds %v tables and indexes", ErrCacheVersion, tables)
 	}
-	if err := c.c.Exec(`
-		create table main.s4ql_cache (
-			id integer primary key check (id = 1),
-			version integer not null,
-			head text not null,
-			database text not null
-		) strict`); err != nil {
+	if err := c.c.Exec(cacheTableSQL); err != nil {
 		return err
 	}
 	return c.exec("insert into main.s4ql_cache (id, version, head, database) values (1, ?, ?, ?)", int64(cacheVersion), format.EmptyLog.String(), identity)
@@ -804,16 +859,35 @@ func (c *conn) lookUpWithoutIndexes(name string) (*table, error) {
 
 // load the table with the given name from the schema of the cache, without its indexes, or nil if
 // there is none. The cache's own tables are not tables of the database.
+//
+// It refuses with [ErrCacheVersion] a table with a trigger, and a table that is not exactly what
+// [table.createSQL] writes for the table that it reads. It reads the columns from
+// pragma_table_info, which hides much of what a statement can declare: a generated column, a
+// collation, a check, a foreign key, a constraint of uniqueness, the conflict clause of a key, and
+// whether the table has a rowid or is strict. So it then compares the text that SQLite keeps for
+// the table in sqlite_schema with the text that createSQL writes for what it read. SQLite keeps the
+// statement from the name of the table on, as it was written, and this package never alters a
+// table, so a table that this package made always has that text, and anything else that a
+// statement declares changes it.
 func (c *conn) load(name string) (*table, error) {
 	if reserved(name) {
 		return nil, nil
 	}
 	var t *table
-	if err := c.readSchema("select name from main.sqlite_schema where type = 'table' and name = ? collate nocase", func(s *sqlite.Stmt) error {
-		t = &table{name: s.ColumnText(0)}
+	var sql string
+	var triggers []string
+	if err := c.readSchema("select type, name, sql from main.sqlite_schema where tbl_name = ? collate nocase and type in ('table', 'trigger')", func(s *sqlite.Stmt) error {
+		if s.ColumnText(0) == "table" {
+			t, sql = &table{name: s.ColumnText(1)}, s.ColumnText(2)
+		} else {
+			triggers = append(triggers, s.ColumnText(1))
+		}
 		return nil
 	}, name); err != nil {
 		return nil, err
+	}
+	if len(triggers) > 0 {
+		return nil, foreign("the table %q has the trigger %q", name, triggers[0])
 	}
 	if t == nil {
 		return nil, nil
@@ -828,18 +902,18 @@ func (c *conn) load(name string) (*table, error) {
 		name := s.ColumnText(0)
 		typ, ok := typeOf(s.ColumnText(1))
 		if !ok {
-			return fmt.Errorf("%w: the column %q of its table %q has the type %q", ErrCacheVersion, name, t.name, s.ColumnText(1))
+			return foreign("the column %q of its table %q has the type %q", name, t.name, s.ColumnText(1))
 		}
 		pk := s.ColumnInt64(2)
 		notNull := s.ColumnInt64(3) != 0
 		if pk > 0 && !notNull {
 			// SQLite reports the key of a table with a rowid as a column that takes NULL.
-			return fmt.Errorf("%w: the primary-key column %q of its table %q takes NULL", ErrCacheVersion, name, t.name)
+			return foreign("the primary-key column %q of its table %q takes NULL", name, t.name)
 		}
 		var dflt *s4qlpb.Value
 		if s.ColumnType(4) != sqlite.TypeNull {
 			if dflt, ok = parseDefault(s.ColumnText(4), typ); !ok {
-				return fmt.Errorf("%w: the column %q of its table %q has the default %q, which s4ql does not write for a column of type %v", ErrCacheVersion, name, t.name, s.ColumnText(4), typeNames[typ])
+				return foreign("the column %q of its table %q has the default %q, which s4ql does not write for a column of type %v", name, t.name, s.ColumnText(4), typeNames[typ])
 			}
 		}
 		if pk > 0 {
@@ -854,13 +928,20 @@ func (c *conn) load(name string) (*table, error) {
 	for i := range len(keyed) {
 		position, ok := keyed[int64(i+1)]
 		if !ok {
-			return nil, fmt.Errorf("%w: its table %q has no column %v of its primary key", ErrCacheVersion, t.name, i+1)
+			return nil, foreign("its table %q has no column %v of its primary key", t.name, i+1)
 		}
 		t.key = append(t.key, position)
 		t.inKey[position] = true
 	}
 	if len(t.columns) == 0 || len(t.key) == 0 {
-		return nil, fmt.Errorf("%w: its table %q has %v columns and a primary key of %v", ErrCacheVersion, t.name, len(t.columns), len(t.key))
+		return nil, foreign("its table %q has %v columns and a primary key of %v", t.name, len(t.columns), len(t.key))
+	}
+	want, err := t.createSQL()
+	if err != nil {
+		return nil, err
+	}
+	if sql != kept(want) {
+		return nil, foreign("its table %q is not declared as s4ql declares a table of its columns", t.name)
 	}
 	return t, nil
 }
