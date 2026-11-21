@@ -19,6 +19,7 @@ import (
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 )
 
 // desc is the position of a column that an index of [indexOf] holds in descending order.
@@ -1983,4 +1984,254 @@ func FuzzScanIndex(f *testing.F) {
 	f.Fuzz(func(t *testing.T, input []byte) {
 		checkIndexScans(t, &choices{b: input}, false)
 	})
+}
+
+// indexFault is a transaction of the fault tests of indexes, on top of [indexFaultBase].
+type indexFault struct {
+	name  string
+	steps []step
+}
+
+// indexFaults are the transactions of the fault tests of indexes: one that creates an index, one
+// that drops one, one that does both, one that creates a table and an index on it, and one that
+// changes rows beside them, with a row long enough that the spool file of the commit object is
+// written before its end, and an annotation, which has a spool file of its own.
+func indexFaults() []indexFault {
+	// The spool file writes through a buffer of 64 KiB.
+	long := strings.Repeat("x", 70<<10)
+	return []indexFault{
+		{name: "create index", steps: []step{createIndex("i1", "t", 2, desc(1))}},
+		{name: "drop index", steps: []step{dropIndex("i0")}},
+		{name: "drop and create index", steps: []step{dropIndex("i0"), createIndex("i1", "t", 2), createIndex("i0", "t", desc(1))}},
+		{name: "create table and index", steps: []step{create("u", 1, "k", "v"), upsert("u", 1, 10), upsert("u", 2, 20), createIndex("iu", "u", 1)}},
+		{name: "rows beside indexes", steps: []step{
+			upsert("t", 100, 7, long), upsert("t", 3, 30, "y"), remove("t", true, 4), dropIndex("i0"), createIndex("i1", "t", desc(1)), note("insert", 1),
+		}},
+	}
+}
+
+// indexFaultBase is the state that the fault tests of indexes start from: the table t with rows
+// and its index i0, and tables beside it whose definitions make the schema of the cache take more
+// than its first page, so that a lookup by name reads pages of the schema from the file.
+func indexFaultBase() []step {
+	ct := s4qlpb.CreateTable_builder{Table: new("t"), PrimaryKey: []uint32{0}, Columns: []*s4qlpb.Column{
+		s4qlpb.Column_builder{Name: new("k"), Type: new(s4qlpb.Type_TYPE_INT)}.Build(),
+		s4qlpb.Column_builder{Name: new("v"), Type: new(s4qlpb.Type_TYPE_INT)}.Build(),
+		s4qlpb.Column_builder{Name: new("w"), Type: new(s4qlpb.Type_TYPE_TEXT)}.Build(),
+	}}.Build()
+	steps := []step{createWith(ct)}
+	for i := range 10 {
+		steps = append(steps, upsert("t", i, i%3, fmt.Sprint("w", i)))
+	}
+	steps = append(steps, createIndex("i0", "t", 1))
+	for i := range 8 {
+		steps = append(steps, create(fmt.Sprint("pad", i), 1, manyColumns(30)...))
+	}
+	return steps
+}
+
+// shrinkPageCache of the cache at path to the fewest pages that SQLite takes, as the default of
+// every connection that opens it later, so that SQLite reads most pages from the file each time it
+// needs them, and a fault of a read can land in nearly every read of the cache. The official build
+// of SQLite in a browser does not have the PRAGMA, and its connections keep their page cache.
+func shrinkPageCache(t *testing.T, path string) {
+	t.Helper()
+	c, err := sqlite.Open(path)
+	is.NotError(t, err)
+	is.NotError(t, c.Exec("pragma default_cache_size = 1"))
+	is.NotError(t, c.Close())
+}
+
+// faultStep is the distance between two positions of a fault in the fault tests of indexes: each
+// position, and under -short every fourth from the first on. A test goes on until a fault lands
+// nowhere, so either way it ends past the last read or write.
+func faultStep() int {
+	if testing.Short() {
+		return 4
+	}
+	return 1
+}
+
+// TestTx_Commit_indexFaults fails each read of the cache, and each write of a spool file, in turn,
+// at the commit of transactions that create and drop indexes, one fault in each run. A commit then
+// fails with a local error, not as a cache of another version, and publishes nothing, or it is
+// published as it is without a fault, and a read that failed stops the instance. Either way the
+// cache, opened again, and a new cache that replays the log hold what the log holds.
+func TestTx_Commit_indexFaults(t *testing.T) {
+	vfs, err := faultvfs.New()
+	is.NotError(t, err)
+	defer func() { is.NotError(t, vfs.Close()) }()
+
+	for _, test := range indexFaults() {
+		t.Run(test.name, func(t *testing.T) {
+			// The transaction without a fault gives the commit object and the state that a commit
+			// that succeeds must give.
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			transact(t, d, indexFaultBase()...)
+			before := read(t, d)
+			baseLog := w.commits(t)
+			transact(t, d, test.steps...)
+			after := read(t, d)
+			want := w.commits(t)[len(baseLog)]
+			is.NotError(t, d.Close(t.Context()))
+
+			for _, kind := range []string{"read", "spool write"} {
+				runs, failed := 0, 0
+				for at := 0; ; at += faultStep() {
+					what := fmt.Sprint(kind, " ", at)
+					if at == 100000 {
+						t.Fatal("every commit fails: " + what)
+					}
+					w := newWorld(t)
+					d := w.serve(t, "a", core.Options{})
+					transact(t, d, indexFaultBase()...)
+					is.NotError(t, d.Close(t.Context()))
+					path := filepath.Join(w.dir, "a.db")
+					shrinkPageCache(t, path)
+					head := w.manifest(t).Head
+
+					o := core.Options{}
+					o.VFS = vfs.Name()
+					spools := failSpools(&o)
+					d = w.serve(t, "a", o)
+					tx, err := d.Begin(t.Context())
+					is.NotError(t, err)
+					for _, s := range test.steps {
+						s(t, tx)
+					}
+					faultsBefore := vfs.Failures() + spools.failures()
+					if kind == "read" {
+						vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.AnyFile, After: at, Times: 1})
+					} else {
+						spools.failWrite(at)
+					}
+					err = tx.Commit(t.Context())
+					vfs.Fail(faultvfs.Fault{})
+					spools.failWrite(-1)
+					faulted := vfs.Failures()+spools.failures() > faultsBefore
+					stopped := isDone(d)
+					_ = d.Close(t.Context())
+					runs++
+
+					published := w.manifest(t).Head != head
+					if err != nil {
+						failed++
+						is.True(t, faulted, "the commit failed, and nothing failed: "+what+": "+err.Error())
+						is.True(t, !published, "the commit failed, and is in the log: "+what)
+						is.Error(t, core.ErrLocal, err, what)
+						is.True(t, !errors.Is(err, core.ErrCacheVersion), "a failed read or write read as a cache of another version: "+what+": "+err.Error())
+					} else {
+						is.True(t, published, "the commit succeeded, and is not in the log: "+what)
+						is.True(t, !faulted || stopped, "the commit succeeded, and the instance goes on after a failure: "+what)
+						log := w.commits(t)
+						is.Equal(t, len(baseLog)+1, len(log), what)
+						is.EqualSlice(t, want, log[len(baseLog)], what)
+					}
+					state := before
+					if published {
+						state = after
+					}
+					// The cache, opened again, and a new cache, which replays the whole log, hold what the
+					// log holds.
+					again := w.serve(t, "a", core.Options{})
+					is.Equal(t, state, read(t, again), what)
+					is.NotError(t, again.Close(t.Context()))
+					is.Equal(t, state, cacheState(t, path), what)
+					fresh := w.serve(t, "fresh", core.Options{})
+					is.Equal(t, state, read(t, fresh), what)
+					is.NotError(t, fresh.Close(t.Context()))
+
+					if !faulted {
+						break
+					}
+				}
+				t.Log(kind, ": ", runs, " runs, ", failed, " failed")
+				is.True(t, failed > 0, "no commit failed at a "+kind)
+			}
+		})
+	}
+}
+
+// TestReplay_indexFaults fails each read of the cache in turn while an instance opens and replays a
+// commit object that creates and drops indexes, one fault in each run. The replay then fails with a
+// local error, not as a broken log or a cache of another version, or it succeeds without a failed
+// read, and the cache, opened again, holds the log.
+func TestReplay_indexFaults(t *testing.T) {
+	vfs, err := faultvfs.New()
+	is.NotError(t, err)
+	defer func() { is.NotError(t, vfs.Close()) }()
+
+	for _, test := range indexFaults() {
+		t.Run(test.name, func(t *testing.T) {
+			// The instance b is caught up with the base, and the instance a then commits the
+			// transaction, which b replays when it opens again.
+			w := newWorld(t)
+			a := w.serve(t, "a", core.Options{})
+			transact(t, a, indexFaultBase()...)
+			is.NotError(t, a.Close(t.Context()))
+			b := w.serve(t, "b", core.Options{})
+			is.NotError(t, b.Close(t.Context()))
+			a = w.serve(t, "a", core.Options{})
+			transact(t, a, test.steps...)
+			want := read(t, a)
+			is.NotError(t, a.Close(t.Context()))
+			head := w.manifest(t).Head
+			shrinkPageCache(t, filepath.Join(w.dir, "b.db"))
+			data, err := os.ReadFile(filepath.Join(w.dir, "b.db"))
+			is.NotError(t, err)
+			o := core.Options{}
+			o.VFS = vfs.Name()
+
+			// Each open gets a copy of the cache of b, and the read that fails is the one after the
+			// reads that succeed, until no read of the open and of the replay fails.
+			runs, failed := 0, 0
+			for at := 0; ; at += faultStep() {
+				what := fmt.Sprint("read ", at)
+				if at == 100000 {
+					t.Fatal("every replay fails: " + what)
+				}
+				path := filepath.Join(w.dir, fmt.Sprint("b-", at, ".db"))
+				is.NotError(t, os.WriteFile(path, data, 0o600))
+				before := vfs.Failures()
+				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.AnyFile, After: at, Times: 1})
+				d, err := core.Open(t.Context(), w.host, w.client(), path, "db", o)
+				if err == nil {
+					err = d.Wait(t.Context())
+				}
+				vfs.Fail(faultvfs.Fault{})
+				faulted := vfs.Failures() > before
+				if d != nil {
+					_ = d.Close(t.Context())
+				}
+				runs++
+
+				if err != nil {
+					failed++
+					is.True(t, faulted, "the replay failed, and no read failed: "+what+": "+err.Error())
+					is.Error(t, core.ErrLocal, err, what)
+					for _, other := range []error{core.ErrLogBroken, core.ErrCacheVersion, core.ErrCacheNotInLog} {
+						is.True(t, !errors.Is(err, other), "a failed read read as a fault of the log or of the cache: "+what+": "+err.Error())
+					}
+				} else {
+					is.True(t, !faulted, "the replay succeeded, and a read failed: "+what)
+				}
+				// The log is as it was, and the cache, opened again, holds it.
+				is.Equal(t, head, w.manifest(t).Head, what)
+				d, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+				is.NotError(t, err, what)
+				is.NotError(t, d.Wait(t.Context()), what)
+				is.Equal(t, want, read(t, d), what)
+				is.NotError(t, d.Close(t.Context()), what)
+				is.Equal(t, want, cacheState(t, path), what)
+				is.NotError(t, os.Remove(path))
+
+				if !faulted {
+					break
+				}
+			}
+			t.Log(runs, " runs, ", failed, " failed")
+			is.True(t, failed > 0, "no replay failed")
+		})
+	}
 }

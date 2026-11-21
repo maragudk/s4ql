@@ -912,3 +912,16 @@ internal/core/tx.go Tx.DropTable remove statement: return tx.fail(ctx, operation
 	The table comes from a lookup with its indexes, so forgetIndexes, which fails only as checkIndexed would, gives nil.
 internal/core/replay.go apply constant: 0 => 1 #3
 	Every return of 0 here is with an error, and the number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
+
+# The faults of the commit of indexes in the core, internal/core: the errors of the writer of the
+# commit object, which keeps its first error. TestTx_Commit_indexFaults fails each write of the
+# spool file and each read of the cache under such a commit, and kills the other mutants of these
+# functions that ignore an error.
+internal/core/index.go Tx.spoolCreatedIndexes condition: err != nil => false #3
+	format.CommitWriter keeps the first error of a write in its field err, and every later method and Close return it; so after a CreateIndex that failed, Tx.spoolCommit fails at the next method of the writer or at its Close, with the same error, which fail classifies the same way, and publishes nothing. The index is valid, which Tx.CreateIndex checked with the same writer, so the error is always one of the spool file.
+internal/core/index.go Tx.spoolCreatedIndexes remove statement: return 0, err => #3
+	format.CommitWriter keeps the first error of a write in its field err, and every later method and Close return it; so after a CreateIndex that failed, Tx.spoolCommit fails at the next method of the writer or at its Close, with the same error, which fail classifies the same way, and publishes nothing. The index is valid, which Tx.CreateIndex checked with the same writer, so the error is always one of the spool file.
+internal/core/tx.go Tx.spoolCommit condition: err != nil => false #4
+	format.CommitWriter keeps the first error of a write in its field err, and every later method and Close return it; so after a DropIndex that failed, Tx.spoolCommit fails at the next method of the writer or at its Close, with the same error, which fail classifies the same way, and publishes nothing. The name is one that Tx.DropIndex found in the cache.
+internal/core/tx.go Tx.spoolCommit remove statement: return nil, fail(err) => #2
+	format.CommitWriter keeps the first error of a write in its field err, and every later method and Close return it; so after a DropIndex that failed, Tx.spoolCommit fails at the next method of the writer or at its Close, with the same error, which fail classifies the same way, and publishes nothing. The name is one that Tx.DropIndex found in the cache.
