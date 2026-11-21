@@ -846,3 +846,11 @@ internal/core/index.go applyDropIndex constant: return 0, err => return 1, err
 	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
 internal/core/index.go applyDropIndex constant: return 0, brokenf("it drops the index %q, which does not exist", name) => return 1, brokenf("it drops the index %q, which does not exist", name)
 	Every return of 0 here is with an error, and the replay, the one caller through apply, reads the number only without an error.
+internal/core/index.go applyCreateIndex constant: return 1, c.createIndex(t, ix) => return 2, c.createIndex(t, ix)
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
+internal/core/index.go applyCreateIndex constant: return 1, c.createIndex(t, ix) => return 0, c.createIndex(t, ix)
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
+internal/core/index.go applyDropIndex constant: return 1, c.dropIndex(ix) => return 2, c.dropIndex(ix)
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
+internal/core/index.go applyDropIndex constant: return 1, c.dropIndex(ix) => return 0, c.dropIndex(ix)
+	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
