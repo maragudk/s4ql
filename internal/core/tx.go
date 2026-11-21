@@ -1135,7 +1135,8 @@ func (tx *Tx) spoolCommit(ctx context.Context) (_ *spooled, err error) {
 				return nil, fail(fmt.Errorf("%w: the table %q that the transaction created is gone", ErrCacheVersion, e.created.GetTable()))
 			}
 			columns := positions(len(t.columns))
-			for row, err := range tx.c.scan(t) {
+			// The scan of a commit runs to its end, whatever the context.
+			for row, err := range tx.c.scan(context.WithoutCancel(ctx), t) {
 				if err != nil {
 					return nil, fail(err)
 				}

@@ -2421,6 +2421,111 @@ func TestScanIndex_order(t *testing.T) {
 	})
 }
 
+// bigRows is the number of rows of the table of [fillBig].
+const bigRows = 10_000
+
+// bigSorted is a scan of the table of [fillBig] that SQLite sorts in its first step.
+var bigSorted = core.IndexScan{Order: orderOf(desc(1))}
+
+// fillBig creates the table big in d, with [bigRows] rows whose third column is body. SQLite sorts
+// its 10,000 rows in about 100,000 instructions and counts them in about 40,000, and its column c1
+// orders them otherwise than their key: 7919 is a prime that does not divide 10,000, so each value
+// from 0 to 9,999 is in one row.
+func fillBig(t *testing.T, d *core.DB, body string) {
+	t.Helper()
+	big := typedTable("big", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_TEXT)
+	write(t, d, func(tx *core.Tx) {
+		is.NotError(t, tx.CreateTable(t.Context(), big))
+		for k := range bigRows {
+			is.NotError(t, tx.Upsert(t.Context(), "big", row(k, (k*7919)%bigRows, body, "")))
+		}
+	})
+}
+
+// bigScanner is a read transaction or a write transaction that scans the table of [fillBig].
+type bigScanner interface {
+	ScanIndex(ctx context.Context, table string, scan core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error]
+	RowsRead() int64
+}
+
+// beginBig begins a read transaction, or a write transaction that has written a row of its own to
+// the table of [fillBig], and gives it with the number of rows of the table that it sees.
+func beginBig(t *testing.T, d *core.DB, read bool) (bigScanner, *core.Tx, int) {
+	t.Helper()
+	if read {
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = r.Close(t.Context()) })
+		return r, nil, bigRows
+	}
+	tx, err := d.Begin(t.Context())
+	is.NotError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback(t.Context()) })
+	is.NotError(t, tx.Upsert(t.Context(), "big", row(bigRows, -1, "tx", "")))
+	return tx, tx, bigRows + 1
+}
+
+// TestScanIndex_context ends the context of a scan with an order between its rows, which holds in
+// every build of SQLite's binding. The tests of a context that ends within a step of SQLite are in
+// index_cgo_test.go, for the binding whose [sqlite.Stmt.StepContext] stops a step.
+func TestScanIndex_context(t *testing.T) {
+	for _, read := range []bool{true, false} {
+		t.Run(fmt.Sprint("should not count the rows that a sort read and did not give when the context has ended before the loop over it stops, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fillBig(t, d, "x")
+			s, tx, _ := beginBig(t, d, read)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			before := s.RowsRead()
+			for _, err := range s.ScanIndex(ctx, "big", bigSorted) {
+				is.NotError(t, err)
+				cancel()
+				break
+			}
+			is.Equal(t, int64(1), s.RowsRead()-before)
+			if tx != nil {
+				is.NotError(t, tx.Upsert(t.Context(), "big", row(bigRows+1, -2, "tx", "")))
+				is.NotError(t, tx.Commit(t.Context()))
+			}
+		})
+
+		t.Run(fmt.Sprint("should stop the instance as for a local failure, count none of the rows, and fail a write transaction, when the count of the rows that a sort read and did not give cannot read the cache, in a read transaction ", read), func(t *testing.T) {
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			// The rows are larger than the page cache, so the count reads pages of the cache again.
+			fillBig(t, d, strings.Repeat("x", 400))
+			is.NotError(t, d.Close(t.Context()))
+			o := core.Options{}
+			o.VFS = vfs.Name()
+			d = w.serve(t, "a", o)
+			s, tx, _ := beginBig(t, d, read)
+
+			before := s.RowsRead()
+			for _, err := range s.ScanIndex(t.Context(), "big", bigSorted) {
+				is.NotError(t, err)
+				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL})
+				break
+			}
+			vfs.Fail(faultvfs.Fault{})
+			is.True(t, vfs.Failures() > 0, "no read of the cache failed")
+			is.Equal(t, int64(1), s.RowsRead()-before)
+			is.True(t, isDone(d), "the instance stopped")
+			if tx != nil {
+				err := tx.Upsert(t.Context(), "big", row(bigRows+1, -2, "tx", ""))
+				is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+				is.True(t, strings.Contains(err.Error(), "can only be rolled back"), err.Error())
+				_ = tx.Rollback(t.Context())
+			}
+			_ = d.Close(t.Context())
+			is.NotError(t, vfs.Close())
+		})
+	}
+}
+
 // indexFault is a transaction of the fault tests of indexes, on top of [indexFaultBase].
 type indexFault struct {
 	name  string

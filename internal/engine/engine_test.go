@@ -19,6 +19,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/ctxtest"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -1295,6 +1296,62 @@ func TestEngine_events(t *testing.T) {
 		e, level = h.last(t)
 		is.Equal(t, slog.LevelDebug, level)
 		is.Equal(t, "refused", e[engine.AttrOutcome])
+	})
+
+	t.Run("should log a query whose context ends while the cache sorts its rows as canceled, with the error of the context, as one whose context ends between its rows", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		// 10,000 rows, which the cache sorts in about ten periods of SQLite's progress handler. v
+		// orders them otherwise than k, and no index has the order.
+		const n = 10_000
+		_, err := i.c.Exec(t.Context(), "create table big (k int primary key, v int not null) strict, without rowid")
+		is.NotError(t, err)
+		is.NotError(t, i.c.Begin(t.Context()))
+		for k := range n {
+			_, err := i.c.Exec(t.Context(), "insert into big (k, v) values (?, ?)", s4qlpb.Value_builder{Integer: new(int64(k))}.Build(), s4qlpb.Value_builder{Integer: new(int64((k * 7919) % n))}.Build())
+			is.NotError(t, err)
+		}
+		is.NotError(t, i.c.Commit(t.Context()))
+
+		// query src with ctx, and give the event of the query and its error, after a loop over the
+		// rows that cancel, if it is not nil, ends after the first row.
+		query := func(ctx context.Context, src string, cancel func()) (map[string]string, error) {
+			rows, err := i.c.Query(ctx, src)
+			if err == nil {
+				for _, rowErr := range rows.All() {
+					if err = rowErr; err != nil || cancel == nil {
+						break
+					}
+					cancel()
+				}
+			}
+			e, _ := h.last(t)
+			return e, err
+		}
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		between, err := query(ctx, "select k from big", cancel)
+		is.Error(t, context.Canceled, err)
+		is.Equal(t, "canceled", between[engine.AttrOutcome])
+		is.Equal(t, "context canceled", between[engine.AttrError])
+
+		// The context ends at each call of its Err up to the first row, among them those of the
+		// progress handler in the sort.
+		probe := ctxtest.EndAtErr(t.Context(), math.MaxInt)
+		calls := 0
+		e, err := query(probe, "select k from big order by v desc limit 1", func() { calls = probe.Calls() })
+		is.NotError(t, err)
+		is.Equal(t, "sorted", e[engine.AttrOrder])
+		is.Equal(t, fmt.Sprint(n), e[engine.AttrRowsRead])
+		is.True(t, calls >= 5, fmt.Sprint(calls, " calls of Err before the first row"))
+		for at := 1; at <= calls; at++ {
+			e, err := query(ctxtest.EndAtErr(t.Context(), at), "select k from big order by v desc limit 1", nil)
+			is.Error(t, context.Canceled, err)
+			is.Equal(t, between[engine.AttrOutcome], e[engine.AttrOutcome], fmt.Sprint("ended at the call ", at))
+			is.Equal(t, between[engine.AttrError], e[engine.AttrError], fmt.Sprint("ended at the call ", at))
+			is.Equal(t, "0", e[engine.AttrRows])
+		}
 	})
 
 	t.Run("should log no text and no event of a healthy instance at Info", func(t *testing.T) {

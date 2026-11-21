@@ -4,6 +4,7 @@ package sqlite_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"debug/elf"
 	"debug/macho"
@@ -21,15 +22,18 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"maragu.dev/is"
 
+	"maragu.dev/s4ql/internal/ctxtest"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
 // Result codes from https://sqlite.org/rescode.html that several tests use.
 const (
 	codeError             = 1
+	codeInterrupt         = 9
 	codeTooBig            = 18
 	codeMisuse            = 21
 	codeAuth              = 23
@@ -1224,6 +1228,206 @@ func TestStmt_Step(t *testing.T) {
 		is.Equal(t, 3091, code(t, err))
 		is.Equal(t, "cannot store REAL value in INT column t1.v1", message(t, err))
 	})
+}
+
+func TestStmt_StepContext(t *testing.T) {
+	// sorted fills the table t of c with n rows whose column v orders them otherwise than their key,
+	// and gives a statement that sorts them by v.
+	sorted := func(t *testing.T, c *sqlite.Conn, n int) *sqlite.Stmt {
+		t.Helper()
+		is.NotError(t, c.Exec("create table t (k int primary key, v int, b blob) strict, without rowid"))
+		is.NotError(t, c.Exec(fmt.Sprint("with recursive c (x) as (select 0 union all select x + 1 from c where x < ", n-1,
+			") insert into t select x, (x * 7919) % ", n, ", randomblob(50) from c")))
+		return prepare(t, c, "select k, v from t order by v")
+	}
+	// count the rows that s gives from its next step on, with [sqlite.Stmt.Step], and check that they
+	// come in the order of v, from the given value on.
+	count := func(t *testing.T, s *sqlite.Stmt, from int) int {
+		t.Helper()
+		n := 0
+		for {
+			ok, err := s.Step()
+			is.NotError(t, err)
+			if !ok {
+				return n
+			}
+			is.Equal(t, int64(from+n), s.ColumnInt64(1))
+			n++
+		}
+	}
+
+	t.Run("should step to the end of a sort as Step does while the context does not end", func(t *testing.T) {
+		c := memory(t)
+		s := sorted(t, c, 20_000)
+		ctx := ctxtest.EndAtErr(t.Context(), math.MaxInt)
+		ok, err := s.StepContext(ctx)
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, int64(0), s.ColumnInt64(1))
+		is.Equal(t, 19_999, count(t, s, 1))
+		// SQLite looked at the context every period of instructions while it sorted.
+		calls := ctx.Calls()
+		is.True(t, calls >= 5 && calls <= s.VMSteps()/sqlite.ProgressPeriod, fmt.Sprint(calls, " calls of Err in ", s.VMSteps(), " instructions"))
+	})
+
+	t.Run("should end a step that sorts with the context's error at the first period of instructions after the context ends, whatever the number of rows", func(t *testing.T) {
+		for _, rows := range []int{20_000, 100_000} {
+			for _, at := range []int{1, 2, 5} {
+				c := memory(t)
+				s := sorted(t, c, rows)
+				ctx := ctxtest.EndAtErr(t.Context(), at)
+				ok, err := s.StepContext(ctx)
+				is.True(t, !ok)
+				is.Error(t, context.Canceled, err)
+				// The handler looked at the context at calls up to the one at which it ended, and
+				// StepContext once more for its error.
+				is.Equal(t, at+1, ctx.Calls())
+				// SQLite looks at the handler at the jumps of its program, which are a few instructions
+				// apart in the loop that fills the sorter, so it stops a few instructions after a period.
+				steps := s.VMSteps()
+				is.True(t, steps >= at*sqlite.ProgressPeriod && steps < at*sqlite.ProgressPeriod+100, fmt.Sprint(rows, " rows, ended at the call ", at, ": ", steps, " instructions"))
+
+				// The statement failed with SQLITE_INTERRUPT, which its reset gives once more, and it then
+				// runs again from the start, to its end.
+				is.Equal(t, codeInterrupt, code(t, s.Reset()))
+				is.Equal(t, rows, count(t, s, 0))
+			}
+		}
+	})
+
+	t.Run("should end the step with the context's error for a context that has ended already, also for an exceeded deadline", func(t *testing.T) {
+		c := memory(t)
+		s := sorted(t, c, 20_000)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err := s.StepContext(ctx)
+		is.Error(t, context.Canceled, err)
+		is.Equal(t, codeInterrupt, code(t, s.Reset()))
+
+		ctx, cancel = context.WithTimeout(t.Context(), -time.Second)
+		defer cancel()
+		_, err = s.StepContext(ctx)
+		is.Error(t, context.DeadlineExceeded, err)
+		is.Equal(t, codeInterrupt, code(t, s.Reset()))
+	})
+
+	t.Run("should interrupt only the step that it runs, and no step after it, of the same statement or another", func(t *testing.T) {
+		c := memory(t)
+		s := sorted(t, c, 20_000)
+		ctx := ctxtest.EndAtErr(t.Context(), 2)
+		_, err := s.StepContext(ctx)
+		is.Error(t, context.Canceled, err)
+		is.Equal(t, codeInterrupt, code(t, s.Reset()))
+
+		// The context has ended, and the steps without it run to their end.
+		is.Equal(t, 20_000, count(t, s, 0))
+		is.NotError(t, s.Reset())
+		other := prepare(t, c, "select k, v from t order by v desc")
+		ok, err := other.Step()
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, int64(19_999), other.ColumnInt64(1))
+		is.NotError(t, other.Reset())
+		// A step with a context that has not ended runs to its end too.
+		ok, err = s.StepContext(t.Context())
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, 19_999, count(t, s, 1))
+		is.Equal(t, 3, ctx.Calls())
+	})
+
+	t.Run("should give a step that ends before the next period of instructions its result, also after the context has ended", func(t *testing.T) {
+		c := memory(t)
+		s := sorted(t, c, 10)
+		ok, err := s.StepContext(ctxtest.EndAtErr(t.Context(), 1))
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, 9, count(t, s, 1))
+
+		is.NotError(t, c.Exec("insert into t (k, v) values (100, 100)"))
+		insert := prepare(t, c, "insert into t (k, v) values (100, 100)")
+		_, err = insert.StepContext(ctxtest.EndAtErr(t.Context(), 1))
+		is.Equal(t, codeConstraintPrimary, code(t, err))
+	})
+
+	t.Run("should leave the transaction of a read that it interrupts open, with its writes", func(t *testing.T) {
+		c := memory(t)
+		s := sorted(t, c, 20_000)
+		is.NotError(t, c.Exec("begin"))
+		is.NotError(t, c.Exec("insert into t (k, v) values (20000, 20000)"))
+		_, err := s.StepContext(ctxtest.EndAtErr(t.Context(), 3))
+		is.Error(t, context.Canceled, err)
+		is.Equal(t, codeInterrupt, code(t, s.Reset()))
+		is.NotError(t, c.Exec("insert into t (k, v) values (20001, 20001)"))
+		is.EqualSlice(t, []string{"integer:20002"}, query(t, c, "select count(*) from t"))
+		is.NotError(t, c.Exec("commit"))
+		is.EqualSlice(t, []string{"integer:20002"}, query(t, c, "select count(*) from t"))
+	})
+
+	t.Run("should not interrupt a count of every row of a table, which SQLite runs in one instruction, and interrupt a count of a column", func(t *testing.T) {
+		c := memory(t)
+		_ = sorted(t, c, 100_000)
+		all := prepare(t, c, "select count(*) from t")
+		ok, err := all.StepContext(ctxtest.EndAtErr(t.Context(), 1))
+		is.NotError(t, err)
+		is.True(t, ok)
+		is.Equal(t, int64(100_000), all.ColumnInt64(0))
+
+		column := prepare(t, c, "select count(k) from t")
+		_, err = column.StepContext(ctxtest.EndAtErr(t.Context(), 1))
+		is.Error(t, context.Canceled, err)
+		is.True(t, column.VMSteps() < sqlite.ProgressPeriod+100, fmt.Sprint(column.VMSteps(), " instructions"))
+	})
+
+	t.Run("should fail with SQLITE_MISUSE on a finalized statement", func(t *testing.T) {
+		c := memory(t)
+		s, err := c.Prepare("select 1")
+		is.NotError(t, err)
+		is.NotError(t, s.Finalize())
+		_, err = s.StepContext(t.Context())
+		is.Equal(t, codeMisuse, code(t, err))
+	})
+}
+
+// BenchmarkStmt_StepContext compares [sqlite.Stmt.StepContext] with [sqlite.Stmt.Step] for the first
+// step of a statement, with a context that can end and does not: for a scan that seeks one row of
+// a table, which runs too few instructions for the progress handler, and for a sort of 20,000 rows
+// in the first step, in which the handler looks at the context every period.
+func BenchmarkStmt_StepContext(b *testing.B) {
+	c, err := sqlite.Open(":memory:")
+	is.NotError(b, err)
+	defer func() { is.NotError(b, c.Close()) }()
+	is.NotError(b, c.Exec("create table t (k int primary key, v int, b blob) strict, without rowid"))
+	is.NotError(b, c.Exec("with recursive c (x) as (select 0 union all select x + 1 from c where x < 19999) insert into t select x, (x * 7919) % 20000, randomblob(50) from c"))
+	ctx, cancel := context.WithCancel(b.Context())
+	defer cancel()
+	for _, sql := range []struct{ name, sql string }{
+		{"seek", "select * from t where k >= 10000 limit 1"},
+		{"sort", "select k, v from t order by v"},
+	} {
+		s, err := c.Prepare(sql.sql)
+		is.NotError(b, err)
+		for _, step := range []struct {
+			name string
+			step func() (bool, error)
+		}{
+			{"Step", s.Step},
+			{"StepContext", func() (bool, error) { return s.StepContext(ctx) }},
+		} {
+			b.Run(sql.name+"/"+step.name, func(b *testing.B) {
+				for b.Loop() {
+					ok, err := step.step()
+					if err != nil || !ok {
+						b.Fatal(ok, err)
+					}
+					if err := s.Reset(); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+		is.NotError(b, s.Finalize())
+	}
 }
 
 func TestStmt_Finalize(t *testing.T) {
