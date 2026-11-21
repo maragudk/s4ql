@@ -778,8 +778,6 @@ internal/core/index.go conn.loadIndexes operator: position >= int64(len(t.column
 	pragma_index_xinfo gives a key column of an index as the position of a column of its table, -1 for the rowid, or -2 for an expression, never one past the columns.
 internal/core/index.go conn.lookUpIndex condition: err != nil => false
 	found is set only by the row of the query, and its LIMIT 1 ends the statement at that row without another read, so the query fails only before the row, found is false whenever err is not nil, and !found alone gives the error back.
-internal/core/index.go conn.loadIndexes condition: primary == "" => false #2
-	The load of a table refuses one that s4ql did not declare, and s4ql declares every table WITHOUT ROWID, so a table that loadIndexes reads has the index of its primary key, and primary is never empty here.
 internal/core/index.go conn.lookUpIndex condition: err != nil => false #3
 	lookUp has read the indexes of the table that it gives, so t.index does not fail as checkIndexed would.
 internal/core/index.go conn.lookUpIndex remove statement: return nil, nil, err => #3
@@ -904,3 +902,9 @@ internal/core/index.go ReadTx.ScanPlan remove statement: return "", nil, err => 
 	scanSQL fails only as checkIndexed would, and the table comes from a lookup with its indexes.
 internal/core/replay.go apply constant: return 0, err => return 1, err #2
 	The number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied; and replay returns at the error before it adds.
+internal/core/tx.go Tx.DropTable condition: err != nil => false #3
+	The table comes from a lookup with its indexes, so forgetIndexes, which fails only as checkIndexed would, gives nil.
+internal/core/tx.go Tx.DropTable remove statement: return tx.fail(ctx, operation, err) =>
+	The table comes from a lookup with its indexes, so forgetIndexes, which fails only as checkIndexed would, gives nil.
+internal/core/replay.go apply constant: 0 => 1 #3
+	Every return of 0 here is with an error, and the number of changes that replay adds up from apply is read by no caller: catchUp reads only the bytes of what replay applied.
