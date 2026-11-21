@@ -772,6 +772,7 @@ var checkCases = []checkCase{
 	{name: "a second default", src: "create table t (k int primary key, v int default 1 default 2) strict, without rowid", err: "s4ql: not supported: second DEFAULT (at offset 51)"},
 	{name: "a second default of the same value", src: "create table t (k int primary key, v int default 1 not null default 1) strict, without rowid", err: "s4ql: not supported: second DEFAULT (at offset 60)"},
 	{name: "a second default after NULL", src: "create table t (k int primary key, v text default null default 'a') strict, without rowid", err: "s4ql: not supported: second DEFAULT (at offset 55)"},
+	{name: "ON CONFLICT before a second default", src: "create table t (k int primary key, v int default 1 not null on conflict abort default 2) strict, without rowid", err: "s4ql: not supported: ON CONFLICT clause (at offset 60)"},
 	{name: "a default with a collation", src: "create table t (k int primary key, v text default 'a' collate binary) strict, without rowid", err: "s4ql: not supported: COLLATE (at offset 54)"},
 	{name: "a default and NULL", src: "create table t (k int primary key, v int default null null) strict, without rowid", err: "s4ql: not supported: NULL constraint (at offset 54)"},
 	{name: "a default and UNIQUE", src: "create table t (k int primary key, v int default 1 unique) strict, without rowid", err: "s4ql: not supported: UNIQUE (at offset 51)"},

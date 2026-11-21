@@ -254,7 +254,8 @@ func (r *recognizer) column(d *ast.ColumnDef, key bool) Column {
 // as 1 and 0; a DEFAULT in parentheses is an expression.
 func (r *recognizer) defaultValue(d *ast.DefaultConstraint, typ Type) Default {
 	start := r.at()
-	if d.Name.Present() && r.isNext(d.Name) && (isWord(d.Name, "true") || isWord(d.Name, "false")) {
+	// A name is the token after DEFAULT, which the caller has taken, and an absent one has no text.
+	if isWord(d.Name, "true") || isWord(d.Name, "false") {
 		r.reject("TRUE or FALSE")
 	}
 	if d.LParen.Present() || d.Name.Present() {

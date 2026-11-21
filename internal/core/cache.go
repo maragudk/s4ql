@@ -553,9 +553,8 @@ func (t *table) createTable() *s4qlpb.CreateTable {
 		if c.nullable {
 			column.Nullable = new(true)
 		}
-		if c.dflt != nil {
-			column.Default = proto.CloneOf(c.dflt)
-		}
+		// The clone of no default is none.
+		column.Default = proto.CloneOf(c.dflt)
 		ct.Columns = append(ct.Columns, column.Build())
 	}
 	for _, position := range t.key {
@@ -569,10 +568,8 @@ func (t *table) createTable() *s4qlpb.CreateTable {
 func newTable(ct *s4qlpb.CreateTable) *table {
 	t := &table{name: ct.GetTable(), inKey: make([]bool, len(ct.GetColumns()))}
 	for _, c := range ct.GetColumns() {
-		var dflt *s4qlpb.Value
-		if c.HasDefault() {
-			dflt = proto.CloneOf(c.GetDefault())
-		}
+		// The clone of no default is none.
+		dflt := proto.CloneOf(c.GetDefault())
 		t.columns = append(t.columns, column{name: c.GetName(), typ: c.GetType(), nullable: c.GetNullable(), dflt: dflt})
 	}
 	for _, position := range ct.GetPrimaryKey() {
