@@ -125,8 +125,8 @@ func TestExec(t *testing.T) {
 		db := w.serve(t, "a")
 		exec(t, db, t1)
 
-		_, err := db.ExecContext(t.Context(), "select * from t1 order by v1")
-		is.Equal(t, "ORDER BY clause (at offset 17)", notSupported(t, err))
+		_, err := db.ExecContext(t.Context(), "select * from t1 group by v1")
+		is.Equal(t, "GROUP BY clause (at offset 17)", notSupported(t, err))
 		_, err = db.QueryContext(t.Context(), "insert into t1 (v1) values (1), (2)")
 		is.True(t, notSupported(t, err) != "")
 		_, err = db.ExecContext(t.Context(), insert1+"; "+insert1)
@@ -213,7 +213,7 @@ func TestExec(t *testing.T) {
 				}
 
 				// A text that s4ql does not support gets the "not supported" that it gets without arguments.
-				for _, src := range []string{"select * from t1 where v1 = ? or v1 = 2", "select * from t1 order by v1", "insert into t1 (v1) values (?1)", "insert into t1 (v1) values (?), (?)", "begin", "", " ; -- nothing"} {
+				for _, src := range []string{"select * from t1 where v1 = ? or v1 = 2", "select * from t1 group by v1", "insert into t1 (v1) values (?1)", "insert into t1 (v1) values (?), (?)", "begin", "", " ; -- nothing"} {
 					err := call(src, args...)
 					is.Equal(t, notSupported(t, call(src)), notSupported(t, err), name, src)
 				}
@@ -420,10 +420,17 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "OR (at offset 30)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = 1 group by v1")
 		is.Equal(t, "GROUP BY clause (at offset 30)", notSupported(t, err))
-		// A select with WHERE that s4ql supports prepares without the instance.
-		p, err := db.PrepareContext(t.Context(), "select * from t1 where v1 = ? and v1 is not null")
-		is.NotError(t, err)
-		is.NotError(t, p.Close())
+		// A select with WHERE, ORDER BY, and LIMIT that s4ql supports prepares without the instance, and
+		// one with a term of ORDER BY or LIMIT that s4ql does not support is refused from the text.
+		for _, src := range []string{"select * from t1 where v1 = ? and v1 is not null", "select * from t1 where v1 > ? order by v1 desc limit ?", "select v1 from t1 limit 0"} {
+			p, err := db.PrepareContext(t.Context(), src)
+			is.NotError(t, err, src)
+			is.NotError(t, p.Close())
+		}
+		_, err = db.PrepareContext(t.Context(), "select * from t1 order by 1")
+		is.Equal(t, "ordering term other than a column (at offset 26)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "select * from t1 limit -1")
+		is.Equal(t, "negative LIMIT (at offset 23)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")
 		is.Equal(t, "named parameter (at offset 28)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "create table t2 (v2 int(10) primary key) strict, without rowid")
@@ -1587,21 +1594,23 @@ func TestIndexes(t *testing.T) {
 			sqliteError(t, 1, 1, want, err)
 		}
 		for src, want := range map[string]string{
-			"create unique index i on x (s)":           "UNIQUE INDEX",
-			"create index i on x (s) where s = 'a'":    "partial index",
-			"select * from x indexed by xs":            "INDEXED BY",
-			"select * from x not indexed":              "NOT INDEXED",
-			"explain query plan select * from x":       "EXPLAIN QUERY PLAN",
-			"reindex xs":                               "REINDEX",
-			"analyze":                                  "ANALYZE",
-			"create index i on x (s collate nocase)":   "COLLATE",
-			"create index i on x (lower(s))":           "index on an expression",
-			"select * from x where s = 'a' order by k": "ORDER BY",
+			"create unique index i on x (s)":         "UNIQUE INDEX",
+			"create index i on x (s) where s = 'a'":  "partial index",
+			"select * from x indexed by xs":          "INDEXED BY",
+			"select * from x not indexed":            "NOT INDEXED",
+			"explain query plan select * from x":     "EXPLAIN QUERY PLAN",
+			"reindex xs":                             "REINDEX",
+			"analyze":                                "ANALYZE",
+			"create index i on x (s collate nocase)": "COLLATE",
+			"create index i on x (lower(s))":         "index on an expression",
 		} {
 			_, err := db.ExecContext(t.Context(), src)
 			is.True(t, strings.HasPrefix(notSupported(t, err), want), fmt.Sprint(src, ": ", err))
 		}
 		is.Equal(t, "k INT: 1; 3", rowsText(t, db, "select k from x where s = 'a'"))
+		got, err := rowsInOrder(t, db, "select k from x where s = 'a' order by k desc")
+		is.NotError(t, err)
+		is.Equal(t, "int64 3; int64 1", strings.Join(got, "; "))
 	})
 
 	t.Run("should create and drop an index in a transaction, undo both with a roll back, and refuse both in a read-only one", func(t *testing.T) {
@@ -1923,6 +1932,553 @@ func TestValueFirst(t *testing.T) {
 		}
 		_, err := db.QueryContext(t.Context(), receive, "q", "2026-11-21T13:00:00.000Z")
 		is.Equal(t, "s4ql: wrong number of arguments: 2 for a statement with 3 parameters", fmt.Sprint(err))
+	})
+}
+
+// ordered is a select with ORDER BY or LIMIT, in its parts, so that a test can ask SQLite for the
+// rows of the same select without its LIMIT, and their ranks under the ORDER BY, and compare the
+// rows of s4ql with them as [ordered.differs] says.
+type ordered struct {
+	// columns of the select list, table, and the conditions of WHERE, or empty for none.
+	columns, table, where string
+	// by holds the terms of ORDER BY, or is empty for none.
+	by string
+	// limit is the number of LIMIT as the text writes it, "?" for a parameter, or empty for none.
+	limit string
+	// args of the parameters of where, and then of limit, each as SQLite binds it.
+	args []any
+}
+
+// src is the text of the select.
+func (q ordered) src() string {
+	src := "select " + q.columns + " from " + q.table
+	if q.where != "" {
+		src += " where " + q.where
+	}
+	if q.by != "" {
+		src += " order by " + q.by
+	}
+	if q.limit != "" {
+		src += " limit " + q.limit
+	}
+	return src
+}
+
+// first is the select with a LIMIT of 1 in place of its own, which gives the row that a QueryRow of
+// the select gives, if its own LIMIT is not 0.
+func (q ordered) first() ordered {
+	if q.limit == "?" {
+		q.args = q.args[:len(q.args)-1]
+	}
+	q.limit = "1"
+	return q
+}
+
+// differs says how the rows got, which s4ql gave for the select in the order in which they came, as
+// [rowText] gives them, differ from what SQLite, o, gives for it, or "" if they do not:
+//
+//   - The number of rows is SQLite's.
+//   - With ORDER BY, the rows are in SQLite's order. SQLite gives the rows of the select without its
+//     LIMIT, and separately the dense rank of each under the ORDER BY, in the same order, so that two
+//     rows have one rank exactly if they tie. The row of s4ql at each place must be a row of the rank
+//     that SQLite has at that place: where no rows tie, that is the same row at the same place, and
+//     the rows of a rank are compared as a multiset, of which a LIMIT that cuts a rank leaves any
+//     part. The ranks at each place do not depend on the order in which SQLite gives tied rows, so
+//     the two queries need not give those in one order.
+//   - Without ORDER BY, the rows are rows of the select without its LIMIT, each no more often than
+//     that select gives it: with a LIMIT, any of them are right, and without one, they are all of
+//     them.
+func (q ordered) differs(t *testing.T, o *oracle, got []string) string {
+	t.Helper()
+	want, err := o.rows(t, q.src(), q.args...)
+	is.True(t, err == nil, fmt.Sprint(q.src(), ": SQLite gives ", err))
+	if len(got) != len(want) {
+		return fmt.Sprintf("%v: s4ql gives %v rows, %q, and SQLite %v, %q", q.src(), len(got), got, len(want), want)
+	}
+	args := q.args
+	if q.limit == "?" {
+		args = args[:len(args)-1]
+	}
+	unlimited := q
+	unlimited.limit, unlimited.args = "", args
+	rows, err := o.rows(t, unlimited.src(), args...)
+	is.True(t, err == nil, fmt.Sprint(unlimited.src(), ": SQLite gives ", err))
+	ranks := make([]string, len(rows))
+	if q.by != "" {
+		ranked := unlimited
+		ranked.columns = "dense_rank() over (order by " + q.by + ")"
+		ranks, err = o.rows(t, ranked.src(), args...)
+		is.True(t, err == nil, fmt.Sprint(ranked.src(), ": SQLite gives ", err))
+		is.Equal(t, len(rows), len(ranks))
+	}
+	if len(got) > len(rows) {
+		return fmt.Sprintf("%v: s4ql gives %v rows, and the select without its LIMIT has %v in SQLite", q.src(), len(got), len(rows))
+	}
+	for start := 0; start < len(got); {
+		end := start
+		left := map[string]int{}
+		for end < len(rows) && ranks[end] == ranks[start] {
+			left[rows[end]]++
+			end++
+		}
+		for n := start; n < min(end, len(got)); n++ {
+			if left[got[n]]--; left[got[n]] < 0 {
+				return fmt.Sprintf("%v: s4ql gives the row %v at the place %v, where SQLite has the rows %q; s4ql's rows are %q", q.src(), got[n], n, rows[start:end], got)
+			}
+		}
+		start = end
+	}
+	return ""
+}
+
+// rowQuerier is where a query of one row runs: a [sql.DB], a [sql.Conn], or a [sql.Tx].
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// inOrder requires that the select q gives on db, through Query and through QueryRow, the rows that
+// SQLite, o, gives for it, as [ordered.differs] says, and gives the rows of the Query.
+func inOrder(t *testing.T, db interface {
+	querier
+	rowQuerier
+}, o *oracle, q ordered) []string {
+	t.Helper()
+	got, err := rowsInOrder(t, db, q.src(), q.args...)
+	is.NotError(t, err, q.src())
+	is.Equal(t, "", q.differs(t, o, got))
+
+	width := strings.Count(q.columns, ",") + 1
+	if q.columns == "*" {
+		width = len(strings.Split(o.columnsOf(t, q.table), ","))
+	}
+	values := make([]any, width)
+	dest := make([]any, width)
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	err = db.QueryRowContext(t.Context(), q.src(), q.args...).Scan(dest...)
+	if len(got) == 0 {
+		is.Error(t, sql.ErrNoRows, err, q.src())
+		return got
+	}
+	is.NotError(t, err, q.src())
+	is.Equal(t, "", q.first().differs(t, o, []string{rowText(values)}))
+	return got
+}
+
+// columnsOf the table in SQLite: their names, joined by commas.
+func (o *oracle) columnsOf(t *testing.T, table string) string {
+	t.Helper()
+	rows, err := o.rows(t, "select group_concat(name) from pragma_table_info(?)", table)
+	is.True(t, err == nil && len(rows) == 1, fmt.Sprint(table, ": ", err))
+	names, ok := strings.CutPrefix(rows[0], `string "`)
+	is.True(t, ok, rows[0])
+	return strings.TrimSuffix(names, `"`)
+}
+
+// orderTable is the table of the tests of ORDER BY and LIMIT, with a column of each type, rows that
+// tie in each column but the key, NULL in the columns that take it, 0.0 and -0.0, the largest and
+// the smallest integer, the empty text and the empty blob, and text that sorts by its bytes.
+var orderTable = []string{
+	"create table o (k int primary key, i integer, r real, s text, b blob, n int not null) strict, without rowid",
+	"insert into o values (1, 3, 1.5, 'm', x'01', 1)",
+	"insert into o values (2, null, 2.5, null, x'02', 2)",
+	"insert into o values (3, 0, null, 'a', null, 0)",
+	"insert into o values (4, 3, 0.5, 'z', x'', 1)",
+	"insert into o values (5, -7, 2.5, 'm', x'ff', 2)",
+	"insert into o values (6, null, -0.0, null, x'00', 0)",
+	"insert into o values (7, 0, 1.5, 'b', null, 1)",
+	"insert into o values (8, 9223372036854775807, 0.0, 'a', x'0100', 2)",
+	"insert into o values (9, -9223372036854775808, null, 'z', x'01', 0)",
+	"insert into o values (10, 3, 3.5, '', x'7f', 1)",
+	"insert into o values (11, 0, -1.5, 'b', x'80', 2)",
+	"insert into o values (12, null, 2.5, 'M', x'02', 0)",
+}
+
+func TestOrderBy(t *testing.T) {
+	// The terms of ORDER BY: each column ascending and descending, two and three columns, and a
+	// column that ties in most rows, alone, which leaves its ties in any order.
+	bys := []string{"k", "k desc", "i", "i desc", "r", "r asc", "r desc", "s", "s desc", "b", "b desc", "n", "n desc",
+		"n, s desc", "n desc, r", "i, r desc, k", "s, b desc", "b desc, i desc, k"}
+	// The limits, as the text writes them: none, 0, 1, a few, more than all rows, and a parameter.
+	limits := []string{"", "0", "1", "3", "100", "?"}
+	// The shapes of the select that the terms and limits go with.
+	shapes := []ordered{
+		{columns: "k"},
+		{columns: "*"},
+		{columns: "s, k", where: "n = ?", args: []any{int64(1)}},
+		{columns: "b, r", where: "s is not null"},
+		{columns: "n", where: "r > 0.0"},
+	}
+
+	t.Run("should give the rows of each type, with NULL, in the order of ORDER BY, ascending and descending, by several columns, with ties, and as many as LIMIT says, through Query and QueryRow, as SQLite gives them", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, orderTable...)
+		o := newOracle(t, orderTable...)
+
+		for _, shape := range shapes {
+			for _, by := range append([]string{""}, bys...) {
+				for _, limit := range limits {
+					q := shape
+					q.table, q.by, q.limit = "o", by, limit
+					q.args = slices.Clone(shape.args)
+					if limit == "?" {
+						q.args = append(q.args, int64(2))
+					}
+					inOrder(t, db, o, q)
+				}
+			}
+		}
+
+		// The rows of an order without ties, pinned, also of a column of each type and with NULL.
+		for src, want := range map[string]string{
+			"select k from o order by i desc, k limit 4":         "int64 8; int64 1; int64 4; int64 10",
+			"select k from o order by r, k limit 4":              "int64 3; int64 9; int64 11; int64 6",
+			"select s from o where n = 0 order by s desc":        `string "z"; string "a"; string "M"; <nil> <nil>`,
+			"select b from o where k < 5 order by b limit 3":     "<nil> <nil>; []uint8 []byte{}; []uint8 []byte{0x1}",
+			"select k from o order by n desc, s desc, b limit 2": "int64 5; int64 11",
+			"select k from o order by k desc limit 0":            "",
+		} {
+			got, err := rowsInOrder(t, db, src)
+			is.NotError(t, err, src)
+			is.Equal(t, want, strings.Join(got, "; "), src)
+		}
+	})
+
+	t.Run("should take a LIMIT argument of an integer from 0 of each Go type that database/sql converts to one, and refuse every other, the driver's types before the names and the engine's after them", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, orderTable...)
+		o := newOracle(t, orderTable...)
+		type count uint16
+		// numbered is the message want with the number of the argument of LIMIT, n, for its %v.
+		numbered := func(want string, n int) string {
+			return strings.ReplaceAll(want, "%v", fmt.Sprint(n))
+		}
+		for _, c := range []struct {
+			arg any
+			n   int64
+		}{
+			{arg: int64(2), n: 2}, {arg: int64(0), n: 0}, {arg: int(1), n: 1}, {arg: int8(3), n: 3}, {arg: int16(4), n: 4},
+			{arg: int32(5), n: 5}, {arg: uint(6), n: 6}, {arg: uint8(7), n: 7}, {arg: uint16(8), n: 8}, {arg: uint32(9), n: 9},
+			{arg: uint64(100), n: 100}, {arg: int64(math.MaxInt64), n: math.MaxInt64}, {arg: uint64(math.MaxInt64), n: math.MaxInt64},
+			{arg: count(2), n: 2}, {arg: new(int64(3)), n: 3}, {arg: valuer(1), n: 1},
+			{arg: sql.NullInt64{Int64: 4, Valid: true}, n: 4}, {arg: bigValuer(1 << 63), n: 15},
+		} {
+			for _, by := range []string{"k", "n desc"} {
+				q := ordered{columns: "k", table: "o", by: by, limit: "?", args: []any{c.n}}
+				got, err := rowsInOrder(t, db, q.src(), c.arg)
+				is.NotError(t, err, fmt.Sprintf("%T", c.arg))
+				is.Equal(t, "", q.differs(t, o, got), fmt.Sprintf("%T", c.arg))
+			}
+		}
+
+		// Each refusal is s4ql's "not supported". The engine refuses a value that is no integer from 0
+		// when the statement runs, after the errors of the names; the driver refuses a type that no
+		// column holds, and an argument that database/sql does not convert, before the engine, so also
+		// where the table does not exist.
+		for _, c := range []struct {
+			arg    any
+			want   string
+			driver bool
+		}{
+			{arg: 2.0, want: "argument %v, which is a real, for LIMIT, which takes an integer from 0"},
+			{arg: float32(2), want: "argument %v, which is a real, for LIMIT, which takes an integer from 0"},
+			{arg: "2", want: "argument %v, which is text, for LIMIT, which takes an integer from 0"},
+			{arg: []byte("2"), want: "argument %v, which is a blob, for LIMIT, which takes an integer from 0"},
+			{arg: []byte{}, want: "argument %v, which is a blob, for LIMIT, which takes an integer from 0"},
+			{arg: nil, want: "argument %v, which is NULL, for LIMIT, which takes an integer from 0"},
+			{arg: (*int64)(nil), want: "argument %v, which is NULL, for LIMIT, which takes an integer from 0"},
+			{arg: sql.NullInt64{}, want: "argument %v, which is NULL, for LIMIT, which takes an integer from 0"},
+			{arg: nullValuer{}, want: "argument %v, which is NULL, for LIMIT, which takes an integer from 0"},
+			{arg: int64(-1), want: "argument %v, which is a negative integer, for LIMIT, which takes an integer from 0"},
+			{arg: int(-3), want: "argument %v, which is a negative integer, for LIMIT, which takes an integer from 0"},
+			{arg: int64(math.MinInt64), want: "argument %v, which is a negative integer, for LIMIT, which takes an integer from 0"},
+			{arg: []byte(nil), want: "argument %v of type []byte, which is nil", driver: true},
+			{arg: true, want: "argument %v of type bool", driver: true},
+			{arg: time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC), want: "argument %v of type time.Time", driver: true},
+			{arg: uint64(1 << 63), want: "argument %v of type uint64, whose value does not fit a signed 64-bit integer", driver: true},
+			{arg: uint(1 << 63), want: "argument %v of type uint, whose value does not fit a signed 64-bit integer", driver: true},
+			{arg: failingValuer{}, want: "argument %v of type s4ql_test.failingValuer, which database/sql cannot convert", driver: true},
+			{arg: struct{}{}, want: "argument %v of type struct {}, which database/sql cannot convert", driver: true},
+			{arg: sql.Named("n", 2), want: `the named argument "n"`, driver: true},
+		} {
+			what := fmt.Sprintf("%T %v", c.arg, c.arg)
+			for _, src := range []string{"select k from o order by k limit ?", "select * from o limit ?", "select k from o where k = ? order by n desc limit ?"} {
+				args := []any{c.arg}
+				if strings.Count(src, "?") == 2 {
+					args = []any{int64(1), c.arg}
+				}
+				want := numbered(c.want, len(args))
+				_, err := db.QueryContext(t.Context(), src, args...)
+				is.Equal(t, want, notSupported(t, err), what, src)
+				err = db.QueryRowContext(t.Context(), src, args...).Scan(new(any))
+				is.Equal(t, want, notSupported(t, err), what, src)
+				_, err = db.ExecContext(t.Context(), src, args...)
+				is.Equal(t, want, notSupported(t, err), what, src)
+				p, err := db.PrepareContext(t.Context(), src)
+				is.NotError(t, err)
+				_, err = p.QueryContext(t.Context(), args...)
+				is.Equal(t, want, notSupported(t, err), what, src)
+				is.NotError(t, p.Close())
+			}
+
+			_, err := db.QueryContext(t.Context(), "select k from nope order by k limit ?", c.arg)
+			if c.driver {
+				is.Equal(t, numbered(c.want, 1), notSupported(t, err), what)
+			} else {
+				sqliteError(t, 1, 1, "no such table: nope", err)
+			}
+			_, err = db.QueryContext(t.Context(), "select k from o order by x limit ?", c.arg)
+			if c.driver {
+				is.Equal(t, numbered(c.want, 1), notSupported(t, err), what)
+			} else {
+				sqliteError(t, 1, 1, "no such column: x", err)
+			}
+		}
+		exec(t, db, t1)
+		readersFree(t, db)
+	})
+
+	t.Run("should prepare a select with ORDER BY and LIMIT ?, and run it several times with other limits, also in a write transaction that wrote rows and in a read-only transaction", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, orderTable...)
+		o := newOracle(t, orderTable...)
+
+		const src = "select k, s from o where n = ? order by s desc, k limit ?"
+		p, err := db.PrepareContext(t.Context(), src)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, p.Close()) }()
+		// run the prepared statement p, or its statement in tx, with n and limit, and compare with SQLite.
+		run := func(t *testing.T, tx *sql.Tx, n, limit int64) {
+			t.Helper()
+			s := p
+			if tx != nil {
+				s = tx.StmtContext(t.Context(), p)
+			}
+			rows, err := s.QueryContext(t.Context(), n, limit)
+			is.NotError(t, err)
+			got := []string{}
+			for rows.Next() {
+				var k, v any
+				is.NotError(t, rows.Scan(&k, &v))
+				got = append(got, rowText([]any{k, v}))
+			}
+			is.NotError(t, rows.Err())
+			is.NotError(t, rows.Close())
+			q := ordered{columns: "k, s", table: "o", where: "n = ?", by: "s desc, k", limit: "?", args: []any{n, limit}}
+			is.Equal(t, "", q.differs(t, o, got))
+		}
+		for _, limit := range []int64{0, 1, 2, 3, 100, 1, 0} {
+			for n := range int64(3) {
+				run(t, nil, n, limit)
+			}
+		}
+
+		// In a write transaction, after writes of its own, which the statement reads.
+		writes := []string{
+			"insert into o values (13, 1, 1.0, 'y', x'03', 1)",
+			"insert into o values (14, 1, 1.0, null, x'04', 1)",
+			"update o set s = 'zz' where k = 7",
+			"delete from o where k = 4",
+		}
+		tx := begin(t, db, nil)
+		execIn(t, tx, writes...)
+		o.exec(t, writes...)
+		for _, limit := range []int64{2, 0, 100, 1} {
+			run(t, tx, 1, limit)
+		}
+		inOrder(t, tx, o, ordered{columns: "*", table: "o", by: "r desc, k", limit: "?", args: []any{int64(5)}})
+		tp, err := tx.PrepareContext(t.Context(), "select k from o order by b desc limit ?")
+		is.NotError(t, err)
+		for _, limit := range []int64{3, 1, 20} {
+			rows, err := tp.QueryContext(t.Context(), limit)
+			is.NotError(t, err)
+			var got []string
+			for rows.Next() {
+				var k any
+				is.NotError(t, rows.Scan(&k))
+				got = append(got, rowText([]any{k}))
+			}
+			is.NotError(t, rows.Err())
+			is.NotError(t, rows.Close())
+			is.Equal(t, "", ordered{columns: "k", table: "o", by: "b desc", limit: "?", args: []any{limit}}.differs(t, o, got))
+		}
+		is.NotError(t, tp.Close())
+		is.NotError(t, tx.Commit())
+		run(t, nil, 1, 3)
+
+		// In a read-only transaction.
+		ro := begin(t, db, readOnly)
+		for _, limit := range []int64{1, 3, 0, 100} {
+			run(t, ro, 1, limit)
+			run(t, ro, 2, limit)
+		}
+		inOrder(t, ro, o, ordered{columns: "k, i", table: "o", by: "i desc", limit: "?", args: []any{int64(4)}})
+		is.NotError(t, ro.Commit())
+		exec(t, db, t1)
+		readersFree(t, db)
+	})
+
+	t.Run("should receive with goqite's statement the message with the highest priority and then the oldest, with and without goqite's index, as SQLite does", func(t *testing.T) {
+		const table = "create table goqite (id text primary key, created text not null, updated text not null, queue text not null, " +
+			"body blob not null, timeout text not null, received int not null, priority int not null) strict, without rowid"
+		const index = "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"
+		const receive = "select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1"
+		const extend = "update goqite set timeout = ?, received = ? where queue = ? and id = ?"
+		const now = "2026-11-21T12:00:00.000Z"
+
+		// message of goqite's table, as far as the receive reads it.
+		type message struct {
+			id, created, queue, timeout string
+			received, priority          int64
+		}
+		messages := []message{
+			{id: "m01", created: "2026-11-21T10:00:05.000Z", queue: "q", timeout: "2026-11-21T10:00:05.000Z", priority: 0},
+			{id: "m02", created: "2026-11-21T10:00:01.000Z", queue: "q", timeout: "2026-11-21T10:00:01.000Z", priority: 0},
+			{id: "m03", created: "2026-11-21T10:00:09.000Z", queue: "q", timeout: "2026-11-21T10:00:09.000Z", priority: 2},
+			{id: "m04", created: "2026-11-21T10:00:03.000Z", queue: "q", timeout: "2026-11-21T10:00:03.000Z", priority: 2},
+			{id: "m05", created: "2026-11-21T10:00:02.000Z", queue: "q", timeout: "2026-11-21T13:00:00.000Z", priority: 5},
+			{id: "m06", created: "2026-11-21T10:00:04.000Z", queue: "q", timeout: "2026-11-21T10:00:04.000Z", priority: 1, received: 3},
+			{id: "m07", created: "2026-11-21T10:00:00.000Z", queue: "r", timeout: "2026-11-21T10:00:00.000Z", priority: 9},
+			{id: "m08", created: "2026-11-21T10:00:07.000Z", queue: "q", timeout: "2026-11-21T10:00:07.000Z", priority: 1, received: 1},
+			{id: "m09", created: "2026-11-21T10:00:06.000Z", queue: "q", timeout: "2026-11-21T10:00:06.000Z", priority: -1},
+			{id: "m10", created: "2026-11-21T10:00:08.000Z", queue: "q", timeout: now, priority: 2},
+		}
+		var inserts []string
+		for _, m := range messages {
+			inserts = append(inserts, fmt.Sprintf("insert into goqite values ('%v', '%v', '%v', '%v', x'00', '%v', %v, %v)",
+				m.id, m.created, m.created, m.queue, m.timeout, m.received, m.priority))
+		}
+		// next is the message that the receive must give, as the test computes it: of the queue q, due
+		// at now, received fewer than 3 times, with the highest priority, and then the oldest.
+		next := func(messages []message) string {
+			var due []message
+			for _, m := range messages {
+				if m.queue == "q" && now >= m.timeout && m.received < 3 {
+					due = append(due, m)
+				}
+			}
+			slices.SortFunc(due, func(a, b message) int {
+				if a.priority != b.priority {
+					return int(b.priority - a.priority)
+				}
+				return strings.Compare(a.created, b.created)
+			})
+			if len(due) == 0 {
+				return ""
+			}
+			return due[0].id
+		}
+
+		for _, indexed := range []bool{false, true} {
+			t.Run(fmt.Sprint("indexed: ", indexed), func(t *testing.T) {
+				w := newWorld(t)
+				db := w.serve(t, "a")
+				statements := append([]string{table}, inserts...)
+				if indexed {
+					statements = append(statements, index)
+				}
+				exec(t, db, statements...)
+				o := newOracle(t, statements...)
+				messages := slices.Clone(messages)
+
+				p, err := db.PrepareContext(t.Context(), receive)
+				is.NotError(t, err)
+				defer func() { is.NotError(t, p.Close()) }()
+				q := ordered{columns: "id", table: "goqite", where: "queue = ? and ? >= timeout and received < ?", by: "priority desc, created", limit: "1",
+					args: []any{"q", now, int64(3)}}
+				is.Equal(t, receive, q.src())
+
+				// Receive until no message is due, and extend each received message past now, as goqite does,
+				// once in a transaction.
+				var order []string
+				for round := 0; ; round++ {
+					want := next(messages)
+					var id string
+					err := p.QueryRowContext(t.Context(), "q", now, 3).Scan(&id)
+					if want == "" {
+						is.Error(t, sql.ErrNoRows, err)
+						break
+					}
+					is.NotError(t, err)
+					is.Equal(t, want, id, fmt.Sprint("round ", round))
+					is.Equal(t, "", q.differs(t, o, []string{rowText([]any{id})}))
+					got := inOrder(t, db, o, q)
+					is.Equal(t, rowText([]any{want}), got[0])
+					order = append(order, id)
+
+					i := slices.IndexFunc(messages, func(m message) bool { return m.id == id })
+					messages[i].timeout, messages[i].received = "2026-11-21T12:30:00.000Z", messages[i].received+1
+					args := []any{messages[i].timeout, messages[i].received, "q", id}
+					if round == 2 {
+						tx := begin(t, db, nil)
+						var again string
+						is.NotError(t, tx.QueryRowContext(t.Context(), receive, "q", now, 3).Scan(&again))
+						is.Equal(t, id, again)
+						res, err := tx.ExecContext(t.Context(), extend, args...)
+						is.Equal(t, int64(1), affected(t, res, err))
+						// The transaction reads its own extend, and receives the next message.
+						err = tx.QueryRowContext(t.Context(), receive, "q", now, 3).Scan(&again)
+						if n := next(messages); n == "" {
+							is.Error(t, sql.ErrNoRows, err)
+						} else {
+							is.NotError(t, err)
+							is.Equal(t, n, again)
+						}
+						is.NotError(t, tx.Commit())
+					} else {
+						res, err := db.ExecContext(t.Context(), extend, args...)
+						is.Equal(t, int64(1), affected(t, res, err))
+					}
+					o.exec(t, fmt.Sprintf("update goqite set timeout = '%v', received = %v where queue = 'q' and id = '%v'", args[0], args[1], id))
+				}
+				is.Equal(t, "m04 m10 m03 m08 m02 m01 m09", strings.Join(order, " "))
+			})
+		}
+	})
+
+	t.Run("should give SQLite's error for a column of ORDER BY that the table does not have, after the errors of the select list and of WHERE, through Query and a prepared statement", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, orderTable...)
+		o := newOracle(t, orderTable...)
+		for src, message := range map[string]string{
+			"select k from o order by x":                       "no such column: x",
+			"select k from o order by x desc limit 0":          "no such column: x",
+			`select k from o order by "x" desc limit 1`:        `no such column: "x" - should this be a string literal in single-quotes?`,
+			"select k from o order by n, x, y":                 "no such column: x",
+			"select k from o where n = ? order by x limit ?":   "no such column: x",
+			"select y from o where z = 1 order by x":           "no such column: y",
+			"select k from o where z is null order by x":       "no such column: z",
+			"select k from nope order by x":                    "no such table: nope",
+			"select k from o where n = 1 order by x, k desc":   "no such column: x",
+			"select * from o where k > 0 order by K, S, nope2": "no such column: nope2",
+		} {
+			var args []any
+			for range strings.Count(src, "?") {
+				args = append(args, int64(1))
+			}
+			_, want := o.rows(t, src, args...)
+			is.True(t, want != nil, src)
+			is.Equal(t, s4ql.Error{Code: 1, ExtendedCode: 1, Message: message}, *want, src)
+
+			_, err := db.QueryContext(t.Context(), src, args...)
+			sqliteError(t, 1, 1, message, err)
+			err = db.QueryRowContext(t.Context(), src, args...).Scan(new(any))
+			sqliteError(t, 1, 1, message, err)
+			p, err := db.PrepareContext(t.Context(), src)
+			is.NotError(t, err, src)
+			_, err = p.QueryContext(t.Context(), args...)
+			sqliteError(t, 1, 1, message, err)
+			_, err = p.ExecContext(t.Context(), args...)
+			sqliteError(t, 1, 1, message, err)
+			is.NotError(t, p.Close())
+		}
+		exec(t, db, t1)
+		readersFree(t, db)
 	})
 }
 
