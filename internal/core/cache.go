@@ -886,11 +886,18 @@ func (c *conn) load(name string) (*table, error) {
 	}, name); err != nil {
 		return nil, err
 	}
+	// A trigger refuses the name also when no table has it, as one on a view would: the core makes
+	// no trigger, and [conn.checkObjects] refuses a view at the open.
 	if len(triggers) > 0 {
 		return nil, foreign("the table %q has the trigger %q", name, triggers[0])
 	}
 	if t == nil {
 		return nil, nil
+	}
+	// A virtual table is refused before pragma_table_info, which fails for one whose module is not
+	// there.
+	if !strings.HasPrefix(sql, "CREATE TABLE ") {
+		return nil, foreign("its table %q is not declared as s4ql declares a table", t.name)
 	}
 
 	// The position of a column in the primary key, from 1, with its position in the table.

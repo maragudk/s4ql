@@ -156,7 +156,9 @@ func (t *table) createIndexSQL(ix *index) string {
 // order in which they were created, and the name that SQLite gives the index of its primary key,
 // which a scan names to read the table in the order of its key. It refuses an index that this
 // package does not make with [ErrCacheVersion]: one that is unique or partial, on an expression,
-// with a collation, with a column twice, or with a reserved name. It then compares the text that
+// with a collation, with a column twice, or with a reserved name. An index of a constraint, such as
+// that of a column declared unique, has refused its table at [conn.load] already, since the
+// constraint is in the table's statement. It then compares the text that
 // SQLite keeps for each index in sqlite_schema with the text of [table.createIndexSQL] for what it
 // read, as [conn.load] does for the table, which refuses whatever else a statement can declare,
 // such as a collation that is named although it is the default one, or the name of the table in
@@ -210,7 +212,7 @@ func (c *conn) loadIndexes(t *table) error {
 		var seqno int64
 		if err := c.readSchema(`select cid, "desc", coll, key, seqno, (select sql from main.sqlite_schema where type = 'index' and name = ?1) from pragma_index_xinfo(?1, 'main')`, func(s *sqlite.Stmt) error {
 			if s.ColumnInt64(4) != seqno {
-				return fmt.Errorf("pragma_index_xinfo gives the column %v of the index %q of the table %q where the column %v is next", s.ColumnInt64(4), name, t.name, seqno)
+				return fmt.Errorf("%w: pragma_index_xinfo gives the column %v of the index %q of its table %q where the column %v is next", ErrCacheVersion, s.ColumnInt64(4), name, t.name, seqno)
 			}
 			if seqno == 0 {
 				sql = s.ColumnText(5)

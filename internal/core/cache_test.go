@@ -577,6 +577,22 @@ drop table saved`, why: `its table "s4ql_cache" is not declared as s4ql declares
 		}
 	})
 
+	t.Run("should refuse at the first look-up a virtual table whose module is not there", func(t *testing.T) {
+		w, path := made(t)
+		before := change(t, path, `pragma writable_schema = on;
+insert into sqlite_schema values ('table', 't9', 't9', 0, 'CREATE VIRTUAL TABLE t9 USING nomodule(k, v)')`)
+		d := w.serve(t, "a", core.Options{})
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		_, err = r.Get(t.Context(), "t9", row(1))
+		is.Error(t, core.ErrCacheVersion, err)
+		is.True(t, strings.Contains(err.Error(), `its table "t9" is not declared as s4ql declares a table`), err.Error())
+		_ = r.Close(t.Context())
+		is.True(t, isDone(d))
+		_ = d.Close(t.Context())
+		unchanged(t, path, before, "a virtual table")
+	})
+
 	t.Run("should refuse a table that gets a trigger while the instance runs, at its first look-up in the next transaction", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
