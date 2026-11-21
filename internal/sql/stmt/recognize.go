@@ -258,8 +258,11 @@ func (r *recognizer) defaultValue(d *ast.DefaultConstraint, typ Type) Default {
 	if isWord(d.Name, "true") || isWord(d.Name, "false") {
 		r.reject("TRUE or FALSE")
 	}
-	// Any other name and an expression in parentheses are no literal, and value names the name or
-	// the parenthesis, the next token.
+	if d.LParen.Present() {
+		// Before value reads the expression inside, which may be a literal that it refuses for itself.
+		r.unexpected()
+	}
+	// Any other name is no literal, and value names it, the next token.
 	negative := false
 	if d.Sign.Present() {
 		r.sign(d.Sign, d.X)

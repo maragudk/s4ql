@@ -31,5 +31,5 @@ The decisions and notes of the builders of [slice 12 of the roadmap](../roadmap.
 
 ## Not built yet
 
-- **Not built, for a fresh builder: mutation testing of the engine step of slice 12** (`fit` with `unturnedBound`, the `ValueFirst` of `engine.Condition`, `stmttest.ValueFirstCases`, and `stmttest.whereText`), and long fuzz runs of `FuzzWhere`, `FuzzChanges`, and `FuzzIndexes` with values on the left.
-- **Not built, for a fresh builder: mutation testing and long fuzz runs of the code of slice 12 in the pass** (`recognizer.condition` and `recognizer.conditionColumn` in `internal/sql/stmt/recognize.go`, `stmt.Operator.Swapped`, and `stmttest.Generator.ValueFirst`; `FuzzCheck`, `FuzzGenerate`, and `FuzzLiteral`), as the diary of the pass lists them.
+- **Not built, for a fresh builder: long fuzz runs of `FuzzWhere`, `FuzzChanges`, and `FuzzIndexes` with values on the left.** The mutation testing of the engine step is done, under "Mutation testing" above; `stmttest.ValueFirstCases` and `stmttest.whereText` are code of the tests, which the runner does not mutate.
+- **Not built, for a fresh builder: long fuzz runs of the code of slice 12 in the pass** (`FuzzCheck`, `FuzzGenerate`, and `FuzzLiteral`). Its mutation testing is done; `stmttest.Generator.ValueFirst` is code of the tests.

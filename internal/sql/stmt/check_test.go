@@ -765,6 +765,8 @@ var checkCases = []checkCase{
 	{name: "a default in parentheses", src: "create table t (k int primary key, v int default (1)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
 	{name: "a default of an expression", src: "create table t (k int primary key, v int default (1+1)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
 	{name: "a default of NULL in parentheses", src: "create table t (k int primary key, v int default (null)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
+	{name: "a default of a hex literal in parentheses", src: "create table t (k int primary key, v int default (0x10)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
+	{name: "a default of current_time in parentheses", src: "create table t (k int primary key, v text default (current_time)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 50)"},
 	{name: "a default of a parameter in parentheses", src: "create table t (k int primary key, v int default (?)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 49)"},
 	{name: "a default of current_timestamp", src: "create table t (k int primary key, v text default current_timestamp) strict, without rowid", err: "s4ql: not supported: current date or time (at offset 50)"},
 	{name: "a default of current_date", src: "create table t (k int primary key, v text default CURRENT_DATE) strict, without rowid", err: "s4ql: not supported: current date or time (at offset 50)"},

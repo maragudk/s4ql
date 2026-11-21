@@ -52,6 +52,5 @@ The decisions and notes of the builders of [slice 11 of the roadmap](../roadmap.
 
 ## Not built yet
 
-- **Not built, for a fresh builder: mutation testing and long fuzz runs of the code of slice 11 in the pass** (`internal/sql/mutation`, `FuzzCheck`, and `FuzzGenerate`).
-- **Not built, for a fresh builder: mutation testing of the engine step of slice 11** (`buildValues`, the default in `buildSink`, `tooLongForCache`, and the planted bug `nullDefault` in `internal/engine`). The engine, the driver, and the generated checks of slice 11 are built.
-- **Not built, for a fresh builder: mutation testing of the core step of slice 11, and a long fuzz run with defaults** (`internal/core/default.go`, `conn.load` and `table.createSQL` in `internal/core/cache.go`, `checkDefault` in `internal/format/check.go`, `FuzzScanIndex`, and `FuzzCommitWriter`). The builder planted three faults by hand, a real in another form, a parse without the check of the canonical form, and a cache that declares only integer defaults, and tests failed for each.
+- **Not built, for a fresh builder: long fuzz runs of the code of slice 11 in the pass** (`FuzzCheck` and `FuzzGenerate`). Its mutation testing is done, with that of the engine, the core, and the format, under "Mutation testing" above.
+- **Not built, for a fresh builder: a long fuzz run with defaults** (`FuzzScanIndex` and `FuzzCommitWriter`). The builder planted three faults by hand, a real in another form, a parse without the check of the canonical form, and a cache that declares only integer defaults, and tests failed for each.

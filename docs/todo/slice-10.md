@@ -29,5 +29,5 @@ The decisions and notes of the builders of [slice 10 of the roadmap](../roadmap.
 
 ## Not built yet
 
-- **Not built, for a fresh builder: mutation testing of the code of slice 10 in the engine** (`nothing`, the cases of `buildSink`, `buildCreateIndex`, and `buildDropIndex`, `report.doesNothing`, and the paths of `Conn.write` and `Conn.writeIn` for a statement that does nothing), and of `stmttest.ExistsRule`, and long fuzz runs of `FuzzIndexes` and `FuzzIndexes_core` with the clauses.
-- **Not built, for a fresh builder: mutation testing and long fuzz runs of the code of slice 10 in the pass** (`internal/sql/mutation`, `FuzzCheck`, and `FuzzGenerate`).
+- **Not built, for a fresh builder: long fuzz runs of `FuzzIndexes` and `FuzzIndexes_core` with the clauses.** The mutation testing of the engine is done, under "Mutation testing" above; `stmttest.ExistsRule` is code of the tests, which the runner does not mutate.
+- **Not built, for a fresh builder: long fuzz runs of the code of slice 10 in the pass** (`FuzzCheck` and `FuzzGenerate`). Its mutation testing is done.
