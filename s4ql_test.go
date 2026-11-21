@@ -200,6 +200,134 @@ func readersFree(t *testing.T, db *sql.DB) {
 	}
 }
 
+// oracle is SQLite, through the binding, on a database in memory, which runs the statements that a
+// test runs on s4ql, so that the test can ask it what a query must give.
+type oracle struct {
+	c *sqlite.Conn
+}
+
+// newOracle after the statements, each of which must succeed.
+func newOracle(t *testing.T, statements ...string) *oracle {
+	t.Helper()
+	c, err := sqlite.Open(":memory:")
+	is.NotError(t, err)
+	t.Cleanup(func() { is.NotError(t, c.Close()) })
+	o := &oracle{c: c}
+	o.exec(t, statements...)
+	return o
+}
+
+// exec the statements, each of which must succeed.
+func (o *oracle) exec(t *testing.T, statements ...string) {
+	t.Helper()
+	for _, s := range statements {
+		is.NotError(t, o.c.Exec(s), s)
+	}
+}
+
+// rows of the query src, with args bound to its parameters by position, each an int64, a float64, a
+// string, a []byte, or nil: each row as [rowText] gives it, in the order in which SQLite gives them,
+// or SQLite's error, with its codes and its message as the driver gives them.
+func (o *oracle) rows(t *testing.T, src string, args ...any) ([]string, *s4ql.Error) {
+	t.Helper()
+	s, err := o.c.Prepare(src)
+	if err != nil {
+		return nil, oracleError(t, err)
+	}
+	defer func() { _ = s.Finalize() }()
+	for i, a := range args {
+		var err error
+		switch a := a.(type) {
+		case int64:
+			err = s.BindInt64(i+1, a)
+		case float64:
+			err = s.BindDouble(i+1, a)
+		case string:
+			err = s.BindText(i+1, a)
+		case []byte:
+			err = s.BindBlob(i+1, a)
+		case nil:
+			err = s.BindNull(i + 1)
+		default:
+			t.Fatalf("%q: an argument of type %T for SQLite", src, a)
+		}
+		if err != nil {
+			return nil, oracleError(t, err)
+		}
+	}
+	rows := []string{}
+	for {
+		ok, err := s.Step()
+		if err != nil {
+			return nil, oracleError(t, err)
+		}
+		if !ok {
+			return rows, nil
+		}
+		values := make([]any, s.ColumnCount())
+		for i := range values {
+			switch typ := s.ColumnType(i); typ {
+			case sqlite.TypeInteger:
+				values[i] = s.ColumnInt64(i)
+			case sqlite.TypeFloat:
+				values[i] = s.ColumnDouble(i)
+			case sqlite.TypeText:
+				values[i] = s.ColumnText(i)
+			case sqlite.TypeBlob:
+				values[i] = s.ColumnBlob(i)
+			case sqlite.TypeNull:
+			default:
+				t.Fatalf("%q: SQLite gives a value of type %v", src, typ)
+			}
+		}
+		rows = append(rows, rowText(values))
+	}
+}
+
+// oracleError of an error of the binding, which must be SQLite's, as the driver gives it.
+func oracleError(t *testing.T, err error) *s4ql.Error {
+	t.Helper()
+	se, ok := errors.AsType[*sqlite.Error](err)
+	is.True(t, ok, fmt.Sprint("not SQLite's error: ", err))
+	return &s4ql.Error{Code: int(se.Code.Primary()), ExtendedCode: int(se.Code), Message: se.Message}
+}
+
+// rowText of the values of a row, each as database/sql gives it to an any, or as [oracle.rows] reads
+// it: the text of each value, its Go type and its Go syntax, as [rowKeys] has them, in the order of
+// the columns. Two rows have one text only if they have the same values.
+func rowText(values []any) string {
+	texts := make([]string, len(values))
+	for i, v := range values {
+		texts[i] = fmt.Sprintf("%T %#v", v, v)
+	}
+	return strings.Join(texts, ", ")
+}
+
+// rowsInOrder of the query src with args on db: each row as [rowText] gives it, in the order in
+// which the rows came, or the error of the query or of its rows.
+func rowsInOrder(t *testing.T, db querier, src string, args ...any) ([]string, error) {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), src, args...)
+	if err != nil {
+		return nil, err
+	}
+	columns, err := rows.Columns()
+	is.NotError(t, err)
+	got := []string{}
+	for rows.Next() {
+		values := make([]any, len(columns))
+		dest := make([]any, len(columns))
+		for i := range values {
+			dest[i] = &values[i]
+		}
+		is.NotError(t, rows.Scan(dest...))
+		got = append(got, rowText(values))
+	}
+	err = rows.Err()
+	is.NotError(t, rows.Close())
+	return got, err
+}
+
 func TestOpen(t *testing.T) {
 	t.Run("should open without waiting for the lease, refuse statements until the instance serves, and serve after a ping", func(t *testing.T) {
 		w := newWorld(t)
