@@ -80,6 +80,9 @@ type answer struct {
 	// null reports whether a value of the rows is NULL. It is not in the text of the answer, which
 	// holds each NULL.
 	null bool
+	// access of the rows of a query of the engine, as [engine.Rows.Access] gives it with the
+	// direction that the engine drew, or nil. It is not in the text of the answer.
+	access *engine.Access
 }
 
 // String of the answer, which is what the tests compare between the engine and SQLite: its error, or
@@ -102,6 +105,31 @@ type oracle struct {
 	c *sqlite.Conn
 	// counts gives SQLite's count of changes and its last insert rowid.
 	counts *sqlite.Stmt
+	// limit is the length limit of c, 0 for SQLite's default.
+	limit int
+}
+
+// lengthLimit of SQLite, n bytes, 0 for SQLite's default.
+func (o *oracle) lengthLimit(t testing.TB, n int) {
+	t.Helper()
+	o.limit = n
+	if n == 0 {
+		n = math.MaxInt32
+	}
+	is.NotError(t, o.c.SetLengthLimit(n))
+}
+
+// unlimited runs src with args as [oracle.run] does, without the length limit, for a query of a test
+// itself, such as the rows of a select in another order, which SQLite sorts with a record of its own
+// under the limit.
+func (o *oracle) unlimited(t testing.TB, src string, args ...any) answer {
+	t.Helper()
+	if o.limit == 0 {
+		return o.run(t, src, args...)
+	}
+	is.NotError(t, o.c.SetLengthLimit(math.MaxInt32))
+	defer func() { is.NotError(t, o.c.SetLengthLimit(o.limit)) }()
+	return o.run(t, src, args...)
 }
 
 func newOracle(t testing.TB) *oracle {
@@ -613,6 +641,9 @@ func (i *instance) queryValues(src string, args []*s4qlpb.Value) answer {
 		columns = append(columns, c.Name+" "+c.DeclType)
 	}
 	a.columns = strings.Join(columns, ", ")
+	if access, ok := rows.Access(); ok {
+		a.access = &access
+	}
 	for row, err := range rows.All() {
 		if err != nil {
 			return i.errAnswer(src, err)
@@ -802,6 +833,12 @@ const (
 	// statement in the cache is longer than the limit, which s4ql refuses as not supported. See
 	// [pair.tooLongForCache].
 	excusedCacheLimit = "a create table whose statement in the cache is longer than the length limit, checked against the length of that statement"
+	// excusedSortTooBig is a select with ORDER BY that SQLite refuses under the length limit with
+	// `string or blob too big`, for the record of what it sorts of a row, and that s4ql answers with
+	// rows: the known difference of slice 13, by the decision of the lead in docs/todo/slice-13.md.
+	// The rows of s4ql must be SQLite's for the same select without the length limit. See
+	// [pair.sortTooBig].
+	excusedSortTooBig = "a sorted select that SQLite refuses for the length of what it sorts, checked against SQLite without the length limit"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -953,6 +990,9 @@ type pair struct {
 	// allPaths is set for a pair whose [pair.everyPath] runs each WHERE by every candidate, and not by
 	// [pathSample] of them.
 	allPaths bool
+	// wrote is set while the statements run in a write transaction in which a statement changed
+	// rows.
+	wrote bool
 	// found holds the tables, folded, that a create table if not exists of the sequence found, and
 	// that no drop table dropped since, for [pair.reach].
 	found map[string]bool
@@ -979,7 +1019,7 @@ func newPairWith(t testing.TB, i *instance, y tally, options engine.Options) *pa
 	t.Cleanup(p.o.close)
 	t.Cleanup(p.empty.close)
 	if i.limit > 0 {
-		is.NotError(t, p.o.c.SetLengthLimit(i.limit))
+		p.o.lengthLimit(t, i.limit)
 	}
 	return p
 }
@@ -1100,12 +1140,19 @@ func (p *pair) step(c stmttest.Call) string {
 		switch {
 		case startedTable(t, p.empty, src, got, want):
 			p.y.excused(acceptedStartedTable)
+		case want.err == tooBig && got.err == "" && c.Query && p.sortTooBig(src, args, got):
+			p.y.excused(excusedSortTooBig)
 		case want.err == "" && got.err == tooBig && p.longCondition(src):
 			p.y.excused(excusedLongCondition)
 		case gap != "":
 			p.y.excused(gap + knownGapSuffix)
 		default:
 			return fmt.Sprintf("%q with the arguments %v: the engine gives\n%v\nand SQLite\n%v", src, args, got, want)
+		}
+	}
+	if sel, ok := u.(*stmt.Select); ok && c.Query && got.err == "" && want.err == "" {
+		if failure := p.checkOrder(sel, args, got); failure != "" {
+			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
 	}
 	// SQLite's count of changes: the engine's result sets it, and a statement that fails keeps it,
@@ -1128,6 +1175,93 @@ func (p *pair) step(c stmttest.Call) string {
 	}
 	if rowid != 0 {
 		return fmt.Sprintf("%q: SQLite's last insert rowid is %v", src, rowid)
+	}
+	return ""
+}
+
+// sortTooBig reports whether the call of the query src, with the arguments args, whose answer of
+// the engine is got, is the known difference of slice 13 under a length limit: a select with ORDER
+// BY, which SQLite refuses with `string or blob too big` for the record of what it sorts of a row,
+// and whose rows of s4ql are those that SQLite gives for it without the length limit, in order, as
+// [ordered.compare] says.
+func (p *pair) sortTooBig(src string, args []any, got answer) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	s, _ := stmt.Check(src)
+	sel, ok := s.(*stmt.Select)
+	if !ok || sel.OrderBy == nil || p.i.limit == 0 || len(args) != sel.Parameters() {
+		return false
+	}
+	want := o.unlimited(t, src, args...)
+	return want.err == "" && orderedOf(sel, args).compare(t, o, got, want) == ""
+}
+
+// checkOrder of the rows got of the engine of the select s with the arguments args, which SQLite
+// gives as well, by the access of the rows, with the direction that the engine drew, as
+// [engine.Rows.Access] gives it: they must be in the order in which the access gives them, as
+// [ordered.inOrderOf] says, which is also the order of the rows that tie under an ORDER BY. Where the
+// direction shows in the rows, which it does where the rows in the other direction differ, it counts
+// what the spec's rule "Unspecified row order varies" says varies: for a select without ORDER BY,
+// whether the rows came in the order of the key of the access or in its reverse; for one whose rows
+// are sorted, whether the rows that tie came in the order of the primary key or in its reverse; and
+// for one whose order the access delivers, that the rows that tie came in the order of the key of the
+// access. It gives what differs, or "".
+func (p *pair) checkOrder(s *stmt.Select, args []any, got answer) string {
+	t, o := p.t, p.o
+	t.Helper()
+	if got.access == nil || len(got.rows) < 2 || got.access.None || got.access.Point != nil {
+		return ""
+	}
+	a := *got.access
+	table, columns := o.columns(t, s.Table.Value)
+	if columns == nil {
+		return ""
+	}
+	ct := createTableOf(table, columns)
+	cis, _ := o.tableIndexes(t, table, columns)
+	key := accessKey(a, ct, cis)
+	q := orderedOf(s, args)
+	inOrder := q.inOrderOf(s, a, key, ct)
+	want := o.unlimited(t, inOrder.src(), inOrder.args...)
+	if want.err != "" {
+		t.Fatalf("%v: SQLite gives %v", inOrder.src(), want.err)
+	}
+	if !slices.Equal(got.rows, want.rows) {
+		return fmt.Sprintf("the engine gives the rows\n%v\nby %v, and SQLite, as %q,\n%v", got.rows, a, inOrder.src(), want.rows)
+	}
+	// other gives the rows of the access a, or of a in the other direction if turned, in the order of
+	// its rows that tie if it sorts.
+	other := func(a engine.Access, turned bool) []string {
+		a.Backward = a.Backward != turned
+		in := q.inOrderOf(s, a, key, ct)
+		rows := o.unlimited(t, in.src(), in.args...)
+		if rows.err != "" {
+			t.Fatalf("%v: SQLite gives %v", in.src(), rows.err)
+		}
+		return rows.rows
+	}
+	switch {
+	case s.OrderBy == nil:
+		var turned []string
+		if s.Limited() {
+			turned = other(a, true)
+		} else {
+			turned = slices.Clone(want.rows)
+			slices.Reverse(turned)
+		}
+		if !slices.Equal(turned, want.rows) {
+			p.count("select without ORDER BY whose rows came in the " + map[bool]string{false: "order", true: "reverse of the order"}[a.Backward] + " of the key of its access")
+		}
+	case a.Sorted:
+		if !slices.Equal(other(a, true), want.rows) {
+			p.count("sorted select whose rows that tie came in the " + map[bool]string{false: "order", true: "reverse of the order"}[a.Backward] + " of the primary key")
+		}
+	case a.Delivered:
+		sorted := a
+		sorted.Delivered, sorted.Sorted = false, true
+		if !slices.Equal(other(sorted, false), other(sorted, true)) {
+			p.count("delivered select whose rows that tie came in the order of the key of its access")
+		}
 	}
 	return ""
 }
@@ -1499,7 +1633,7 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 		}
 		key := accessKey(k.access, ct, cis)
 		inOrder := q.inOrderOf(sel, k.access, key, ct)
-		in := o.run(t, inOrder.src(), inOrder.args...)
+		in := o.unlimited(t, inOrder.src(), inOrder.args...)
 		if in.err != "" {
 			t.Fatalf("%v: SQLite gives %v", inOrder.src(), in.err)
 		}
@@ -1809,6 +1943,9 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 				p.y["reached: value on the left on a table that a create table if not exists found"]++
 			}
 		}
+		if sel, ok := s.(*stmt.Select); ok && sel.OrderBy != nil && c.Query && got.err == "" && len(got.rows) > 0 && p.wrote {
+			p.y["reached: ORDER BY that gives rows in a write transaction after a change of rows"]++
+		}
 	}
 }
 
@@ -1901,6 +2038,7 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, 
 			return
 		}
 		reachWhere(t, o, s, c, got, outcome, table, columns, count)
+		reachOrder(t, o, s, c, got, outcome, table, columns, count)
 		if got.null {
 			count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[s.Columns == nil] + outcome)
 		}
@@ -1952,9 +2090,9 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 		count(what + " " + outcome)
 	}
 	if s.OrderBy != nil || limitRule(s, args) != "" {
-		// The rule and the model choose an access for the conditions alone, and an ORDER BY takes part
-		// in the choice: [pair.everyPath] runs such a select by every path. An argument of LIMIT that
-		// s4ql refuses leaves the select without an access.
+		// The rule of the key chooses an access for the conditions alone, and an ORDER BY takes part in
+		// the choice, which [reachOrder] checks against the model. An argument of LIMIT that s4ql refuses
+		// leaves the select without an access.
 		return
 	}
 	// The plan reads the rows by the key as the rule says, which the comparison of the rows cannot see
@@ -1985,6 +2123,147 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 		count("WHERE that gives every row of a table with rows")
 	default:
 		count("WHERE that gives some rows of a table")
+	}
+}
+
+// reachOrder counts what the select s with ORDER BY or LIMIT, of slice 13, of the call c, whose answer
+// of the engine is got and whose outcome in the engine is outcome, reaches on the database of o,
+// where its table has the name table and the columns, as [reach] says: a select with arguments that
+// s4ql refuses, for their number or for one that no column holds, and one with an argument of LIMIT
+// that s4ql refuses, by its kind; a LIMIT by an argument; a column of ORDER BY that the table does
+// not have; the ORDER BY by its form, by the type and the NULL of each of its columns, by its
+// directions, with a column that the WHERE pins, and without WHERE; for a query that succeeds, its
+// LIMIT by what it keeps of the rows of the select without it, 0, all, more than all, or a part, and
+// a part that cuts a group of rows that tie under the ORDER BY; and for one that SQLite and s4ql take,
+// the choice of its access against the model, as [checkChoice] checks it, and an access that delivers
+// the order with a LIMIT where without the LIMIT the model would choose a range, which is the shape
+// of goqite's receive with goqite's index beside one on the queue and the timeout.
+func reachOrder(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got answer, outcome, table string, columns []stmttest.TableColumn, count func(string)) {
+	t.Helper()
+	if s.OrderBy == nil && !s.Limited() {
+		return
+	}
+	args := oracleArgs(c.Args)
+	if len(args) != s.Parameters() || slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" }) {
+		count("ORDER BY or LIMIT with arguments that s4ql refuses " + outcome)
+		return
+	}
+	if rule := limitRule(s, args); rule != "" {
+		count("LIMIT with an argument that is " + rule[strings.Index(rule, "which is ")+len("which is "):strings.Index(rule, ", for LIMIT")] + " " + outcome)
+		return
+	}
+	if s.Limit.Parameter > 0 {
+		count("LIMIT by an argument " + outcome)
+	}
+	for _, oc := range s.OrderBy {
+		if stmttest.ColumnOf(columns, oc.Name) < 0 {
+			count("ORDER BY of a column that the table does not have " + outcome)
+			return
+		}
+	}
+	q := orderedOf(s, args)
+	if s.OrderBy != nil {
+		count(fmt.Sprint("ORDER BY of ", len(s.OrderBy), " columns ", outcome))
+		if s.Where == nil {
+			count("ORDER BY without WHERE " + outcome)
+		}
+		descending := 0
+		for _, oc := range s.OrderBy {
+			column := columns[stmttest.ColumnOf(columns, oc.Name)]
+			count("ORDER BY of a column of type " + column.Type + " " + outcome)
+			if column.Nullable {
+				count("ORDER BY of a column that takes NULL " + outcome)
+			}
+			if oc.Descending {
+				descending++
+			}
+			if slices.ContainsFunc(s.Where, func(w stmt.Condition) bool {
+				return w.Column.Fold() == oc.Name.Fold() && (w.Operator == stmt.OpEqual || w.Operator == stmt.OpIsNull && column.Nullable)
+			}) {
+				count("ORDER BY of a column that the WHERE pins " + outcome)
+			}
+		}
+		switch descending {
+		case 0:
+			count("ORDER BY ascending " + outcome)
+		case len(s.OrderBy):
+			count("ORDER BY descending " + outcome)
+		default:
+			count("ORDER BY of mixed directions " + outcome)
+		}
+	}
+	if s.OrderBy != nil && got.err != tooBig {
+		checkChoice(t, o, s, args, c, table, columns, count)
+	}
+	if s.OrderBy != nil && s.Where != nil && got.err != tooBig {
+		_, indexes := o.tableIndexes(t, table, columns)
+		unlimited := *s
+		unlimited.Limit = stmt.Term{}
+		if with, ok := stmttest.ChosenAccess(columns, indexes, s, args); ok && s.Limited() && with.Delivered && with.Index != "" {
+			if without, ok := stmttest.ChosenAccess(columns, indexes, &unlimited, slices.Clip(args[:len(args)-map[bool]int{true: 1, false: 0}[s.Limit.Parameter > 0]])); ok && !without.Same(with) && (without.Lower != nil || without.Upper != nil) && len(without.Pins) == len(with.Pins) {
+				count("ORDER BY with LIMIT read by an index that delivers the order beside one that narrows a range")
+				if without.Index != "" && len(with.Pins) > 0 {
+					count("ORDER BY with LIMIT read by an index that delivers the order with a pin beside an index that narrows a range")
+				}
+			}
+		}
+	}
+	if !c.Query || got.err != "" {
+		return
+	}
+	if s.OrderBy != nil {
+		var nulls []string
+		for _, term := range orderTerms(s.OrderBy) {
+			nulls = append(nulls, strings.TrimSuffix(term, " desc")+" is null")
+		}
+		src := "select count(*) from " + q.table + " where (" + strings.Join(nulls, " or ") + ")"
+		if q.where != "" {
+			src += " and " + q.where
+		}
+		if n := o.unlimited(t, src, q.unlimited().args...); n.err == "" && n.rows[0] != "0" {
+			count("ORDER BY over rows with NULL in its columns")
+		}
+	}
+	if s.Limited() {
+		limit := int64(0)
+		if s.Limit.Parameter > 0 {
+			limit = args[s.Limit.Parameter-1].(int64)
+		} else {
+			limit = int64(s.Limit.Value.(stmt.Integer))
+		}
+		all := q.unlimited()
+		ranked := "select "
+		if s.OrderBy != nil {
+			ranked += "dense_rank() over (order by " + all.by + ")"
+		} else {
+			ranked += "1"
+		}
+		ranked += " from " + all.table
+		if all.where != "" {
+			ranked += " where " + all.where
+		}
+		if all.by != "" {
+			ranked += " order by " + all.by
+		}
+		ranks := o.unlimited(t, ranked, all.args...)
+		if ranks.err != "" {
+			t.Fatalf("%v: SQLite gives %v", ranked, ranks.err)
+		}
+		n := int64(len(ranks.rows))
+		switch {
+		case limit == 0:
+			count("LIMIT 0")
+		case n == 0:
+		case limit > n:
+			count("LIMIT above the number of rows")
+		case limit == n:
+			count("LIMIT of the number of rows")
+		default:
+			count("LIMIT that cuts")
+			if s.OrderBy != nil && ranks.rows[limit-1] == ranks.rows[limit] {
+				count("LIMIT that cuts a group of rows that tie")
+			}
+		}
 	}
 }
 
@@ -2250,7 +2529,8 @@ func accessOf(a engine.Access) stmttest.Access {
 		}
 		return nil
 	}
-	m := stmttest.Access{None: a.None, Get: a.Point != nil, Full: a.Full, Index: a.Index, LowerOpen: a.LowerOpen, UpperOpen: a.UpperOpen}
+	m := stmttest.Access{None: a.None, Get: a.Point != nil, Full: a.Full, Index: a.Index, LowerOpen: a.LowerOpen, UpperOpen: a.UpperOpen,
+		Delivered: a.Delivered, Backward: a.Delivered && a.Backward, Sorted: a.Sorted}
 	for _, v := range append(slices.Clone(a.Point), a.Equal...) {
 		m.Pins = append(m.Pins, value(v))
 	}
@@ -2294,6 +2574,14 @@ func checkChoice(t testing.TB, o *oracle, s *stmt.Select, args []any, c stmttest
 	}
 	if len(cis) > 1 {
 		kind += " of a table of several indexes"
+	}
+	switch {
+	case want.Delivered && want.Backward:
+		kind += ", delivered backward"
+	case want.Delivered:
+		kind += ", delivered forward"
+	case want.Sorted:
+		kind += ", sorted"
 	}
 	count("chosen " + kind)
 	// The choices that a condition with its value on the left decides: with != in place of the
@@ -2881,7 +3169,7 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order:
 		n *= 2
 	}
 	return uint64(n)

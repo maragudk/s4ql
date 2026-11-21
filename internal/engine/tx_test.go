@@ -558,7 +558,7 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		if indexed && y != nil {
 			y["reached: "+map[bool]string{true: "commit", false: "roll back"}[commit]+" of a transaction with a create index or a drop index"]++
 		}
-		open, changed, indexed = "", false, false
+		open, changed, indexed, p.wrote = "", false, false, false
 		want := p.o.state(t)
 		if got := i.state(); got != want {
 			fail("after the end of the transaction the engine holds\n%v\nand SQLite\n%v", got, want)
@@ -595,6 +595,7 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		if s, _ := stmt.Check(c.Src); open == "write" && p.last.err == "" && i.changes > 0 && changesRows(c.Src) {
 			_, isInsert := s.(*stmt.Insert)
 			changed = changed || !isInsert
+			p.wrote = true
 		}
 		switch s, _ := stmt.Check(c.Src); s.(type) {
 		case *stmt.CreateIndex, *stmt.DropIndex:

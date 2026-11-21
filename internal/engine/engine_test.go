@@ -499,7 +499,7 @@ func init() {
 func newOracleLimited(t testing.TB, limit int) *oracle {
 	t.Helper()
 	o := newOracle(t)
-	is.NotError(t, o.c.SetLengthLimit(limit))
+	o.lengthLimit(t, limit)
 	return o
 }
 

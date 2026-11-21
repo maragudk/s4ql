@@ -67,6 +67,17 @@ type Profile struct {
 	// the calls of a sequence in transactions begins one at one call in Transactions of those outside
 	// a transaction.
 	Transactions int
+	// Order is the number of selects in four that have an ORDER BY of slice 13, as
+	// [Sequence.order] draws it, and Limit, if not 0, makes one select in Limit have a LIMIT; the
+	// area of the ORDER BY and the LIMIT is off with both 0.
+	Order, Limit int
+	// Keys, if not 0, makes one insert in Keys give the key a value that no other statement gives, as
+	// [keyOfStep] gives it, so that the tables of the sequence hold more rows.
+	Keys int
+	// Shared, if not 0, makes one create index in Shared of a table of which the sequence keeps an
+	// index hold the first column of such an index and then another column, so that two indexes of
+	// a table begin alike, as goqite's two do.
+	Shared int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
@@ -79,7 +90,7 @@ const Slots = 32
 var (
 	// Mixed has every area on, with the odds of each as a statement of several features meets them.
 	Mixed = &Profile{Name: "mixed", Faults: allFaults, Weights: weights(4, 10, 5, 1, 3, 2, 3, 1), Others: 12, Where: 2, Indexes: 1, Exists: 3, Defaults: 1,
-		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4}
+		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4}
 	// Tables weighs the tables themselves, of slices 1, 4, 5, and 6: their columns, types, and keys,
 	// the columns that take NULL, the lists and the faults of an insert, whole reals for a column of
 	// integers, and a select of all rows.
@@ -105,15 +116,21 @@ var (
 	// Arguments weighs the parameters of slice 2, the arguments around those that s4ql supports, and
 	// the texts of [Others]: the errors and the refusals.
 	Arguments = &Profile{Name: "arguments", Faults: allFaults, Aim: 3, Weights: weights(2, 10, 6, 1, 3, 2, 0, 0), Others: 4, Where: 3, Parameters: 1, Around: [2]int{2, 6}, Transactions: 4}
+	// Order weighs the ORDER BY and the LIMIT of slice 13: of every type of column, ascending and
+	// descending, with NULL and with rows that tie, with WHERE and without, by an index that delivers
+	// the order and beside one that only narrows a range, and the LIMIT as a literal and as a ?, also
+	// with an argument that s4ql refuses.
+	Order = &Profile{Name: "order", Faults: []string{areaOrder}, Aim: 3, Weights: weights(2, 14, 9, 1, 1, 1, 6, 1), Where: 2, Indexes: 2, Columns: 2,
+		Parameters: 3, Transactions: 4, Order: 3, Limit: 2, Keys: 1, Shared: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].
-var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes}
+var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder}
 
 // Profiles, each at the slot of its place in the list. A profile is added at the end, and none is
 // taken out or moved, since the seeds of each profile are those of its slot: see [Profile.Seed].
 var Profiles = func() []*Profile {
-	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments}
+	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order}
 	if len(ps) > Slots {
 		panic("stmttest: more profiles than slots")
 	}
@@ -175,6 +192,9 @@ const (
 	areaValueFirst = "valuefirst"
 	// areaArguments draws whether a value is a parameter, and the arguments around those of a call.
 	areaArguments = "arguments"
+	// areaOrder draws the ORDER BY and the LIMIT of a select, and an argument of the LIMIT that s4ql
+	// refuses.
+	areaOrder = "order"
 	// areaOthers draws the texts of [Others].
 	areaOthers = "others"
 	// areaText draws how a statement is written: its gaps, the case of its keywords, the spelling of
@@ -203,6 +223,8 @@ func (p *Profile) on(area string) bool {
 		return p.Parameters > 0 || p.Around != [2]int{}
 	case areaOthers:
 		return p.Others > 0
+	case areaOrder:
+		return p.Order > 0 || p.Limit > 0
 	}
 	return true
 }

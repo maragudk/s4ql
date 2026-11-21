@@ -874,28 +874,57 @@ type Access struct {
 	// leave the bound itself out if open.
 	Lower, Upper         any
 	LowerOpen, UpperOpen bool
+	// Delivered reports whether the select has an ORDER BY whose order the key of the access delivers,
+	// backward if Backward, and Sorted whether it has one whose rows are sorted. A select without
+	// ORDER BY has neither.
+	Delivered, Backward, Sorted bool
 }
 
-// ChosenAccess of the select s with WHERE of the table of the columns, in the order of the table,
-// with the indexes, in the order in which they were created, and with the arguments args as for
-// [TypeRule], by the rules of slice 9 as the roadmap states them: the key of an index is its columns
-// followed by the columns of the primary key that it does not hold, and a column is pinned by = or by
-// IS NULL. A WHERE that pins the whole primary key with = reads its row. Otherwise the index, or the
-// primary key, that has the most leading columns of its key pinned wins, and of those with as many,
-// one with a range on the next column; a tie goes to the primary key, then to the index created
-// first; and when nothing fits, every row is read. Before these, as in slice 7, a WHERE that compares
-// a column with NULL, or tests the primary key with IS NULL, reads no row.
+// ChosenAccess of the select s with WHERE or ORDER BY of the table of the columns, in the order of
+// the table, with the indexes, in the order in which they were created, and with the arguments args as
+// for [TypeRule], by the rules of slice 9 as the roadmap states them: the key of an index is its
+// columns followed by the columns of the primary key that it does not hold, and a column is pinned by
+// = or by IS NULL. A WHERE that pins the whole primary key with = reads its row. Otherwise the index,
+// or the primary key, that has the most leading columns of its key pinned wins, and of those with as
+// many, one with a range on the next column; a tie goes to the primary key, then to the index created
+// first; and when the primary key wins with nothing pinned and nothing bounded, every row is read.
+// Before these, as in slice 7, a WHERE that compares a column with NULL, or tests the primary key with
+// IS NULL, reads no row.
 //
 // What the roadmap leaves open is as the builder of slice 9 decided it, in the todo: a column is
 // pinned by the first condition in the order of the text that pins it; IS NULL pins only a column
 // that takes NULL, since no row has NULL in another; and the bounds of the range are the tightest of
 // the conditions with <, <=, >, and >= on the column, where of two at one value the open one is the
-// tighter. It reports false for a select that SQLite or s4ql refuses, as [KeyAccess] gives "" for
-// one.
+// tighter.
+//
+// With an ORDER BY, the rules of slice 13 as they were agreed: among the candidates that pin as many
+// columns, with a LIMIT one that delivers the order wins over one that only has a range, and without a
+// LIMIT a range wins over the order, and then the order over none; then the primary key, and then the
+// index created first. No row and the row of one primary key deliver every order, forward. A
+// candidate delivers the order when, with the columns that the WHERE pins taken out of its key and
+// out of the ORDER BY, what is left of the ORDER BY is the start of what is left of the key, every
+// column in the direction of the key, forward, or every one in the other, backward; an ORDER BY of
+// pinned columns alone is delivered forward. The access is Sorted where it does not deliver the order.
+// A LIMIT without ORDER BY changes nothing in the choice.
+//
+// It reports false for a select that SQLite or s4ql refuses, as [KeyAccess] gives "" for one, also
+// for a column of the ORDER BY that the table does not have, and for an argument of the LIMIT that is
+// no int64 from 0, which s4ql refuses.
 func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, args []any) (Access, bool) {
 	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" {
 		return Access{}, false
 	}
+	for _, c := range s.OrderBy {
+		if ColumnOf(columns, c.Name) < 0 {
+			return Access{}, false
+		}
+	}
+	if s.Limit.Parameter > 0 {
+		if n, ok := args[s.Limit.Parameter-1].(int64); !ok || n < 0 {
+			return Access{}, false
+		}
+	}
+	ordered := s.OrderBy != nil
 	type term struct {
 		position int
 		op       stmt.Operator
@@ -908,9 +937,9 @@ func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, a
 	for _, t := range terms {
 		switch {
 		case t.op == stmt.OpIsNull && columns[t.position].PrimaryKey:
-			return Access{None: true}, true
+			return Access{None: true, Delivered: ordered}, true
 		case t.op != stmt.OpIsNull && t.op != stmt.OpIsNotNull && t.value == nil:
-			return Access{None: true}, true
+			return Access{None: true, Delivered: ordered}, true
 		}
 	}
 	var primary []int
@@ -933,7 +962,7 @@ func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, a
 		}
 		return nil, false
 	}
-	get := Access{Get: true}
+	get := Access{Get: true, Delivered: ordered}
 	for _, position := range primary {
 		v, ok := pin(position, false)
 		if !ok {
@@ -957,9 +986,51 @@ func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, a
 		}
 		return n > 0 || n == 0 && open && !wOpen
 	}
-	// fitted is the access of a scan by the key of the index of the name, or of the primary key.
-	fitted := func(name string, key []int) Access {
+	// pinned reports whether a condition pins the column at the position.
+	pinned := func(position int) bool {
+		_, ok := pin(position, true)
+		return ok
+	}
+	// delivers reports whether a scan by the key, whose columns hold the positions in the directions
+	// of descending, gives the rows in the order of the ORDER BY, and whether it runs backward to.
+	delivers := func(key []int, descending []bool) (delivered, backward bool) {
+		var restKey []int
+		var restDescending []bool
+		for i, position := range key {
+			if !pinned(position) {
+				restKey, restDescending = append(restKey, position), append(restDescending, descending[i])
+			}
+		}
+		var rest []stmt.OrderColumn
+		for _, c := range s.OrderBy {
+			if !pinned(ColumnOf(columns, c.Name)) {
+				rest = append(rest, c)
+			}
+		}
+		if len(rest) > len(restKey) {
+			return false, false
+		}
+		for i, c := range rest {
+			turned := c.Descending != restDescending[i]
+			switch {
+			case ColumnOf(columns, c.Name) != restKey[i]:
+				return false, false
+			case i == 0:
+				backward = turned
+			case turned != backward:
+				return false, false
+			}
+		}
+		return true, backward
+	}
+	// fitted is the access of a scan by the key of the index of the name, or of the primary key, whose
+	// columns are held in the directions of descending.
+	fitted := func(name string, key []int, descending []bool) Access {
 		a := Access{Index: name}
+		if ordered {
+			a.Delivered, a.Backward = delivers(key, descending)
+			a.Sorted = !a.Delivered
+		}
 		for _, position := range key {
 			if v, ok := pin(position, true); ok {
 				a.Pins = append(a.Pins, v)
@@ -979,31 +1050,39 @@ func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, a
 		}
 		return a
 	}
-	// score of an access: the pinned columns count first, and a range then.
+	// score of an access: the pinned columns count first; then, with ORDER BY and LIMIT, the order and
+	// then a range, and otherwise a range and then the order, which only an ORDER BY has.
 	score := func(a Access) int {
-		n := 2 * len(a.Pins)
+		ranged, delivered := 0, 0
 		if a.Lower != nil || a.Upper != nil {
-			n++
+			ranged = 1
 		}
-		return n
+		if a.Delivered {
+			delivered = 1
+		}
+		if s.Limited() {
+			return 4*len(a.Pins) + 2*delivered + ranged
+		}
+		return 4*len(a.Pins) + 2*ranged + delivered
 	}
-	best := fitted("", primary)
+	best := fitted("", primary, make([]bool, len(primary)))
 	for _, ix := range indexes {
 		var key []int
+		var descending []bool
 		for _, c := range ix.Columns {
-			key = append(key, c.Position)
+			key, descending = append(key, c.Position), append(descending, c.Descending)
 		}
 		for _, position := range primary {
 			if !slices.Contains(key, position) {
-				key = append(key, position)
+				key, descending = append(key, position), append(descending, false)
 			}
 		}
-		if a := fitted(ix.Name, key); score(a) > score(best) {
+		if a := fitted(ix.Name, key, descending); score(a) > score(best) {
 			best = a
 		}
 	}
-	if score(best) == 0 {
-		return Access{Full: true}, true
+	if best.Index == "" && len(best.Pins) == 0 && best.Lower == nil && best.Upper == nil {
+		return Access{Full: true, Delivered: best.Delivered, Backward: best.Backward, Sorted: best.Sorted}, true
 	}
 	return best, true
 }
@@ -1026,34 +1105,46 @@ func (a Access) Same(b Access) bool {
 			return false
 		}
 	}
-	return equal(a.Lower, b.Lower) && equal(a.Upper, b.Upper) && (a.Lower == nil || a.LowerOpen == b.LowerOpen) && (a.Upper == nil || a.UpperOpen == b.UpperOpen)
+	return equal(a.Lower, b.Lower) && equal(a.Upper, b.Upper) && (a.Lower == nil || a.LowerOpen == b.LowerOpen) && (a.Upper == nil || a.UpperOpen == b.UpperOpen) &&
+		a.Delivered == b.Delivered && a.Sorted == b.Sorted && (!a.Delivered || a.Backward == b.Backward)
 }
 
 // String of the access in words, with its values: "no row", "a get of one key" and the key, "a scan
 // of every row", or a scan by the primary key or by an index, with the number of columns that it
 // pins and their values, if any, and its bounds, if any, such as `a scan of the index i with 2 pinned
-// []interface {}{1, "a"} from a lower bound (3`, where ( and ) are open and [ and ] closed.
+// []interface {}{1, "a"} from a lower bound (3`, where ( and ) are open and [ and ] closed; and for a
+// select with ORDER BY ", delivered forward", ", delivered backward", or ", sorted" after that.
 func (a Access) String() string {
+	var s string
 	switch {
 	case a.None:
-		return "no row"
+		s = "no row"
 	case a.Get:
-		return fmt.Sprintf("a get of one key %#v", a.Pins)
+		s = fmt.Sprintf("a get of one key %#v", a.Pins)
 	case a.Full:
-		return "a scan of every row"
+		s = "a scan of every row"
+	default:
+		s = "a scan"
+		if a.Index != "" {
+			s += " of the index " + a.Index
+		}
+		if len(a.Pins) > 0 {
+			s += fmt.Sprintf(" with %v pinned %#v", len(a.Pins), a.Pins)
+		}
+		if a.Lower != nil {
+			s += fmt.Sprintf(" from a lower bound %v%#v", map[bool]string{true: "(", false: "["}[a.LowerOpen], a.Lower)
+		}
+		if a.Upper != nil {
+			s += fmt.Sprintf(" to an upper bound %#v%v", a.Upper, map[bool]string{true: ")", false: "]"}[a.UpperOpen])
+		}
 	}
-	s := "a scan"
-	if a.Index != "" {
-		s += " of the index " + a.Index
-	}
-	if len(a.Pins) > 0 {
-		s += fmt.Sprintf(" with %v pinned %#v", len(a.Pins), a.Pins)
-	}
-	if a.Lower != nil {
-		s += fmt.Sprintf(" from a lower bound %v%#v", map[bool]string{true: "(", false: "["}[a.LowerOpen], a.Lower)
-	}
-	if a.Upper != nil {
-		s += fmt.Sprintf(" to an upper bound %#v%v", a.Upper, map[bool]string{true: ")", false: "]"}[a.UpperOpen])
+	switch {
+	case a.Delivered && a.Backward:
+		s += ", delivered backward"
+	case a.Delivered:
+		s += ", delivered forward"
+	case a.Sorted:
+		s += ", sorted"
 	}
 	return s
 }
