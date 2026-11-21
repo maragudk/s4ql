@@ -99,9 +99,11 @@ func (q *Sequence) Indexed() {
 }
 
 // Mistyped makes one insert in eight of the sequence give an integer of a column of INT or INTEGER,
-// if it has one, as the real of the same value, which SQLite converts back to the integer and s4ql
-// refuses, as it refuses every value of another type than its column. The values that the
-// conditions of a WHERE draw from keep the integer.
+// if it has one, as the real of the same value, which s4ql refuses, as it refuses every value of
+// another type than its column. SQLite converts the real back to the integer where a real holds the
+// integer exactly, as it does for the small integers that a sequence mostly gives; for an integer
+// beyond 2^53 the real is a neighbour of it, and SQLite refuses ±2^63, the real of the limits of 64
+// bits. The values that the conditions of a WHERE draw from keep the integer.
 func (q *Sequence) Mistyped() {
 	q.mistyped = true
 }
@@ -405,8 +407,8 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 	}
 	q.store(table, shape, list, values)
 	if q.mistyped && r.IntN(8) == 0 {
-		// An integer of a column of INT or INTEGER as the whole real of its value, which SQLite
-		// converts back to the integer that is stored for the conditions.
+		// An integer of a column of INT or INTEGER as the real of its value, which the values of the
+		// conditions keep as the integer.
 		var integers []int
 		for i, position := range order[:min(len(order), len(values))] {
 			if _, ok := values[i].(stmt.Integer); ok && kindOf(shape[position].Type) == stmt.TypeInt {

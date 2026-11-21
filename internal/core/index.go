@@ -237,9 +237,8 @@ func (c *conn) loadIndexes(t *table) error {
 		}, name); err != nil {
 			return err
 		}
-		if len(ix.columns) == 0 {
-			return foreign("the index %q of its table %q has no columns", name, t.name)
-		}
+		// An index of SQLite has a column of its own, and one on an expression is refused above, so ix
+		// has columns.
 		if sql != kept(t.createIndexSQL(ix)) {
 			return foreign("the index %q of its table %q is not declared as s4ql declares an index of its columns", name, t.name)
 		}
