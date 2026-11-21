@@ -190,11 +190,17 @@ func fit(t *s4qlpb.CreateTable, index string, key []int, conditions []condition,
 			if c.position != position {
 				continue
 			}
-			switch c.op {
+			op := c.op
+			if b.unturnedBound && c.valueFirst {
+				// The planted bug: a condition with its value on the left bounds its column by the operator
+				// as the text writes it, as if the condition had not been turned round.
+				op = op.Swapped()
+			}
+			switch op {
 			case stmt.OpLess, stmt.OpLessOrEqual:
-				a.upper, err = tighter(a.upper, bound{value: c.value, open: c.op == stmt.OpLess}, true)
+				a.upper, err = tighter(a.upper, bound{value: c.value, open: op == stmt.OpLess}, true)
 			case stmt.OpGreater, stmt.OpGreaterOrEqual:
-				a.lower, err = tighter(a.lower, bound{value: c.value, open: c.op == stmt.OpGreater}, false)
+				a.lower, err = tighter(a.lower, bound{value: c.value, open: op == stmt.OpGreater}, false)
 			}
 			if err != nil {
 				return access{}, err

@@ -12,7 +12,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// allowed node types and fields of slices 1, 2, 5, 7, 8, 9, 10, and 11, as the README defines them: a type by its
+// allowed node types and fields of slices 1, 2, 5, 7, 8, 9, 10, 11, and 13, as the README defines them: a type by its
 // name, and a field by the name of its type and its path, as "CreateTable.Name.Name". A field is
 // present when its token is, when its node is not nil, or when its list is not empty.
 var allowed = map[string]bool{
@@ -63,6 +63,9 @@ var allowed = map[string]bool{
 	"CreateIndex.On": true, "CreateIndex.Table": true, "CreateIndex.LParen": true, "CreateIndex.Columns": true,
 	"CreateIndex.Commas": true, "CreateIndex.RParen": true,
 	"OrderingTerm": true, "OrderingTerm.X": true, "OrderingTerm.Order": true,
+
+	"SimpleSelect.OrderBy": true, "OrderBy": true, "OrderBy.Order": true, "OrderBy.By": true, "OrderBy.Terms": true,
+	"OrderBy.Commas": true, "SimpleSelect.Limit": true, "Limit": true, "Limit.Limit": true, "Limit.X": true,
 }
 
 // features of the tree from n that are present: the name of the type of every node, and every field
@@ -139,7 +142,7 @@ var allowListExtra = []string{
 	"insert or ignore into t (v) values (1)",
 }
 
-// TestAllowList checks that a supported statement uses only the node types and fields of slices 1 to 11,
+// TestAllowList checks that a supported statement uses only the node types and fields of slices 1 to 13,
 // on many statements, and that every node type of package ast and every field of the node types of
 // slice 1 occurs in some statement of the test, so that the check covers each of them.
 func TestAllowList(t *testing.T) {
@@ -179,7 +182,7 @@ func TestAllowList(t *testing.T) {
 		if s, err := stmt.Check(sql); err == nil && s != nil {
 			for k := range f {
 				if !allowed[k] {
-					t.Errorf("%q is supported, and has %v, which slices 1 to 11 do not have", sql, k)
+					t.Errorf("%q is supported, and has %v, which slices 1 to 13 do not have", sql, k)
 				}
 			}
 			maps.Copy(seenSupported, f)

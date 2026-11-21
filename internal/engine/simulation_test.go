@@ -720,6 +720,21 @@ func hasClause(s stmt.Statement) bool {
 	return false
 }
 
+// hasValueFirst reports whether s is a select, an update, or a delete with a comparison whose value
+// is on the left of its column, of slice 12.
+func hasValueFirst(s stmt.Statement) bool {
+	var where []stmt.Condition
+	switch s := s.(type) {
+	case *stmt.Select:
+		where = s.Where
+	case *stmt.Update:
+		where = s.Where
+	case *stmt.Delete:
+		where = s.Where
+	}
+	return slices.ContainsFunc(where, func(c stmt.Condition) bool { return c.ValueFirst })
+}
+
 // isChange reports whether s is an update or a delete.
 func isChange(s stmt.Statement) bool {
 	switch s.(type) {
@@ -2334,6 +2349,18 @@ func tallyOf(s simulation) map[string]int {
 				counts["updates and deletes with SQLite's error"]++
 			}
 		}
+		if hasValueFirst(s) {
+			counts["statements with a value on the left"]++
+			switch {
+			case a.state == succeeded && (isChange(s) && !a.unchanged || a.query && len(a.answer.rows) > 0):
+				counts["statements with a value on the left that found rows"]++
+			case a.state == sqliteFailed:
+				counts["statements with a value on the left with SQLite's error"]++
+			}
+			if a.access == "primary_key" || a.access == "index" {
+				counts["statements with a value on the left read by a key or an index"]++
+			}
+		}
 	}
 	counts["indexes dropped while the rows of a query that read by them were open"] = r.droppedUnder()
 	counts["acknowledged writes"] = len(r.acked)
@@ -2506,6 +2533,12 @@ func TestSimulation(t *testing.T) {
 			// tables of the log with a default, and the values of its rows that are the default of their
 			// column, NULL apart, which [run.verifyRows] counts.
 			"create tables with a default in the log": 0.34, "values of a default in the log": 0.3,
+			// The selects, updates, and deletes with a value on the left of slice 12, which one
+			// comparison in three of the sequence has since 2026-11-21, a quarter of what the first 1,000
+			// seeds gave that day: all of them, those that found rows, those with SQLite's error, and
+			// those read by the primary key or an index, which [tallyOf] counts.
+			"statements with a value on the left": 2.1, "statements with a value on the left that found rows": 0.086,
+			"statements with a value on the left with SQLite's error": 0.91, "statements with a value on the left read by a key or an index": 0.46,
 		}, 0.15},
 		// The ends of transactions for the lease, which only this workload reaches.
 		{"idle", idleWorkload, map[string]float64{
@@ -2542,6 +2575,11 @@ func TestSimulation(t *testing.T) {
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.43, "statements that do nothing, compared with SQLite": 0.068,
 			"statements that do nothing in a transaction, compared with SQLite": 0.24,
 			"create tables with a default in the log":                           0.1, "values of a default in the log": 0.055,
+			// The statements with a value on the left that found rows have no least number here: the
+			// first 1,000 seeds gave 34 on 2026-11-21, a quarter of which is less than one in 50 seeds.
+			// The default and hammer workloads require them.
+			"statements with a value on the left": 1.5, "statements with a value on the left with SQLite's error": 0.72,
+			"statements with a value on the left read by a key or an index": 0.097,
 		}, 0.15},
 		// The least number of the selects with WHERE in a transaction read by an index is a quarter of
 		// the 186 that the first 1,000 seeds gave on 2026-11-20, where it was 0.06, since the sequence
@@ -2584,6 +2622,8 @@ func TestSimulation(t *testing.T) {
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 1.4, "statements that do nothing, compared with SQLite": 0.81,
 			"statements that do nothing in a transaction, compared with SQLite": 1.1,
 			"create tables with a default in the log":                           0.49, "values of a default in the log": 0.6,
+			"statements with a value on the left": 4.3, "statements with a value on the left that found rows": 0.18,
+			"statements with a value on the left with SQLite's error": 1.7, "statements with a value on the left read by a key or an index": 1.2,
 		}, 0.12},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2787,6 +2827,15 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// first 200 seeds, on 2026-11-21, 56 found the bug, 53 of them by its own violation. A write in a
 		// transaction plants it too.
 		{"nullDefault", defaultWorkload, "default", []string{", and in SQLite", "the replay of the log holds", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
+		// A scan whose bound from a condition with its value on the left, of slice 12, is the operator as
+		// the text writes it, so that `5 < k` reads the keys below 5: a select with WHERE gives fewer
+		// rows than in SQLite, since the filter above the scan drops the rows that the scan read wrongly
+		// and cannot give those that it did not read; an update or a delete changes fewer rows, after
+		// which the statements can differ. An engine that reads every row does not have the bug. Of the
+		// first 200 seeds, on 2026-11-21, 33 found the bug in the hammer workload, 26 of them by its
+		// own violation, and 11 in the default workload, 6 of them by it; the default run finds it the
+		// second time by it at seed 24.
+		{"unturnedBound", hammerWorkload, "hammer", []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {

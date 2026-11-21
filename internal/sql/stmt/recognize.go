@@ -354,7 +354,7 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 			if i > 0 {
 				r.take(c.Columns.Commas[i-1])
 			}
-			if r.isNext(t) && seen[asciiLower(dequote(t))] {
+			if r.isNext(t) && quotingName(t) == "" && seen[asciiLower(dequote(t))] {
 				// SQLite takes the first value for the column and leaves the others unused.
 				r.reject("column named twice")
 			}
@@ -561,7 +561,8 @@ func unaryName(op ast.Token) string {
 	}
 }
 
-// selectCmd: SELECT, * or the names of one or more columns, FROM table.
+// selectCmd: SELECT, * or the names of one or more columns, FROM table, and an optional WHERE, ORDER
+// BY, and LIMIT, in that order.
 func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	r.accept(c)
 	r.accept(c.Select)
@@ -597,7 +598,130 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	if core.Where != nil {
 		s.Where = r.where(core.Where, 0)
 	}
+	if core.OrderBy != nil {
+		s.OrderBy = r.orderBy(core.OrderBy)
+	}
+	if core.Limit != nil {
+		// The ? of the LIMIT comes after those of the conditions in the text.
+		s.Limit = r.limit(core.Limit, conditionParameters(s.Where))
+	}
 	return s
+}
+
+// orderBy: ORDER BY and one or more columns, separated by commas, of which no two are one name.
+func (r *recognizer) orderBy(o *ast.OrderBy) []OrderColumn {
+	r.accept(o)
+	r.take(o.Order)
+	r.take(o.By)
+	seen := map[string]bool{}
+	var columns []OrderColumn
+	for i, term := range o.Terms {
+		if i > 0 {
+			r.take(o.Commas[i-1])
+		}
+		c := r.orderColumn(term, seen)
+		seen[c.Name.Fold()] = true
+		columns = append(columns, c)
+	}
+	return columns
+}
+
+// orderColumn o of an ORDER BY, after the columns of seen, by their folds: the bare name of a column,
+// or one in double quotes, that seen does not have, and ASC, DESC, or neither. SQLite reads any
+// expression there, an integer literal as the position of a result column; the pass supports none.
+// A column that an earlier one names is not supported: SQLite orders by the first, so the later one
+// orders nothing.
+func (r *recognizer) orderColumn(o *ast.OrderingTerm, seen map[string]bool) OrderColumn {
+	r.accept(o)
+	switch x := o.X.(type) {
+	case *ast.ColumnRef:
+		switch {
+		case x.Table.Present():
+			r.reject("column with the name of a table")
+		case isTrueOrFalse(x):
+			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+			r.reject("TRUE or FALSE")
+		case r.isNext(x.Column) && quotingName(x.Column) == "" && seen[asciiLower(dequote(x.Column))]:
+			r.reject("column named twice")
+		}
+		r.accept(x)
+	case *ast.Collate:
+		r.reject("COLLATE")
+	case *ast.Paren:
+		r.reject("parentheses")
+	default:
+		r.reject("ordering term other than a column")
+	}
+	c := OrderColumn{Name: r.name(o.X.(*ast.ColumnRef).Column)}
+	if o.Order.Present() {
+		r.take(o.Order)
+		c.Descending = o.Order.Kind == token.Desc
+	}
+	return c
+}
+
+// limit: LIMIT and the number of rows, after before parameters of the statement: a decimal integer
+// literal without a sign that fits in 64 bits, or a plain ?. SQLite takes any expression there,
+// which it converts to an integer when the select runs: a real or a text that holds an integer is
+// that integer, and any other value is `datatype mismatch`; a negative number is no limit. By the
+// exact types of s4ql, only an integer that is a limit is supported. LIMIT with OFFSET, also as
+// LIMIT and two numbers, is not supported.
+func (r *recognizer) limit(l *ast.Limit, before int) Term {
+	r.accept(l)
+	r.take(l.Limit)
+	v := r.limitCount(l.X, before)
+	if l.Sep.Present() {
+		// The next token is OFFSET, or the comma of `LIMIT a, b`, whose first number is the offset and
+		// the second the count.
+		r.reject("OFFSET")
+	}
+	return v
+}
+
+// limitCount: the number of rows of a LIMIT, the expression x, which starts at the next token, after
+// before parameters of the statement.
+func (r *recognizer) limitCount(x ast.Expr, before int) Term {
+	switch x := x.(type) {
+	case *ast.Variable:
+		var v Term
+		v.Parameter, v.Span = r.parameter(x, before)
+		return v
+	case *ast.Literal:
+		t := x.Value
+		switch t.Kind {
+		case token.Integer:
+			if strings.HasPrefix(t.Text, "0x") || strings.HasPrefix(t.Text, "0X") {
+				r.reject("hex literal")
+			}
+			i, err := strconv.ParseInt(t.Text, 10, 64)
+			if err != nil {
+				// SQLite reads the literal as a real, which is no integer.
+				r.reject("integer outside 64 bits")
+			}
+			r.take(t)
+			return Term{Value: Integer(i), Span: Span{Start: t.Offset, End: t.End()}}
+		case token.Float, token.String, token.Blob, token.Null:
+			r.reject("LIMIT other than an integer")
+		}
+		r.reject(literalName(t))
+	case *ast.Unary:
+		switch x.Op.Kind {
+		case token.Minus:
+			// SQLite reads a negative number as no limit.
+			r.reject("negative LIMIT")
+		case token.Plus:
+			r.reject("+ sign")
+		}
+	case *ast.ColumnRef:
+		if isTrueOrFalse(x) {
+			// SQLite reads a bare TRUE or FALSE as 1 or 0.
+			r.reject("TRUE or FALSE")
+		}
+	case *ast.Paren:
+		r.reject("parentheses")
+	}
+	r.reject("LIMIT of an expression")
+	return Term{}
 }
 
 // where: WHERE and its conditions, after before parameters of the statement.
@@ -630,7 +754,7 @@ func (r *recognizer) update(c *ast.Update) *Update {
 			// The assignment is to a list of columns in parentheses.
 			r.unexpected()
 		}
-		if r.isNext(a.Column) && seen[asciiLower(dequote(a.Column))] {
+		if r.isNext(a.Column) && quotingName(a.Column) == "" && seen[asciiLower(dequote(a.Column))] {
 			// SQLite gives the column the value of its last assignment, and leaves the others unused.
 			r.reject("column named twice")
 		}
@@ -717,10 +841,13 @@ func (r *recognizer) conditions(e ast.Expr, before int) []Condition {
 const maxDepth = 1000
 
 // depth of the condition e, which the recognizer took, as SQLite counts it: a name, a literal, and a
-// parameter are 1 deep, and an operator is one deeper than its deepest operand, a sign too.
+// parameter are 1 deep, and an operator is one deeper than its deepest operand, a sign too, on
+// either side of the operator.
 func depth(e ast.Expr) int {
 	if b, ok := e.(*ast.Binary); ok {
-		if _, ok := b.Y.(*ast.Unary); ok {
+		_, left := b.X.(*ast.Unary)
+		_, right := b.Y.(*ast.Unary)
+		if left || right {
 			return 3
 		}
 	}
@@ -740,8 +867,13 @@ var comparisons = map[token.Kind]Operator{
 }
 
 // condition e of a WHERE clause, after before parameters of the statement: a column compared with a
-// literal or a parameter, with one of the operators of [comparisons], or a column IS NULL or IS NOT
-// NULL.
+// literal or a parameter, with one of the operators of [comparisons], on either side of the
+// operator, or a column IS NULL or IS NOT NULL.
+//
+// A comparison with the value on the left, as `5 < a`, is read as the column compared with the value
+// by the operator swapped, `a > 5`, with [Condition.ValueFirst] set; see [Condition] for why. The
+// value is read as a value on the right is, with the same names for what is not supported, and its
+// ? has its number in the order of the text.
 //
 // The next token is the first of e when it is called, since e follows WHERE or AND, and the first
 // token of the left operand of a condition is the first of the condition.
@@ -768,7 +900,13 @@ func (r *recognizer) condition(e ast.Expr, before int) Condition {
 		r.unexpected()
 	}
 	r.accept(b)
-	c := Condition{Column: r.leftColumn(b.X), Operator: op}
+	if isValue(b.X) {
+		c := Condition{Value: r.term(b.X, before), Operator: op.Swapped(), ValueFirst: true}
+		r.take(b.Op)
+		c.Column = r.conditionColumn(b.Y, "value compared with a value")
+		return c
+	}
+	c := Condition{Column: r.conditionColumn(b.X, ""), Operator: op}
 	r.take(b.Op)
 	if ref, ok := b.Y.(*ast.ColumnRef); ok && !isTrueOrFalse(ref) {
 		r.reject("column compared with a column")
@@ -780,7 +918,7 @@ func (r *recognizer) condition(e ast.Expr, before int) Condition {
 // isCondition: a column IS NULL or IS NOT NULL.
 func (r *recognizer) isCondition(e *ast.Is) Condition {
 	r.accept(e)
-	c := Condition{Column: r.leftColumn(e.X), Operator: OpIsNull}
+	c := Condition{Column: r.conditionColumn(e.X, "value before IS"), Operator: OpIsNull}
 	r.take(e.Is)
 	if e.Not.Present() {
 		r.take(e.Not)
@@ -800,9 +938,11 @@ func (r *recognizer) isCondition(e *ast.Is) Condition {
 	return c
 }
 
-// leftColumn of a condition, the expression x on the left of its operator, which starts at the next
-// token: the bare name of a column.
-func (r *recognizer) leftColumn(x ast.Expr) Name {
+// conditionColumn of a condition, the expression x on either side of its operator, which starts at the next
+// token: the bare name of a column. A literal or a parameter there, with a sign or without one, is
+// not supported as value, the name of that form; value is "" where the caller has read such a
+// value as the value of the condition.
+func (r *recognizer) conditionColumn(x ast.Expr, value string) Name {
 	ref, ok := x.(*ast.ColumnRef)
 	switch {
 	case ok && ref.Table.Present():
@@ -810,8 +950,8 @@ func (r *recognizer) leftColumn(x ast.Expr) Name {
 	case ok && isTrueOrFalse(ref):
 		// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
 		r.reject("TRUE or FALSE")
-	case isValue(x):
-		r.reject("value on the left of a comparison")
+	case value != "" && isValue(x):
+		r.reject(value)
 	case !ok:
 		r.unexpected()
 	}
@@ -940,7 +1080,7 @@ func (r *recognizer) indexColumn(o *ast.OrderingTerm, seen map[string]bool) Inde
 		case isTrueOrFalse(x):
 			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
 			r.reject("TRUE or FALSE")
-		case r.isNext(x.Column) && seen[asciiLower(dequote(x.Column))]:
+		case r.isNext(x.Column) && quotingName(x.Column) == "" && seen[asciiLower(dequote(x.Column))]:
 			// SQLite makes an index of the column twice.
 			r.reject("column named twice")
 		}

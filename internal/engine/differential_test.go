@@ -1036,8 +1036,9 @@ func (p *pair) step(c stmttest.Call) string {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
-		// empty database without a syntax error.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
+		// empty database without a syntax error. A select with ORDER BY or LIMIT, of slice 13, is
+		// not supported until the engine runs it, as [orderedOrLimited] says.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil && !orderedOrLimited(s) {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -1421,6 +1422,14 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	if len(cis) > 0 {
 		p.count("WHERE run by every path on a table with an index")
 	}
+	// A WHERE with a value on the left, which src writes as the text does.
+	valueFirst := slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return c.ValueFirst })
+	if valueFirst {
+		p.count("WHERE with a value on the left run by every path")
+		if len(cis) > 0 {
+			p.count("WHERE with a value on the left run by every path on a table with an index")
+		}
+	}
 	if !p.allPaths && len(cs) > pathSample {
 		for j := range pathSample {
 			k := j + p.rnd.IntN(len(cs)-j)
@@ -1443,6 +1452,9 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 		}
 		for _, kind := range pathKinds(k, key, ct) {
 			p.count(kind)
+			if valueFirst && strings.HasSuffix(kind, " and a range") {
+				p.count(kind + " of a WHERE with a value on the left")
+			}
 		}
 		if p.rnd.IntN(4) == 0 {
 			if failure := p.checkPlan(src, table, k.access, ct, cis); failure != "" {
@@ -1678,8 +1690,8 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 			if p.inTx && slices.ContainsFunc([]string{"create table if not exists ", "drop table if exists ", "create index if not exists ", "drop index if exists "}, func(k string) bool { return strings.HasPrefix(what, k) }) {
 				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
 			}
-			// So do the defaults of slice 11.
-			if p.inTx && (strings.Contains(what, " default") || strings.Contains(what, "DEFAULT NULL")) {
+			// So do the defaults of slice 11, and the statements with a value on the left of slice 12.
+			if p.inTx && (strings.Contains(what, " default") || strings.Contains(what, "DEFAULT NULL") || strings.Contains(what, "with a value on the left ")) {
 				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
 			}
 		})
@@ -1811,6 +1823,7 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 		return
 	}
 	args := oracleArgs(c.Args)
+	reachValueFirst(s, args, c, got, "select", outcome, count)
 	switch {
 	case len(args) != s.Parameters():
 		count("WHERE with the wrong number of arguments " + outcome)
@@ -1853,6 +1866,35 @@ func reachWhere(t testing.TB, o *oracle, s *stmt.Select, c stmttest.Call, got an
 	}
 }
 
+// reachValueFirst counts for the select, the update, or the delete of the call c, of the kind, whose
+// WHERE is that of the select s with the arguments args, and whose outcome in the engine is outcome,
+// each case of [stmttest.ValueFirstCases], the comparisons with the value on the left, of slice 12,
+// by their operator as the text writes it, and those of them with NULL: after the kind with the
+// outcome, and by itself with the outcome of any kind, where "ok" is "finds rows" or "finds no row",
+// by the rows of a query and by the count of an update or a delete, whose outcome says so already.
+// A select that is run as no query has no rows to tell, and keeps "ok".
+func reachValueFirst(s *stmt.Select, args []any, c stmttest.Call, got answer, kind, outcome string, count func(string)) {
+	ofAnyKind := outcome
+	switch {
+	case outcome == "ok" && kind == "select" && c.Query:
+		outcome = map[bool]string{true: "ok, no row found", false: "ok, rows found"}[len(got.rows) == 0]
+		ofAnyKind = map[bool]string{true: "finds no row", false: "finds rows"}[len(got.rows) == 0]
+	case outcome == "ok, no row found":
+		ofAnyKind = "finds no row"
+	case outcome == "ok, rows changed":
+		ofAnyKind = "finds rows"
+	}
+	cases := stmttest.ValueFirstCases(s, args)
+	for _, what := range cases {
+		count(what + " " + ofAnyKind)
+		count(kind + " with a " + what + " " + outcome)
+	}
+	if cases != nil {
+		count("value on the left " + ofAnyKind)
+		count(kind + " with a value on the left " + outcome)
+	}
+}
+
 // reachChange counts what the update or the delete s of the call c, whose answer of the engine is got,
 // whose outcome in the engine is outcome, and after which the engine's count of changes is changes,
 // reaches on the database of o, before the call, for a table that SQLite has. An outcome "ok" is "ok,
@@ -1881,6 +1923,11 @@ func reachChange(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got
 	}
 	count(kind + map[bool]string{true: " with WHERE ", false: " without WHERE "}[where != nil] + outcome)
 	args := oracleArgs(c.Args)
+	if sel, selArgs := stmttest.SelectOf(s, args); sel != nil {
+		reachValueFirst(sel, selArgs, c, got, kind, outcome, count)
+	} else {
+		reachValueFirst(&stmt.Select{Where: where}, nil, c, got, kind, outcome, count)
+	}
 	if len(args) != s.Parameters() || slices.ContainsFunc(args, func(a any) bool { return refusal(a) != "" }) {
 		count(kind + " with arguments that s4ql refuses " + outcome)
 		return
@@ -2127,6 +2174,19 @@ func checkChoice(t testing.TB, o *oracle, s *stmt.Select, args []any, c stmttest
 		kind += " of a table of several indexes"
 	}
 	count("chosen " + kind)
+	// The choices that a condition with its value on the left decides: with != in place of the
+	// operator of each, which pins and bounds nothing and keeps a comparison with NULL, the model
+	// chooses another access.
+	rest, valueFirst := *s, false
+	rest.Where = slices.Clone(s.Where)
+	for i, w := range rest.Where {
+		if w.ValueFirst {
+			rest.Where[i].Operator, valueFirst = stmt.OpNotEqual, true
+		}
+	}
+	if without, ok := stmttest.ChosenAccess(columns, indexes, &rest, args); valueFirst && ok && !without.Same(want) {
+		count("chosen " + kind + " by a value on the left")
+	}
 }
 
 // createTableOf the table of the name and the columns, as SQLite has them, in the engine's terms.
@@ -2742,12 +2802,13 @@ func TestDifferential(t *testing.T) {
 		// the second and the third down; and the sequence draws other random numbers for the defaults
 		// of its shapes and the text of each DEFAULT, which moves each of them. [excusedCacheLimit] is
 		// 0: no create table of the sequence comes near the limit by its statement in the cache, which
-		// TestPair_tooLongForCache and TestEngine_defaults pin by hand. When an update and a delete of
-		// the sequence bounded the key on one side by a value of an insert for every third of the values
-		// that it keeps, they went from 13, 816, 278, 530, 4, 4, and 0 to 14, 825, 289, 519, 4, 4, and 0:
-		// the generator draws the same random numbers, and the rows that such a bound changes or deletes
-		// move the outcomes of the statements after it.
-		want := map[string]int{acceptedStartedTable: 14, excusedArguments: 825, excusedArgument: 289, excusedType: 519, excusedLong: 4, excusedLongChange: 4, excusedLongCondition: 0, excusedCacheLimit: 0}
+		// TestPair_tooLongForCache and TestEngine_defaults pin by hand. When one comparison in three of
+		// the sequence had its value on the left, of slice 12, they went from 13, 816, 278, 530, 4, 4,
+		// 0, and 0 to 26, 817, 263, 540, 2, 2, 2, and 0: the generator draws a number for each
+		// comparison, which moves the statements after it, and so each of these kinds. The 2 of
+		// [excusedLongCondition] are selects with a long literal on the left of its column, for which
+		// SQLite gives rows as for a long literal on the right, and which the rule decides alone.
+		want := map[string]int{acceptedStartedTable: 26, excusedArguments: 817, excusedArgument: 263, excusedType: 540, excusedLong: 2, excusedLongChange: 2, excusedLongCondition: 2, excusedCacheLimit: 0}
 		kinds := slices.Collect(maps.Keys(want))
 		for name := range y {
 			// The count of [excusedRecordSlip] depends on the allocator of the platform.
@@ -2787,7 +2848,7 @@ var reachedDifferential = map[string]int{
 	"create table of mixed types ok": 76, "create table with two columns of a type ok": 120,
 	"create table with the key at 0 ok": 140, "create table with the key at 1 ok": 68, "create table with the key at 2 ok": 26,
 	"insert without a list ok": 130, "insert with a list in the order of the table ok": 120, "insert with a list in another order ok": 86,
-	"insert with a list in another order UNIQUE constraint failed": 7, "insert with a list in another order a value of another type": 5,
+	"insert with a list in another order UNIQUE constraint failed": 7, "insert with a list in another order a value of another type": 17,
 	"insert with a list in another order NOT NULL constraint failed":         8,
 	"insert with a column that the table does not have: has no column named": 29, "insert with a column without a value: NOT NULL constraint failed": 43,
 	"insert with the wrong number of values: values were supplied": 37, "insert with the wrong number of values:  values for ": 44,
@@ -2808,7 +2869,7 @@ var reachedDifferential = map[string]int{
 	"create table of which some columns outside the key take NULL ok": 16, "literal null": 220,
 	"NULL literal into a column that takes NULL ok": 34, "NULL argument into a column that takes NULL ok": 16,
 	"NULL literal into a column that takes NULL UNIQUE constraint failed": 11, "NULL argument into a column that takes NULL UNIQUE constraint failed": 5,
-	"NULL literal into a column that takes NULL a value of another type": 1, "NULL argument into a column that takes NULL a value of another type": 2,
+	"NULL literal into a column that takes NULL a value of another type": 5, "NULL argument into a column that takes NULL a value of another type": 2,
 	"NULL literal into the key NOT NULL constraint failed": 35, "NULL argument into the key NOT NULL constraint failed": 14,
 	"NULL literal into a column that does not take NULL NOT NULL constraint failed": 10, "NULL argument into a column that does not take NULL NOT NULL constraint failed": 4,
 	"insert that leaves out a column that takes NULL ok": 60, "insert that leaves out a column that takes NULL UNIQUE constraint failed": 16,
@@ -2830,8 +2891,11 @@ var reachedDifferential = map[string]int{
 	"IS NULL on the key ok": 19, "IS NOT NULL on the key ok": 16,
 	"= on another column ok": 10, "!= on another column ok": 8, "< on another column ok": 9, "<= on another column ok": 6, "> on another column ok": 11,
 	">= on another column ok": 7, "IS NULL on another column ok": 2, "IS NOT NULL on another column ok": 2,
-	"= on the key a value of another type": 11, "!= on the key a value of another type": 11, "< on the key a value of another type": 14,
-	"<= on the key a value of another type": 11, "> on the key a value of another type": 12, ">= on the key a value of another type": 11,
+	// When the sequence wrote the values on the left of slice 12, it drew other random numbers, which
+	// took "!= on the key a value of another type" from 15 to 6 and "> on the key a value of another
+	// type" from 26 to 11, whose least numbers are a third now.
+	"= on the key a value of another type": 11, "!= on the key a value of another type": 2, "< on the key a value of another type": 14,
+	"<= on the key a value of another type": 11, "> on the key a value of another type": 3, ">= on the key a value of another type": 11,
 	"WHERE that reads no row ok": 29, "WHERE that reads a get of one key ok": 18, "WHERE that reads a scan from a lower bound ok": 15,
 	"WHERE that reads a scan to an upper bound ok": 16, "WHERE that reads a scan between two bounds ok": 19,
 	"WHERE that reads a scan between two bounds that hold no key ok": 18, "WHERE that reads a scan of every row ok": 38,
@@ -2876,12 +2940,10 @@ var reachedDifferential = map[string]int{
 	// bounds that hold no key ok, no row found" from 9 to 8, of which the least number is now a third.
 	// Since an update and a delete bound the key on one side by a value of an insert, where they had
 	// the key equal to it, for every third of the values that the sequence keeps, on 2026-11-21, the
-	// run reaches "update WHERE that reads a scan to an upper bound ok, rows changed" 10 times, which
-	// the sequences of create indexes and drop indexes had not reached, and requires it again. The
-	// generator draws the same random numbers, and the rows that such a bound changes or deletes took
-	// "NULL literal into a column that takes NULL a value of another type", "SET with argument
-	// float64 ok, rows changed", and "insert with a list in another order a value of another type"
-	// to 4, 1, and 15, of which the least numbers are a third, or 1.
+	// run reaches "update WHERE that reads a scan to an upper bound ok, rows changed" 11 times, which
+	// the sequences of create indexes and drop indexes had reached 0 to 3 times, and requires it again,
+	// and "update WHERE that reads a scan from a lower bound ok, rows changed" 3 times. The generator
+	// draws the same random numbers as without the bound, so the pins above did not move.
 	"update with WHERE ok, rows changed": 17, "update with WHERE ok, no row found": 76, "update without WHERE ok, rows changed": 20, "update without WHERE ok, no row found": 17,
 	"delete with WHERE ok, rows changed": 32, "delete with WHERE ok, no row found": 77, "delete without WHERE ok, rows changed": 23, "delete without WHERE ok, no row found": 12,
 	"update that changes every row of a table with rows": 27, "update that changes some rows of a table": 10, "update that changes no row of a table with rows": 42,
@@ -2892,7 +2954,7 @@ var reachedDifferential = map[string]int{
 	"SET with a value of another type a value of another type": 29, "SET with literal integer ok, rows changed": 15, "SET with literal real ok, rows changed": 5,
 	"SET with literal real -0.0 ok, rows changed": 1, "SET with literal text ok, rows changed": 5, "SET with literal empty text ok, rows changed": 1,
 	"SET with literal blob ok, rows changed": 4, "SET with literal empty blob ok, rows changed": 1, "SET with literal null ok, rows changed": 2,
-	"SET with argument int64 ok, rows changed": 4, "SET with argument float64 ok, rows changed": 1, "SET with argument string ok, rows changed": 1,
+	"SET with argument int64 ok, rows changed": 4, "SET with argument float64 ok, rows changed": 2, "SET with argument string ok, rows changed": 1,
 	"SET with argument []uint8 ok, no row found": 5, "SET with argument nil ok, rows changed": 1,
 	"update with WHERE no such column": 34, "update WHERE with a column in double quotes that the table does not have no such column": 11,
 	"update WHERE with a value of another type a value of another type": 24, "update with WHERE NOT NULL constraint failed": 4, "update without WHERE NOT NULL constraint failed": 5,
@@ -2907,9 +2969,16 @@ var reachedDifferential = map[string]int{
 	"delete WHERE with a value of another type a value of another type": 18, "delete with arguments that s4ql refuses not supported": 7,
 	"delete with arguments that s4ql refuses wrong number of arguments": 11, "delete WHERE that reads no row ok, no row found": 12,
 	"delete WHERE that reads a get of one key ok, rows changed": 15, "delete WHERE that reads a scan from a lower bound ok, rows changed": 3,
-	"delete WHERE that reads a scan to an upper bound ok, rows changed": 2, "delete WHERE that reads a scan between two bounds ok, rows changed": 4,
+	// When the sequence wrote the values on the left of slice 12, it drew other random numbers, which
+	// took "delete WHERE that tests a column more than once ok, rows changed" from 12 to 5, whose
+	// least number is a third now, and "delete WHERE that reads a scan between two bounds ok, rows
+	// changed" from 5 to 1, which is left out: the WHERE of a delete is read by the conditions that
+	// read that of a select and an update, and "WHERE that reads a scan between two bounds ok" and
+	// "update WHERE that reads a scan between two bounds ok, rows changed" are still required here,
+	// and TestEngine_paths runs deletes between two bounds of the key by every path.
+	"delete WHERE that reads a scan to an upper bound ok, rows changed":                   2,
 	"delete WHERE that reads a scan between two bounds that hold no key ok, no row found": 2, "delete WHERE that reads a scan of every row ok, rows changed": 2,
-	"delete WHERE that tests a column more than once ok, rows changed": 7, "delete WHERE with contradicting conditions ok, no row found": 3,
+	"delete WHERE that tests a column more than once ok, rows changed": 1, "delete WHERE with contradicting conditions ok, no row found": 3,
 	"WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column": 2, "changed both ways": 576,
 	// The create indexes and drop indexes of slice 9, by outcome and by their columns, as [reachIndex]
 	// counts them; the choices of the rules, as [checkChoice] counts them; the paths that
@@ -2975,6 +3044,41 @@ var reachedDifferential = map[string]int{
 	"insert that leaves out a column with a long default string or blob too big":                           1,
 	"NULL given for a column with a default, which takes NULL ok":                                          10,
 	"NULL given for a column with a default, which does not take NULL NOT NULL constraint failed":          19,
+
+	// Slice 12, a third of what the run gave on 2026-11-21 when one comparison in three of the
+	// sequence had its value on the left, or 1, as [reachValueFirst] counts them: each operator as
+	// the text writes it, by whether its statement finds rows or none, and by each refusal that a
+	// comparison of it meets, of a value of another type, of a column that the table does not have,
+	// of the number of the arguments, and of an argument that no column holds; NULL on the left, a
+	// value on the left that is too long, NOT NULL and UNIQUE of an update with one; a select, an
+	// update, and a delete with one that find rows and none; the choices of the access that a value
+	// on the left decides, as [checkChoice] counts them; and the WHERE with one that run by every
+	// path, and its paths that a range bounds, as [pair.everyPath] counts them.
+	"value on the left of = finds rows": 17, "value on the left of != finds rows": 2, "value on the left of < finds rows": 1,
+	"value on the left of <= finds rows": 2, "value on the left of > finds rows": 2, "value on the left of >= finds rows": 4,
+	"value on the left of = finds no row": 65, "value on the left of != finds no row": 8, "value on the left of < finds no row": 16,
+	"value on the left of <= finds no row": 15, "value on the left of > finds no row": 20, "value on the left of >= finds no row": 20,
+	"value on the left of = a value of another type": 22, "value on the left of != a value of another type": 3, "value on the left of < a value of another type": 5,
+	"value on the left of <= a value of another type": 6, "value on the left of > a value of another type": 6, "value on the left of >= a value of another type": 4,
+	"value on the left of = no such column": 19, "value on the left of != no such column": 6, "value on the left of < no such column": 6,
+	"value on the left of <= no such column": 6, "value on the left of > no such column": 7, "value on the left of >= no such column": 8,
+	"value on the left of = wrong number of arguments": 12, "value on the left of != wrong number of arguments": 1, "value on the left of < wrong number of arguments": 3,
+	"value on the left of <= wrong number of arguments": 4, "value on the left of > wrong number of arguments": 5, "value on the left of >= wrong number of arguments": 4,
+	"value on the left of = not supported": 4, "value on the left of != not supported": 1, "value on the left of < not supported": 2,
+	"value on the left of <= not supported": 2, "value on the left of > not supported": 3, "value on the left of >= not supported": 1,
+	"value on the left compared with NULL finds no row": 6, "value on the left string or blob too big": 1,
+	"value on the left NOT NULL constraint failed": 1, "value on the left UNIQUE constraint failed": 1,
+	"select with a value on the left ok, rows found": 10, "select with a value on the left ok, no row found": 56,
+	"update with a value on the left ok, rows changed": 9, "update with a value on the left ok, no row found": 38,
+	"delete with a value on the left ok, rows changed": 7, "delete with a value on the left ok, no row found": 27,
+	"chosen a get by a value on the left": 56, "chosen the primary key with 0 pinned and a range by a value on the left": 32,
+	"chosen an index with 0 pinned and a range by a value on the left": 1, "chosen an index with 1 pinned by a value on the left": 2,
+	"chosen an index with 1 pinned and a range by a value on the left": 3, "chosen an index with 2 pinned and a range by a value on the left": 1,
+	"WHERE with a value on the left run by every path": 165, "WHERE with a value on the left run by every path on a table with an index": 65,
+	"path of the primary key with 0 pinned and a range of a WHERE with a value on the left": 82,
+	"path of an index with 0 pinned and a range of a WHERE with a value on the left":        12,
+	"path of an index with 1 pinned and a range of a WHERE with a value on the left":        6,
+	"path of an index with 2 pinned and a range of a WHERE with a value on the left":        2,
 }
 
 // TestDifferential_plantedBugs runs the first sequences of [TestDifferential] with each planted bug
@@ -2990,10 +3094,12 @@ func TestDifferential_plantedBugs(t *testing.T) {
 	for _, b := range []struct {
 		name string
 		// least is the number of the n sequences that must find the bug, about half of what they found
-		// on 2026-11-20.
+		// on 2026-11-20, and for unturnedBound on 2026-11-21, when 3 found it, each by the rows of a
+		// select of its WHERE that the rules give, which differ from SQLite's.
 		least int
 	}{
 		{"pinByPlace", 3},
+		{"unturnedBound", 1},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			found := 0
@@ -3485,7 +3591,8 @@ func FuzzWhere_core(f *testing.F) {
 
 // fuzzWhere is [FuzzWhere] on the instances of newInstance. Its seeds have every operator on the key
 // and on v, with a value of a row, of the bytes, NULL, and of another type, as a literal and as an
-// argument, a column that the table does not have, and several conditions.
+// argument, a column that the table does not have, and several conditions, also with the value on
+// the left of slice 12.
 func fuzzWhere(f *testing.F, newInstance func(t testing.TB) *instance) {
 	for table := range byte(len(whereTypes)) {
 		for op := range byte(10) {
@@ -3497,6 +3604,12 @@ func fuzzWhere(f *testing.F, newInstance func(t testing.TB) *instance) {
 		}
 		f.Add([]byte{table, 0, 4, 0, 1, 0, 2, 0, 3, 3, 0, 2, 5})
 		f.Add([]byte{table, 2, 0, 0, 0, 0, 6, 1, 0, 5, 9})
+		// Each operator of a comparison with its value on the left, of slice 12, and with conditions
+		// of the other order.
+		for op := range byte(8) {
+			f.Add([]byte{table, op % 2, 130 + op, op, 2, 1, 0})
+		}
+		f.Add([]byte{table, 0, 128 + 4, 0, 1, 0, 2, 0, 3, 3, 0, 128 + 6, 13, 1, 0, 128 + 7, 9})
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) == 0 {
@@ -3529,10 +3642,11 @@ func fuzzWhere(f *testing.F, newInstance func(t testing.TB) *instance) {
 // whereOf the bytes data: a select of * from the table, whose key k and column v are of the type
 // typ, with a WHERE of up to eight conditions, each of which takes bytes from data while it has
 // them, and zero bytes after them: its column, k, v, or x, which the table does not have, in double
-// quotes for a byte above 127; its operator, one of the eight of slice 7; and for a comparison its
-// value, by a byte whose lowest bits choose a key of a row of the table, a value of typ from the
-// bytes that follow, NULL, or a value of another type from the bytes that follow, and whose next bit
-// chooses a literal or an argument.
+// quotes for a byte above 127; its operator, one of the eight of slice 7, which a byte above 127 writes
+// with the value on the left of the column, of slice 12, and the operator turned round; and for a
+// comparison its value, by a byte whose lowest bits choose a key of a row of the table, a value of
+// typ from the bytes that follow, NULL, or a value of another type from the bytes that follow, and
+// whose next bit chooses a literal or an argument.
 func whereOf(table, typ string, data []byte) stmttest.Call {
 	r := &fuzzBytes{data: data}
 	where, args := r.conditions(typ, []string{"k", "v", "x"}, 8, nil)
@@ -3576,7 +3690,8 @@ func (r *fuzzBytes) conditions(typ string, names []string, most int, args []any)
 }
 
 // typedConditions are [fuzzBytes.conditions] on columns of the names, each of the type at its
-// position in types.
+// position in types. The byte that chooses the operator of a comparison writes it with its value on
+// the left of its column, of slice 12, and the operator turned round, if its highest bit is set.
 func (r *fuzzBytes) typedConditions(names, types []string, most int, args []any) (string, []any) {
 	ops := []string{"=", "==", "!=", "<>", "<", "<=", ">", ">=", "is null", "is not null"}
 	var b strings.Builder
@@ -3593,14 +3708,19 @@ func (r *fuzzBytes) typedConditions(names, types []string, most int, args []any)
 		if col > 127 {
 			name = `"` + name + `"`
 		}
-		op := ops[int(r.next())%len(ops)]
-		b.WriteString(name + " " + op)
+		form := r.next()
+		op := ops[int(form)%len(ops)]
 		if strings.HasPrefix(op, "is") {
+			b.WriteString(name + " " + op)
 			continue
 		}
 		var term string
 		term, args = r.term(typ, args)
-		b.WriteString(" " + term)
+		if form > 127 {
+			b.WriteString(term + " " + turned[op] + " " + name)
+			continue
+		}
+		b.WriteString(name + " " + op + " " + term)
 	}
 	return b.String(), args
 }
@@ -4127,10 +4247,13 @@ func (r *fuzzBytes) index(name string, n int) (indexesIndex, bool) {
 // and then the key column key if it does not hold it, of a table of the columns of the names and the
 // types: a byte, modulo the columns of the key plus one, chooses how many of them are pinned, and a
 // byte for each pinned column whether it is IS NULL, for an odd byte, or = a term, as
-// [fuzzBytes.term] gives it. A byte then bounds the next column of the key, if there is one: by its
-// lowest two bits not, from below, from above, or both, from below with >= if its bit 4 is set and >
-// otherwise, and from above with <= if its bit 8 is set and < otherwise, each with a term. A WHERE
-// that pins nothing and bounds nothing is the condition of the first column IS NOT NULL.
+// [fuzzBytes.term] gives it, with the term on the left of the column, of slice 12, if its bit 2 is
+// set. A byte then bounds the next column of the key, if there is one: by its lowest two bits not,
+// from below, from above, or both, from below with >= if its bit 4 is set and > otherwise, and from
+// above with <= if its bit 8 is set and < otherwise, each with a term, which is on the left of the
+// column, with the operator turned round, for the lower bound if its bit 16 is set and for the upper
+// one if its bit 32 is. A WHERE that pins nothing and bounds nothing is the condition of the first
+// column IS NOT NULL.
 func (r *fuzzBytes) pins(ix indexesIndex, key int, names, types []string) (string, []any) {
 	columns := slices.Clone(ix.columns)
 	if !slices.Contains(columns, key) {
@@ -4138,15 +4261,24 @@ func (r *fuzzBytes) pins(ix indexesIndex, key int, names, types []string) (strin
 	}
 	var conditions []string
 	var args []any
+	// condition of the column of the name by the operator op and the term, with the value on the left
+	// of the column, of slice 12, and op turned round if valueFirst.
+	condition := func(name, op, term string, valueFirst bool) string {
+		if valueFirst {
+			return term + " " + turned[op] + " " + name
+		}
+		return name + " " + op + " " + term
+	}
 	pinned := int(r.next()) % (len(columns) + 1)
 	for _, c := range columns[:pinned] {
-		if r.next()%2 == 1 {
+		form := r.next()
+		if form%2 == 1 {
 			conditions = append(conditions, names[c]+" is null")
 			continue
 		}
 		var term string
 		term, args = r.term(types[c], args)
-		conditions = append(conditions, names[c]+" = "+term)
+		conditions = append(conditions, condition(names[c], "=", term, form&2 != 0))
 	}
 	bounds := r.next()
 	if pinned < len(columns) {
@@ -4154,12 +4286,12 @@ func (r *fuzzBytes) pins(ix indexesIndex, key int, names, types []string) (strin
 		if bounds&1 != 0 {
 			var term string
 			term, args = r.term(types[c], args)
-			conditions = append(conditions, names[c]+map[bool]string{false: " > ", true: " >= "}[bounds&4 != 0]+term)
+			conditions = append(conditions, condition(names[c], map[bool]string{false: ">", true: ">="}[bounds&4 != 0], term, bounds&16 != 0))
 		}
 		if bounds&2 != 0 {
 			var term string
 			term, args = r.term(types[c], args)
-			conditions = append(conditions, names[c]+map[bool]string{false: " < ", true: " <= "}[bounds&8 != 0]+term)
+			conditions = append(conditions, condition(names[c], map[bool]string{false: "<", true: "<="}[bounds&8 != 0], term, bounds&32 != 0))
 		}
 	}
 	if conditions == nil {
@@ -4254,6 +4386,21 @@ func indexesSeeds() [][]byte {
 			4, 0, 8,
 			13,
 			9, 2, 0, 0, 1, 0, 0, 1, 0})
+		// The tables of the two seeds above with values on the left of slice 12: a pin of the key; a
+		// range of both bounds, and of the lower one; a select and a delete of a comparison; after a
+		// drop of i0, a lower bound of the key; and on the table of three columns, a pin of c2 and a
+		// lower bound of c0 by i1, and the pin and both bounds.
+		seeds = append(seeds, []byte{0, typ, 0, 0, 0x80,
+			1, 1, 2, 0, 2, 0,
+			1, 0, 51, 0, 1, 0, 4,
+			1, 0, 19, 0, 1, 0, 4,
+			0, 0, 134, 0, 2,
+			4, 0, 135, 0, 3,
+			5,
+			1, 0, 17, 0, 3})
+		seeds = append(seeds, []byte{5, typ | 8, (typ + 1) % 5, (typ+2)%5 | 8, 2, 0, 0x80, 1, 2, 0, 0x82, 0x81, 0x80, 0,
+			9, 1, 2, 0, 1, 17, 0, 2,
+			9, 1, 2, 0, 1, 51, 0, 2, 0, 4})
 	}
 	return seeds
 }
@@ -4278,6 +4425,13 @@ func TestFuzzIndexes_seeds(t *testing.T) {
 			"create index if not exists did its work", "create index if not exists did nothing: an index of the name exists",
 			"create index if not exists no such table", "drop index if exists did its work",
 			"drop index if exists did nothing: no index of the name exists", "drop index if exists did nothing: no index of the name exists, and a table has it",
+			// The values on the left of slice 12.
+			"chosen a get by a value on the left", "chosen the primary key with 0 pinned and a range by a value on the left",
+			"chosen an index with 1 pinned and a range of a table of several indexes by a value on the left",
+			"path of the primary key with 0 pinned and a range of a WHERE with a value on the left",
+			"path of an index with 0 pinned and a range of a WHERE with a value on the left",
+			"path of an index with 1 pinned and a range of a WHERE with a value on the left",
+			"value on the left of < finds rows", "delete with a value on the left ok, rows changed",
 		} {
 			is.True(t, y["reached: "+kind] > 0, kind)
 		}

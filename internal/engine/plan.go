@@ -132,11 +132,17 @@ type Filter struct {
 }
 
 // Condition of a [Filter]: the column of the name, as the statement writes it, compared with Value
-// by Operator, or tested for NULL, with a Value of nil.
+// by Operator, or tested for NULL, with a Value of nil. ValueFirst reports whether the statement
+// writes the value on the left of the operator and the column on the right, as in `5 < a`, of slice
+// 12. Operator is then the operator turned round, as [stmt.Condition] has it, so that `5 < a` is the
+// condition `a > 5`, and the engine reads every condition one way, whichever side its column is on.
+// ValueFirst is there only for the planted bug unturnedBound and for tests: the statement pass has
+// turned the operator round already, and nothing may turn Operator round again from ValueFirst.
 type Condition struct {
-	Column   stmt.Name
-	Operator stmt.Operator
-	Value    Expr
+	Column     stmt.Name
+	Operator   stmt.Operator
+	Value      Expr
+	ValueFirst bool
 }
 
 // Values gives one row for each of Rows, which hold one expression for each value.
@@ -253,7 +259,7 @@ func rowsOf(table stmt.Name, where []stmt.Condition) Node {
 	}
 	f := &Filter{Source: source}
 	for _, c := range where {
-		condition := Condition{Column: c.Column, Operator: c.Operator}
+		condition := Condition{Column: c.Column, Operator: c.Operator, ValueFirst: c.ValueFirst}
 		if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
 			condition.Value = term(c.Value)
 		}

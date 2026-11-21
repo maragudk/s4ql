@@ -18,8 +18,9 @@
 // The supported statements are those of slices 1 and 2 of docs/roadmap.md, with the column types and
 // the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, the
 // UPDATE and DELETE of slice 8, the CREATE INDEX and DROP INDEX of slice 9, the IF NOT EXISTS and
-// IF EXISTS of slice 10, and the DEFAULT of slice 11. The README next to this file defines them token for token, and lists the
-// names that a "not supported" error gives.
+// IF EXISTS of slice 10, the DEFAULT of slice 11, the value on the left of a comparison of slice 12,
+// and the ORDER BY and LIMIT of a select of slice 13. The README next to this file defines them token
+// for token, and lists the names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist, its values are as many as the columns, or a value has the type of its
@@ -296,7 +297,8 @@ type Term struct {
 }
 
 // Select of the rows of one table that meet the conditions of its WHERE clause, or of every row, with
-// the columns that it names, or every column.
+// the columns that it names, or every column, in the order of its ORDER BY clause, and at most as
+// many as its LIMIT clause says.
 type Select struct {
 	Span  Span
 	Table Name
@@ -307,19 +309,56 @@ type Select struct {
 	// AND, so that a row is read only if it meets every one, or nil if the statement has no WHERE.
 	// Two of them may test one column.
 	Where []Condition
+	// OrderBy holds the columns of the ORDER BY clause, in the order of the text, one or more, or nil
+	// if the statement has no ORDER BY. The rows come in the order of the first column, those that
+	// tie there in the order of the second, and so on, each column ordered as SQLite orders its
+	// values: NULL before every other value in ascending order, and after every other in descending
+	// order. The order of rows that tie on every column is unspecified. No two of the columns have
+	// one name, as [Name.Fold] compares names, and a column need not be one that the select list
+	// names. Whether the table has them is not decided here.
+	OrderBy []OrderColumn
+	// Limit of the LIMIT clause: the most rows that the select gives, as a literal [Integer] from 0
+	// to the largest of 64 bits, or as a parameter, whose argument is taken after those of the
+	// conditions. It is the zero Term, which is neither, if the statement has no LIMIT; see
+	// [Select.Limited].
+	Limit Term
+}
+
+// Limited reports whether the statement has a LIMIT clause.
+func (s *Select) Limited() bool {
+	return s.Limit.Value != nil || s.Limit.Parameter > 0
+}
+
+// OrderColumn of an ORDER BY: a column and its direction.
+type OrderColumn struct {
+	// Name of the column.
+	Name Name
+	// Descending reports whether the column says DESC. A column that says ASC, or neither, is in
+	// ascending order.
+	Descending bool
 }
 
 // Condition of a WHERE clause of a select, an update, or a delete: a column compared with a value,
 // or tested for NULL.
+//
+// A condition always reads as Column, Operator, Value, whichever side of the operator the text
+// writes the column on: `5 < a` is the condition `a > 5`, with ValueFirst set. SQLite gives the two
+// the same rows, for every operator and every type, NULL included, so code that runs a condition can
+// read every condition one way and never needs ValueFirst. The text's own order is kept for messages
+// and spans: in ValueFirst, and in the offsets of Column and of Value.
 type Condition struct {
-	// Column that the condition tests, which is on the left of its operator. Whether the table has it
-	// is not decided here.
+	// Column that the condition tests. Whether the table has it is not decided here.
 	Column Name
-	// Operator of the condition.
+	// Operator of the condition, as it compares Column with Value. When ValueFirst is set, the text
+	// writes [Operator.Swapped] of it.
 	Operator Operator
 	// Value that the column is compared with, a literal or a parameter, as a value of an insert is.
 	// For [OpIsNull] and [OpIsNotNull] it is the zero Term, which is neither.
 	Value Term
+	// ValueFirst reports whether the text writes the value on the left of the operator and the column
+	// on the right, as in `5 < a`. It is never set for [OpIsNull] and [OpIsNotNull], whose column is
+	// always on the left.
+	ValueFirst bool
 }
 
 // Operator of a [Condition]. The zero value is no operator.
@@ -358,6 +397,25 @@ func (o Operator) String() string {
 		return "IS NOT NULL"
 	}
 	return ""
+}
+
+// Swapped gives the operator that compares as o does with its two sides swapped: > for <, >= for
+// <=, and = and != themselves. A test for NULL has one side, and gives no operator, as no operator
+// gives.
+func (o Operator) Swapped() Operator {
+	switch o {
+	case OpEqual, OpNotEqual:
+		return o
+	case OpLess:
+		return OpGreater
+	case OpLessOrEqual:
+		return OpGreaterOrEqual
+	case OpGreater:
+		return OpLess
+	case OpGreaterOrEqual:
+		return OpLessOrEqual
+	}
+	return 0
 }
 
 // Update of the rows of one table that meet the conditions of its WHERE clause, or of every row: each
@@ -479,9 +537,14 @@ func (s *Insert) Parameters() int {
 	return n
 }
 
-// Parameters of the statement: the number of the values of its conditions that are a parameter.
+// Parameters of the statement: the number of the values of its conditions that are a parameter, and
+// one more if its LIMIT is a parameter, which comes after them in the text.
 func (s *Select) Parameters() int {
-	return conditionParameters(s.Where)
+	n := conditionParameters(s.Where)
+	if s.Limit.Parameter > 0 {
+		n++
+	}
+	return n
 }
 
 // Parameters of the statement: the number of the values of its assignments and of its conditions

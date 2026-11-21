@@ -221,16 +221,22 @@ func SelectText(s *stmt.Select, args []any, orderBy string) (string, []any) {
 }
 
 // whereText of the conditions of a WHERE, with a ? for each value, after " where ", or "" for no
-// condition, and the arguments of its parameters, as [FoundQuery] gives them.
+// condition, and the arguments of its parameters, as [FoundQuery] gives them. A condition that says
+// [stmt.Condition.ValueFirst] is written so, with the ? on the left and the operator as the text
+// wrote it, so that a statement of the text runs the form that its conditions came from.
 func whereText(where []stmt.Condition, args []any) (string, []any) {
 	var conditions []string
 	var bound []any
 	for _, c := range where {
-		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+		switch {
+		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
 			conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String())
 			continue
+		case c.ValueFirst:
+			conditions = append(conditions, "? "+c.Operator.Swapped().String()+" "+Quote(c.Column.Value))
+		default:
+			conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" ?")
 		}
-		conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" ?")
 		bound = append(bound, boundValue(c.Value, args))
 	}
 	if len(conditions) == 0 {
@@ -598,6 +604,28 @@ func WhereCases(columns []TableColumn, s *stmt.Select, args []any) []string {
 		cases = append(cases, "WHERE with contradicting conditions")
 	}
 	return append(cases, "WHERE that reads "+KeyAccess(columns, s, args))
+}
+
+// ValueFirstCases of the WHERE of the select s, with the arguments args of its parameters: for each
+// comparison that its text writes with the value on the left of the column, of slice 12, "value on
+// the left of" and the operator as the text writes it, which [stmt.Operator.Swapped] gives, such as
+// "value on the left of <" for `5 < a`; and "value on the left compared with NULL" for one whose
+// value is the literal NULL or the argument nil. Whether a parameter is NULL is known only when args
+// has an argument for each parameter. It does not depend on the table, so it names also a
+// comparison of a column that the table does not have.
+func ValueFirstCases(s *stmt.Select, args []any) []string {
+	var cases []string
+	for _, c := range s.Where {
+		if !c.ValueFirst {
+			continue
+		}
+		cases = append(cases, fmt.Sprint("value on the left of ", c.Operator.Swapped()))
+		_, literal := c.Value.Value.(stmt.Null)
+		if literal || c.Value.Parameter > 0 && len(args) == s.Parameters() && args[c.Value.Parameter-1] == nil {
+			cases = append(cases, "value on the left compared with NULL")
+		}
+	}
+	return cases
 }
 
 // SelectOf the WHERE of the update or the delete s, with the arguments args of s: a select of * of its

@@ -123,6 +123,18 @@ func TestRecognize(t *testing.T) {
 		is.Equal(t, "s4ql: not supported: assignment (at offset 21)", nse.Error())
 	})
 
+	t.Run("should not support a column of ORDER BY whose name is not the next token, before it looks whether ORDER BY names it twice", func(t *testing.T) {
+		// SELECT * FROM t ORDER BY v,  v, where the tree holds the second v at an offset where the text
+		// has a space.
+		src := "select * from t order by v,  v"
+		tree, _, err := parser.Parse(src)
+		is.NotError(t, err)
+		tree.Cmd.(*ast.SelectCmd).Select.First.(*ast.SimpleSelect).OrderBy.Terms[1].X.(*ast.ColumnRef).Column.Offset--
+		s, nse := recognize(src, tree)
+		is.True(t, s == nil)
+		is.Equal(t, "s4ql: not supported: column reference (at offset 29)", nse.Error())
+	})
+
 	t.Run("should not support an assignment beyond SQLite's limit that does not start at the next token, before it counts it", func(t *testing.T) {
 		// UPDATE t SET c0 = 1, ..., with one assignment more than SQLite allows, where the tree holds the
 		// last one, and its column, at an offset where the text has a space.

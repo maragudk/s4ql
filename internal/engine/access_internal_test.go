@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -139,6 +140,42 @@ func accessText(a access) string {
 	return text
 }
 
+// turnedWhere is the WHERE where, of comparisons `column op value` and tests for NULL joined by " and
+// ", with the comparisons for which turn reports true, by their number among the comparisons from 0,
+// written `value op' column`, where op' compares with its sides swapped as op does.
+func turnedWhere(where string, turn func(n int) bool) string {
+	swapped := map[string]string{"=": "=", "==": "==", "!=": "!=", "<>": "<>", "<": ">", "<=": ">=", ">": "<", ">=": "<="}
+	conditions := strings.Split(where, " and ")
+	n := 0
+	for i, c := range conditions {
+		fields := strings.Fields(c)
+		if len(fields) != 3 || fields[1] == "is" {
+			continue
+		}
+		if swapped[fields[1]] == "" {
+			panic("no operator " + fields[1] + " to turn round in " + where)
+		}
+		if turn(n) {
+			conditions[i] = fields[2] + " " + swapped[fields[1]] + " " + fields[0]
+		}
+		n++
+	}
+	return strings.Join(conditions, " and ")
+}
+
+// textAccess of the select src, without parameters, on the table ct with the indexes, as the engine
+// builds it from the statement, with the bugs b planted.
+func textAccess(t *testing.T, ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, src string, b bugs) access {
+	t.Helper()
+	s, err := stmt.Check(src)
+	is.NotError(t, err, src)
+	built, err := buildQuery(t.Context(), tableOf{ct, indexes}, NewPlan(s).(*Query), nil, math.MaxInt, reading{bugs: b})
+	is.NotError(t, err, src)
+	scan := scanOf(built)
+	is.True(t, scan != nil, src)
+	return scan.access
+}
+
 func TestChooseAccess(t *testing.T) {
 	// k is the primary key, a and e do not take NULL, and b, c, and d do.
 	one := accessTable([]uint32{0}, "k int", "a int", "b text?", "c real?", "d int?", "e int")
@@ -209,7 +246,7 @@ func TestChooseAccess(t *testing.T) {
 		{name: "should take, of two that pin as many, the one with a range on the next column", table: one, indexes: [][]string{{"i1", "a"}, {"i2", "a", "e"}}, where: "a = 1 and e > 2", want: "i2 = 1 > 2"},
 		{name: "should take, of two that pin as many, the one with a range also when it was created first", table: one, indexes: [][]string{{"i2", "a", "e"}, {"i1", "a"}}, where: "a = 1 and e > 2", want: "i2 = 1 > 2"},
 		{name: "should take an index that pins more over a later one that pins less and bounds the next column", table: one, indexes: [][]string{{"i2", "a", "e"}, {"i1", "b"}}, where: "a = 1 and e = 2 and b > 'x'", want: "i2 = 1,2"},
-		{name: "should take an index with a range over the primary key with nothing",table: one, indexes: [][]string{{"i", "a"}}, where: "a < 3", want: "i < 3"},
+		{name: "should take an index with a range over the primary key with nothing", table: one, indexes: [][]string{{"i", "a"}}, where: "a < 3", want: "i < 3"},
 		{name: "should give a tie of ranges to the primary key", table: one, indexes: [][]string{{"i", "a"}}, where: "a < 3 and k < 4", want: "primary < 4"},
 		{name: "should give a tie of pinned columns to the index that was created first", table: one, indexes: [][]string{{"i1", "a"}, {"i2", "a", "e"}}, where: "a = 1", want: "i1 = 1"},
 		{name: "should give a tie of pinned columns to the index that was created first, whatever its columns", table: one, indexes: [][]string{{"i2", "a", "e"}, {"i1", "a"}}, where: "a = 1", want: "i2 = 1"},
@@ -235,6 +272,13 @@ func TestChooseAccess(t *testing.T) {
 			a, err := chooseAccess(test.table, indexes, conditions, bugs{})
 			is.NotError(t, err)
 			is.Equal(t, test.want, accessText(a))
+
+			// The statement of the conditions chooses it too, also with every comparison written with its
+			// value first, and with every second one so, which the statement pass reads as the conditions.
+			for _, turn := range []func(int) bool{func(int) bool { return false }, func(int) bool { return true }, func(n int) bool { return n%2 == 1 }} {
+				src := "select * from t where " + turnedWhere(test.where, turn)
+				is.Equal(t, test.want, accessText(textAccess(t, test.table, indexes, src, bugs{})), src)
+			}
 			is.True(t, !a.backward, "the rules set no direction")
 
 			// The first two rules do not depend on the indexes, which is why a statement that they decide
@@ -246,6 +290,16 @@ func TestChooseAccess(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("should bound a column by a value on the left with the operator as the text writes it, with the planted bug unturnedBound, and by the other order as without it", func(t *testing.T) {
+		planted := bugs{unturnedBound: true}
+		ix := []*s4qlpb.CreateIndex{accessIndex(one, "i", "a", "e")}
+		is.Equal(t, "primary < 5", accessText(textAccess(t, one, nil, "select * from t where 5 < k", planted)))
+		is.Equal(t, "primary <= 9", accessText(textAccess(t, one, nil, "select * from t where 9 <= k", planted)))
+		is.Equal(t, "i = 1 > 2 <= 7", accessText(textAccess(t, one, ix, "select * from t where 1 = a and 2 > e and e <= 7", planted)))
+		is.Equal(t, "primary > 5", accessText(textAccess(t, one, nil, "select * from t where k > 5", planted)))
+		is.Equal(t, "point 5", accessText(textAccess(t, one, nil, "select * from t where 5 = k", planted)))
+	})
 
 	t.Run("should fail with an internal error for two bounds of values of two types, which the check of the types refuses before", func(t *testing.T) {
 		conditions := []condition{

@@ -159,9 +159,9 @@ func TestCheck_reals(t *testing.T) {
 }
 
 // FuzzLiteral checks the value of any literal that the pass supports as a value of an insert, of a
-// condition of WHERE, or of an assignment of an update, against the value that SQLite gives it. A
-// text with commas is several values of an insert, or several assignments, and a text with AND
-// several conditions.
+// condition of WHERE on either side of its column, or of an assignment of an update, against the
+// value that SQLite gives it. A text with commas is several values of an insert, or several
+// assignments, and a text with AND several conditions.
 func FuzzLiteral(f *testing.F) {
 	for _, c := range checkCases {
 		switch s := c.want.(type) {
@@ -176,6 +176,9 @@ func FuzzLiteral(f *testing.F) {
 				if w.Value.Value != nil {
 					f.Add(c.src[w.Value.Span.Start:w.Value.Span.End])
 				}
+			}
+			if s.Limit.Value != nil {
+				f.Add(c.src[s.Limit.Span.Start:s.Limit.Span.End])
 			}
 		case *stmt.Update:
 			for _, a := range s.Set {
@@ -227,6 +230,22 @@ func FuzzLiteral(f *testing.F) {
 		if s, err := stmt.Check(src); err == nil {
 			if sel, ok := s.(*stmt.Select); ok {
 				check(src, conditionValues(sel.Where))
+			}
+		}
+		src = "select * from t where " + lit + " < v"
+		if s, err := stmt.Check(src); err == nil {
+			if sel, ok := s.(*stmt.Select); ok {
+				check(src, conditionValues(sel.Where))
+			}
+		}
+		// The number of LIMIT is a ? or an integer from 0, whose value is SQLite's.
+		src = "select * from t limit " + lit
+		if s, err := stmt.Check(src); err == nil {
+			if sel, ok := s.(*stmt.Select); ok {
+				if v, ok := sel.Limit.Value.(stmt.Integer); sel.Limit.Parameter == 0 && (!ok || v < 0) {
+					t.Fatalf("%q: gives the limit %#v", src, sel.Limit)
+				}
+				check(src, []stmt.Term{sel.Limit})
 			}
 		}
 		src = "update t set v = " + lit

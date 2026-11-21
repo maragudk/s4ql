@@ -308,6 +308,7 @@ var plantable = map[string]func(b *bugs){
 	"keepOldKey":      func(b *bugs) { b.keepOldKey = true },
 	"pinByPlace":      func(b *bugs) { b.pinByPlace = true },
 	"replaceExisting": func(b *bugs) { b.replaceExisting = true },
+	"unturnedBound":   func(b *bugs) { b.unturnedBound = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

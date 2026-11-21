@@ -50,6 +50,9 @@ func TestNewPlan(t *testing.T) {
 		{src: `CREATE INDEX "I 1" ON t1 (v2 DESC, "V1" asc, v3)`, want: "create index \"I 1\" on t1 (v2 desc, \"V1\", v3)\n"},
 		{src: "create index i on t (v)", want: "create index i on t (v)\n"},
 		{src: `DROP INDEX "I 1"`, want: "drop index \"I 1\"\n"},
+		// A condition with its value on the left is the condition with its column first.
+		{src: "select v1 from t1 where 1 < v1 and ? >= v2 and null = v3 and v2 = ?", want: "query\n  project v1\n    filter v1 > 1 and v2 <= ?1 and v3 = null and v2 = ?2\n      scan t1\n"},
+		{src: "update t1 set v1 = ? where ? <> v2", want: "update t1 set v1 = ?1\n  filter v2 != ?2\n    scan t1\n"},
 		{src: "create table t (k int default - /* c */ 1 primary key, a integer not null default 00012, b real default .5, c real default -0.0, d text default 'it''s', e blob default X'aBcD', f int default NULL, g text not null default null, h int) strict, without rowid",
 			want: "create table t (k INT DEFAULT -1, a INTEGER DEFAULT 12, b REAL NULL DEFAULT 0.5, c REAL NULL DEFAULT -0.0, d TEXT NULL DEFAULT 'it''s', e BLOB NULL DEFAULT x'abcd', f INT NULL DEFAULT null, g TEXT DEFAULT null, h INT NULL, primary key (k))\n"},
 		{src: "create index i on t (a, b desc)", want: "create index i on t (a, b desc)\n"},
@@ -88,6 +91,15 @@ func TestNewPlan(t *testing.T) {
 		is.Equal(t, "a IS NULL <nil>", fmt.Sprint(f.Conditions[0].Column.Value, " ", f.Conditions[0].Operator, " ", f.Conditions[0].Value))
 		is.Equal(t, "B = 1", fmt.Sprint(f.Conditions[1].Column.Raw, " ", f.Conditions[1].Operator, " ", f.Conditions[1].Value.(*engine.Parameter).Number))
 		is.Equal(t, "a != x", fmt.Sprint(f.Conditions[2].Column.Raw, " ", f.Conditions[2].Operator, " ", f.Conditions[2].Value.(*engine.Text).Value))
+		is.True(t, !f.Conditions[0].ValueFirst && !f.Conditions[1].ValueFirst && !f.Conditions[2].ValueFirst)
+
+		// A condition with its value on the left has its operator turned round, and says ValueFirst.
+		s, err = stmt.Check("select b from t where 5 < a and ? >= B")
+		is.NotError(t, err)
+		f = engine.NewPlan(s).(*engine.Query).Root.(*engine.Project).Source.(*engine.Filter)
+		is.Equal(t, "a > 5 true", fmt.Sprint(f.Conditions[0].Column.Raw, " ", f.Conditions[0].Operator, " ", f.Conditions[0].Value.(*engine.Integer).Value, " ", f.Conditions[0].ValueFirst))
+		is.Equal(t, "B <= 1 true", fmt.Sprint(f.Conditions[1].Column.Raw, " ", f.Conditions[1].Operator, " ", f.Conditions[1].Value.(*engine.Parameter).Number, " ", f.Conditions[1].ValueFirst))
+
 		s, err = stmt.Check("select * from t")
 		is.NotError(t, err)
 		_, ok := engine.NewPlan(s).(*engine.Query).Root.(*engine.Project).Source.(*engine.Scan)
