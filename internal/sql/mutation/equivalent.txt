@@ -786,3 +786,9 @@ internal/core/index.go conn.lookUpIndex condition: err != nil => false
 	found is set only by the row of the query, and its LIMIT 1 ends the statement at that row without another read, so the query fails only before the row, found is false whenever err is not nil, and !found alone gives the error back.
 internal/core/cache.go cacheVersion constant: 4 => 5
 	The version of the layout of the cache only needs to be one that no other layout of the cache had, and no layout had 5; the tests name it as core.CacheVersion.
+internal/core/index.go conn.loadIndexes condition: primary == "" => false #2
+	The load of a table refuses one that s4ql did not declare, and s4ql declares every table WITHOUT ROWID, so a table that loadIndexes reads has the index of its primary key, and primary is never empty here.
+internal/core/index.go conn.loadIndexes remove statement: return foreign("its table %q has no index of its primary key", t.name) =>
+	The load of a table refuses one that s4ql did not declare, and s4ql declares every table WITHOUT ROWID, so a table that loadIndexes reads has the index of its primary key, and primary is never empty here.
+internal/core/index.go conn.loadIndexes swap arguments: foreign("its table %q has no index of its primary key", t.name) => foreign(t.name, "its table %q has no index of its primary key")
+	The load of a table refuses one that s4ql did not declare, and s4ql declares every table WITHOUT ROWID, so a table that loadIndexes reads has the index of its primary key, and primary is never empty here.
