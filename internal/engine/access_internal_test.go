@@ -658,7 +658,7 @@ func TestChooseAccess_orderBy(t *testing.T) {
 			is.NotError(t, err)
 			is.Equal(t, limited, orderedText(a), "with a LIMIT")
 
-			// Without the ORDER BY, the access is the one of slice 9, with a LIMIT and without, and its
+			// Without the ORDER BY, the access is the one that pins and bounds decide, with a LIMIT and without, and its
 			// rows have no order.
 			plain, err := chooseAccess(one, indexes, conditions, orderBy{}, bugs{})
 			is.NotError(t, err)
@@ -687,7 +687,10 @@ func TestForcedAccess_orderBy(t *testing.T) {
 			where: "a = 1", by: "b desc, k", want: "iab delivered forward"},
 		{name: "the primary key that delivers the order", path: path{kind: pathPrimary}, where: "a = 1", by: "k desc", want: "full delivered backward"},
 		{name: "the primary key, sorted", path: path{kind: pathPrimary, sort: true}, where: "k > 1", by: "k desc", want: "primary > 1 sorted"},
-		{name: "the primary key in place of a get, which sorts one row at most", path: path{kind: pathPrimary}, where: "k = 1", by: "b", want: "primary = 1 sorted"},
+		{name: "the primary key in place of a get, which reads one row at most and sorts nothing", path: path{kind: pathPrimary}, where: "k = 1", by: "b", want: "primary = 1 delivered forward"},
+		{name: "the primary key in place of a get, also where the path sorts", path: path{kind: pathPrimary, sort: true}, where: "k = 1", by: "b desc", want: "primary = 1 delivered forward"},
+		{name: "an index that pins its whole key, which is sorted all the same", path: path{kind: pathIndex, index: "iab"}, where: "a = 1 and b = 'x' and k = 1", by: "c",
+			want: "iab = 1,'x',1 sorted"},
 		{name: "no row, also where the path sorts", path: path{kind: pathPrimary, sort: true}, where: "k is null", by: "b", want: "none delivered forward"},
 	}
 	for _, test := range tests {

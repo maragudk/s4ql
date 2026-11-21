@@ -990,7 +990,7 @@ func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []c
 		return a, err
 	case pathRules:
 		if a, err := chooseAccess(t, nil, conditions, rules, b.how.bugs); err != nil || a.none || a.point != nil {
-			return o.sort(a), err
+			return o.sort(t, a), err
 		}
 	}
 	indexes, err := b.r.indexes(ctx, t.GetTable())
@@ -1006,7 +1006,7 @@ func (b build) access(ctx context.Context, t *s4qlpb.CreateTable, conditions []c
 	if err != nil || !p.sort {
 		return a, err
 	}
-	return o.sort(a), nil
+	return o.sort(t, a), nil
 }
 
 // buildValues: the source of the rows of v, with args for their parameters, and the expressions of

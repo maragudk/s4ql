@@ -144,16 +144,17 @@ func (o orderBy) place(t *s4qlpb.CreateTable, key []core.KeyColumn, conditions [
 		a.order, a.backward = delivered, backward
 		return a
 	}
-	return o.sort(a)
+	return o.sort(t, a)
 }
 
-// sort the rows of the access a by the columns of o, whatever its key delivers. An access of no row
-// and of the one row of a primary key has nothing to sort, and delivers the order. A statement
-// without ORDER BY keeps a as it is.
-func (o orderBy) sort(a access) access {
+// sort the rows of the access a to the table t by the columns of o, whatever its key delivers. An
+// access of no row, of the one row of a primary key, and a scan by the primary key that pins every
+// column of it, which reads one row at most, have nothing to sort, and deliver the order. A
+// statement without ORDER BY keeps a as it is.
+func (o orderBy) sort(t *s4qlpb.CreateTable, a access) access {
 	switch {
 	case o.columns == nil:
-	case a.none || a.point != nil:
+	case a.none || a.point != nil, a.index == "" && len(a.equal) == len(t.GetPrimaryKey()):
 		a.order = delivered
 	default:
 		a.order, a.by, a.backward = sorted, o.columns, false
@@ -213,10 +214,10 @@ func (o orderBy) better(a, best access) bool {
 // of the types of their columns, as [checkType] checks them.
 func chooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditions []condition, o orderBy, b bugs) (access, error) {
 	if never(t, conditions) {
-		return o.sort(access{none: true}), nil
+		return o.sort(t, access{none: true}), nil
 	}
 	if point := pointOf(t, conditions); point != nil {
-		return o.sort(access{point: point}), nil
+		return o.sort(t, access{point: point}), nil
 	}
 	best, err := fit(t, "", primaryKey(t), conditions, b)
 	if err != nil {
@@ -397,7 +398,8 @@ type path struct {
 	// that of the rows that tie.
 	direction direction
 	// sort makes the storage sort the rows of every query with ORDER BY, also where the key of the
-	// access delivers the order. Without it, a forced access delivers the order if its key does, as
+	// access delivers the order, unless the access reads one row at most, as [orderBy.sort] says.
+	// Without it, a forced access delivers the order if its key does, as
 	// [delivers] says, and is sorted otherwise. With the kind pathRules, the access is the one that
 	// the rules choose for the statement without its ORDER BY.
 	sort bool
@@ -451,7 +453,7 @@ func forcedAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditio
 		name, key, ordered = found.GetIndex(), indexKey(t, found), core.IndexKey(t, found)
 	}
 	if never(t, conditions) {
-		return o.sort(access{none: true}), true, nil
+		return o.sort(t, access{none: true}), true, nil
 	}
 	a, err := fit(t, name, key, conditions, b)
 	if err != nil {
@@ -468,7 +470,7 @@ func forcedAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, conditio
 // delivers the order.
 func (p path) place(o orderBy, t *s4qlpb.CreateTable, key []core.KeyColumn, conditions []condition, a access) access {
 	if p.sort {
-		return o.sort(a)
+		return o.sort(t, a)
 	}
 	return o.place(t, key, conditions, a)
 }

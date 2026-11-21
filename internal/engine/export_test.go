@@ -219,29 +219,6 @@ func ChooseAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, position
 	return exported(a), err
 }
 
-// ChooseOrderedAccess is [ChooseAccess] for a query with an ORDER BY of the columns by, each the
-// position of a column of t and whether it is descending, and with a LIMIT if limited: the rules of
-// the choice of an access and of its ordering.
-func ChooseOrderedAccess(t *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIndex, positions []int, ops []stmt.Operator, values []*s4qlpb.Value, by []core.KeyColumn, limited bool) (Access, error) {
-	conditions := make([]condition, len(positions))
-	for i := range positions {
-		conditions[i] = condition{position: positions[i], op: ops[i], value: values[i]}
-	}
-	a, err := chooseAccess(t, indexes, conditions, orderBy{columns: by, limited: limited}, bugs{})
-	return exported(a), err
-}
-
-// Delivers is [delivers] for conditions as [ChooseAccess] takes them: whether a scan in the order of
-// the key of the index ix of t, or of its primary key if ix is nil, gives the rows that pass the
-// conditions in the order of the columns by, and whether backward.
-func Delivers(t *s4qlpb.CreateTable, ix *s4qlpb.CreateIndex, positions []int, ops []stmt.Operator, values []*s4qlpb.Value, by []core.KeyColumn) (ok, backward bool) {
-	conditions := make([]condition, len(positions))
-	for i := range positions {
-		conditions[i] = condition{position: positions[i], op: ops[i], value: values[i]}
-	}
-	return delivers(t, core.IndexKey(t, ix), conditions, by)
-}
-
 // AccessOf the select, the update, or the delete of src, with args for its parameters, on the table
 // ct with the indexes, in the order in which they were created: how the statement reads the rows of
 // ct, as [chooseAccess] gives it to its scan, without a direction, but for an access that delivers
