@@ -3044,8 +3044,8 @@ func FuzzSQL_core(f *testing.F) {
 	fuzzSQL(f, func(t testing.TB) *instance { return newInstance(t, engine.Options{}) })
 }
 
-// fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of the sequence of
-// [TestDifferential], the texts of [stmttest.Others] and [fuzzSetUp], and every 500th text of the corpus.
+// fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of a sequence of
+// the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], and every 500th text of the corpus.
 func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 	q := newSequence(f, stmttest.Mixed.Seed(1))
 	for range 40 {
