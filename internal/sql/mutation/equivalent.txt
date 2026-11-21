@@ -640,7 +640,7 @@ internal/core/tx.go zeroValue constant: int64(0) => int64(1)
 	The planted bug nullZero: it then writes 1 for a NULL in an INT or INTEGER column, which is as wrong as 0, and the bug is found either way.
 
 # The storage formats, internal/format: the checks of the values of slice 4.
-internal/format/check.go checkStored condition: v.WhichKind() == s4qlpb.Value_Real_case => true
+internal/format/check.go checkStoredValue condition: v.WhichKind() == s4qlpb.Value_Real_case => true
 	GetReal gives 0.0 for a value that is not a real, and its sign is not set, so the check of -0.0 holds only for a real either way.
 
 # The WHERE of slice 7 in the recognizer, internal/sql/stmt.

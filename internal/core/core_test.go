@@ -216,6 +216,13 @@ func nullableTable(ct *s4qlpb.CreateTable, positions ...int) *s4qlpb.CreateTable
 	return ct
 }
 
+// withDefault gives the column of ct at position the default v, as [row] makes a value of it, and
+// returns ct.
+func withDefault(ct *s4qlpb.CreateTable, position int, v any) *s4qlpb.CreateTable {
+	ct.GetColumns()[position].SetDefault(row(v)[0])
+	return ct
+}
+
 // reader is what a write transaction and a read transaction both read with.
 type reader interface {
 	Tables(ctx context.Context) ([]*s4qlpb.CreateTable, error)
@@ -225,8 +232,9 @@ type reader interface {
 }
 
 // describe a table: its name, its columns, each with a star if it is in the primary key and the
-// position there, with its type after a colon unless it is int, and with a question mark if it takes
-// NULL, as in "t1(a*0,b:text,c?)".
+// position there, with its type after a colon unless it is int, with a question mark if it takes
+// NULL, and with its default after an equals sign, as [text] writes a value, if it has one, as in
+// "t1(a*0,b:text=\"x\",c?,d?=null)".
 func describe(ct *s4qlpb.CreateTable) string {
 	columns := make([]string, len(ct.GetColumns()))
 	for i, c := range ct.GetColumns() {
@@ -241,6 +249,9 @@ func describe(ct *s4qlpb.CreateTable) string {
 		}
 		if c.GetNullable() {
 			columns[i] += "?"
+		}
+		if c.HasDefault() {
+			columns[i] += "=" + text([]*s4qlpb.Value{c.GetDefault()})
 		}
 	}
 	return fmt.Sprint(ct.GetTable(), "(", strings.Join(columns, ","), ")")
@@ -905,11 +916,25 @@ func TestDB_stop_cache(t *testing.T) {
 			"t9 (k any primary key) strict, without rowid":        `the column "k" of its table "t9" has the type "ANY"`,
 			"t9 (k int primary key, v any) strict, without rowid": `the column "v" of its table "t9" has the type "ANY"`,
 			"t9 (k int) strict": `its table "t9" has 1 columns and a primary key of 0`,
-			"t9 (k int primary key, v int default 0) strict, without rowid":             `the column "v" of its table "t9" has the default "0"`,
-			"t9 (k int primary key, v int not null default null) strict, without rowid": `the column "v" of its table "t9" has the default "null"`,
-			"t9 (k int primary key default null) strict, without rowid":                 `the column "k" of its table "t9" has the default "null"`,
 			// SQLite reports the key of a table that is not STRICT as a column that takes NULL.
-			"t9 (k int primary key default null)": `the column "k" of its table "t9" has the default "null"`,
+			"t9 (k int primary key default null)": `the primary-key column "k" of its table "t9" takes NULL`,
+			// A default that s4ql does not write: another spelling of a value, a value of another type,
+			// and what is no literal.
+			"t9 (k int primary key, v int default +1) strict, without rowid":            `the column "v" of its table "t9" has the default "+1", which s4ql does not write for a column of type int`,
+			"t9 (k int primary key default 00012) strict, without rowid":                `the column "k" of its table "t9" has the default "00012"`,
+			"t9 (k int primary key, v int default 1.0) strict, without rowid":           `the column "v" of its table "t9" has the default "1.0"`,
+			"t9 (k int primary key, v int default '1') strict, without rowid":           `the column "v" of its table "t9" has the default "'1'"`,
+			"t9 (k int primary key, v integer default - 1) strict, without rowid":       `the column "v" of its table "t9" has the default "- 1"`,
+			"t9 (k int primary key, v real default 1.5) strict, without rowid":          `the column "v" of its table "t9" has the default "1.5", which s4ql does not write for a column of type real`,
+			"t9 (k int primary key, v real default 1) strict, without rowid":            `the column "v" of its table "t9" has the default "1"`,
+			"t9 (k int primary key, v real default -0e+00) strict, without rowid":       `the column "v" of its table "t9" has the default "-0e+00"`,
+			"t9 (k int primary key, v text default \"abc\") strict, without rowid":      `the column "v" of its table "t9" has the default "\"abc\""`,
+			"t9 (k int primary key, v text default abc) strict, without rowid":          `the column "v" of its table "t9" has the default "abc"`,
+			"t9 (k int primary key, v text default x'61') strict, without rowid":        `the column "v" of its table "t9" has the default "x'61'"`,
+			"t9 (k int primary key, v blob default X'AB') strict, without rowid":        `the column "v" of its table "t9" has the default "X'AB'"`,
+			"t9 (k int primary key, v blob default 'ab') strict, without rowid":         `the column "v" of its table "t9" has the default "'ab'"`,
+			"t9 (k int primary key, v int default NULL) strict, without rowid":          `the column "v" of its table "t9" has the default "NULL"`,
+			"t9 (k int primary key, v text default current_time) strict, without rowid": `the column "v" of its table "t9" has the default "current_time"`,
 		} {
 			// A read looks the table up, and so does a create table of its name.
 			for _, write := range []bool{false, true} {
@@ -1585,7 +1610,7 @@ func TestOpen_identity(t *testing.T) {
 
 		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{Identity: "one"})
 		is.Error(t, core.ErrCacheVersion, err)
-		is.Equal(t, "open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version 3; open the database with a new cache, or delete this one, with its files -wal and -shm", err.Error())
+		is.Equal(t, fmt.Sprint("open the cache: the cache is not one that this version of s4ql reads: it has version 0, and this version of s4ql reads version ", core.CacheVersion, "; open the database with a new cache, or delete this one, with its files -wal and -shm"), err.Error())
 		is.True(t, hasRow1(t, path), "the row is gone")
 		position, _, err := cacheDump(path)
 		is.NotError(t, err)

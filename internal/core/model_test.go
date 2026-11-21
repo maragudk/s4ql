@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 
+	"google.golang.org/protobuf/proto"
+
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -525,10 +527,17 @@ func (m *mtx) dropIndex(name string) bool {
 	return true
 }
 
-// create the table, and report whether no table and no index had the name.
+// create the table, and report whether no table and no index had the name. A default of -0.0 is
+// 0.0 in the table, which is what a column stores for it.
 func (m *mtx) create(ct *s4qlpb.CreateTable) bool {
 	if m.taken(ct.GetTable()) != nil {
 		return false
+	}
+	for i, c := range ct.GetColumns() {
+		if d := c.GetDefault(); d.HasReal() && d.GetReal() == 0 && math.Signbit(d.GetReal()) {
+			ct = proto.CloneOf(ct)
+			ct.GetColumns()[i].SetDefault(row(0.0)[0])
+		}
 	}
 	m.now.tables[foldName(ct.GetTable())] = &mtable{create: ct, rows: map[string][]*s4qlpb.Value{}}
 	m.change(ct.GetTable()).created = true
@@ -846,8 +855,9 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 		}
 		ct := s4qlpb.CreateTable_builder{Table: new(name)}
 		keyed := map[int64]uint32{}
-		// A column that takes NULL is declared "default null".
-		if err := query("select name, type, pk, coalesce(lower(dflt_value) = 'null', 0) from pragma_table_info("+literal(name)+") order by cid", func(s *sqlite.Stmt) {
+		// A column outside the primary key that takes NULL is declared without "not null". A default is
+		// what SQLite reads its literal as, which is the value that it would store for it.
+		if err := query(`select name, type, pk, pk = 0 and not "notnull", dflt_value from pragma_table_info(`+literal(name)+") order by cid", func(s *sqlite.Stmt) {
 			if pk := s.ColumnInt64(2); pk > 0 {
 				keyed[pk] = uint32(len(ct.Columns))
 			}
@@ -864,6 +874,11 @@ func cacheDump(path string) (position format.Name, state map[string][]string, er
 			column := s4qlpb.Column_builder{Name: new(s.ColumnText(0)), Type: new(typ)}
 			if s.ColumnInt64(3) == 1 {
 				column.Nullable = new(true)
+			}
+			if s.ColumnType(4) != sqlite.TypeNull {
+				if qerr := query("select "+s.ColumnText(4), func(s *sqlite.Stmt) { column.Default = columnValue(s, 0) }); qerr != nil {
+					err = fmt.Errorf("the default %v of the column %v of the table %v: %w", s.ColumnText(4), s.ColumnText(0), name, qerr)
+				}
 			}
 			ct.Columns = append(ct.Columns, column.Build())
 		}); err != nil {

@@ -96,6 +96,16 @@ message Column {
   // column, and a reader refuses a create table where it is. A column
   // without it does not take NULL.
   bool nullable = 3;
+  // The value that the column was declared with in its DEFAULT, and absent
+  // if it was declared without one, so that no DEFAULT and DEFAULT NULL
+  // differ. It is NULL or a value of the column's type, which is an integer
+  // for INT and INTEGER, as a row holds it: never -0.0, NaN, or infinite,
+  // and text is valid UTF-8 without the character NUL. A reader refuses a
+  // create table with another. DEFAULT NULL is allowed on a column that does
+  // not take NULL and on a primary-key column, as SQLite allows it. The
+  // storage core stores nothing by it: the rows of a commit object hold
+  // every value.
+  Value default = 4;
 }
 
 // The declared type of a column, as the column was declared: INT and

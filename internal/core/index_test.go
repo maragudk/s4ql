@@ -798,7 +798,7 @@ func TestOpen_cache_indexes(t *testing.T) {
 
 		_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
 		is.Error(t, core.ErrCacheVersion, err)
-		is.True(t, strings.Contains(err.Error(), "it has version 2, and this version of s4ql reads version 3"), err.Error())
+		is.True(t, strings.Contains(err.Error(), fmt.Sprint("it has version 2, and this version of s4ql reads version ", core.CacheVersion)), err.Error())
 		is.Equal(t, int64(2), cacheVersion(t, path))
 		after, err := os.ReadFile(path)
 		is.NotError(t, err)
@@ -1668,8 +1668,9 @@ type scanStats struct {
 }
 
 // checkIndexScans makes, by the choices of in, a table of two to five columns of any types, with a
-// primary key of one or two of them, columns that take NULL, up to twelve rows, and one to three
-// indexes, in the core and in a database of SQLite alone. It then runs scans by the primary key and
+// primary key of one or two of them, columns that take NULL, defaults of their types and of NULL,
+// up to twelve rows, and one to three indexes, in the core and in a database of SQLite alone. The
+// table must read back with its defaults. It then runs scans by the primary key and
 // by each index: every shape, if every, of the number of pinned columns, of a lower and an upper
 // bound that are missing, closed, or open, and of the direction, and else eight that in chooses.
 // Each scan must give the rows that SQLite gives for a statement of the test's own, in the same
@@ -1694,6 +1695,18 @@ func checkIndexScans(t *testing.T, in *choices, every bool) scanStats {
 		ct.Columns = append(ct.Columns, column.Build())
 	}
 	table := ct.Build()
+	// A column has a default one time in three, NULL one time in four of those, and else a key of its
+	// type; the table must read back with them.
+	for _, c := range table.GetColumns() {
+		if in.intn(3) > 0 {
+			continue
+		}
+		if pool := simKeys[c.GetType()]; in.intn(4) > 0 {
+			c.SetDefault(pool[in.intn(len(pool))])
+		} else {
+			c.SetDefault(row(nil)[0])
+		}
+	}
 	value := func(position uint32, null int) *s4qlpb.Value {
 		c := table.GetColumns()[position]
 		if c.GetNullable() && in.intn(null) == 0 {
@@ -1760,6 +1773,9 @@ func checkIndexScans(t *testing.T, in *choices, every bool) scanStats {
 		is.NotError(t, r.Close(t.Context()))
 		is.NotError(t, d.Close(t.Context()))
 	}()
+	got, err := r.Table(t.Context(), table.GetTable())
+	is.NotError(t, err)
+	is.Equal(t, describe(storedTable(table)), describe(got))
 
 	var stats scanStats
 	// all is the number of rows of the table.
