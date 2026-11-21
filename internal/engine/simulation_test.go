@@ -2677,8 +2677,11 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the callers did, and maybe one that a later insert of the log meets.
 		{"annotateNext", defaultWorkload, "default", []string{"and its caller gave the arguments", "the replay of the log holds", "fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A failed statement that is kept is in the commit object of its transaction, whose replay in
-		// SQLite then fails.
-		{"keepFailed", defaultWorkload, "default", []string{"whose statements that succeeded and write are", "fails in SQLite"}},
+		// SQLite then fails. What it changed before it failed is kept too: an update that changes the key
+		// of a row that the transaction inserted, and fails with UNIQUE after the delete of the old key,
+		// leaves the insert and the delete, whose net effect is nothing, so the commit object holds
+		// neither, and the insert that its caller was told of is not in the log.
+		{"keepFailed", defaultWorkload, "default", []string{"whose statements that succeeded and write are", "fails in SQLite", "is not in the log"}},
 		// A read-only transaction that moves on to the newest state reads rows that were committed after
 		// its beginning, and its later statements report the newer state. When its read of the newest
 		// state fails, the transaction keeps the read that the bug ended, whose end then fails.
@@ -2738,8 +2741,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// An update that changes the key and leaves the old row: the commit object holds the new row and
 		// no delete of the old key, so the replay of the log into an empty cache, which writes its rows,
 		// differs from SQLite, which runs the statements; and the row that stays makes later statements
-		// differ.
-		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes"}},
+		// differ, among them a write whose net effect on the rows that the bug left is nothing, which is
+		// then in no commit object, and not in the log that its caller was told of.
+		{"keepOldKey", defaultWorkload, "default", []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "is not in the log"}},
 		// A create table with IF NOT EXISTS of a table that exists, which replaces the table with the
 		// one of the statement, empty, where SQLite does nothing: the commit object holds the drop and
 		// the create, so the replay of the log into an empty cache, which writes them, differs from
