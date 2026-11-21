@@ -362,18 +362,28 @@ func TestOpen_cache_defaults(t *testing.T) {
 			withDefault(ct, i, v)
 		}
 		nullableTable(ct, 5, 7)
-		transact(t, d, createWith(ct))
+		// A key of two columns, which a key of its own declares, and whose columns, which never take
+		// NULL, are not declared not null.
+		u := withDefault(typedTable("u", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL), 1, "k")
+		u.SetPrimaryKey([]uint32{1, 0})
+		transact(t, d, createWith(ct), createWith(u))
 		is.NotError(t, d.Close(t.Context()))
 
 		c, err := sqlite.Open(filepath.Join(w.dir, "a.db"))
 		is.NotError(t, err)
 		defer func() { is.NotError(t, c.Close()) }()
-		s, err := c.Prepare("select sql from sqlite_schema where name = 't'")
-		is.NotError(t, err)
-		ok, err := s.Step()
-		is.NotError(t, err)
-		is.True(t, ok)
-		is.Equal(t, `CREATE TABLE "t" ("c0" int primary key default -9223372036854775808, "c1" integer not null default 12, "c2" real not null default -1.5e-300, "c3" text not null default 'it''s', "c4" blob not null default x'ab00', "c5" int default null, "c6" real not null default 1e+00, "c7" text) strict, without rowid`, s.ColumnText(0))
-		is.NotError(t, s.Finalize())
+		for name, want := range map[string]string{
+			"t": `CREATE TABLE "t" ("c0" int primary key default -9223372036854775808, "c1" integer not null default 12, "c2" real not null default -1.5e-300, "c3" text not null default 'it''s', "c4" blob not null default x'ab00', "c5" int default null, "c6" real not null default 1e+00, "c7" text) strict, without rowid`,
+			"u": `CREATE TABLE "u" ("c0" int, "c1" text default 'k', "c2" real not null, primary key ("c1", "c0")) strict, without rowid`,
+		} {
+			s, err := c.Prepare("select sql from sqlite_schema where name = ?")
+			is.NotError(t, err)
+			is.NotError(t, s.BindText(1, name))
+			ok, err := s.Step()
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, want, s.ColumnText(0))
+			is.NotError(t, s.Finalize())
+		}
 	})
 }

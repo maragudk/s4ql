@@ -401,6 +401,26 @@ func TestEngine_reading(t *testing.T) {
 		is.Equal(t, 5, h.drawn)
 	})
 
+	t.Run("should draw nothing for a statement of IF NOT EXISTS or IF EXISTS, of its own or in a transaction, whether it does nothing or not", func(t *testing.T) {
+		h := &drawHost{Host: host.New(), draws: []uint64{1}}
+		c := newEngine(newFake().with("t1", []string{"v1"}), h, Options{}).Conn()
+		statements := []string{
+			"create table if not exists t1 (v1 int primary key) strict, without rowid", "drop table if exists nosuch",
+			"create index if not exists i on t1 (v1)", "drop index if exists i", "drop table if exists t1",
+		}
+		for _, src := range statements {
+			_, err := c.Exec(t.Context(), src)
+			is.NotError(t, err, src)
+		}
+		is.NotError(t, c.Begin(t.Context()))
+		for _, src := range statements[:2] {
+			_, err := c.Exec(t.Context(), src)
+			is.NotError(t, err, src)
+		}
+		is.NotError(t, c.Rollback(t.Context()))
+		is.Equal(t, 0, h.drawn)
+	})
+
 	t.Run("should draw the directions from its seed, and nothing from the host, the same for the same seed, both ways, and forward for a statement that is no query", func(t *testing.T) {
 		h := &drawHost{draws: []uint64{1}}
 		first := directions(newEngine(nil, h, Options{Directions: new(uint64(3))}), true, 64)

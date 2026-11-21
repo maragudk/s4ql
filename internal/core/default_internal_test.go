@@ -127,8 +127,10 @@ func TestDefaultSQL(t *testing.T) {
 		}
 		_, ok := parseDefault("null", s4qlpb.Type_TYPE_UNSPECIFIED)
 		is.True(t, ok, "null")
-		_, ok = parseDefault("1", s4qlpb.Type_TYPE_UNSPECIFIED)
-		is.True(t, !ok, "a default of an unknown type")
+		for _, sql := range []string{"1", "1e+00", "'a'", "x'01'"} {
+			_, ok = parseDefault(sql, s4qlpb.Type_TYPE_UNSPECIFIED)
+			is.True(t, !ok, "a default of an unknown type", sql)
+		}
 	})
 }
 

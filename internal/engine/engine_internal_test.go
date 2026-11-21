@@ -468,7 +468,8 @@ func TestEngine_write(t *testing.T) {
 
 	t.Run("should look up a statement of its own that does nothing on a reader of its own while the reader of the connection is busy, and never begin a write transaction", func(t *testing.T) {
 		d := &beginCounter{fake: newFake().with("t1", []string{"v1"})}
-		conn := newEngine(d, host.New(), Options{}).Conn()
+		h := &recorder{}
+		conn := newEngine(d, host.New(), Options{Logger: slog.New(h)}).Conn()
 		// The reader of the connection is held, as by the rows of an earlier query.
 		conn.rd = busyReader{}
 		for _, src := range []string{"create table if not exists t1 (v1 int primary key) strict, without rowid", "drop table if exists nosuch"} {
@@ -479,6 +480,8 @@ func TestEngine_write(t *testing.T) {
 		is.Equal(t, 2, d.opened, "the readers opened")
 		is.Equal(t, 0, d.readers, "the readers open")
 		is.Equal(t, 0, d.open, "the transactions open")
+		// It wrote nothing, so its event has the position of the read transaction and no parent.
+		is.Equal(t, fmt.Sprintf("map[msg:statement outcome:ok statement.kind:drop_table statement.nothing:true statement.position:%v statement.rows:0 statement.table:nosuch]", format.EmptyLog), h.last())
 
 		// A statement that has work to do still takes the write path.
 		_, err := conn.Exec(t.Context(), "drop table if exists t1")
@@ -491,6 +494,15 @@ func TestEngine_write(t *testing.T) {
 		_, err = conn.Exec(t.Context(), "drop table if exists nosuch")
 		is.NotError(t, err)
 		is.Equal(t, 2, d.begins, "the write transactions")
+		is.Equal(t, "[table nosuch rollback]", fmt.Sprint(d.calls))
+		// It wrote nothing, so its event has the position of the write transaction and no parent.
+		is.Equal(t, fmt.Sprintf("map[msg:statement outcome:ok statement.kind:drop_table statement.nothing:true statement.position:%v statement.rows:0 statement.table:nosuch]", format.EmptyLog), h.last())
+
+		// And where the reader of its own cannot be opened.
+		d.readFails, d.readerFails, d.calls = nil, errors.New("the reader cannot be opened"), nil
+		_, err = conn.Exec(t.Context(), "drop table if exists nosuch")
+		is.NotError(t, err)
+		is.Equal(t, 3, d.begins, "the write transactions")
 		is.Equal(t, "[table nosuch rollback]", fmt.Sprint(d.calls))
 	})
 

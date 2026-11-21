@@ -876,7 +876,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>The generated checks of <code>order by</code> and <code>limit</code>, then mutation testing of the newest slices. After that comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>The generated checks of <code>order by</code> and <code>limit</code>, then their mutation testing. After that comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -967,22 +967,22 @@ footer ul {
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 9: indexes</h3><p><code>create index</code> on one or more columns, each <code>asc</code> or <code>desc</code>, and <code>drop index</code>. The log holds only the definition, and the cache holds a real SQLite index. s4ql picks the index by fixed rules, so the choice is the same on every instance, and rows without <code>order by</code> come in an order that varies from query to query. The statements run, and generated queries run through every path that can serve them. Mutation testing is still to come.</p></div>
+        <div><h3>Slice 9: indexes</h3><p><code>create index</code> on one or more columns, each <code>asc</code> or <code>desc</code>, and <code>drop index</code>. The log holds only the definition, and the cache holds a real SQLite index. s4ql picks the index by fixed rules, so the choice is the same on every instance, and rows without <code>order by</code> come in an order that varies from query to query. The statements run, and generated queries run through every path that can serve them.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 10: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not, and the same for indexes. A statement that does nothing writes nothing to the log. The statements run, and generated sequences check them against SQLite. Mutation testing is still to come.</p></div>
+        <div><h3>Slice 10: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not, and the same for indexes. A statement that does nothing writes nothing to the log. The statements run, and generated sequences check them against SQLite.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 11: <code>default</code> with a literal</h3><p>A column may carry <code>default</code> with a literal or <code>null</code>, and an <code>insert</code> that leaves the column out stores it. The commit format changes: a column carries its default. The statements run, and generated sequences check them against SQLite. Mutation testing is still to come.</p></div>
+        <div><h3>Slice 11: <code>default</code> with a literal</h3><p>A column may carry <code>default</code> with a literal or <code>null</code>, and an <code>insert</code> that leaves the column out stores it. The commit format changes: a column carries its default. The statements run, and generated sequences check them against SQLite.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 12: a value on the left of a comparison</h3><p>In a <code>where</code>, a comparison may have a literal or <code>?</code> on the left and the column on the right, such as <code>? &gt;= timeout</code>. The primary key and the indexes are used as for the other order, and the commit format stays as it is. The statements run, and generated sequences check them against SQLite. Mutation testing is still to come.</p></div>
+        <div><h3>Slice 12: a value on the left of a comparison</h3><p>In a <code>where</code>, a comparison may have a literal or <code>?</code> on the left and the column on the right, such as <code>? &gt;= timeout</code>. The primary key and the indexes are used as for the other order, and the commit format stays as it is. The statements run, and generated sequences check them against SQLite.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="built">

@@ -390,7 +390,7 @@ Background: [the research note on how engines pick an index](research/index-sele
 
 ### Slice 10: `if not exists` and `if exists`
 
-Status: built on 2026-11-21, with its generated checks; mutation testing is still to come. The statement pass, the engine, and the `database/sql` driver run `create table if not exists`, `create index if not exists`, `drop table if exists`, and `drop index if exists`. A statement that does nothing writes nothing to the log, is not annotated, and runs also in a read-only transaction. One of its own that does nothing waits for no writer, as in SQLite. It is checked by table tests against SQLite, statement by statement and in transactions. Generated sequences with the clauses run in the engine's differential tests and in the driver's against mattn/go-sqlite3. The simulation finds a planted bug, `replaceExisting`, and an independent review checked the branch.
+Status: built, with the generated checks and the mutation testing done on 2026-11-21. The statement pass, the engine, and the `database/sql` driver run `create table if not exists`, `create index if not exists`, `drop table if exists`, and `drop index if exists`. A statement that does nothing writes nothing to the log, is not annotated, and runs also in a read-only transaction. One of its own that does nothing waits for no writer, as in SQLite. It is checked by table tests against SQLite, statement by statement and in transactions. Generated sequences with the clauses run in the engine's differential tests and in the driver's against mattn/go-sqlite3. The simulation finds a planted bug, `replaceExisting`, and an independent review checked the branch.
 
 ```sql
 create table if not exists t1 (v1 int primary key, v2 text) strict, without rowid;
@@ -419,7 +419,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 11: `default` with a literal
 
-Status: built on 2026-11-21, with its generated checks; mutation testing is still to come. The statement pass, the commit format and storage core, the engine, and the `database/sql` driver run a `default` with a literal on a column of `create table`, and an `insert` with a list of columns gives each column that it leaves out its default, or null where the column has none. It is checked by table tests against SQLite, with goqite's schema among them as far as slices 1 to 11 take it. Generated sequences with defaults run in the engine's differential tests and in the driver's against mattn/go-sqlite3. The simulation finds a planted bug, `nullDefault`, and two independent reviews checked the branches.
+Status: built, with the generated checks and the mutation testing done on 2026-11-21. The statement pass, the commit format and storage core, the engine, and the `database/sql` driver run a `default` with a literal on a column of `create table`, and an `insert` with a list of columns gives each column that it leaves out its default, or null where the column has none. It is checked by table tests against SQLite, with goqite's schema among them as far as slices 1 to 11 take it. Generated sequences with defaults run in the engine's differential tests and in the driver's against mattn/go-sqlite3. The simulation finds a planted bug, `nullDefault`, and two independent reviews checked the branches.
 
 ```sql
 create table t1 (v1 int primary key, v2 int not null default 0, v3 text default 'a') strict, without rowid;
@@ -446,7 +446,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 12: a value on the left of a comparison
 
-Status: built on 2026-11-21, with its generated checks; mutation testing is still to come. The statement pass, the engine, and the `database/sql` driver run a comparison with its literal or `?` on the left and its column on the right, in the `where` of a `select`, an `update`, and a `delete`, and the engine uses the primary key and the indexes for it as for the other order. It is checked by table tests against SQLite. Generated conditions of both orders run through every path that can serve them, in the engine's differential tests and in the driver's against mattn/go-sqlite3, and the engine's choice is compared with the model of the rules. The golden plans hold goqite's receive query in both orders. The simulation finds a planted bug, `unturnedBound`, and an independent review checked the branch with a random test of its own.
+Status: built, with the generated checks and the mutation testing done on 2026-11-21. The statement pass, the engine, and the `database/sql` driver run a comparison with its literal or `?` on the left and its column on the right, in the `where` of a `select`, an `update`, and a `delete`, and the engine uses the primary key and the indexes for it as for the other order. It is checked by table tests against SQLite. Generated conditions of both orders run through every path that can serve them, in the engine's differential tests and in the driver's against mattn/go-sqlite3, and the engine's choice is compared with the model of the rules. The golden plans hold goqite's receive query in both orders. The simulation finds a planted bug, `unturnedBound`, and an independent review checked the branch with a random test of its own.
 
 ```sql
 select v1 from t1 where 5 < v1;

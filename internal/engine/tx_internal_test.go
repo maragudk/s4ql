@@ -78,6 +78,9 @@ func TestConn_writeIn(t *testing.T) {
 			_, _ = c.Exec(t.Context(), "insert into t1 (v1) values (4)")
 		}()
 		s.insertPanics = false
+		// A statement that does nothing is released without an annotation, and not rolled back to.
+		_, err = c.Exec(t.Context(), "drop table if exists nosuch")
+		is.NotError(t, err)
 		_, err = c.Exec(t.Context(), "drop table t1")
 		is.NotError(t, err)
 		is.NotError(t, c.Commit(t.Context()))
@@ -86,6 +89,7 @@ func TestConn_writeIn(t *testing.T) {
 			"serving", "savepoint", "table t1", "insert t1 2", "rollback to",
 			"serving", "savepoint", "table t1", "insert t1 3", "annotate insert into t1 (v1) values (3)", "rollback to",
 			"serving", "savepoint", "table t1", "rollback to",
+			"serving", "savepoint", "table nosuch", "release",
 			"serving", "savepoint", "table t1", "drop t1", "annotate drop table t1", "release",
 			"commit",
 		}, "\n"), strings.Join(s.calls, "\n"))
