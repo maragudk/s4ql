@@ -1,0 +1,170 @@
+# What each profile of TestConn_differential of the engine reaches in its full run.
+# A row is a run, what the run reached when this file was written, the least number that the
+# test requires of it, a third, or = for a count that is pinned exactly, and the kind. The kinds
+# are those of testdata/reached/TestConn_differential.kinds. Written by the test with S4QL_RECOUNT=1 in a full run: see
+# stmttest.Reached. Do not edit a number by hand.
+mixed	9	3	delete attempt to write a readonly database
+mixed	101	=	excused: a value of another type than its column, checked against s4ql's rule
+mixed	2	=	excused: already exists after the start of a table, accepted
+mixed	55	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	130	=	excused: the wrong number of arguments, checked against s4ql's rule
+mixed	3	1	reached: NULL given for a column with a default, which takes NULL ok in a write transaction
+mixed	48	16	reached: WHERE run by every path on a table with an index
+mixed	311	103	reached: changed both ways
+mixed	73	24	reached: changed both ways in a read-only transaction
+mixed	10	3	reached: commit of a transaction whose update or delete changed rows
+mixed	24	8	reached: commit of a transaction with a create index or a drop index
+mixed	13	4	reached: create index attempt to write a readonly database
+mixed	7	2	reached: create index if not exists attempt to write a readonly database in a read-only transaction
+mixed	13	4	reached: create table if not exists attempt to write a readonly database in a read-only transaction
+mixed	16	5	reached: create table if not exists did its work in a write transaction
+mixed	10	3	reached: create table if not exists did nothing: a table of the name exists in a read-only transaction
+mixed	21	7	reached: create table if not exists did nothing: a table of the name exists in a write transaction
+mixed	20	6	reached: create table with a default on the key attempt to write a readonly database in a read-only transaction
+mixed	31	10	reached: create table with a default on the key ok in a write transaction
+mixed	5	1	reached: delete with a value on the left attempt to write a readonly database in a read-only transaction
+mixed	3	1	reached: drop index if exists did nothing: no index of the name exists in a read-only transaction
+mixed	6	2	reached: drop index if exists did nothing: no index of the name exists in a write transaction
+mixed	4	1	reached: drop table if exists did its work in a write transaction
+mixed	4	1	reached: drop table if exists did nothing: no table of the name exists in a read-only transaction
+mixed	5	1	reached: drop table if exists did nothing: no table of the name exists in a write transaction
+mixed	6	2	reached: insert that leaves out a column with a default of integer ok in a write transaction
+mixed	3	1	reached: insert that leaves out the key with a default ok in a write transaction
+mixed	182	60	reached: read both ways
+mixed	39	13	reached: read both ways in a read-only transaction
+mixed	4	1	reached: roll back of a transaction whose update or delete changed rows
+mixed	14	4	reached: select with a value on the left ok, no row found in a write transaction
+mixed	5	1	reached: update with a value on the left a value of another type in a write transaction
+mixed	3	1	reached: update with a value on the left attempt to write a readonly database in a read-only transaction
+mixed	9	3	update attempt to write a readonly database
+mixed	7	2	update with a parameter attempt to write a readonly database
+tables	42	=	excused: a value of another type than its column, checked against s4ql's rule
+where	81	=	excused: a value of another type than its column, checked against s4ql's rule
+where	439	146	reached: read both ways
+where	136	45	reached: read both ways in a read-only transaction
+changes	11	3	delete attempt to write a readonly database
+changes	56	=	excused: a value of another type than its column, checked against s4ql's rule
+changes	350	116	reached: changed both ways
+changes	91	30	reached: changed both ways in a read-only transaction
+changes	16	5	reached: commit of a transaction whose update or delete changed rows
+changes	67	22	reached: read both ways
+changes	13	4	reached: read both ways in a read-only transaction
+changes	6	2	reached: roll back of a transaction whose update or delete changed rows
+changes	24	8	update attempt to write a readonly database
+changes	22	7	update with a parameter attempt to write a readonly database
+indexes	6	2	delete attempt to write a readonly database
+indexes	31	=	excused: a value of another type than its column, checked against s4ql's rule
+indexes	173	57	reached: WHERE run by every path on a table with an index
+indexes	151	50	reached: changed both ways
+indexes	31	10	reached: changed both ways in a read-only transaction
+indexes	15	5	reached: commit of a transaction whose update or delete changed rows
+indexes	19	6	reached: commit of a transaction with a create index or a drop index
+indexes	18	6	reached: create index attempt to write a readonly database
+indexes	5	1	reached: drop index attempt to write a readonly database
+indexes	215	71	reached: read both ways
+indexes	58	19	reached: read both ways in a read-only transaction
+indexes	5	1	reached: roll back of a transaction whose update or delete changed rows
+indexes	8	2	reached: roll back of a transaction with a create index or a drop index
+indexes	4	1	update attempt to write a readonly database
+indexes	14	4	update with a parameter attempt to write a readonly database
+exists	11	3	delete attempt to write a readonly database
+exists	31	=	excused: a value of another type than its column, checked against s4ql's rule
+exists	58	19	reached: WHERE run by every path on a table with an index
+exists	112	37	reached: changed both ways
+exists	37	12	reached: changed both ways in a read-only transaction
+exists	3	1	reached: commit of a transaction whose update or delete changed rows
+exists	63	21	reached: commit of a transaction with a create index or a drop index
+exists	48	16	reached: create index attempt to write a readonly database
+exists	28	9	reached: create index if not exists attempt to write a readonly database in a read-only transaction
+exists	33	11	reached: create index if not exists did its work in a write transaction
+exists	9	3	reached: create index if not exists did nothing: an index of the name exists in a read-only transaction
+exists	16	5	reached: create index if not exists did nothing: an index of the name exists in a write transaction
+exists	36	12	reached: create table if not exists attempt to write a readonly database in a read-only transaction
+exists	58	19	reached: create table if not exists did its work in a write transaction
+exists	58	19	reached: create table if not exists did nothing: a table of the name exists in a read-only transaction
+exists	73	24	reached: create table if not exists did nothing: a table of the name exists in a write transaction
+exists	22	7	reached: drop index attempt to write a readonly database
+exists	20	6	reached: drop index if exists did its work in a write transaction
+exists	17	5	reached: drop index if exists did nothing: no index of the name exists in a read-only transaction
+exists	25	8	reached: drop index if exists did nothing: no index of the name exists in a write transaction
+exists	30	10	reached: drop table if exists attempt to write a readonly database in a read-only transaction
+exists	40	13	reached: drop table if exists did its work in a write transaction
+exists	8	2	reached: drop table if exists did nothing: no table of the name exists in a read-only transaction
+exists	14	4	reached: drop table if exists did nothing: no table of the name exists in a write transaction
+exists	89	29	reached: read both ways
+exists	27	9	reached: read both ways in a read-only transaction
+exists	19	6	reached: roll back of a transaction with a create index or a drop index
+exists	6	2	update attempt to write a readonly database
+exists	13	4	update with a parameter attempt to write a readonly database
+defaults	57	=	excused: a value of another type than its column, checked against s4ql's rule
+defaults	20	6	reached: NULL given for a column with a default, which takes NULL ok in a write transaction
+defaults	66	22	reached: changed both ways
+defaults	17	5	reached: changed both ways in a read-only transaction
+defaults	3	1	reached: commit of a transaction whose update or delete changed rows
+defaults	25	8	reached: create table with a default on the key attempt to write a readonly database in a read-only transaction
+defaults	42	14	reached: create table with a default on the key ok in a write transaction
+defaults	3	1	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed in a write transaction
+defaults	4	1	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok in a write transaction
+defaults	20	6	reached: insert that leaves out a column with a default of integer attempt to write a readonly database in a read-only transaction
+defaults	23	7	reached: insert that leaves out a column with a default of integer ok in a write transaction
+defaults	5	1	reached: insert that leaves out the key with a default UNIQUE constraint failed in a write transaction
+defaults	6	2	reached: insert that leaves out the key with a default ok in a write transaction
+defaults	116	38	reached: read both ways
+defaults	25	8	reached: read both ways in a read-only transaction
+defaults	3	1	reached: roll back of a transaction whose update or delete changed rows
+defaults	8	2	update attempt to write a readonly database
+defaults	13	4	update with a parameter attempt to write a readonly database
+valuefirst	17	5	delete attempt to write a readonly database
+valuefirst	75	=	excused: a value of another type than its column, checked against s4ql's rule
+valuefirst	88	=	excused: an argument that no column holds, checked against s4ql's rule
+valuefirst	222	=	excused: the wrong number of arguments, checked against s4ql's rule
+valuefirst	228	76	reached: WHERE run by every path on a table with an index
+valuefirst	548	182	reached: changed both ways
+valuefirst	132	44	reached: changed both ways in a read-only transaction
+valuefirst	23	7	reached: commit of a transaction whose update or delete changed rows
+valuefirst	23	7	reached: commit of a transaction with a create index or a drop index
+valuefirst	21	7	reached: create index attempt to write a readonly database
+valuefirst	12	4	reached: delete with a value on the left attempt to write a readonly database in a read-only transaction
+valuefirst	10	3	reached: delete with a value on the left ok, rows changed in a write transaction
+valuefirst	8	2	reached: drop index attempt to write a readonly database
+valuefirst	581	193	reached: read both ways
+valuefirst	151	50	reached: read both ways in a read-only transaction
+valuefirst	10	3	reached: roll back of a transaction whose update or delete changed rows
+valuefirst	12	4	reached: roll back of a transaction with a create index or a drop index
+valuefirst	25	8	reached: select with a value on the left ok, no row found in a read-only transaction
+valuefirst	47	15	reached: select with a value on the left ok, no row found in a write transaction
+valuefirst	3	1	reached: select with a value on the left ok, rows found in a read-only transaction
+valuefirst	11	3	reached: select with a value on the left ok, rows found in a write transaction
+valuefirst	13	4	reached: update with a value on the left a value of another type in a write transaction
+valuefirst	23	7	reached: update with a value on the left attempt to write a readonly database in a read-only transaction
+valuefirst	6	2	reached: update with a value on the left ok, rows changed in a write transaction
+valuefirst	19	6	update attempt to write a readonly database
+valuefirst	27	9	update with a parameter attempt to write a readonly database
+transactions	15	5	delete attempt to write a readonly database
+transactions	66	=	excused: a value of another type than its column, checked against s4ql's rule
+transactions	28	9	reached: WHERE run by every path on a table with an index
+transactions	229	76	reached: changed both ways
+transactions	61	20	reached: changed both ways in a read-only transaction
+transactions	13	4	reached: commit of a transaction whose update or delete changed rows
+transactions	5	1	reached: commit of a transaction with a create index or a drop index
+transactions	11	3	reached: create index attempt to write a readonly database
+transactions	127	42	reached: read both ways
+transactions	37	12	reached: read both ways in a read-only transaction
+transactions	5	1	reached: roll back of a transaction whose update or delete changed rows
+transactions	4	1	reached: roll back of a transaction with a create index or a drop index
+transactions	11	3	update attempt to write a readonly database
+transactions	19	6	update with a parameter attempt to write a readonly database
+arguments	3	1	delete attempt to write a readonly database
+arguments	35	=	excused: a value of another type than its column, checked against s4ql's rule
+arguments	5	=	excused: already exists after the start of a table, accepted
+arguments	112	=	excused: an argument that no column holds, checked against s4ql's rule
+arguments	172	=	excused: the wrong number of arguments, checked against s4ql's rule
+arguments	131	43	reached: changed both ways
+arguments	23	7	reached: changed both ways in a read-only transaction
+arguments	6	2	reached: commit of a transaction whose update or delete changed rows
+arguments	4	1	reached: create table if not exists did nothing: a table of the name exists in a write transaction
+arguments	3	1	reached: drop table if exists attempt to write a readonly database in a read-only transaction
+arguments	3	1	reached: drop table if exists did its work in a write transaction
+arguments	186	62	reached: read both ways
+arguments	39	13	reached: read both ways in a read-only transaction
+arguments	8	2	update with a parameter attempt to write a readonly database
