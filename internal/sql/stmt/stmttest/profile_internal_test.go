@@ -27,11 +27,13 @@ func TestProfileOf(t *testing.T) {
 		}
 	})
 
-	t.Run("should have no weight for a create index or a drop index in a profile without indexes, and every area on in the mixed profile", func(t *testing.T) {
+	t.Run("should have no weight for a create index or a drop index in a profile without indexes, odds of a transaction in each, and every area on in the mixed profile", func(t *testing.T) {
 		for _, p := range Profiles {
 			if p.Indexes == 0 {
 				is.Equal(t, 0, p.Weights[KindCreateIndex]+p.Weights[KindDropIndex], p.Name)
 			}
+			// What runs a sequence in transactions draws a number below Transactions.
+			is.True(t, p.Transactions >= 1, p.Name)
 		}
 		for _, area := range []string{areaNames, areaPlan, areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaExists, areaDefaults,
 			areaValueFirst, areaArguments, areaOthers, areaText} {
