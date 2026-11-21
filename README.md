@@ -32,6 +32,6 @@ As of 2026-11-21:
   - Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.
 - **How it is checked:** against SQLite with generated statements, in the engine and through `database/sql`, in a deterministic simulation with planted bugs, and with mutation testing and fuzzing. The storage is also tested against a real S3-compatible bucket in CI.
 - **Not built:** `or` and other expressions in a `where`, `order by` and `limit`, more than one row per `insert`, and a statement while rows of the same transaction are open.
-- **Next:** mutation testing of slices 9 to 12, then slice 13 (`order by` and `limit`). After it comes the rest of what the first application needs (the roadmap's [milestones](docs/roadmap.md#milestones)).
+- **Next:** mutation testing of slices 10 to 12, then the engine step of slice 13 (`order by` and `limit`), whose statement pass is in. After it comes the rest of what the first application needs (the roadmap's [milestones](docs/roadmap.md#milestones)).
 
 The slices, and how each is checked, are in [docs/roadmap.md](docs/roadmap.md). What is open in detail is in [docs/todo.md](docs/todo.md).
