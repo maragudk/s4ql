@@ -619,7 +619,14 @@ func WhereCases(columns []TableColumn, s *stmt.Select, args []any) []string {
 				continue
 			}
 			a, b := termValue(c.Value, args), termValue(d.Value, args)
-			if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || a != nil && b != nil && compareValues(a, b) == 0 {
+			// An integer and a real, which a column of INT takes both, compare by their value.
+			if x, ok := a.(int64); ok && reflect.TypeOf(b) == reflect.TypeFor[float64]() {
+				a = float64(x)
+			}
+			if x, ok := b.(int64); ok && reflect.TypeOf(a) == reflect.TypeFor[float64]() {
+				b = float64(x)
+			}
+			if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || a != nil && b != nil && reflect.TypeOf(a) == reflect.TypeOf(b) && compareValues(a, b) == 0 {
 				contradicts = true
 			}
 		}

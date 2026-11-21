@@ -632,6 +632,8 @@ func TestChooseAccess_orderBy(t *testing.T) {
 		{name: "an index that pins over the primary key that delivers", indexes: []string{"ia: a"}, where: "a = 1", by: "k", want: "ia = 1 delivered forward"},
 		{name: "an ORDER BY of a pinned column", indexes: []string{"ia: a"}, where: "a = 1", by: "a desc", want: "ia = 1 delivered forward"},
 		{name: "a pinned column in the middle of the key", indexes: []string{"iab: a, b desc"}, where: "b is null", by: "a desc, k desc", want: "iab delivered backward"},
+		{name: "a gap in the key, which does not deliver: the key holds the rows that tie in a in the order of b, not of k", indexes: []string{"iab: a, b"}, by: "a, k", want: "full sorted"},
+		{name: "a gap in the key that a pin closes", indexes: []string{"iab: a, b"}, where: "b = 'x'", by: "a, k", want: "iab delivered forward"},
 		{name: "no row, which delivers every order", indexes: []string{"ia: a"}, where: "a = null", by: "b", want: "none delivered forward"},
 		{name: "the row of a primary key, which delivers every order", indexes: []string{"ia: a"}, where: "k = 1", by: "b desc", want: "point 1 delivered forward"},
 	}
