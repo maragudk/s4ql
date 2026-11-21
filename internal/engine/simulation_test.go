@@ -2451,11 +2451,12 @@ func TestSimulation(t *testing.T) {
 			"NULL values in the log": 0.27,
 			// The selects with WHERE that the checks compare with SQLite, of their own and in a transaction: those
 			// on an engine that reads every row, on one that forces an index path, and those read by an index,
-			// and those that give rows.
+			// and those that give rows. The selects of their own read by an index have no least number here,
+			// since a quarter of what the first 1,000 seeds give is less than one in 50 seeds; the hammer
+			// workload requires them.
 			"selects with WHERE of their own compared with SQLite":                                             0.6,
 			"selects with WHERE of their own compared with SQLite, on an engine that reads every row":          0.094,
 			"selects with WHERE of their own compared with SQLite, on an engine that forces an index path":     0.1,
-			"selects with WHERE of their own compared with SQLite, read by an index":                           0.014,
 			"selects with WHERE of their own that give rows, compared with SQLite":                             0.037,
 			"selects with WHERE in a transaction compared with SQLite":                                         0.88,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row":      0.15,
@@ -2513,32 +2514,21 @@ func TestSimulation(t *testing.T) {
 			"selects with WHERE of their own compared with SQLite":                                             0.51,
 			"selects with WHERE of their own compared with SQLite, on an engine that reads every row":          0.086,
 			"selects with WHERE of their own compared with SQLite, on an engine that forces an index path":     0.081,
-			"selects with WHERE of their own compared with SQLite, read by an index":                           0.003,
-			"selects with WHERE of their own that give rows, compared with SQLite":                             0.0032,
 			"selects with WHERE in a transaction compared with SQLite":                                         0.57,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that reads every row":      0.095,
 			"selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path": 0.085,
-			"selects with WHERE in a transaction compared with SQLite, read by an index":                       0.0052,
-			"selects with WHERE in a transaction that give rows, compared with SQLite":                         0.0052,
 			"updates and deletes": 2.4, "updates and deletes that succeeded and changed rows": 0.043,
 			"updates and deletes with SQLite's error":                                             0.93,
 			"updates and deletes that change no row, compared with SQLite":                        0.052,
-			"updates and deletes of their own whose count of changes is compared with SQLite":     0.012,
 			"updates and deletes in a transaction whose count of changes is compared with SQLite": 0.14,
 			"create index: ok": 0.14, "create index: 1/1: index … already exists": 0.089,
 			"create index: 1/1: no such column: …": 0.039, "create index: 1/1: no such table: …": 0.87,
 			"create index: 1/1: there is already a table named …":     0.091,
 			"create index: 8/8: attempt to write a readonly database": 0.036, "drop index: ok": 0.02,
-			"drop index: 1/1: no such index: …": 0.23, "drop index: 8/8: attempt to write a readonly database": 0.0025,
-			"selects read by an index": 0.013, "updates read by an index": 0.008, "deletes read by an index": 0.0044,
+			"drop index: 1/1: no such index: …":                 0.23,
 			"statements on an engine that forces an index path": 1.4,
-			// A quarter of the 59 that the first 1,000 seeds gave on 2026-11-21, where it was 0.02, since
-			// the sequence writes defaults and draws other random numbers; the first 50 seeds give none,
-			// and the default workload requires 3 of them.
-			"statements read by the index that their engine forces": 0.014,
-			"crash, then an empty cache, of a log with an index":    0.0052, "replays of a log with an index": 0.038,
-			"indexes dropped while the rows of a query that read by them were open": 0.0035,
-			"integrity checks after a crash":                                        1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
+			"replays of a log with an index":                    0.038,
+			"integrity checks after a crash":                    1, "integrity checks after the replay": 1, "integrity checks at the end": 2,
 			"statements of IF NOT EXISTS or IF EXISTS that did nothing": 0.31, "statements of IF NOT EXISTS or IF EXISTS that did their work": 0.25,
 			"statements of IF NOT EXISTS or IF EXISTS with SQLite's error": 0.43, "statements that do nothing, compared with SQLite": 0.068,
 			"statements that do nothing in a transaction, compared with SQLite": 0.24,
@@ -2552,10 +2542,11 @@ func TestSimulation(t *testing.T) {
 			"failed: timeout": 2.9, "query not read to its end": 0.96, "acknowledged writes": 5.9, "commits": 4.2,
 			"commits with a parameter": 1.2,
 			"fault: lost request":      0.23, "fault: lost response": 0.21, "fault: no answer": 0.25, "fault: conflict": 0.14,
-			// A quarter of the 81 that the first 1,000 seeds gave on 2026-11-21, where it was 0.02, since
-			// the sequence writes defaults and draws other random numbers; the first 50 seeds give none,
-			// and the other workloads require 12 each.
-			"fault: slow way": 0.45, "fault: broken read": 0.019, "fault: cut-off": 0.058, "fault: outage": 0.026,
+			// The broken reads have no least number here: the first 1,000 seeds gave 81 on 2026-11-21, a
+			// quarter of which is less than one in 50 seeds, and the first 50 give none, since the sequence
+			// writes defaults and draws other random numbers. The default and idle workloads require 12
+			// each.
+			"fault: slow way": 0.45, "fault: cut-off": 0.058, "fault: outage": 0.026,
 			"fault: write applied after its caller gave up": 0.079, "fault: write stuck in the network": 0.41,
 			"statements in a transaction": 24, "read-only transactions": 1.8, "transactions committed": 4.2,
 			"transactions rolled back": 1.5, "transactions not committed": 0.15, "transactions unknown": 0.1,
@@ -2607,7 +2598,11 @@ func TestSimulation(t *testing.T) {
 				return
 			}
 			for kind, least := range c.reached {
-				if want := int(least * float64(n)); counts[kind] < want {
+				want := int(least * float64(n))
+				if least > 0 && want == 0 {
+					t.Errorf("%v seeds require none of %q at its least number %v, so it checks nothing: raise it or drop it, and say where the kind is still required", n, kind, least)
+				}
+				if counts[kind] < want {
 					t.Errorf("%v seeds give %v of %q, and at least %v were expected: something that the workload did stopped happening", n, counts[kind], kind, want)
 				}
 			}

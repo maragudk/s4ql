@@ -375,32 +375,32 @@ func TestEngine_defaults(t *testing.T) {
 		is.Equal(t, want, d.i.state(), "after a replay of the log")
 	})
 
+	// goqiteTable is the create table of goqite v0.4.0's schema_sqlite.sql, with its columns in its order,
+	// cut where a later slice is needed: the defaults of id, created, updated, and timeout are expressions,
+	// `('m_' || lower(hex(randomblob(16))))` and `(strftime('%Y-%m-%dT%H:%M:%fZ'))`, which slice 11
+	// rejects, so those columns have none and the inserts give them; and goqite's table is STRICT only,
+	// where s4ql needs WITHOUT ROWID too. The two literal defaults, `default 0` of received and of
+	// priority, are as goqite has them. goqite's trigger, which sets updated after an update, is left out;
+	// its index, goqiteIndex, is as goqite has it.
+	const goqiteTable = "create table goqite (\n" +
+		"  id text primary key,\n" +
+		"  created text not null,\n" +
+		"  updated text not null,\n" +
+		"  queue text not null,\n" +
+		"  body blob not null,\n" +
+		"  timeout text not null,\n" +
+		"  received integer not null default 0,\n" +
+		"  priority integer not null default 0\n" +
+		") strict, without rowid"
+	const goqiteIndex = "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"
+	const now = "2026-11-21T12:00:00.000Z"
+	// send is goqite's send, without its `returning id`, which a later slice brings, and with the id and
+	// the times, whose defaults are cut.
+	const send = "insert into goqite (id, created, updated, queue, body, timeout, priority) values (?, ?, ?, ?, ?, ?, ?)"
+
 	t.Run("should run goqite's schema as far as slices 1 to 11 take it, and its inserts that leave the columns with defaults out", func(t *testing.T) {
-		// goqite's create table, as docs/research/glue-on-s4ql.md describes it, with its columns in the
-		// order of goqite's table in the tests of indexes, cut where a later slice is needed: the
-		// defaults of id, created, updated, and timeout are expressions, `('m_' ||
-		// lower(hex(randomblob(16))))` and `(strftime('%Y-%m-%dT%H:%M:%fZ'))`, which slice 11 rejects,
-		// so those columns have none and the inserts give them; goqite's table is STRICT only, and
-		// s4ql needs WITHOUT ROWID too; and its trigger, which sets updated after an update, is left
-		// out. The two literal defaults, `default 0` of received and of priority, are as goqite has
-		// them, and so is its index.
-		const goqite = "create table if not exists goqite (\n" +
-			"  id text primary key,\n" +
-			"  created text not null,\n" +
-			"  updated text not null,\n" +
-			"  queue text not null,\n" +
-			"  body blob not null,\n" +
-			"  timeout text not null,\n" +
-			"  received integer not null default 0,\n" +
-			"  priority integer not null default 0\n" +
-			") strict, without rowid"
-		d := newDuo(t, 0, goqite, "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)")
-		// goqite runs its schema again on every start.
-		d.run(goqite).ok()
-		const now = "2026-11-21T12:00:00.000Z"
-		// goqite's send, without its `returning id`, which a later slice brings, and with the id and
-		// the times, whose defaults are cut.
-		send := "insert into goqite (id, created, updated, queue, body, timeout, priority) values (?, ?, ?, ?, ?, ?, ?)"
+		// glue's migrations apply goqite's schema once: its create table, then its create index.
+		d := newDuo(t, 0, goqiteTable, goqiteIndex)
 		d.run(send, "m_1", now, now, "jobs", []byte("a"), now, int64(0)).ok()
 		d.run(send, "m_2", now, now, "jobs", []byte("b"), now, int64(5)).ok()
 		d.run("insert into goqite (id, created, updated, queue, body, timeout) values (?, ?, ?, ?, ?, ?)", "m_3", now, now, "other", []byte("c"), now).ok()
@@ -412,9 +412,24 @@ func TestEngine_defaults(t *testing.T) {
 		is.True(t, strings.Contains(want, "received INTEGER DEFAULT 0, priority INTEGER DEFAULT 0"), want)
 		d.i.restart(true, engine.Options{})
 		is.Equal(t, want, d.i.state(), "after a replay of the log")
-		d.run(goqite).ok()
 		d.run(send, "m_5", now, now, "jobs", []byte("e"), now, int64(1)).ok()
 		d.run("select id, received, priority from goqite").ok()
+		d.same()
+	})
+
+	t.Run("should do nothing for goqite's create table with if not exists where the table exists, and keep its defaults", func(t *testing.T) {
+		// An extra case, beyond what glue does, which applies the schema once: a schema with IF NOT
+		// EXISTS that an application runs again on every start.
+		ifNotExists := strings.Replace(goqiteTable, "create table goqite", "create table if not exists goqite", 1)
+		d := newDuo(t, 0, ifNotExists, goqiteIndex)
+		d.run(send, "m_1", now, now, "jobs", []byte("a"), now, int64(2)).ok()
+		d.run(ifNotExists).ok()
+		d.run("insert into goqite (id, created, updated, queue, body, timeout) values (?, ?, ?, ?, ?, ?)", "m_2", now, now, "jobs", []byte("b"), now).ok()
+		d.run("select id, received, priority from goqite").ok()
+		want := d.same()
+		d.i.restart(true, engine.Options{})
+		is.Equal(t, want, d.i.state(), "after a replay of the log")
+		d.run(ifNotExists).ok()
 		d.same()
 	})
 }
