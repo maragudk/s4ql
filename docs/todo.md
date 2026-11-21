@@ -29,3 +29,4 @@ The list is in the directory [todo](todo), one file per area and one per slice:
 - [slice-10.md](todo/slice-10.md): slice 10 of the roadmap, `if not exists` and `if exists`.
 - [slice-11.md](todo/slice-11.md): slice 11 of the roadmap, `default` with a literal.
 - [slice-12.md](todo/slice-12.md): slice 12 of the roadmap, a value on the left of a comparison.
+- [slice-13.md](todo/slice-13.md): slice 13 of the roadmap, `order by` and `limit` on `select`.

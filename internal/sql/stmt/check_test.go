@@ -665,7 +665,8 @@ var checkCases = []checkCase{
 	{name: "a parameter in a select", src: "select ?", err: "s4ql: not supported: result column other than a column or * (at offset 7)"},
 	{name: "a parameter in WHERE", src: "select * from t where v = ?",
 		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, param(1, 26))}}},
-	{name: "a parameter in LIMIT", src: "select * from t limit ?", err: "s4ql: not supported: LIMIT clause (at offset 16)"},
+	{name: "a parameter in LIMIT", src: "select * from t limit ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 23}, Table: name("t", "t", 14), Limit: param(1, 22)}},
 	{name: "a parameter in a default", src: "create table t (v int primary key default ?) strict, without rowid", err: `near "?": syntax error`},
 
 	// DEFAULT, of slice 11.
@@ -819,8 +820,10 @@ var checkCases = []checkCase{
 	{name: "no from but a where", src: "select * where 1", err: "s4ql: not supported: WHERE clause (at offset 9)"},
 	{name: "where", src: "select * from t where v = 1",
 		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, lit(stmt.Integer(1), 26, 27))}}},
-	{name: "order by", src: "select * from t order by v", err: "s4ql: not supported: ORDER BY clause (at offset 16)"},
-	{name: "limit", src: "select * from t limit 1", err: "s4ql: not supported: LIMIT clause (at offset 16)"},
+	{name: "order by", src: "select * from t order by v",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 26}, Table: name("t", "t", 14), OrderBy: []stmt.OrderColumn{oc(name("v", "v", 25), false)}}},
+	{name: "limit", src: "select * from t limit 1",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 23}, Table: name("t", "t", 14), Limit: lit(stmt.Integer(1), 22, 23)}},
 	{name: "a join", src: "select * from t, u", err: "s4ql: not supported: join (at offset 15)"},
 	{name: "an alias with as", src: "select * from t as u", err: "s4ql: not supported: alias (at offset 16)"},
 	{name: "an alias", src: "select * from t u", err: "s4ql: not supported: alias (at offset 16)"},
@@ -989,7 +992,7 @@ var checkCases = []checkCase{
 		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpIsNull, stmt.Term{})}}},
 	{name: "is not null in where", src: "select v from t where v is not null",
 		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 35}, Table: name("t", "t", 14), Columns: []stmt.Name{name("v", "v", 7)}, Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpIsNotNull, stmt.Term{})}}},
-	{name: "null in limit", src: "select * from t limit null", err: "s4ql: not supported: LIMIT clause (at offset 16)"},
+	{name: "null in limit", src: "select * from t limit null", err: "s4ql: not supported: LIMIT other than an integer (at offset 22)"},
 	{name: "null in an upsert", src: "insert into t (v) values (1) on conflict (v) do update set v = null", err: "s4ql: not supported: ON CONFLICT clause (at offset 29)"},
 
 	// Slice 7: WHERE on SELECT.
@@ -1104,8 +1107,12 @@ var checkCases = []checkCase{
 	{name: "false after and", src: "select * from t where v = 1 and false", err: "s4ql: not supported: TRUE or FALSE (at offset 32)"},
 	{name: "a literal after and", src: "select * from t where v = 1 and 1", err: "s4ql: not supported: literal (at offset 32)"},
 	{name: "a column after and", src: "select * from t where v = 1 and w", err: "s4ql: not supported: column reference (at offset 32)"},
-	{name: "order by after where", src: "select * from t where v = 1 order by v", err: "s4ql: not supported: ORDER BY clause (at offset 28)"},
-	{name: "limit after where", src: "select * from t where v = 1 limit 1", err: "s4ql: not supported: LIMIT clause (at offset 28)"},
+	{name: "order by after where", src: "select * from t where v = 1 order by v",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 38}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, lit(stmt.Integer(1), 26, 27))},
+			OrderBy: []stmt.OrderColumn{oc(name("v", "v", 37), false)}}},
+	{name: "limit after where", src: "select * from t where v = 1 limit 1",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 35}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, lit(stmt.Integer(1), 26, 27))},
+			Limit: lit(stmt.Integer(1), 34, 35)}},
 	{name: "group by after where", src: "select * from t where v = 1 group by v", err: "s4ql: not supported: GROUP BY clause (at offset 28)"},
 	{name: "a window after where", src: "select * from t where v = 1 window w as ()", err: "s4ql: not supported: WINDOW clause (at offset 28)"},
 	{name: "a compound after where", src: "select * from t where v = 1 union select * from t", err: "s4ql: not supported: compound SELECT (at offset 28)"},
@@ -1622,6 +1629,120 @@ var checkCases = []checkCase{
 	{name: "a value on the left and nothing after its operator", src: "select * from t where 5 <", err: "incomplete input"},
 	{name: "a value on the left and a keyword after its operator", src: "select * from t where 5 < select", err: `near "select": syntax error`},
 	{name: "an operator without a left side", src: "select * from t where < v", err: `near "<": syntax error`},
+
+	// Slice 13: ORDER BY and LIMIT on a select.
+	{name: "the first select of the roadmap's slice 13", src: "select v1, v2 from t1 order by v2 desc, v1 limit 10",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 51}, Table: name("t1", "t1", 19), Columns: []stmt.Name{name("v1", "v1", 7), name("v2", "v2", 11)},
+			OrderBy: []stmt.OrderColumn{oc(name("v2", "v2", 31), true), oc(name("v1", "v1", 40), false)}, Limit: lit(stmt.Integer(10), 49, 51)}},
+	{name: "the second select of the roadmap's slice 13, its ? of LIMIT after that of WHERE", src: "select v1 from t1 where v2 > ? order by v1 limit ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 50}, Table: name("t1", "t1", 15), Columns: []stmt.Name{name("v1", "v1", 7)},
+			Where: []stmt.Condition{cond(name("v2", "v2", 24), stmt.OpGreater, param(1, 29))}, OrderBy: []stmt.OrderColumn{oc(name("v1", "v1", 40), false)}, Limit: param(2, 49)}},
+	{name: "the receive of goqite's queue", src: "select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 111}, Table: name("goqite", "goqite", 15), Columns: []stmt.Name{name("id", "id", 7)}, Where: []stmt.Condition{
+			cond(name("queue", "queue", 28), stmt.OpEqual, param(1, 36)), condFirst(name("timeout", "timeout", 47), stmt.OpLessOrEqual, param(2, 42)),
+			cond(name("received", "received", 59), stmt.OpLess, param(3, 70))},
+			OrderBy: []stmt.OrderColumn{oc(name("priority", "priority", 81), true), oc(name("created", "created", 96), false)}, Limit: lit(stmt.Integer(1), 110, 111)}},
+	{name: "order by and limit in upper case with ASC, a name in double quotes, leading zeros, and comments in every gap",
+		src: `SELECT * FROM t ORDER/*a*/BY/*b*/"a b"/*c*/ASC/*d*/,/*e*/v/*f*/DESC/*g*/LIMIT/*h*/007;`,
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 86}, Table: name("t", "t", 14),
+			OrderBy: []stmt.OrderColumn{oc(name(`"a b"`, "a b", 33), false), oc(name("v", "v", 57), true)}, Limit: lit(stmt.Integer(7), 82, 85)}},
+	{name: "limit 0", src: "select * from t limit 0", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 23}, Table: name("t", "t", 14), Limit: lit(stmt.Integer(0), 22, 23)}},
+	{name: "the largest limit of 64 bits", src: "select * from t limit 9223372036854775807",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 41}, Table: name("t", "t", 14), Limit: lit(stmt.Integer(9223372036854775807), 22, 41)}},
+	{name: "order by a column named by a keyword", src: "select * from t order by abort desc",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 35}, Table: name("t", "t", 14), OrderBy: []stmt.OrderColumn{oc(name("abort", "abort", 25), true)}}},
+	{name: "order by and limit after a where of every form", src: "select a from t where a = 1 and b is null and 2 < c and d is not null and e != ? order by c, a desc limit ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 107}, Table: name("t", "t", 14), Columns: []stmt.Name{name("a", "a", 7)}, Where: []stmt.Condition{
+			cond(name("a", "a", 22), stmt.OpEqual, lit(stmt.Integer(1), 26, 27)), cond(name("b", "b", 32), stmt.OpIsNull, stmt.Term{}),
+			condFirst(name("c", "c", 50), stmt.OpGreater, lit(stmt.Integer(2), 46, 47)), cond(name("d", "d", 56), stmt.OpIsNotNull, stmt.Term{}),
+			cond(name("e", "e", 74), stmt.OpNotEqual, param(1, 79))},
+			OrderBy: []stmt.OrderColumn{oc(name("c", "c", 90), false), oc(name("a", "a", 93), true)}, Limit: param(2, 106)}},
+	{name: "a position in order by", src: "select * from t order by 1", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a position out of range in order by", src: "select * from t order by 0", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a large position in order by", src: "select * from t order by 99", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a negative position in order by", src: "select * from t order by -1", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a position after a column in order by", src: "select * from t order by v, 2", err: "s4ql: not supported: ordering term other than a column (at offset 28)"},
+	{name: "a hex position in order by", src: "select * from t order by 0x1", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a real in order by", src: "select * from t order by 1.5", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a string in order by", src: "select * from t order by 'v'", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a blob in order by", src: "select * from t order by x'00'", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "null in order by", src: "select * from t order by null", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a parameter in order by", src: "select * from t order by ?", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "the current time in order by", src: "select * from t order by current_time", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "an expression in order by", src: "select * from t order by v + 1", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a negated column in order by", src: "select * from t order by -v", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a function in order by", src: "select * from t order by abs(v)", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a cast in order by", src: "select * from t order by cast(v as int)", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a subquery in order by", src: "select * from t order by (select 1)", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a column in parentheses in order by", src: "select * from t order by (v)", err: "s4ql: not supported: parentheses (at offset 25)"},
+	{name: "a column with its table in order by", src: "select * from t order by t.v", err: "s4ql: not supported: column with the name of a table (at offset 25)"},
+	{name: "a column with its schema and table in order by", src: "select * from t order by main.t.v", err: "s4ql: not supported: column with the name of a table (at offset 25)"},
+	{name: "collate in order by", src: "select * from t order by v collate nocase", err: "s4ql: not supported: COLLATE (at offset 25)"},
+	{name: "nulls first in order by", src: "select * from t order by v nulls first", err: "s4ql: not supported: NULLS FIRST or NULLS LAST (at offset 27)"},
+	{name: "nulls last after desc in order by", src: "select * from t order by v desc nulls last", err: "s4ql: not supported: NULLS FIRST or NULLS LAST (at offset 32)"},
+	{name: "nulls first before a second column in order by", src: "select * from t order by v asc nulls first, w", err: "s4ql: not supported: NULLS FIRST or NULLS LAST (at offset 31)"},
+	{name: "true in order by", src: "select * from t order by true", err: "s4ql: not supported: TRUE or FALSE (at offset 25)"},
+	{name: "false after a column in order by", src: "select * from t order by v, false desc", err: "s4ql: not supported: TRUE or FALSE (at offset 28)"},
+	{name: "a column named twice in order by", src: "select * from t order by v, v", err: "s4ql: not supported: column named twice (at offset 28)"},
+	{name: "a column named twice in order by in another case and direction", src: "select * from t order by v asc, w, V desc", err: "s4ql: not supported: column named twice (at offset 35)"},
+	{name: "a column named twice in order by, once in double quotes", src: `select * from t order by "v", v`, err: "s4ql: not supported: column named twice (at offset 30)"},
+	// A name in brackets or backticks is not supported for its quoting, before the pass looks whether
+	// the list named it before: SQLite reads [v] as v, and "[v]" as [v].
+	{name: "a name in brackets after a name in double quotes with brackets in it in order by", src: `select * from t order by "[v]", [v]`, err: "s4ql: not supported: name in brackets (at offset 32)"},
+	{name: "a name in brackets after a name in double quotes with brackets in it in an insert", src: `insert into t ("[v]", [v]) values (1, 2)`, err: "s4ql: not supported: name in brackets (at offset 22)"},
+	{name: "a name in backticks after the same name bare in a set", src: "update t set v = 1, `v` = 2", err: "s4ql: not supported: name in backticks (at offset 20)"},
+	{name: "a name in brackets after the same name bare in an index", src: "create index i on t (v, [v])", err: "s4ql: not supported: name in brackets (at offset 24)"},
+	{name: "a name in brackets in order by", src: "select * from t order by [v]", err: "s4ql: not supported: name in brackets (at offset 25)"},
+	{name: "a name in backticks in order by", src: "select * from t order by `v`", err: "s4ql: not supported: name in backticks (at offset 25)"},
+	{name: "an empty name in order by", src: `select * from t order by ""`, err: "s4ql: not supported: empty name (at offset 25)"},
+	{name: "order by without a column", src: "select * from t order by", err: "incomplete input"},
+	{name: "order by with a comma and no column after it", src: "select * from t order by v,", err: "incomplete input"},
+	{name: "asc and desc in order by", src: "select * from t order by v asc desc", err: `near "desc": syntax error`},
+	{name: "order by twice", src: "select * from t order by v order by v", err: `near "order": syntax error`},
+	{name: "order by after group by", src: "select * from t group by v order by v", err: "s4ql: not supported: GROUP BY clause (at offset 16)"},
+	{name: "order by after a compound", src: "select * from t union select * from t order by v", err: "s4ql: not supported: compound SELECT (at offset 16)"},
+	{name: "order by after OR in where", src: "select * from t where v = 1 or v = 2 order by v", err: "s4ql: not supported: OR (at offset 28)"},
+	{name: "a negative limit", src: "select * from t limit -1", err: "s4ql: not supported: negative LIMIT (at offset 22)"},
+	{name: "a limit of minus zero", src: "select * from t limit -0", err: "s4ql: not supported: negative LIMIT (at offset 22)"},
+	{name: "a negative parameter in limit", src: "select * from t limit -?", err: "s4ql: not supported: negative LIMIT (at offset 22)"},
+	{name: "a plus sign in limit", src: "select * from t limit +1", err: "s4ql: not supported: + sign (at offset 22)"},
+	{name: "null after a plus sign in limit", src: "select * from t limit +null", err: "s4ql: not supported: + sign (at offset 22)"},
+	{name: "two minus signs in limit", src: "select * from t limit - -1", err: "s4ql: not supported: negative LIMIT (at offset 22)"},
+	{name: "a negative string in limit", src: "select * from t limit -'a'", err: "s4ql: not supported: negative LIMIT (at offset 22)"},
+	{name: "an infinite real in limit", src: "select * from t limit 1e999", err: "s4ql: not supported: LIMIT other than an integer (at offset 22)"},
+	{name: "not in limit", src: "select * from t limit not 1", err: "s4ql: not supported: LIMIT of an expression (at offset 22)"},
+	{name: "a real in limit", src: "select * from t limit 1.5", err: "s4ql: not supported: LIMIT other than an integer (at offset 22)"},
+	{name: "a real with an integer value in limit", src: "select * from t limit 1.0", err: "s4ql: not supported: LIMIT other than an integer (at offset 22)"},
+	{name: "a real with an exponent in limit", src: "select * from t limit 1e2", err: "s4ql: not supported: LIMIT other than an integer (at offset 22)"},
+	{name: "a string in limit", src: "select * from t limit '5'", err: "s4ql: not supported: LIMIT other than an integer (at offset 22)"},
+	{name: "a blob in limit", src: "select * from t limit x'05'", err: "s4ql: not supported: LIMIT other than an integer (at offset 22)"},
+	{name: "a hex limit", src: "select * from t limit 0x5", err: "s4ql: not supported: hex literal (at offset 22)"},
+	{name: "a limit outside 64 bits", src: "select * from t limit 9223372036854775808", err: "s4ql: not supported: integer outside 64 bits (at offset 22)"},
+	{name: "a limit with a digit separator", src: "select * from t limit 1_0", err: "s4ql: not supported: number with a digit separator (at offset 22)"},
+	{name: "the current time in limit", src: "select * from t limit current_time", err: "s4ql: not supported: current date or time (at offset 22)"},
+	{name: "true in limit", src: "select * from t limit true", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
+	{name: "a column in limit", src: "select * from t limit v", err: "s4ql: not supported: LIMIT of an expression (at offset 22)"},
+	{name: "a column in double quotes in limit", src: `select * from t limit "v"`, err: "s4ql: not supported: LIMIT of an expression (at offset 22)"},
+	{name: "an expression in limit", src: "select * from t limit 1 + 1", err: "s4ql: not supported: LIMIT of an expression (at offset 22)"},
+	{name: "a ~ in limit", src: "select * from t limit ~1", err: "s4ql: not supported: LIMIT of an expression (at offset 22)"},
+	{name: "a function in limit", src: "select * from t limit abs(1)", err: "s4ql: not supported: LIMIT of an expression (at offset 22)"},
+	{name: "a limit in parentheses", src: "select * from t limit (1)", err: "s4ql: not supported: parentheses (at offset 22)"},
+	{name: "a numbered parameter in limit", src: "select * from t limit ?1", err: "s4ql: not supported: numbered parameter (at offset 22)"},
+	{name: "a named parameter in limit", src: "select * from t limit :n", err: "s4ql: not supported: named parameter (at offset 22)"},
+	{name: "limit with offset", src: "select * from t limit 1 offset 2", err: "s4ql: not supported: OFFSET (at offset 24)"},
+	{name: "limit with an offset and a comma", src: "select * from t limit 2, 1", err: "s4ql: not supported: OFFSET (at offset 23)"},
+	{name: "limit with an offset and a comma, the offset a string", src: "select * from t limit 'a', 1", err: "s4ql: not supported: LIMIT other than an integer (at offset 22)"},
+	{name: "limit with a parameter and offset", src: "select * from t order by v limit ? offset ?", err: "s4ql: not supported: OFFSET (at offset 35)"},
+	{name: "offset alone", src: "select * from t offset 2", err: `near "2": syntax error`},
+	{name: "limit without a number", src: "select * from t limit", err: "incomplete input"},
+	{name: "limit before order by", src: "select * from t limit 1 order by v", err: `near "order": syntax error`},
+	{name: "limit twice", src: "select * from t limit 1 limit 2", err: `near "limit": syntax error`},
+	{name: "order by and limit and a second statement", src: "select * from t order by v limit 1; select 1", err: "s4ql: not supported: second statement (at offset 36)"},
+}
+
+// oc is a column of an ORDER BY.
+func oc(n stmt.Name, descending bool) stmt.OrderColumn {
+	return stmt.OrderColumn{Name: n, Descending: descending}
 }
 
 // ixc is a column of a CREATE INDEX.
@@ -1852,6 +1973,44 @@ func TestCheck(t *testing.T) {
 			}
 			is.EqualSlice(t, left, names, form)
 		}
+	})
+
+	t.Run("should take every keyword of SQLite that SQLite reads as the name of a column in ORDER BY, with ASC, DESC, or neither, and no other", func(t *testing.T) {
+		d := open(t)
+		d.must("create table t (x int primary key) strict, without rowid")
+		var first []string
+		for _, form := range []string{"select * from t order by %v", "select * from t order by %v desc", "select * from t order by x asc, %v", "select x from t where x = 1 order by %v asc limit 1"} {
+			var names []string
+			for _, kw := range keywords(t) {
+				src := fmt.Sprintf(form, kw)
+				if oracle.Judge(src).Kind != oracle.Parses {
+					continue
+				}
+				column := false
+				var e *sqlite.Error
+				if err := d.exec(src); errors.As(err, &e) && e.Message == "no such column: "+kw {
+					column = true
+					names = append(names, kw)
+				}
+				o, _ := verify(t, src)
+				is.Equal(t, column, o == supported, src)
+			}
+			slices.Sort(names)
+			is.True(t, len(names) > 80, "too few keywords are names")
+			t.Logf("%v keywords are names of columns in %q: %v", len(names), form, names)
+			// SQLite reads the same keywords as a column in each place of ORDER BY.
+			if first == nil {
+				first = names
+			}
+			is.EqualSlice(t, first, names, form)
+		}
+		// They are those of the select list, which the generator draws the columns of ORDER BY from. A
+		// keyword of the base pool, such as temp, is in the pool twice.
+		pool := slices.DeleteFunc(slices.Clone(namePools(t)[stmttest.SelectColumn]), func(n string) bool {
+			return !slices.Contains(keywords(t), n)
+		})
+		slices.Sort(pool)
+		is.EqualSlice(t, first, slices.Compact(pool))
 	})
 
 	t.Run("should take every keyword of SQLite that SQLite reads as the name of a table or a column of an update or a delete, and no other", func(t *testing.T) {
@@ -2207,6 +2366,122 @@ func TestCheck(t *testing.T) {
 		}
 		t.Logf("%v selects with a value on the left gave the rows of the column on the left, %v of them some rows", compared, some)
 		is.True(t, some > compared/4, "too few selects gave rows")
+	})
+
+	t.Run("should order a column of each type of a strict table as SQLite does: NULL first in ASC and last in DESC, numbers by value, texts and blobs by their bytes", func(t *testing.T) {
+		// What the engine of slice 13 has to give. A strict column holds one type and NULL, so values
+		// of two types never meet in ORDER BY.
+		for _, c := range []struct {
+			typ    string
+			values []stmt.Value
+		}{
+			{"int", []stmt.Value{stmt.Integer(5), stmt.Integer(math.MinInt64), stmt.Integer(math.MaxInt64), stmt.Integer(0), stmt.Integer(-1), stmt.Integer(5)}},
+			// -0.0 and 0.0 compare equal, so their rows tie.
+			{"real", []stmt.Value{stmt.Real(1.5), stmt.Real(math.Copysign(0, -1)), stmt.Real(0), stmt.Real(-math.MaxFloat64), stmt.Real(math.MaxFloat64), stmt.Real(2), stmt.Real(math.SmallestNonzeroFloat64)}},
+			// By their bytes, the BINARY collation: an upper-case letter before every lower-case one, and
+			// a letter outside ASCII after every ASCII one, É (C3 89) before é (C3 A9).
+			{"text", []stmt.Value{stmt.Text("b"), stmt.Text("B"), stmt.Text("a"), stmt.Text("A"), stmt.Text(""), stmt.Text("é"), stmt.Text("É"), stmt.Text("z"), stmt.Text("ab"), stmt.Text("a b"), stmt.Text("😀"), stmt.Text("�")}},
+			{"blob", []stmt.Value{stmt.Blob{1}, stmt.Blob{}, stmt.Blob{1, 0}, stmt.Blob{0xff}, stmt.Blob{0}, stmt.Blob{0x7f}, stmt.Blob{0x80}}},
+		} {
+			d := open(t)
+			d.must("create table t (k int primary key, v " + c.typ + ") strict, without rowid")
+			rows := [][]stmt.Value{{stmt.Integer(0), stmt.Null{}}}
+			for i, v := range c.values {
+				rows = append(rows, []stmt.Value{stmt.Integer(i + 1), v})
+			}
+			rows = append(rows, []stmt.Value{stmt.Integer(len(c.values) + 1), stmt.Null{}})
+			d.insert("t", rows)
+			for _, desc := range []bool{false, true} {
+				sql := "select v from t order by v"
+				if desc {
+					sql += " desc"
+				}
+				_, got, err := d.run(sql, nil)
+				is.NotError(t, err)
+				is.Equal(t, len(rows), len(got), sql)
+				nulls := []int{0, 1}
+				if desc {
+					nulls = []int{len(got) - 2, len(got) - 1}
+				}
+				for _, i := range nulls {
+					is.Equal(t, "null", show(got[i][0]), c.typ, sql)
+				}
+				for i := 1; i < len(got); i++ {
+					cmp := compareValues(got[i-1][0], got[i][0])
+					if desc {
+						cmp = -cmp
+					}
+					is.True(t, cmp <= 0, c.typ, sql, showRows(got))
+				}
+			}
+			// A strict column refuses a value of another type, with SQLITE_CONSTRAINT_DATATYPE.
+			other := map[string]string{"int": "'x'", "real": "'x'", "text": "x'01'", "blob": "1"}[c.typ]
+			sqliteError(t, c.typ, d.exec("insert into t values (99, "+other+")"), 3091, fmt.Sprintf("cannot store %v value in %v column t.v",
+				map[string]string{"int": "TEXT", "real": "TEXT", "text": "BLOB", "blob": "INT"}[c.typ], strings.ToUpper(c.typ)))
+		}
+	})
+
+	t.Run("should limit as SQLite does: to none for 0, to every row for a negative number, and with an argument that holds an integer, and refuse every other argument with datatype mismatch", func(t *testing.T) {
+		// What the engine of slice 13 has to give, or refuse in its own way. The driver hands SQLite an
+		// argument as an int64, a float64, a string, a []byte, or nil, and refuses a bool or a
+		// time.Time before it.
+		d := open(t)
+		d.must("create table t (k int primary key) strict, without rowid")
+		d.must("create table e (k int primary key) strict, without rowid")
+		d.insert("t", [][]stmt.Value{{stmt.Integer(1)}, {stmt.Integer(2)}, {stmt.Integer(3)}, {stmt.Integer(4)}})
+		for _, c := range []struct {
+			arg  stmt.Value
+			rows int
+		}{
+			{stmt.Integer(0), 0}, {stmt.Integer(2), 2}, {stmt.Integer(4), 4}, {stmt.Integer(99), 4}, {stmt.Integer(math.MaxInt64), 4},
+			{stmt.Integer(-1), 4}, {stmt.Integer(math.MinInt64), 4},
+			{stmt.Real(2), 2}, {stmt.Real(math.Copysign(0, -1)), 0}, {stmt.Real(-1), 4}, {stmt.Real(1.5), -1}, {stmt.Real(1e19), -1},
+			{stmt.Real(math.Inf(1)), -1}, {stmt.Real(math.NaN()), -1},
+			{stmt.Text("2"), 2}, {stmt.Text("2.0"), 2}, {stmt.Text(" 2 "), 2}, {stmt.Text("-1"), 4}, {stmt.Text("x"), -1}, {stmt.Text(""), -1},
+			{stmt.Text("0x2"), -1},
+			{stmt.Blob("2"), -1}, {stmt.Blob{2}, -1}, {stmt.Blob{}, -1},
+			{stmt.Null{}, -1},
+		} {
+			for _, table := range []string{"t", "e"} {
+				_, got, err := d.run("select k from "+table+" limit ?", []stmt.Value{c.arg})
+				switch {
+				case c.rows < 0:
+					// SQLite refuses the argument when it steps the statement, also on an empty table.
+					sqliteError(t, show(c.arg), err, 20, "datatype mismatch")
+				case table == "e":
+					is.NotError(t, err)
+					is.Equal(t, 0, len(got), show(c.arg))
+				default:
+					is.NotError(t, err)
+					is.Equal(t, c.rows, len(got), show(c.arg))
+				}
+			}
+		}
+	})
+
+	t.Run("should give SQLite's errors for ORDER BY after those of the select list and of WHERE, in the order of the text", func(t *testing.T) {
+		d := open(t)
+		d.must("create table t (k int primary key, a int) strict, without rowid")
+		for _, c := range []struct{ src, want string }{
+			{"select k from t order by nope", "no such column: nope"},
+			{"select k from t order by a, nope, nope2", "no such column: nope"},
+			{`select k from t order by "nope"`, `no such column: "nope" - should this be a string literal in single-quotes?`},
+			{"select nope from t order by nope2", "no such column: nope"},
+			{"select k from t where nope = 1 order by nope2", "no such column: nope"},
+			// A test for NULL of a missing column does not stop the walk over WHERE, but its error comes
+			// before ORDER BY.
+			{"select k from t where a = 1 and nope is null order by nope2", "no such column: nope"},
+			{"select k from t where nope is null and a = 1 order by nope2", "no such column: nope"},
+			{"select k from t where a is null order by nope", "no such column: nope"},
+			{"select k from nope order by nope", "no such table: nope"},
+			// LIMIT is refused when the statement runs, after the names.
+			{"select k from t order by nope limit ?", "no such column: nope"},
+		} {
+			_, _, err := d.run(c.src, []stmt.Value{stmt.Text("x")}[:strings.Count(c.src, "?")])
+			sqliteError(t, c.src, err, 1, c.want)
+			o, _ := verify(t, c.src)
+			is.Equal(t, supported, o, c.src)
+		}
 	})
 
 	t.Run("should give SQLite's errors for a value on the left in the order of the other side", func(t *testing.T) {

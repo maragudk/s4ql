@@ -177,6 +177,9 @@ func FuzzLiteral(f *testing.F) {
 					f.Add(c.src[w.Value.Span.Start:w.Value.Span.End])
 				}
 			}
+			if s.Limit.Value != nil {
+				f.Add(c.src[s.Limit.Span.Start:s.Limit.Span.End])
+			}
 		case *stmt.Update:
 			for _, a := range s.Set {
 				if a.Value.Parameter == 0 {
@@ -233,6 +236,16 @@ func FuzzLiteral(f *testing.F) {
 		if s, err := stmt.Check(src); err == nil {
 			if sel, ok := s.(*stmt.Select); ok {
 				check(src, conditionValues(sel.Where))
+			}
+		}
+		// The number of LIMIT is a ? or an integer from 0, whose value is SQLite's.
+		src = "select * from t limit " + lit
+		if s, err := stmt.Check(src); err == nil {
+			if sel, ok := s.(*stmt.Select); ok {
+				if v, ok := sel.Limit.Value.(stmt.Integer); sel.Limit.Parameter == 0 && (!ok || v < 0) {
+					t.Fatalf("%q: gives the limit %#v", src, sel.Limit)
+				}
+				check(src, []stmt.Term{sel.Limit})
 			}
 		}
 		src = "update t set v = " + lit

@@ -1,11 +1,13 @@
 package stmt_test
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
+	"math/big"
 	"math/rand/v2"
 	"slices"
 	"strconv"
@@ -373,7 +375,7 @@ func canonical(s stmt.Statement) string {
 		if s.Columns != nil {
 			list = quoteNames(s.Columns)
 		}
-		return fmt.Sprintf("select %v from %v%v", list, quote(s.Table.Value), canonicalWhere(s.Where))
+		return fmt.Sprintf("select %v from %v%v%v", list, quote(s.Table.Value), canonicalWhere(s.Where), canonicalOrder(s))
 	case *stmt.Update:
 		var set []string
 		for _, a := range s.Set {
@@ -433,6 +435,27 @@ func canonicalWhere(where []stmt.Condition) string {
 		return ""
 	}
 	return " where " + strings.Join(conditions, " and ")
+}
+
+// canonicalOrder of the select s: " order by " and its columns, each with " desc" if it is
+// descending, and " limit " and its limit, or "" for each that s does not have.
+func canonicalOrder(s *stmt.Select) string {
+	var b strings.Builder
+	for i, c := range s.OrderBy {
+		if i == 0 {
+			b.WriteString(" order by ")
+		} else {
+			b.WriteString(", ")
+		}
+		b.WriteString(quote(c.Name.Value))
+		if c.Descending {
+			b.WriteString(" desc")
+		}
+	}
+	if s.Limited() {
+		b.WriteString(" limit " + canonicalTerm(s.Limit))
+	}
+	return b.String()
 }
 
 // sqliteError requires that err is an error of SQLite with the result code code and the message
@@ -959,7 +982,7 @@ func checkNotNull(t testing.TB, open func(testing.TB) *db, src, table string, co
 // for the first name of the list on a table without it.
 func checkSelect(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Select) {
 	t.Helper()
-	if s.Where != nil {
+	if s.Where != nil || s.OrderBy != nil || s.Limited() {
 		checkWhere(t, open, src, s)
 		return
 	}
@@ -1131,9 +1154,16 @@ func (a anyTable) create(names []string) string {
 }
 
 // rows of the table for the conditions where of the statement src with args, at least least of them:
-// the values of each column of a condition are those around the value of each of its conditions, and
-// NULL and the least value of each type but the real, as [whereRows] combines them.
+// the values of each column of a condition are those of [anyTable.pools], as [whereRows] combines
+// them.
 func (a anyTable) rows(src string, where []stmt.Condition, args []stmt.Value, least int) [][]stmt.Value {
+	return whereRows(src, a.pools(where, args), a.key, least)
+}
+
+// pools of the values of the columns of the table for the conditions where with args: for each column
+// of a condition, those around the value of each of its conditions, and NULL and the least value of
+// each type but the real, and nil for every other column.
+func (a anyTable) pools(where []stmt.Condition, args []stmt.Value) [][]stmt.Value {
 	pools := make([][]stmt.Value, len(a.names))
 	for _, c := range where {
 		i := a.index[c.Column.Fold()]
@@ -1148,7 +1178,7 @@ func (a anyTable) rows(src string, where []stmt.Condition, args []stmt.Value, le
 			pools[i] = append(pools[i], around(c.Value.Value)...)
 		}
 	}
-	return whereRows(src, pools, a.key, least)
+	return pools
 }
 
 // refuses requires SQLite's error want when src runs with args on the table without the columns of
@@ -1214,35 +1244,53 @@ func (a anyTable) checkMissing(t testing.TB, open func(testing.TB) *db, src stri
 	}
 }
 
-// checkWhere is [checkSelect] of a SELECT with WHERE. The value of each literal of a condition is the
-// one that SQLite gives its text. The table is an [anyTable] of the columns that src names, those of
-// the select list first, and holds the values around those of the conditions, of every type, and
-// NULL, as [anyTable.rows] gives them. On it, src reads the same rows, by the same names, as the
-// canonical text does, with the same arguments, which differ from each other; with *, in key order.
-// SQLite gives `no such table` for src without the table, `no such column` for the first name of the
-// select list on a table without it, and `no such column` for the columns of the conditions that the
-// list does not name, as [anyTable.checkMissing] says.
+// checkWhere is [checkSelect] of a SELECT with WHERE, ORDER BY, or LIMIT. The value of each literal
+// of a condition is the one that SQLite gives its text. The table is an [anyTable] of the columns
+// that src names, those of the select list first, and holds the values around those of the
+// conditions, of every type, and NULL, as [anyTable.rows] gives them, and for a column of ORDER BY
+// without a condition those of [orderValues], with ties. On it, src reads the same rows, by the same
+// names, as the canonical text does, with the same arguments, which differ from each other, but for
+// that of a ? of LIMIT, an integer from [limitArg]; with * and without ORDER BY, in key order. The
+// ORDER BY and LIMIT of src mean what the statement says, as [checkOrder] checks. SQLite gives `no
+// such table` for src without the table, `no such column` for the first name of the select list on a
+// table without it, `no such column` for the columns of the conditions that the list does not name,
+// as [anyTable.checkMissing] says, and then for the first column of ORDER BY that neither names.
 func checkWhere(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Select) {
 	t.Helper()
 	checkLiterals(t, open, src, conditionValues(s.Where))
 	args := whereArgs(src, s.Parameters())
+	if s.Limit.Parameter > 0 {
+		args[s.Limit.Parameter-1] = limitArg(src)
+	}
 	named := slices.Clone(s.Columns)
 	for _, c := range s.Where {
 		named = append(named, c.Column)
 	}
+	for _, c := range s.OrderBy {
+		named = append(named, c.Name)
+	}
 	a := newAnyTable(swapCase(s.Table.Value), named)
-	rows := a.rows(src, s.Where, args, 1)
-	read := func(sql string) ([]string, [][]stmt.Value) {
+	least := 1
+	if s.OrderBy != nil {
+		least = 30
+	}
+	rows := a.orderedRows(src, s, args, least)
+	// readWith the arguments of the text sql: its names and its rows.
+	readWith := func(sql string, args []stmt.Value) ([]string, [][]stmt.Value) {
 		d := open(t)
 		d.must(a.create(a.names))
 		d.insert(a.name, rows)
-		is.Equal(t, d.parameters(sql), s.Parameters(), sql)
+		is.Equal(t, d.parameters(sql), len(args), sql)
 		names, got, err := d.run(sql, args)
 		if err != nil {
 			t.Fatalf("%q: %v", sql, err)
 		}
 		return names, got
 	}
+	read := func(sql string) ([]string, [][]stmt.Value) {
+		return readWith(sql, args)
+	}
+	is.Equal(t, s.Parameters(), len(args), src)
 	gotNames, got := read(src)
 	wantNames := a.names
 	if s.Columns != nil {
@@ -1255,14 +1303,22 @@ func checkWhere(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Sel
 	canonicalNames, want := read(canonical(s))
 	is.Equal(t, fmt.Sprint(gotNames), fmt.Sprint(canonicalNames), src)
 	is.Equal(t, showRows(want), showRows(got), src)
-	if s.Columns == nil {
+	if s.Columns == nil && s.OrderBy == nil {
 		for i := 1; i < len(got); i++ {
 			if got[i-1][a.key].(stmt.Integer) >= got[i][a.key].(stmt.Integer) {
 				t.Fatalf("%q: the rows are not in key order: %v", src, showRows(got))
 			}
 		}
 	}
-	count(&whereReads, len(got), len(rows))
+	if s.Where != nil {
+		count(&whereReads, len(got), len(rows))
+	}
+	if s.OrderBy != nil || s.Limited() {
+		checkOrder(t, src, s, a, args, got, func(sql string, args []stmt.Value) [][]stmt.Value {
+			_, rows := readWith(sql, args)
+			return rows
+		})
+	}
 
 	_, _, err := open(t).run(src, args)
 	sqliteError(t, src, err, 1, "no such table: "+s.Table.Value)
@@ -1274,6 +1330,163 @@ func checkWhere(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Sel
 		}
 	}
 	a.checkMissing(t, open, src, args, s.Where, listed)
+	// SQLite looks for the columns of ORDER BY after those of the select list and the conditions, in
+	// the order of the text.
+	for _, c := range s.Where {
+		listed[c.Column.Fold()] = true
+	}
+	var missing []stmt.Name
+	for _, c := range s.OrderBy {
+		if !listed[c.Name.Fold()] {
+			missing = append(missing, c.Name)
+		}
+	}
+	if missing != nil {
+		a.noSuchColumn(t, open, src, args, missing[0], map[string]bool{missing[0].Fold(): true})
+		all := map[string]bool{}
+		for _, n := range missing {
+			all[n.Fold()] = true
+		}
+		a.noSuchColumn(t, open, src, args, missing[0], all)
+	}
+}
+
+// orderValues of a column of ORDER BY without a condition: NULL and values of every type, two of
+// which compare equal, so that the rows tie on them.
+var orderValues = []stmt.Value{stmt.Null{}, stmt.Integer(math.MinInt64), stmt.Integer(-1), stmt.Integer(2), stmt.Real(-1.5),
+	stmt.Real(2), stmt.Real(math.Copysign(0, -1)), stmt.Text(""), stmt.Text("B"), stmt.Text("a"), stmt.Text("é"), stmt.Blob{},
+	stmt.Blob{0}, stmt.Blob{0xff}}
+
+// orderedRows of the table for the select s of src with args, at least least of them: those of
+// [anyTable.rows], with the values of [orderValues] in each column of ORDER BY that no condition
+// tests.
+func (a anyTable) orderedRows(src string, s *stmt.Select, args []stmt.Value, least int) [][]stmt.Value {
+	tested := map[string]bool{}
+	for _, c := range s.Where {
+		tested[c.Column.Fold()] = true
+	}
+	pools := a.pools(s.Where, args)
+	for _, c := range s.OrderBy {
+		if i := a.index[c.Name.Fold()]; !tested[c.Name.Fold()] {
+			pools[i] = orderValues
+		}
+	}
+	return whereRows(src, pools, a.key, least)
+}
+
+// limitArg of a ? of LIMIT in the statement src: an integer that the length of the text picks, none,
+// one, a few, more than any table of the checks has rows, or the largest of 64 bits.
+func limitArg(src string) stmt.Value {
+	limits := []stmt.Value{stmt.Integer(0), stmt.Integer(1), stmt.Integer(3), stmt.Integer(1000), stmt.Integer(math.MaxInt64)}
+	return limits[len(src)%len(limits)]
+}
+
+// checkOrder of the select s of src, whose rows with args on the table a are got: the canonical text
+// of s with * in place of its select list reads the rows in the order of the columns of ORDER BY,
+// each in its direction, as [compareValues] orders values, and as many as LIMIT says, but no more than
+// the rows that the text without LIMIT reads; those rows are the first ones of the text without
+// LIMIT, by their values in the columns of ORDER BY; and got is those rows with the columns of the
+// select list. read reads the rows of a text with the arguments of its parameters.
+func checkOrder(t testing.TB, src string, s *stmt.Select, a anyTable, args []stmt.Value, got [][]stmt.Value, read func(string, []stmt.Value) [][]stmt.Value) {
+	t.Helper()
+	star := *s
+	star.Columns = nil
+	all := read(canonical(&star), args)
+	positions := make([]int, len(s.OrderBy))
+	for i, c := range s.OrderBy {
+		positions[i] = a.index[c.Name.Fold()]
+	}
+	keys := func(row []stmt.Value) string {
+		var parts []stmt.Value
+		for _, p := range positions {
+			parts = append(parts, row[p])
+		}
+		return showRows([][]stmt.Value{parts})
+	}
+	for i := 1; i < len(all); i++ {
+		for j, c := range s.OrderBy {
+			cmp := compareValues(all[i-1][positions[j]], all[i][positions[j]])
+			if c.Descending {
+				cmp = -cmp
+			}
+			if cmp < 0 {
+				break
+			}
+			if cmp > 0 {
+				t.Fatalf("%q: the rows are not in the order of ORDER BY at row %v:\n%v", src, i, showRows(all))
+			}
+		}
+	}
+	if s.Limited() {
+		limit := s.Limit.Value
+		if s.Limit.Parameter > 0 {
+			limit = args[s.Limit.Parameter-1]
+		}
+		unlimited := star
+		unlimited.Limit = stmt.Term{}
+		// The ? of LIMIT is the last parameter.
+		every := read(canonical(&unlimited), args[:unlimited.Parameters()])
+		n := min(int64(len(every)), int64(limit.(stmt.Integer)))
+		if int64(len(all)) != n {
+			t.Fatalf("%q: %v rows with LIMIT %v, of %v without it", src, len(all), show(limit), len(every))
+		}
+		for i := range all {
+			if keys(all[i]) != keys(every[i]) {
+				t.Fatalf("%q: the row %v with LIMIT is %v, without it %v", src, i, showRows(all[i:i+1]), showRows(every[i:i+1]))
+			}
+		}
+	}
+	if len(got) != len(all) {
+		t.Fatalf("%q: %v rows, and %v with *", src, len(got), len(all))
+	}
+	for i, row := range all {
+		want := row
+		if s.Columns != nil {
+			want = nil
+			for _, c := range s.Columns {
+				want = append(want, row[a.index[c.Fold()]])
+			}
+		}
+		if showRows([][]stmt.Value{want}) != showRows(got[i:i+1]) {
+			t.Fatalf("%q: the row %v is %v, with * %v", src, i, showRows(got[i:i+1]), showRows(all[i:i+1]))
+		}
+	}
+}
+
+// compareValues a and b as SQLite orders values without a collation: NULL first, then the numbers,
+// an integer and a real by their exact values, then the texts by their bytes, then the blobs by
+// their bytes. It gives a negative number if a comes first, a positive one if b does, and 0 if they
+// tie.
+func compareValues(a, b stmt.Value) int {
+	rank := func(v stmt.Value) int {
+		switch v.(type) {
+		case stmt.Null:
+			return 0
+		case stmt.Integer, stmt.Real:
+			return 1
+		case stmt.Text:
+			return 2
+		}
+		return 3
+	}
+	if ra, rb := rank(a), rank(b); ra != rb {
+		return ra - rb
+	}
+	number := func(v stmt.Value) *big.Float {
+		if i, ok := v.(stmt.Integer); ok {
+			return new(big.Float).SetInt64(int64(i))
+		}
+		return big.NewFloat(float64(v.(stmt.Real)))
+	}
+	switch a := a.(type) {
+	case stmt.Integer, stmt.Real:
+		return number(a).Cmp(number(b))
+	case stmt.Text:
+		return strings.Compare(string(a), string(b.(stmt.Text)))
+	case stmt.Blob:
+		return bytes.Compare(a, b.(stmt.Blob))
+	}
+	return 0
 }
 
 // checkChange is [checkMeaning] of an UPDATE, whose assignments are set, or of a DELETE, for which
@@ -1656,6 +1869,34 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		}
 		parameters := 0
 		names = append(names, checkConditions(t, src, b, s.Table.Offset+len(s.Table.Raw), &parameters, s.Where)...)
+		// The columns of ORDER BY come after the conditions, each after the one before it, and the
+		// LIMIT after them, with a ? numbered after those of the conditions.
+		end := s.Table.Offset + len(s.Table.Raw)
+		for _, c := range s.Where {
+			end = max(end, c.Column.Offset+len(c.Column.Raw), c.Value.Span.End)
+		}
+		if s.OrderBy != nil && len(s.OrderBy) == 0 {
+			t.Fatalf("%q: an empty ORDER BY", src)
+		}
+		var columns []stmt.Name
+		for _, c := range s.OrderBy {
+			if c.Name.Offset < end {
+				t.Fatalf("%q: ORDER BY %q at %v", src, c.Name.Raw, c.Name.Offset)
+			}
+			end = c.Name.Offset + len(c.Name.Raw)
+			columns = append(columns, c.Name)
+		}
+		checkOnce(t, src, columns)
+		names = append(names, columns...)
+		if s.Limited() {
+			checkTerm(t, src, b, &end, &parameters, s.Limit)
+			if v, ok := s.Limit.Value.(stmt.Integer); s.Limit.Parameter == 0 && (!ok || v < 0) {
+				t.Fatalf("%q: LIMIT %v", src, s.Limit.Value)
+			}
+		} else if s.Limit != (stmt.Term{}) {
+			t.Fatalf("%q: no LIMIT, and the term %+v", src, s.Limit)
+		}
+		is.Equal(t, parameters, s.Parameters(), src)
 	case *stmt.Update:
 		names = []stmt.Name{s.Table}
 		if len(s.Set) == 0 {
