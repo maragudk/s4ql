@@ -898,3 +898,7 @@ internal/core/index.go scanned condition: err != nil => false
 	The table comes from a lookup with its indexes, so t.index does not fail as checkIndexed would.
 internal/core/index.go scanned remove statement: return nil, err =>
 	The table comes from a lookup with its indexes, so t.index does not fail as checkIndexed would.
+internal/core/index.go ReadTx.ScanPlan condition: err != nil => false #4
+	scanSQL fails only as checkIndexed would, and the table comes from a lookup with its indexes.
+internal/core/index.go ReadTx.ScanPlan remove statement: return "", nil, err => #4
+	scanSQL fails only as checkIndexed would, and the table comes from a lookup with its indexes.
