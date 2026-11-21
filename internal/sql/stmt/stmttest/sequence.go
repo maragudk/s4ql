@@ -1704,7 +1704,7 @@ func (q *Sequence) next() Call {
 	}
 	k = q.aim(r, k, p.Aim > 0 && r.IntN(4) < p.Aim)
 	src, s, args := q.g.CallOf(k)
-	if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 && q.fault(q.rOrder, areaOrder, 4) {
+	if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 && q.fault(q.rOrder, areaOrder, 2) {
 		// An argument of the LIMIT that s4ql refuses: a negative integer, a real, text, a blob, or NULL,
 		// of which SQLite takes some as a number and refuses others.
 		r := q.rOrder
