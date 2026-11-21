@@ -22,7 +22,7 @@ SQLite first, with the shell built from `/internal/sqlite/c/shell.c`, `/internal
 
 Tests. `/internal/sql/stmt/stmt_test.go`: `canonical` writes ORDER BY and LIMIT (`canonicalOrder`); `checkSelect` sends a select with ORDER BY or LIMIT to `checkWhere`, which now puts the values of `orderValues` (NULL and values of every type, two that compare equal) in a column of ORDER BY that no condition tests, 30 rows at least so that rows tie, binds `limitArg` to a `?` of LIMIT, and calls the new `checkOrder`: the canonical text with `*` reads its rows in the order of ORDER BY, each column in its direction, as the new `compareValues` orders values (NULL, numbers exactly by `big.Float`, texts and blobs by bytes); with LIMIT, as many as it says and the first ones of the text without LIMIT by their values in ORDER BY; and the text's rows are those rows with the select list. `checkWhere` also requires SQLite's `no such column` for the first column of ORDER BY that neither the select list nor WHERE names, on a table without it and on one without all of them. `checkPositions` checks the offsets of the columns of ORDER BY, that no two are one name, the span of LIMIT, the number of its `?`, and `Parameters`. `anyTable.rows` is split into `anyTable.pools` and `whereRows`.
 
-`/internal/sql/stmt/check_test.go`: six old cases have new answers, five of them supported now; 78 new cases, 8 supported (both selects of the roadmap, goqite's receive in full, comments in every gap, `limit 0`, the largest limit, a keyword as a column, and a WHERE of every form of slices 7 and 12 before ORDER BY and LIMIT) and 70 not supported or syntax errors; and four subtests: the keywords that SQLite reads as a column in ORDER BY (84, the same in four places and the same as those of the select list), the order of a column of each type of a strict table, LIMIT with each kind of argument through the binding, and the order of SQLite's errors for ORDER BY. `/internal/sql/stmt/recognize_internal_test.go`: the guard of `column named twice` on the next token. `/internal/sql/stmt/vocabulary_test.go`: the allow list has the fields of ORDER BY and LIMIT. `/internal/sql/stmt/generate_test.go`: `newGenerator` sets `OrderBy` to 3, `difference` tells ordering columns, direction, and limit apart, and the near misses of a select have 54 new forms in place of five that are now supported.
+`/internal/sql/stmt/check_test.go`: six old cases have new answers, five of them supported now; 78 new cases (83 after the review), 8 supported (both selects of the roadmap, goqite's receive in full, comments in every gap, `limit 0`, the largest limit, a keyword as a column, and a WHERE of every form of slices 7 and 12 before ORDER BY and LIMIT) and 70 not supported or syntax errors; and four subtests: the keywords that SQLite reads as a column in ORDER BY (84, the same in four places and the same as those of the select list), the order of a column of each type of a strict table, LIMIT with each kind of argument through the binding, and the order of SQLite's errors for ORDER BY. `/internal/sql/stmt/recognize_internal_test.go`: the guard of `column named twice` on the next token. `/internal/sql/stmt/vocabulary_test.go`: the allow list has the fields of ORDER BY and LIMIT. `/internal/sql/stmt/generate_test.go`: `newGenerator` sets `OrderBy` to 3, `difference` tells ordering columns, direction, and limit apart, and the near misses of a select have 54 new forms in place of five that are now supported.
 
 `/internal/sql/stmt/stmttest/stmttest.go`: `Generator.OrderBy` and the hook `Generator.Order`, written by `Generator.order` after WHERE, and `Generator.limitValue`. `TestGenerator_OrderBy` in `/internal/sql/stmt/stmttest/stmttest_test.go`.
 
@@ -66,3 +66,52 @@ SQLite reads an ORDER BY term as a position only for an integer that fits 32 bit
 
 - The README of the pass beyond its five names, and the checks of the branch: step 2.
 - The engine and the driver for slice 13: remove `orderLimitRefusal` and `orderedOrLimited`, give `TestPrepare` back its `order by` if wanted, set `Generator.OrderBy` in their generated checks and `Generator.Order` in the hooks of `Sequence`, vary the rows that tie, and decide the refusal of an argument of LIMIT that is not an int64 from 0.
+
+## Step 2: The README, the review, the checks outside the pass, and the fuzz seeds
+
+**Author:** order-limit-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Finish: `make test`, `make lint`, `make check-browser`, and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` pass; `make test-asan` only for the packages whose fuzz tests you changed. Self-review against these requirements."
+**Interpretation:** Bring the README of the pass up to slice 13, review the branch, fix what matters, and run every check, also those of the modules beside the library.
+**Inferred intent:** A branch whose code, numbers, and documents agree, ready for the lead and for the builder of the engine.
+
+### What I did
+
+A writer sub-agent, in a worktree of its own, updated `/internal/sql/stmt/README.md` (typed form, the SELECT section token for token, the tables of names, "How it is tested", and "Results" from a full `-v` run, 98 s); I cherry-picked its commit and read it. It found that `docs/todo/slice-13.md` claimed the subtests pin more than they do, called `incomplete input` a syntax error without saying so, and called `a JOIN clause is required before ON` a known gap of the README, which it is not; all three are corrected. It also listed five names of LIMIT that no case pinned (`+null`, `- -1`, `-'a'`, `1e999`, `not 1`); they are cases now.
+
+The review (`code-review high origin/main...HEAD`) gave five points. Fixed: `order by "[v]", [v]` was `column named twice`, though SQLite reads the two as `[v]` and `v`; in all four lists of columns (insert, SET, index, ORDER BY) the pass now checks the quoting first, with four cases. Fixed: the doc comments of package `stmttest` and of `Generator` named slices up to 12, and a line of the package comment of `stmt` ran to 150 characters. The README point was the writer's. Left, for the lead: the driver's `Prepare` takes a select with ORDER BY or LIMIT, whose first run is refused; the brief keeps the driver out, and slice 12 had the same. Left: `engine.NewPlan` builds a plan without order and limit for such a select; only `engine.check` stands before it, and the engine's builder removes both.
+
+`make test` failed in the module `internal/sqlite/crosscheck`: `drivercheck_test.go:2960: "select * from t1 order by v1" with the arguments []interface {}{1}: s4ql gives exec with an argument: exec failed with s4ql: not supported: ORDER BY clause (at offset 17), where the rule gives ""`. `checkNotSupported` there now takes the refusal of the engine for such a select. `FuzzLiteral` in `/internal/sql/stmt/real_test.go` puts its literal in LIMIT too.
+
+### Why
+
+The four lists share one rule, so the fix of the order of the checks went into all of them, not only into ORDER BY.
+
+### What worked
+
+`make lint`, `make check-browser`, and `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` passed. `make test` passed after the fix of `drivercheck`, `make asan-test ASANPKGS="maragu.dev/s4ql/internal/sql/stmt maragu.dev/s4ql/internal/sql/stmt/stmttest maragu.dev/s4ql/internal/engine"` in the `golang` image passed (56 s, 2 s, 281 s; stmt again after the change of `FuzzLiteral`), and `go test -count=1 ./internal/sql/...` passed with the pinned numbers unchanged by the fix of the quoting. Under `-race`, `TestGenerator_OrderBy` and `TestCheck_orderLimit` passed 20 times and the new cases and subtests of `TestCheck` 5 times. `FuzzGenerate`, `FuzzCheck`, and `FuzzLiteral` ran 30 s each and found nothing.
+
+### What didn't work
+
+`FuzzLiteral` failed at once on its own seed `?`: `"select * from t limit ?": gives the limit stmt.Term{Value:stmt.Value(nil), Parameter:1, ...}`; the check takes a parameter now. The failure wrote `internal/sql/stmt/testdata/`, which I deleted.
+
+### What I learned
+
+Nothing beyond step 1.
+
+### What was tricky
+
+Nothing beyond step 1.
+
+### What warrants review
+
+- The changes outside the pass that keep the checks passing: `TestPrepare` in `/conn_test.go`, `orderedOrLimited` in `/internal/engine/orderby_test.go` and its use in `/internal/engine/differential_test.go`, and `checkNotSupported` in `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`.
+- The SELECT section and "Results" of `/internal/sql/stmt/README.md`.
+
+### Future work
+
+- The engine and the driver for slice 13, as step 1 lists, and with them the three exceptions above and the driver's `Prepare`.
+- Mutation testing and long fuzz runs of the code of slice 13 in the pass (`recognizer.orderBy`, `orderColumn`, `limit`, `limitCount`, `stmttest.Generator.order`).
+- The roadmap's slice 13 is unchanged, so the site needs nothing from this step.
