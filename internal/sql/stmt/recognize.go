@@ -940,8 +940,8 @@ func (r *recognizer) isCondition(e *ast.Is) Condition {
 
 // conditionColumn of a condition, the expression x on either side of its operator, which starts at the next
 // token: the bare name of a column. A literal or a parameter there, with a sign or without one, is
-// not supported as value, the name of that form; value is "" where the caller has read such a
-// value as the value of the condition.
+// not supported as value, the name of that form. Where the caller reads a value on the left as the
+// value of the condition, it calls this only for a left side that is no value, with value "".
 func (r *recognizer) conditionColumn(x ast.Expr, value string) Name {
 	ref, ok := x.(*ast.ColumnRef)
 	switch {
@@ -950,7 +950,7 @@ func (r *recognizer) conditionColumn(x ast.Expr, value string) Name {
 	case ok && isTrueOrFalse(ref):
 		// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
 		r.reject("TRUE or FALSE")
-	case value != "" && isValue(x):
+	case isValue(x):
 		r.reject(value)
 	case !ok:
 		r.unexpected()
