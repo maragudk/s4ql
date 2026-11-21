@@ -3,7 +3,8 @@ name: Nightly
 # The long runs that a pull request has no time for: every fuzz test for FUZZTIME, ten times the 30
 # seconds of CI's jobs asan-fuzz and fuzz, those that link C under the address sanitizer, and the
 # planted bugs of the simulations of the core and of the engine on many more seeds than CI's jobs
-# run, without a stop at the first seeds that find a bug. Under the sanitizer, a heavy fuzz test such
+# run, without a stop at the first seeds that find a bug, and the generated checks of the engine on
+# more sequences and seeds of each profile. Under the sanitizer, a heavy fuzz test such
 # as FuzzDifferential_core of the engine makes about 70 executions in 30 seconds, so it needs
 # minutes to do real work. A failure opens an issue with the label nightly, or comments on the one
 # that is open; it is never closed by a later run that passes, since a fuzz test may not find the
@@ -140,10 +141,36 @@ jobs:
           S4QL_TEST_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
         run: go test -count=1 -run '^TestSimulation_plantedBugs$' -timeout 150m -v ./internal/engine/
 
+  # The generated checks of the engine on more sequences and seeds of each profile than CI's jobs
+  # run, for breadth: TestDifferential with ten times the sequences, each compared with SQLite
+  # statement by statement, and TestSimulation with 100 seeds of each cell of each environment. Both
+  # then check no count, since the counts of testdata/reached are those of CI's run: a sequence or a
+  # seed that fails prints the flag or the command that replays it.
+  generated-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/go
+        with:
+          cache: sql
+
+      - name: Run the differential test of the engine on many sequences of each profile
+        run: go test -count=1 -run '^TestDifferential$' -timeout 60m ./internal/engine/ -sequences 400
+
+      - name: Run the simulation of the engine on many seeds of each cell
+        env:
+          S4QL_ENGINE_SIM_SEEDS: "100"
+        run: go test -count=1 -run '^TestSimulation$' -timeout 60m ./internal/engine/
+
   # Opens an issue when a job above failed, or comments on the open one, so that a failure at night
   # is seen in the morning.
   report:
-    needs: [asan-fuzz, fuzz, simulation-core, simulation-engine]
+    needs: [asan-fuzz, fuzz, simulation-core, simulation-engine, generated-engine]
     # A job that runs past its timeout-minutes can end as cancelled rather than failed, so both count.
     if: ${{ always() && github.ref == 'refs/heads/main' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest

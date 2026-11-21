@@ -37,10 +37,11 @@ type Profile struct {
 	Others int
 	// Where is the number of selects in four that have a WHERE.
 	Where int
-	// Indexes is 0 for a sequence without names of indexes, whose create indexes and drop indexes, if
-	// their weights are not 0, take the names of tables; 1 for one WHERE in two of a table with a
-	// create index that pins leading columns of the index; and 2 for three in four, and more create
-	// indexes of every column but the key, and more WHERE that pin every column of an index.
+	// Indexes is 0 for a sequence without indexes, whose weights of a create index and a drop index
+	// are 0; 1 for one or two names of indexes, and one WHERE in two of a table with an index that
+	// pins leading columns of the index; and 2 for two or three names, three such WHERE in four, more
+	// create indexes of every column but the key, and more WHERE that pin every column of an index,
+	// and the key after them.
 	Indexes int
 	// Exists is [Generator.Exists]: one create and drop in Exists says IF NOT EXISTS or IF EXISTS.
 	Exists int

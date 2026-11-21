@@ -58,3 +58,62 @@ The design above, before the code: the slots, the streams by statement, and the 
 
 - A counter of the statements compared with SQLite, on the code of today, for the number before.
 - The mechanism in `stmttest`, then each test, then the recounts.
+
+## Step 2: The mechanism in `stmttest`, and the engine's tests on profiles
+
+**Author:** workload-profiles builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "1. Adding a feature must not dilute or shift the others. [...] 2. Every tallied kind is required somewhere with margin. Least numbers are set per profile, each at about a third of what the profile reaches in the test's run and never at a number that rounds to zero at the test's seed count [...] Go through every tally that exists and every one that the diaries and todo files above record as lowered, moved to a sibling, or dropped [...] and restore each in the profile where it belongs. [...] 3. Every planted bug is found with margin, by the property that should find it. [...] Keep the commit history readable: the mechanism first, then the recounts per test."
+
+**Interpretation:** Build the profiles, the streams, and the file of counts; run `TestDifferential`, `TestConn_differential`, `TestSimulation`, and the planted bugs on profiles; and recount each.
+
+**Inferred intent:** The pins of the engine hold what they held before and what the slices had dropped, each in the profile that weighs it.
+
+### What I did
+
+- `687d2e3`: a counter of the calls that run in SQLite, on the sequence of before: 12,108 of 14,400 in `TestDifferential`, 2,998 of 3,600 in `TestConn_differential`, 8,487 of 12,000 in `TestGenerated` of the driver check.
+- `f97c285`, the mechanism. `/internal/sql/stmt/stmttest/profile.go`: `Profile`, the ten profiles, `Slots`, `ProfileOf`, `Profile.Seed`, the areas, `stepStream` (seeded anew for each statement), `newStream` (for the shape of a table), and `offStream`, which panics. `/internal/sql/stmt/stmttest/sequence.go`: `NewSequence(seed)`, every hook on the stream of its area, `Sequence.Stream` for what a test draws for itself, `Sequence.aim`, `Sequence.fault`, and the indexes that the sequence keeps (`sequenceIndex`). `/internal/sql/stmt/stmttest/stmttest.go`: the generator's four streams that are not exported, which are its one `Rand` for the tests of the pass. `/internal/sql/stmt/stmttest/reached.go`: `Reached`, with the kinds that a test requires in a `.kinds` file and the counts in a `.tsv` file that `S4QL_RECOUNT=1` writes. `/internal/sql/stmt/stmttest/profile_internal_test.go`: the slots, the streams, the same sequence twice, a digest of each profile, the areas that are off, and the same statements with other numbers for the clause of slice 10 and for the value on the left.
+- `e58af31`, `1f723e8`, `b35c934`, `4d00d86`: the counts of `TestDifferential` (660 sequences, 25,642 calls compared), `TestConn_differential` (280 sequences, 15,173 calls compared), and `TestSimulation` (cells of profiles in each environment, 166 seeds), and the planted bugs of `TestDifferential_plantedBugs` on their profiles (21 and 15 of 30, where 11 and 6 of 60).
+- Each planted bug of `TestSimulation_plantedBugs` names the profile that weighs what it breaks. The default run finds each twice by its own violation within 15 seeds at the most, where `listOrder` needed 83, and takes 7.2 s, where it took 13.8 s.
+- `TestSimulation` of the core fails for a minimum below 1.
+- A job `generated-engine` in `/.github/workflows/nightly.yml` runs `TestDifferential` with `-sequences 400` and `TestSimulation` with 100 seeds of each cell.
+
+### Why
+
+A focused profile at 40 sequences has fewer statements of its area than 300 mixed sequences had, so the counts of rare kinds do not rise by focus alone. What raised them was to make the statements do their work: of the statements of the one sequence, about half met a table that was not there. `Sequence.aim` makes three statements in four of a focused profile name a table that the sequence created, and `Sequence.fault` gives the statements beside the focus a quarter of their faults.
+
+### What worked
+
+- The first run of every profile through `TestDifferential` found no difference from SQLite, and neither did any later run, the simulation, or the transactions: 25,642 + 15,173 compared calls and 166 seeds.
+- `TestSimulation` reached every kind of its three old maps and the 14 dropped ones at the first recount.
+- The recount as a command: each change of a weight was one run and a list of the kinds that no profile reaches three times, with the count of each profile.
+
+### What didn't work
+
+- The first form of the file of counts held every kind that a profile reached three times, and every kind of the file had to stay. After the first recount the next change of the generator failed for `"createindex 1/1: there is already a table named FolLoWiNG"` and other chance kinds with a name in them. The kinds that a test requires are a file of their own now, which a builder writes, and only they and the exact kinds have rows.
+- A test that claimed "a text of `Others` in the place of a statement changes no other statement" failed: the statement that the text replaced would have stored values that later conditions draw from. The numbers that another statement draws are the same; its text depends on what the statements before it did. The test keeps the two areas for which the claim holds, the clause of slice 10 and the value on the left.
+- `run.open` of the simulation divided by the number of names of indexes: `panic: runtime error: integer divide by zero` in a profile without indexes. Such an engine reads every row now.
+- `TestSequence_createIndex` expected three kept indexes of a table that the sequence had not created: `Expected "3", but got "0"`. The test creates the table in the model first.
+- 16 sequences of the profile of the defaults in transactions reached "insert that leaves out the key with a default ok" twice, and the same 16 with other seeds 8 times: the count of a kind that hangs on the shape of one or two tables varies much between few sequences. The test runs 40 of that profile.
+
+### What I learned
+
+- An index is chosen by the rules in 8 of 100 WHERE that the sequence aims at an index, since a WHERE that pins the key reads by the key. `Profile.Columns` of 2 and more create indexes without the key in the profiles of the indexes raise it.
+- With `Others` and `Around` off, nearly every statement of a focused profile runs in SQLite: 3,786 of 3,840 in the profile of the clauses.
+
+### What was tricky
+
+- The kinds that a profile reaches three to five times move with every change of a weight. Seven rounds went into them: more sequences for five profiles, `Profile.Columns`, a WHERE with a bound on the first column of an index and no pin, the key pinned after the columns of an index, a drop table that names an index, the two zeros in one real of four of an update, and a text and a blob of a byte more than the length limit among the edges.
+- The harness refuses a shell command that it finds "too complex to verify that it stays inside the worktree", also one with a long here-doc for Python. Scripts written with the Write tool and run by a plain command pass.
+
+### What warrants review
+
+- `/internal/sql/stmt/stmttest/profile.go` and `Sequence.aim`, `Sequence.fault` in `/internal/sql/stmt/stmttest/sequence.go`: the model of the tables and indexes that the sequence keeps is what makes the focused profiles work, and it is new.
+- `/internal/sql/stmt/stmttest/reached.go`: a least number is a third, a required kind needs a row in a run, and nothing else has a row.
+- The rows of `/internal/engine/testdata/reached/*.tsv` with a least number of 1: they hold, and they are thin.
+
+### Future work
+
+- The driver check, by a builder of its own; the shares of the planted bugs over 200 seeds; the documents.

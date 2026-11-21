@@ -14,10 +14,20 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, and 12 that meet at a few tables and columns, each
-// named in several spellings that SQLite takes for one name and in some that it takes for others,
-// with values from a small set so that keys repeat, and with statements that are not supported and
-// texts that SQLite refuses mixed in.
+// Sequence of random statements of slices 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, and 12 that meet at a few
+// tables and columns, each named in several spellings that SQLite takes for one name and in some
+// that it takes for others, with values from a small set so that keys repeat, and with statements
+// that are not supported and texts that SQLite refuses mixed in.
+//
+// A sequence is a function of its seed alone. The seed gives it its [Profile], as [ProfileOf]
+// says, which weighs the kinds of statement and turns each area of the generator on or off, and
+// every random number that it draws comes from the stream of an area, seeded from the seed, the
+// name of the area, and the number of the statement or the name of the table that the number is
+// for: see the areas in profile.go. What follows describes a sequence of [Mixed], in which every
+// area is on; the fields of [Profile] say what another profile changes. In a profile with
+// [Profile.Aim], most statements name a table that the sequence created and did not drop, as
+// [Sequence.aim] says, and each fault below is a quarter as likely in the statements of an area that
+// is not among [Profile.Faults], as [Sequence.fault] says.
 //
 // Each name of a table has a shape of the sequence's own: from one to [sequenceColumns] columns,
 // each with a name and one of the five types, of which two often have the same type, the primary
@@ -52,7 +62,7 @@ import (
 // writes it. One comparison in three of a WHERE has its value on the left and its column on the
 // right, as [Generator.ValueFirst] writes it, with the conditions as the hooks give them.
 //
-// One value in three of an insert is a plain ? with the value as its argument, nil for NULL, and
+// One value in [Profile.Parameters] is a plain ? with the value as its argument, nil for NULL, and
 // some calls, as [Sequence.Next] says, have arguments around those that s4ql supports: none for a
 // ?, one for a statement without one, two for a ?, one that no column holds, one with a name, or a
 // value of another Go type that s4ql supports.
@@ -1288,8 +1298,8 @@ func integer(a any) (int64, bool) {
 }
 
 // Next call of the sequence. Its arguments are those of its parameters, and [Sequence.around]
-// changes them for one call in four of a statement with a parameter and for one in twenty of a
-// statement without one.
+// changes them for one call in [Profile.Around][0] of a statement with a parameter and for one in
+// [Profile.Around][1] of a statement without one.
 func (q *Sequence) Next() Call {
 	q.step++
 	c := q.next()
