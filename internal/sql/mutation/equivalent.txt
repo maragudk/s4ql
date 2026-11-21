@@ -691,6 +691,10 @@ internal/core/tx.go Tx.dropKeys remove statement: return tx.fail(ctx, operation,
 internal/core/tx.go Tx.dropKeys remove statement: delete(tx.c.stmts, sql) =>
 	The texts of the statements of a set name its table, whose number no later table of the transaction has, so a finalized statement that stays at rest is never prepared again, and forget finalizes it again, which the binding does without a call of SQLite and without an error.
 
+# The indexes of slice 9 in the recognizer, internal/sql/stmt.
+stmt/recognize.go recognizer.indexColumn remove statement: r.accept(x) =>
+	A column reference without a table name has one token, its column, which is the next one: name rejects it at once or takes it, so describe never looks inside the node, and names it the same whether it was accepted or not.
+
 # The indexes of slice 9 in the engine, internal/engine.
 internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, p.pins)
 	max is commutative.
