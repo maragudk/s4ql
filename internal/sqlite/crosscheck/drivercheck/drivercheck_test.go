@@ -4082,8 +4082,9 @@ func TestGenerated(t *testing.T) {
 // NULL, each about once in ten sequences.
 // The defaults and the transactions also reach the statements of a transaction while its rows are
 // open the most, of which a read-only transaction's insert is the rarest. The profile of RETURNING
-// runs 50 for goqite's receive by id, an update with RETURNING of several rows, and a delete with
-// RETURNING through a prepared statement run several times, each reached three to five times.
+// runs 50 for the rows of RETURNING left open in a transaction, and for goqite's receive by id, an
+// update with RETURNING of several rows, and a delete with RETURNING through a prepared statement run
+// several times, each reached three to five times.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:

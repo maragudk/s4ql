@@ -200,8 +200,12 @@ func TestSequence_update(t *testing.T) {
 		for range 4000 {
 			set, where := q.update(table)
 			setsKey := slices.ContainsFunc(set, func(a stmt.Assignment) bool { return nameOf(a.Column.Raw, 0).Fold() == key.Name.Value })
+			// A SET with a name that the shape does not have, the fault of the changes, can hide the key of
+			// a move, so such an update counts as none of them.
+			fault := slices.ContainsFunc(set, func(a stmt.Assignment) bool { return columnOfShape(shape, nameOf(a.Column.Raw, 0).Fold()) == nil })
 			byKey := len(where) == 1 && where[0].Operator == stmt.OpEqual && nameOf(where[0].Column.Raw, 0).Fold() == key.Name.Value && stored[valueKey(where[0].Value.Value)]
 			switch {
+			case fault:
 			case byKey && !setsKey:
 				counts["the row of a key"]++
 			case byKey && nameOf(set[0].Column.Raw, 0).Fold() == key.Name.Value && valueKey(set[0].Value.Value) == valueKey(keyOfStep(key.Type, q.step)):
