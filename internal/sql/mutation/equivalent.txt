@@ -1133,6 +1133,24 @@ internal/core/index.go conn.step remove statement: return s.StepContext(ctx) =>
 	The first step of a scan that does not sort then runs under SQLite's largest length limit. SQLite builds no record in it, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
 internal/core/index.go conn.unread swap arguments: max(rows-given, 0) => max(0, rows-given)
 	max is commutative.
+internal/core/cache.go maxOrderedTerms constant: 63 => 62
+	A scan, a commit, or a set of keys by a key of 63 columns, which SQLite does not sort, then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/cache.go conn.unlimited condition: c.limit == maxLength => false
+	It sets the largest length limit, which the connection has already, for f, and puts back the same.
+internal/core/cache.go conn.unlimited remove statement: return f() =>
+	It sets the largest length limit, which the connection has already, for f, and puts back the same.
+internal/core/index.go table.scanSQL boolean: false => true
+	Every caller of scanSQL returns its error first, and reads nothing else that it gives with an error.
+internal/core/index.go table.scanSQL operator: len(order) > maxOrderedTerms => len(order) >= maxOrderedTerms
+	The first step of a scan that leaves 63 columns of its key unpinned then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/tx.go KeySet.after condition: len(k.t.key) > maxOrderedTerms => true
+	The read of a key of a set then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/tx.go KeySet.after operator: len(k.t.key) > maxOrderedTerms => len(k.t.key) >= maxOrderedTerms
+	The read of a key of a set of a key of 63 columns then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/tx.go Tx.spoolTouched condition: len(t.key) > maxOrderedTerms => true
+	The reads of the commit of a table then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/tx.go Tx.spoolTouched operator: len(t.key) > maxOrderedTerms => len(t.key) >= maxOrderedTerms
+	The reads of the commit of a table whose key has 63 columns then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
 
 # The interrupted step of slice 13 in the binding, internal/sqlite.
 internal/sqlite/progress.go s4qlInterrupted constant: return 1 => return 2
