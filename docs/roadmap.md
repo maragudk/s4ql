@@ -31,7 +31,7 @@ Rejected for now, to be decided later: upserts, and join variants such as comma 
 
 A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
 
-- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 13 lead to it. After slice 13 comes the rest of what glue needs, which is not agreed as slices yet.
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 14 lead to it. After slice 14 comes the rest of what glue needs, which is not agreed as slices yet.
 
 ## Slices
 
@@ -501,3 +501,39 @@ Rejected as not supported, where SQLite would accept it:
 - `nulls first` and `nulls last`.
 - `collate`.
 - `order by` and `limit` on `update` and `delete`. The pinned SQLite build gives a syntax error for them, and so does s4ql.
+
+### Slice 14: `returning` on `insert`, `update`, and `delete`
+
+Status: agreed on 2026-11-23, not built.
+
+```sql
+insert into t1 (v1, v2) values (?, ?) returning v1;
+
+update t1 set v2 = ? where v1 = ? returning v1, v2;
+
+delete from t1 where v1 = ? returning *;
+```
+
+```go
+rows, err := db.QueryContext(ctx, "update t1 set v2 = ? where v1 = ? returning v1, v2", "b", 1)
+```
+
+Included:
+
+- `returning` at the end of an `insert`, an `update`, or a `delete`, with a list of column names of the statement's table, or `*` for all columns in the order of the table.
+- The statement gives one row for each row that it inserts, updates, or deletes. An `insert` and an `update` give the values after the change. A `delete` gives the values that the row had.
+- SQLite does not specify the order of the returned rows, so they follow the rule on row order of [the spec](spec.md), as the rows of a `select` without `order by` do.
+- Outside a transaction, the statement commits before it gives its first row. If the commit fails, the statement gives the error and no rows. So a row that a caller has read belongs to a change that is committed. Inside a transaction, the statement gives the rows at once, and the change belongs to the transaction like any other.
+- `Exec` runs a statement with `returning` and drops its rows. `RowsAffected` gives the same count as without `returning`. `Query` gives the rows.
+- The commit format does not change.
+- A column named twice in the list, a statement that changes no row, and whether an `update` that sets a row to the values it already has returns that row are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo.md).
+- Everything of slices 1 to 13 with `returning`: arguments, prepared statements, transactions, and a restart with an empty cache.
+- The reason: goqite, the queue that glue uses, sends a message with `insert ... returning id` and receives one with `update ... returning id, body`.
+
+Further details are decided when the slice is built, and recorded here.
+
+Rejected as not supported, where SQLite would accept it:
+
+- An expression in the list, such as `returning v1 + 1` or a function call.
+- An alias, such as `returning v1 as x`.
+- A column with the name of its table, such as `returning t1.v1`, and `t1.*`.
