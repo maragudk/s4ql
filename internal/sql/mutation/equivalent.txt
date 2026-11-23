@@ -1203,3 +1203,11 @@ internal/engine/returning.go buildReturning remove statement: ret.positions = ap
 	The planted bug starKeyFirst then gives * as the key alone, another wrong set of columns, which TestDifferential_plantedBugs finds by the rows.
 internal/engine/returning.go returning.add condition: v.HasReal() => true
 	GetReal of a value that holds no real, or of nil for NULL, is +0.0, whose sign bit is clear, so math.Signbit(f) is false and the value is given as it is.
+internal/engine/returning.go newReturned operator: len(data) > 1 => len(data) >= 1
+	The planted bug dropLast then also leaves out the one row of a statement that changes one, another row left out, which TestDifferential_plantedBugs finds by the rows, as it finds dropLast.
+internal/engine/returning.go newReturned constant: len(data) > 1 => len(data) > 2
+	The planted bug dropLast then leaves out the last row only of three or more, which TestDifferential_plantedBugs finds by the rows of such statements, as it finds dropLast.
+internal/engine/returning.go newReturned constant: len(data) > 1 => len(data) > 0
+	As len(data) >= 1: the planted bug dropLast then also leaves out the one row of a statement that changes one, which TestDifferential_plantedBugs finds by the rows.
+internal/engine/returning.go newReturned constant: len(data)-1 => len(data)-2
+	The planted bug dropLast then leaves out the last two rows of several, which TestDifferential_plantedBugs finds by the rows, as it finds dropLast.

@@ -136,7 +136,8 @@ type returned struct {
 	backward bool
 }
 
-// newReturned rows of the RETURNING r, in the order of the reading how.
+// newReturned rows of the RETURNING r, in the order of the reading how. It takes the rows of r,
+// which a backward reading reverses in place: the statement has run, and nothing else reads them.
 func newReturned(r *returning, how reading) *returned {
 	data := r.rows
 	if how.bugs.dropLast && len(data) > 1 {
@@ -144,7 +145,6 @@ func newReturned(r *returning, how reading) *returned {
 		data = data[:len(data)-1]
 	}
 	if how.backward {
-		data = slices.Clone(data)
 		slices.Reverse(data)
 	}
 	return &returned{data: data, cols: r.columns(), backward: how.backward}
