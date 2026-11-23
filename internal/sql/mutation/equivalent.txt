@@ -1127,20 +1127,10 @@ internal/engine/bugs.go sortedAfter.rows swap cases: case x.HasNull() || y.HasNu
 	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
 
 # The sort of slice 13 and its interruption in the core, internal/core.
-internal/core/index.go conn.scanIndex remove statement: first = false =>
-	Every step of a scan after the first reads one row, in far fewer than the 10,000 instructions after which SQLite first calls the progress handler, and builds no record of a sort, so StepContext and the length limit of a sort change nothing in it.
-internal/core/index.go conn.scanIndex boolean: false => true
-	Every step of a scan after the first reads one row, in far fewer than the 10,000 instructions after which SQLite first calls the progress handler, and builds no record of a sort, so StepContext and the length limit of a sort change nothing in it.
-internal/core/index.go conn.step condition: !sorting || c.limit == maxLength => false
-	The first step of a scan that does not sort then runs under SQLite's largest length limit. SQLite builds no record in it, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
-internal/core/index.go conn.step operator: !sorting || c.limit == maxLength => !sorting && c.limit == maxLength
-	The first step of a scan that does not sort then runs under SQLite's largest length limit. SQLite builds no record in it, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
 internal/core/index.go conn.step condition: !sorting => false
 	The first step of a scan that does not sort then runs under SQLite's largest length limit. SQLite builds no record in it, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
 internal/core/index.go conn.step remove statement: return s.StepContext(ctx) =>
 	The first step of a scan that does not sort then runs under SQLite's largest length limit. SQLite builds no record in it, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
-internal/core/index.go conn.step condition: c.limit == maxLength => false
-	It sets the largest length limit, which the connection has already, for the step, and puts back the same.
 internal/core/index.go conn.unread swap arguments: max(rows-given, 0) => max(0, rows-given)
 	max is commutative.
 
