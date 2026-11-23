@@ -8098,3 +8098,224 @@
   commit it. It continues the one from 2026-11-16, so it overwrites
   2026-11-16-site-and-simulator.txt, unless you want it as a new file.
 ✻ Worked for 6s · done 11:19 AM
+❯ /export                                                                       
+  ⎿  Conversation exported to /Users/maragubot/Developer/s4ql/2026-11-23-111916-
+     this-session-is-being-continued-from-a-previous-c.txt
+
+❯ exported                                                                      
+
+  Ran 4 shell commands · 1 failed (ctrl+o to expand)
+
+⏺ The export is committed and pushed (f7a367b). It replaces
+  docs/conversations/2026-11-16-site-and-simulator.txt, because it holds the
+  whole conversation from the start, including everything in the earlier export,
+  now 8,099 lines.
+
+  main is clean and nothing is running, so you can compact and restart. The SQL
+  box starts after that, with the check of limit and order by first.
+
+✻ Brewed for 27s · done 11:19 AM
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Skills restored (impeccable:impeccable)
+
+❯ Go ahead                                                                      
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ fabrik:builder(Build simulator SQL box)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A builder is now working on the SQL box in its own worktree, on the branch
+  simulator-sql-box; nothing is built yet.
+
+  order by and limit are both fully built on select (slice 13, merged on
+  2026-11-21), so the box can use them. offset and or are not built.
+
+  Decisions I made in the brief:
+
+  - Results cut-off: the table shows the first 50 rows and says how many there
+    are in all, since a select without limit can still return thousands.
+  - barcodes: only select is allowed on it from the box, so creating an index on
+    it is refused too.
+  - Statement length: capped, so large text literals cannot fill the browser's
+    storage before the 2,000-object cap stops the session.
+  - First load: the box starts with select code from barcodes order by code desc
+    limit 5, and Cmd/Ctrl+Enter runs it.
+
+  I'll review the branch and screenshots when the builder reports, then have it
+  taken through its pull request.
+
+✻ Sautéed for 1m 5s · done 11:23 AM
+
+› Message from fabrik:builder
+  The SQL box is built and committed on branch `simulator-sql-box` (last commit
+  db8bcb9). It is not pushed. No Go code outside `internal/simulator` changed.
+  The tests, lints and site check all pass, but I left two edge cases unchecked
+  (below).
+
+  **How it works:** the engine has a new action, `sql`. It sends one statement
+  to the instance the requests go to, as a call of the caller `box`. A select
+  runs like the app's reads. Any other statement runs as begin, statement,
+  commit, so its outcomes stay apart like the app's writes: refused, abandoned,
+  unknown, not committed. To find the table a statement names, I used the
+  statement pass (`stmt.Check`) and its table and index names. `advance` takes a
+  new option, `until: "sql"`, so a paused page steps exactly to the answer.
+  While paused, Run does not step if the instance's connection to S3 hangs or
+  its clocks stand still; the box then says "Waiting: the connection of a to S3
+  hangs. Play to let time move."
+
+  **What I decided:**
+  - **Refusal wording:** "Refused by the simulator: barcodes is the app's table,
+  so the box can only select from it." A statement the statement pass does not
+  accept goes to the engine, which refuses it with its own error before it can
+  change anything.
+  - **Placement:** at the top of the right column beside the log, above the
+  commit objects; first in the stack below 960 px. At 1280×800 the diagram
+  already runs past the first screen and the log starts at about 1075 px, so
+  this pushes neither. I added one link in the intro, "Send one of your own",
+  pointing to the box. That is the only intro change; `site/index.html` is
+  untouched.
+  - **Invariants:** the checker knows a box write by the name of its commit
+  object (learned from the core's `commit` event on the call's context).
+    - `acknowledged` and `not_committed` apply to the box's writes.
+    - `fresh` applies to app reads and box selects alike.
+    - For box selects, `state` checks only that the position is in the log, not
+  the rows.
+    - `once` is unchanged.
+    - New: an insert or delete of `barcodes` in the log that no app call made is
+  a `not_committed` violation. Without this, the checker missed a foreign
+  delete of a `barcodes` row.
+    - The exhaustive fast-versus-slow test now also covers a box commit
+  (acknowledged, unknown, not yet ended) and a box select at every position.
+  - **Length cap:** 1,000 characters, checked by both the engine and the page.
+  The page says "The box takes at most 1,000 characters, and this has N." and
+  disables Run.
+  - **Sound:** a tick of its own, E6 then A6 (18 and 22 ms), at the select
+  tick's level: about −42.1 dBFS against −42.0 for a select. Failures and
+  refusals use the existing error tone. The mix limits still hold.
+  - **Storage:** when `sessionStorage` refuses a write, the page now stops with
+  "S3 is full. … Reset to start over." The box's text is remembered under
+  `s4ql:box`, survives Reset, and is kept only if it is within the cap.
+
+  **Test runs, all passing:**
+  - `go test -tags s4ql_browser ./internal/simulator/...`, also with `-race`
+  - `TestEngine_box` and `TestChecker` with `-count=50` and with `-race
+  -count=20`
+  - `make test-browser BROWSERPKGS=./internal/simulator`
+  - `golangci-lint run --build-tags s4ql_browser ./internal/simulator/...`, also
+  with `GOOS=js GOARCH=wasm`
+  - simlint over `./internal/simulator/...` with the tag
+  - `make site-check`, extended with every step you listed, plus a statement
+  sent while playing and paused at once
+
+  Self-review with the code-review skill found three real problems, all fixed:
+  - A statement still on its way when the visitor paused stayed pending for
+  good.
+  - A requests switch right after Run could send the statement to the other
+  instance.
+  - The box's text was kept in storage at any length, so a huge paste could fill
+  it and stop the page again after every Reset.
+
+  A writer sub-agent updated `internal/simulator/README.md`, and I reviewed and
+  committed it.
+
+  **Not done or not checked:**
+  - A box write whose process crashes before the core logs its commit has no
+  name, so the checker learns nothing of it. This is listed in the README under
+  what is not checked.
+  - A select reading more than about 2,400 rows would hit the 30 s timeout,
+  since each row costs about 12.5 ms of fake time. The 2,000-commit cap keeps
+  tables below that.
+  - The page has only one theme (dark), so there was nothing else to check.
+  - On a fresh page at time 0, the example statement is refused until a holds
+  the lease.
+
+  The diary is `docs/diary/2026-11-23-simulator-sql-box.md`. Screenshots:
+  - /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c0d47f-ada8-4603-9
+  95b-2482fe6fef3a/scratchpad/sqlbox/box-1280.png
+  - /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c0d47f-ada8-4603-9
+  95b-2482fe6fef3a/scratchpad/sqlbox/box-390.png
+
+  Read 2 files, ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Build simulator SQL box" finished · 45m 26s
+
+⏺ Agent(Shepherd SQL box PR) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The SQL box is built on the branch simulator-sql-box and is now going through
+  its pull request; it is not merged or live yet. The builder reports that the
+  simulator's tests, lints and the extended site check pass locally. I checked
+  its screenshots at 1280 and 390 px and that nothing outside the simulator
+  changed.
+
+  - Where it sits: at the top of the right column beside the log, above the
+    commit objects, and first in the stack on a phone. The intro got one link to
+    it, "Send one of your own".
+  - How it runs: the statement goes to the instance that requests go to, shows
+    in the log as "You send … to a.", and a write becomes its own commit object.
+    While paused, Run steps fake time just to the answer.
+  - When S3 hangs: the box says "Waiting: the connection of a to S3 hangs. Play
+    to let time move."
+  - barcodes: anything but a select gets "Refused by the simulator: barcodes is
+    the app's table, so the box can only select from it."
+  - Results: the first 50 rows, with a line like "a serves 50 of 141 rows."
+  - Limits: a statement is at most 1,000 characters. If the browser's storage
+    refuses a write, the page stops with the "S3 is full" message.
+  - Sound: the box has its own two-note tick at the level of a select tick.
+  - Checker: it accepts the box's commits, and now flags any change to barcodes
+    that the app did not make.
+
+  Known gaps:
+
+  - On a fresh page at time 0, Run is refused until instance a holds the lease.
+    That is what the app's requests get too, but it is a poor first click; say
+    if you want the box to wait for the lease instead.
+  - A box write whose process crashes before the commit is logged is not
+    checked.
+  - A select of more than about 2,400 rows would hit the 30-second timeout; the
+    2,000-commit cap keeps tables below that.
+
+  I'll confirm when it is merged and live.
+
+✻ Cogitated for 30s · done 12:09 PM
+
+› Message from general-purpose
+  PR #127 ("Add a SQL box to the simulator") is merged. The merge commit is
+  d49822a (full SHA d49822a10f48732bd86b72aaac81f86e985af27f).
+  - Checks: before merging, all 29 were in bucket `pass`. That covers every job
+  in ci.yml, with matrix entries counted: `changes`, lint, test, test-core,
+  test-engine, simulation, sql, proto, crosscheck, asan, asan-core 1-3,
+  asan-engine 1-2, asan-fuzz 1-4, fuzz, browser, browser-test 1-6, site and
+  govulncheck. I waited for all of them, so I did not use the asan exception.
+  There was no re-run.
+  - No conflicts: `git merge-tree` reported the merge as clean.
+  - Cleanup: `main` is pulled and fast-forwarded. The worktree
+  `agent-a7a6063a468446169` is unlocked and removed. The local branch
+  `simulator-sql-box` and the remote branch are deleted. The local branch
+  `worktree-agent-a7a6063a468446169` did not exist.
+  - Deploy: the Pages run 45163650101 for d49822a finished with success.
+  https://www.s4ql.com/simulator/page.js contains "Refused by the simulator".
+  The simulator HTML page does not contain that text, but its markup and CSS
+  have the SQL box (a `.sql` block with "The box for SQL" comments).
+  - Left undone: nothing for this task. The CI and Security runs on d49822a had
+  not finished when I stopped waiting. They were still queued or in progress,
+  and they run the same checks that passed on the PR.
+
+⏺ The SQL box is live at https://www.s4ql.com/simulator/. PR #127 merged as
+  d49822a after all 29 checks passed, and the deployed page has the box.
+
+  The post-merge CI run on main was still in progress when the shepherd stopped;
+  it runs the same checks that passed on the PR.
+
+  One question is still open: on a fresh page at time 0, Run is refused until
+  instance a holds the lease. Say if you want the box to wait for the lease
+  instead.
+
+✻ Churned for 2s · done 12:17 PM
+
+⏺ Agent "Shepherd SQL box PR" finished · 7m 18s
+
+※ recap: The SQL box for trying the engine by hand is merged and live on the simulator page. Next is your call on whether Run should wait for the lease on a fresh page instead of being refused. (turn off recaps in /config)
