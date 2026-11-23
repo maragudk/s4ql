@@ -120,3 +120,45 @@ SQLite runs every change of a statement with RETURNING in its first step, so a Q
 ### Future work
 
 The generated checks (`stmttest.Generator.Returning` with a hook and a profile, and the simulation), and mutation testing, by the next builders. `pair.openRows` and the QueryRow of more than one column in the driver check run a text twice, which a generated write with RETURNING meets.
+
+## Step 3: self-review, a test that depended on its seed, and the README
+
+**Author:** builder of the engine step of slice 14
+
+### Prompt Context
+
+**Verbatim prompt:** the same brief as Step 1: "Review your own work when the code is done, and fix what you find."
+**Interpretation:** run `make test`, `make lint`, `make test-sql`, the new tests many times and under `-race`, and a review of the diff, and fix what they find.
+**Inferred intent:** hand the lead a branch that the independent reviewer finds little in.
+
+### What I did
+
+`make test`, `make test-sql`, and `make lint` pass. `make lint` first failed with `SA4026: in Go, the floating-point literal '-0.0' is the same as '0.0', it does not produce a negative zero` on an argument of `returningCalls`, which is `math.Copysign(0, -1)` now. The new tests ran 50 times, and under `-race` 10 times, where one run failed; see below. A review of `main...HEAD` (the `code-review` skill, medium) found no bug and four nits: the notes said every insert draws a direction (corrected: only one with RETURNING); the planted bug `keepRead` left the rows of a RETURNING open, which hold no read transaction (`Rows.Close` now applies it only to other rows); `pair.returnedInOrder` would skip its check for an update that sets a column twice (left: the pass gives no `stmt.Update` with a column twice in SET); and the simulator's SQL box runs a statement with RETURNING with `Conn.Exec` and drops its rows (left for the lead, as the brief says). The writer's README commit is cherry-picked into the branch, and its worktree and branch are removed.
+
+### Why
+
+The brief asks for a self-review before the independent reviewer reads the branch.
+
+### What worked
+
+The seed that the failure printed replayed it at once: `go test ./internal/engine -run 'TestEngine_returning' -count=1 -directions=7222707078055668510` failed with `returning_test.go:119: Not true`.
+
+### What didn't work
+
+`go test -race ./internal/engine -run 'TestEngine_returning|TestConn_returning|TestPair_returning' -count=10`, run while `make test` ran, failed once, and `tail -5` cut the message off, leaving only the seeds 7066272948084129795 and 7222707078055668510. 120 runs more under `-race` passed. The replay showed that with that seed two rounds of the calls drew one direction for every statement that the order check counts, so the requirement that both directions came failed. It did not depend on timing, but on the seed, which a run draws. The rounds now go on until both directions came, at most 20; for a given seed the number of rounds is fixed. I also gave goqite's messages their own times of creation in `TestConn_returning`, where two messages tied in the order of the receive; that was safe already, since goqite's index delivers the order and its ties come in the order of the id, but the test no longer leans on it.
+
+### What I learned
+
+A requirement that a drawn property varies within a fixed number of draws fails for some seeds; a loop bounded by many rounds, deterministic for its seed, is the shape that holds for every seed.
+
+### What was tricky
+
+Seeing that the race failure was a seed and not a race: the two seeds in the log were the clue, and the replay with `-directions` settled it.
+
+### What warrants review
+
+The loop of rounds in `TestEngine_returning`, and `Rows.Close` with `keepRead` in `/internal/engine/engine.go`.
+
+### Future work
+
+None beyond Step 2.
