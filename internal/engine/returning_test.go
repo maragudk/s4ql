@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -231,6 +232,44 @@ func TestConn_returning(t *testing.T) {
 			n++
 		}
 		is.Equal(t, 2, n)
+	})
+
+	t.Run("should log one event for a statement with RETURNING when it has ended, as the write it is, with the rows that it returned and the direction that it drew", func(t *testing.T) {
+		h := &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
+		is.Equal(t, "", i.exec("create table t (k int primary key, v text) strict, without rowid").err)
+		for k := range 3 {
+			is.Equal(t, "", i.exec("insert into t (k, v) values (?, 'a')", int64(k)).err)
+		}
+		for _, c := range []struct {
+			src, kind, access, rows, read string
+			direction                     bool
+		}{
+			{"insert into t (k, v) values (3, 'b') returning *", "insert", "", "1", "", false},
+			{"update t set v = 'c' where k > 0 returning k", "update", "primary_key", "3", "6", true},
+			{"delete from t returning v", "delete", "full_scan", "4", "8", true},
+			{"delete from t where k = 9 returning v", "delete", "primary_key", "0", "0", true},
+		} {
+			n := len(h.records)
+			rows, err := i.c.Query(t.Context(), c.src)
+			is.NotError(t, err, c.src)
+			// The event is logged before the rows are read, and not again when they end.
+			is.Equal(t, n+1, len(h.records), c.src)
+			e, _ := h.last(t)
+			is.Equal(t, c.kind, e[engine.AttrKind], c.src)
+			is.Equal(t, "ok", e[engine.AttrOutcome], c.src)
+			is.Equal(t, c.rows, e[engine.AttrRows], c.src)
+			is.Equal(t, c.access, e[engine.AttrAccess], c.src)
+			is.Equal(t, c.read, e[engine.AttrRowsRead], c.src)
+			is.True(t, e[engine.AttrParent] != "", c.src)
+			_, has := e[engine.AttrDirection]
+			is.Equal(t, c.direction, has, c.src)
+			for _, err := range rows.All() {
+				is.NotError(t, err)
+			}
+			is.NotError(t, rows.Close())
+			is.Equal(t, n+1, len(h.records), c.src)
+		}
 	})
 
 	t.Run("should vary the order of the rows of RETURNING from one statement to the next, by the seed of the engine", func(t *testing.T) {

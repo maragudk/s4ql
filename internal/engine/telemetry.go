@@ -54,10 +54,12 @@ const (
 	attrIndex = "statement.index"
 	// attrDirection is the direction that the engine drew for a query, forward or backward, as
 	// [Engine.reading] draws it, so that a run whose rows depend on it can be told from its event: the
-	// direction of the scan of a query without ORDER BY, and of the rows that tie of a query whose
-	// rows are sorted. A statement that draws none, an update, a delete, or a query whose path the
-	// tests force, has none, and so has a query without the attribute [attrAccess], and a query whose
-	// access delivers the order of its ORDER BY, for which the draw decides nothing.
+	// direction of the scan of a query without ORDER BY, of the rows that tie of a query whose rows are
+	// sorted, and of the rows of an update or a delete with RETURNING, as [Engine.order] draws it. A
+	// statement that draws none, an update or a delete without RETURNING, or a statement whose path
+	// the tests force, has none, and so has a statement without the attribute [attrAccess], such as an
+	// insert with RETURNING, and a query whose access delivers the order of its ORDER BY, for which the
+	// draw decides nothing.
 	attrDirection = "statement.direction"
 	// attrOrder is how the rows of a query with ORDER BY came in its order, as [ordering] says:
 	// delivered, by the key of its access, with no sort, or sorted, by the storage, which then read
@@ -66,7 +68,8 @@ const (
 	attrOrder = "statement.order"
 	// attrRowsRead is the number of rows that the statement read from the cache, whether or not its
 	// conditions held for them: by its scan or its get, and, for an update, also the row that it reads
-	// to check a NULL for a column that does not take it, and each row again that it changes.
+	// to check a NULL for a column that does not take it, and each row again that it changes, and, for
+	// a delete with RETURNING, each row again that it deletes, whose values it gives.
 	attrRowsRead = "statement.rows_read"
 	// attrNothing is whether a statement of IF NOT EXISTS or IF EXISTS did nothing because its object
 	// was there, or not there, as SQLite does nothing then: true, or false for one that went on to do
@@ -76,7 +79,8 @@ const (
 	attrNothing = "statement.nothing"
 	// attrSQL is the SQL text, at Debug only.
 	attrSQL = "statement.sql"
-	// attrRows is the number of rows that the statement returned or changed.
+	// attrRows is the number of rows that the statement returned or changed: for an insert, an update,
+	// or a delete with RETURNING, both, which are the same number.
 	attrRows = "statement.rows"
 	// attrPosition is the last commit object of the state that the statement saw: the position of its
 	// read transaction, or the parent of its write transaction.

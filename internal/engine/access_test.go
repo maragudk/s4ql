@@ -672,6 +672,11 @@ var goqiteQueries = []planQuery{
 		args: []any{"2026-11-20T12:05:00.000Z", "default", "m_0001"}},
 	{name: "delete", src: "delete from goqite where queue = ? and id = ?", args: []any{"default", "m_0001"}},
 	{name: "delete a queue", src: "delete from goqite where queue = 'default'"},
+	// goqite's receive takes the message that the select of the next message found, with RETURNING,
+	// by its id, since a scalar subquery and arithmetic are not supported.
+	{name: "receive by id", src: "update goqite set timeout = ?, received = ? where id = ? returning id, body",
+		args: []any{"2026-11-20T12:00:30.000Z", int64(1), "m_0001"}},
+	{name: "delete a queue with RETURNING", src: "delete from goqite where queue = ? returning id", args: []any{"default"}},
 }
 
 // planSchemas whose plans TestAccessOf_golden keeps.
