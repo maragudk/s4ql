@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 
@@ -46,7 +47,7 @@ var returningCalls = []returningCall{
 	{src: "insert into t (k) values (2) returning k, d, s, k"},
 	{src: "insert into t (k, i, r, b) values (3, null, null, null) returning *"},
 	{src: "insert into t (k, r) values (4, -0.0) returning r, K"},
-	{src: "insert into t (k, i, r, s, b) values (?, ?, ?, ?, ?) returning *", args: []any{int64(5), int64(-9223372036854775808), -0.0, "é", []byte{}}},
+	{src: "insert into t (k, i, r, s, b) values (?, ?, ?, ?, ?) returning *", args: []any{int64(5), int64(-9223372036854775808), math.Copysign(0, -1), "é", []byte{}}},
 	{src: "insert into t values (?, ?, ?, ?, ?, ?) returning b, i", args: []any{int64(6), nil, 2.5, "b", []byte{0, 1}, nil}},
 	{src: `insert into t (k, s) values (7, 'c') returning "d", S`},
 	{src: "insert into t (k) values (8) returning d", exec: true},
