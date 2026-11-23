@@ -18,7 +18,7 @@ SQLite first, with the shell built from `/internal/sqlite/c/shell.c`, `/internal
 
 `/internal/sql/stmt/stmt.go`: the type `Returning`, with `Span` and `Columns`, nil for `*`, and `Returning.Present`, and a field `Returning` on `Insert`, `Update`, and `Delete`. `/internal/sql/stmt/recognize.go`: `recognizer.returning`, called at the end of `insert`, `update`, and `delete`, which reads each column with `recognizer.resultColumn`, the code of the select list. No new name in the vocabulary: every refusal inside RETURNING has the name that the select list gives.
 
-Tests. `/internal/sql/stmt/check_test.go`: a section of slice 14 of 63 cases, six of them the old cases that refused RETURNING, which are supported now or refuse a column of it (16 supported: the three statements of the roadmap, goqite's send, `*`, a column three times, a column that the insert does not list, `"*"` as a name, negative zero, keywords and `rowid`, comments in every gap; 33 not supported; 14 syntax errors); two subtests, the keywords that SQLite reads as a column in RETURNING in four places (84, those of the select list and of the pool of `SelectColumn`), and the order of SQLite's errors for 20 texts. `/internal/sql/stmt/stmt_test.go`: `canonical` writes RETURNING (`canonicalReturning`); `checkPositions` checks the span and the columns of RETURNING (`checkReturning`) and `Parameters` of an insert, an update, and a delete; `checkInsert` gives the table of the check the columns of RETURNING, by name without a list when they fit and as columns with a DEFAULT of their own after those of the list, and calls `checkInsertReturning` (the row that the text gives is what a select of the same columns reads after it, and the canonical text gives the same) and `checkReturningMissing` (`no such column` for the first column of RETURNING that a table lacks, after the errors of the list); `checkChange` adds the columns of RETURNING to its table, calls `checkChangeReturning` (a row for each row that the WHERE chooses, as many as `changes()`, with the values after an update and before a delete, as a select of the chosen keys reads them), and requires `no such column` for the first column of RETURNING that neither SET nor WHERE names. `returningReads` counts the updates and deletes with RETURNING by the rows they gave. `/internal/sql/stmt/vocabulary_test.go`: the allow list has the node `Returning` and its fields. `/internal/sql/stmt/generate_test.go`: `newGenerator` sets `Returning` to 3, `difference` tells RETURNING apart, and the seven near misses with RETURNING that are supported now gave way to 30 near misses of RETURNING.
+Tests. `/internal/sql/stmt/check_test.go`: a section of slice 14 of 63 cases, six of them the old cases that refused RETURNING, which are supported now or refuse a column of it (16 supported: the three statements of the roadmap, goqite's send, `*`, a column three times, a column that the insert does not list, `"*"` as a name, negative zero, keywords and `rowid`, comments in every gap; 33 not supported; 14 syntax errors); two subtests, the keywords that SQLite reads as a column in RETURNING in four places (84, those of the select list and of the pool of `SelectColumn`), and the order of SQLite's errors for 20 texts. `/internal/sql/stmt/stmt_test.go`: `canonical` writes RETURNING (`canonicalReturning`); `checkPositions` checks the span and the columns of RETURNING (`checkReturning`) and `Parameters` of an insert, an update, and a delete; `checkInsert` gives the table of the check the columns of RETURNING, by name without a list when they fit and as columns with a DEFAULT of their own after those of the list, and calls `checkInsertReturning` (the row that the text gives is what a select of the same columns reads after it, and the canonical text gives the same) and `checkReturningMissing` (`no such column` for the first column of RETURNING that a table lacks, after the errors of the list); `checkChange` adds the columns of RETURNING to its table, calls `checkChangeReturning` (a row for each row that the WHERE chooses, as many as `changes()`, with the values after an update and before a delete, as a select of the chosen keys reads them), and requires `no such column` for the first column of RETURNING that neither SET nor WHERE names. `returningReads` counts the updates and deletes with RETURNING by the rows they gave. `/internal/sql/stmt/vocabulary_test.go`: the allow list has the node `Returning` and its fields. `/internal/sql/stmt/generate_test.go`: `newGenerator` sets `Returning` to 3, `difference` tells RETURNING apart, and the six near misses with RETURNING that are supported now gave way to 30 near misses of RETURNING.
 
 `/internal/sql/stmt/stmttest/stmttest.go`: `Generator.Returning` and `Generator.returning`. `TestGenerator_Returning` in `/internal/sql/stmt/stmttest/stmttest_test.go`.
 
@@ -63,3 +63,49 @@ SQLite names a result column of RETURNING by the column as the table stores it, 
 - The README of the pass for slice 14: step 2.
 - The engine and the driver for slice 14: remove `returningRefusal`, `returned`, and the exception, decide the driver's `check`, add the hook of the generator with the area and the profile of the generated checks, and give `too many columns in result set` for a select and a RETURNING of more than 2,000 columns.
 - Mutation testing and long fuzz runs of `recognizer.returning` and `Generator.returning`.
+
+## Step 2: The README, the review, the fixes it found, and the checks
+
+**Author:** returning-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Run `make test` before you finish (and `make lint` if the Makefile has it). [...] Review your own work when the code is done, and fix what you find."
+**Interpretation:** Bring the README of the pass up to slice 14, review the branch with competing reviewers, fix what matters, and run the checks of the project.
+**Inferred intent:** A branch whose code, documents, and numbers agree, ready for the lead and for the builder of the engine.
+
+### What I did
+
+A writer sub-agent, in a worktree of its own, updated `/internal/sql/stmt/README.md` (the typed form, a section `### RETURNING`, the grammar of INSERT, UPDATE, and DELETE, "How it is tested", and "Results" from a full `-v` run); I cherry-picked its commit. It found six things in my notes and code, and I fixed five: the near misses that RETURNING made supported are six, not seven; the excused selects with ON are two; the corpus kept its excused numbers but its supported texts rose by 22; `*` on a wide table cannot pass 2,000 columns, since a table has at most 2,000 and the pass takes no `*` with another column; and `returningReads` was counted and never read, so it now counts only texts with WHERE and `TestGenerate` logs it and requires that more give some rows than none (seed 0: 346 none, 498 some, 0 every row). It also found two sentences of slice 13 in the README that said the engine still refuses ORDER BY and LIMIT and that `Sequence` writes none; both now say what the code does.
+
+The review (`code-review high 9238075...HEAD`) gave five points. Fixed: `pair.step` in `/internal/engine/differential_test.go` checked an insert or an update with RETURNING against the rule of the type and of the length of its values, which applies now that the pass takes such a text, so FuzzSQL could fail on `insert into t1 (v1) values ('x') returning v1` (the reviewer confirmed it with a throwaway test, and `TestPair_returning` in `/internal/engine/returning_test.go` reproduced it before the fix: "the engine gives not supported ("s4ql: not supported: RETURNING clause (at offset 33)"), and the rule "s4ql: not supported: a string literal for the column t1.v1 [...]""); a statement for which `returned` holds now skips both rules. Fixed: `engine.NewPlan` panics for a statement with RETURNING, so that no path that skips `engine.check` runs its change and drops its rows. Fixed by the writer: the README. Left for the lead: the simulator's box (`/internal/simulator/box.go`) sends a text to the path of a write when the pass takes it, so a statement with RETURNING now begins a write transaction before the engine refuses it, and its event says "abandoned" where it said "failed"; the brief keeps `internal/simulator` out of this step. Left: the driver's `check` parses the text twice when a statement is prepared, once in `stmt.Check` and once in `engine.Check`; it keeps the refusal in one place, and the engine's builder removes it with the refusal.
+
+### Why
+
+The rules of the differential tests describe what s4ql does with a statement that it runs, and until the engine runs RETURNING, the refusal of the text comes before any value, so the rules do not hold for it.
+
+### What worked
+
+`make test` passed (also the module `internal/sqlite/crosscheck`, whose driver check runs in full), `make lint` gave 0 issues in each of its six runs, and `make test-sql`, the full run of `./internal/sql/...` and `./internal/engine/...` that checks the counts of `testdata/reached/`, passed with no `.tsv` file changed: `Sequence` writes no RETURNING. `FuzzCheck`, `FuzzGenerate`, and `FuzzSQL` ran 30 s each and found nothing.
+
+### What didn't work
+
+Nothing beyond the failure of `TestPair_returning` before its fix, quoted above.
+
+### What I learned
+
+The rules of the differential tests read a text through `stmt.Check` on their own, so every form that the pass takes before the engine runs it needs its exception there too, not only in the branch of "not supported".
+
+### What was tricky
+
+Nothing beyond step 1.
+
+### What warrants review
+
+- The skip of the rules in `pair.step` and the panic of `engine.NewPlan`, both of which the engine's builder removes.
+- The section `### RETURNING` and "Results" of `/internal/sql/stmt/README.md`.
+
+### Future work
+
+- The simulator's box and RETURNING, for the lead, until the engine runs it.
+- The engine and the driver for slice 14, as step 1 lists, and with them the skip in `pair.step` and the panic of `NewPlan`.

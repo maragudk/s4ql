@@ -71,10 +71,11 @@ func TestGenerate(t *testing.T) {
 		n /= 10
 	}
 	g := newGenerator(t, *seed)
-	var before, beforeChanges [3]int64
+	var before, beforeChanges, beforeReturning [3]int64
 	for i := range whereReads {
 		before[i] = whereReads[i].Load()
 		beforeChanges[i] = changeReads[i].Load()
+		beforeReturning[i] = returningReads[i].Load()
 	}
 	kinds := map[string]int{}
 	for range n {
@@ -96,7 +97,8 @@ func TestGenerate(t *testing.T) {
 		what   string
 		reads  *[3]atomic.Int64
 		before [3]int64
-	}{{"selects", &whereReads, before}, {"updates and deletes", &changeReads, beforeChanges}} {
+	}{{"selects", &whereReads, before}, {"updates and deletes", &changeReads, beforeChanges},
+		{"updates and deletes with RETURNING", &returningReads, beforeReturning}} {
 		var reads [3]int64
 		for i := range c.reads {
 			reads[i] = c.reads[i].Load() - c.before[i]

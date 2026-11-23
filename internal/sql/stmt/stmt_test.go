@@ -1207,9 +1207,9 @@ var whereReads [3]atomic.Int64
 // changed no row of the table, some, or every row, as [whereReads] counts the selects.
 var changeReads [3]atomic.Int64
 
-// returningReads counts the updates and the deletes with RETURNING that [checkChangeReturning] ran, by
-// whether they gave no row, some, or a row for every row of the table, so that a test can see that
-// the check compares rows.
+// returningReads counts the updates and the deletes with WHERE and RETURNING that
+// [checkChangeReturning] ran, by whether they gave no row, some, or a row for every row of the table,
+// so that a test can see that the check compares rows.
 var returningReads [3]atomic.Int64
 
 // count in reads a statement that read or changed n of the all rows of a table: none, some, or every
@@ -1818,7 +1818,9 @@ func checkChangeReturning(t testing.TB, open func(testing.TB) *db, src string, s
 	got, n := read(src)
 	canonicalGot, _ := read(canonical(s))
 	is.Equal(t, got, canonicalGot, src)
-	count(&returningReads, n, len(rows))
+	if where != nil {
+		count(&returningReads, n, len(rows))
+	}
 }
 
 // sortedRows of a result, as [showRows] shows them, in the order of their text.
