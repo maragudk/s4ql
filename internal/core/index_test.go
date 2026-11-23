@@ -1658,8 +1658,7 @@ func TestScanIndex(t *testing.T) {
 			is.Error(t, core.ErrTooBig, err)
 		}
 		is.True(t, longest > 2000 && longest < 3000, fmt.Sprint(longest))
-		// The sorter holds the columns of the key once, as columns of the row, so its record is no
-		// longer than the row, and SQLite takes it.
+		// SQLite sorts by the 70 columns, under the largest length limit.
 		for _, scan := range []core.IndexScan{{Index: "wide_i"}, {Index: "wide_i", Backward: true}, {Index: "wide_i", Lower: core.Bound{Value: row(1006)[0]}}} {
 			is.Equal(t, 1, len(scanBy(t, tx, "wide", scan)), describeScan(scan))
 		}
@@ -1700,7 +1699,8 @@ func TestScanIndex(t *testing.T) {
 			is.Error(t, core.ErrTooBig, err)
 		}
 		is.True(t, longest > 2000 && longest < 3000, fmt.Sprint(longest))
-		for _, scan := range []core.IndexScan{{Index: "wide_i"}, {Index: "wide_i", Backward: true}, {Index: "wide_i", Lower: core.Bound{Value: row(0.0)[0]}}} {
+		// The last scan pins 6 columns, and leaves 64, the fewest that SQLite sorts by.
+		for _, scan := range []core.IndexScan{{Index: "wide_i"}, {Index: "wide_i", Backward: true}, {Index: "wide_i", Lower: core.Bound{Value: row(0.0)[0]}}, {Index: "wide_i", Equal: row(0.0, 1.0, 2.0, 3.0, 4.0, 5.0)}} {
 			is.Equal(t, 1, len(scanBy(t, tx, "wide", scan)), describeScan(scan))
 		}
 		is.NotError(t, tx.Commit(t.Context()))
@@ -2554,6 +2554,27 @@ func beginBig(t *testing.T, d *core.DB, read bool) (bigScanner, *core.Tx, int) {
 // index_cgo_test.go, for the binding whose [sqlite.Stmt.StepContext] stops a step.
 func TestScanIndex_context(t *testing.T) {
 	for _, read := range []bool{true, false} {
+		t.Run(fmt.Sprint("should give every row of a scan, sorted or not, whose context ends after its first row, in a read transaction ", read), func(t *testing.T) {
+			// SQLite counts the instructions of a statement over all its steps, so the steps after the
+			// first, which run to their end, run past the instructions at which it would look at the
+			// context.
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fillBig(t, d, "x")
+			s, _, total := beginBig(t, d, read)
+			for _, scan := range []core.IndexScan{{}, bigSorted} {
+				ctx, cancel := context.WithCancel(t.Context())
+				n := 0
+				for _, err := range s.ScanIndex(ctx, "big", scan) {
+					is.NotError(t, err)
+					n++
+					cancel()
+				}
+				cancel()
+				is.Equal(t, total, n, describeScan(scan))
+			}
+		})
+
 		t.Run(fmt.Sprint("should not count the rows that a sort read and did not give when the context has ended before the loop over it stops, in a read transaction ", read), func(t *testing.T) {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})

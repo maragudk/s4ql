@@ -26,6 +26,10 @@ const cacheVersion = 4
 // is also the largest that SQLite takes: SQLITE_MAX_LENGTH.
 const maxLength = 1_000_000_000
 
+// maxOrderedTerms is the most terms of an ORDER BY that SQLite compares with the order of an index:
+// it sorts by more, also where the index holds the rows in their order.
+const maxOrderedTerms = 63
+
 // conn is a connection to the cache, with the prepared statements and the tables that the
 // transaction that uses it has looked up. It is used by one goroutine at a time.
 type conn struct {
@@ -191,6 +195,30 @@ func (c *conn) query(sql string, row func(s *sqlite.Stmt) error, args ...any) er
 // ctx has ended, as [sqlite.Stmt.StepContext] says. It then fails with the error of ctx.
 func (c *conn) queryContext(ctx context.Context, sql string, row func(s *sqlite.Stmt) error, args ...any) error {
 	return c.queryWith(func(s *sqlite.Stmt) (bool, error) { return s.StepContext(ctx) }, sql, row, args...)
+}
+
+// queryUnlimited is [conn.query] of a statement that SQLite may sort, under SQLite's largest length
+// limit, as [conn.unlimited] says.
+func (c *conn) queryUnlimited(sql string, row func(s *sqlite.Stmt) error, args ...any) error {
+	return c.unlimited(func() error { return c.query(sql, row, args...) })
+}
+
+// unlimited runs f, which steps a statement that SQLite may sort, under SQLite's largest length
+// limit, and puts the limit of the connection back after it, also when f fails. SQLite builds a
+// record of what it sorts for each row, under the length limit, and that record is longer than the
+// row is in its table where a real of the row holds an integer, which the table keeps in fewer
+// bytes: without the larger limit, a row that the table holds under a small limit could not be
+// sorted. The limit bounds nothing else in a statement that only reads.
+func (c *conn) unlimited(f func() error) error {
+	if c.limit == maxLength {
+		return f()
+	}
+	// SetLengthLimit fails only on a closed connection or for a limit that is not positive, and the
+	// limit of the connection is positive. On a closed connection, f fails too.
+	_ = c.c.SetLengthLimit(maxLength)
+	err := f()
+	_ = c.c.SetLengthLimit(c.limit)
+	return err
 }
 
 // queryWith is [conn.query] with step for each step of the statement.
