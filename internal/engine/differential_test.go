@@ -3100,7 +3100,7 @@ func reachReturning(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, 
 	}
 }
 
-// reachInsertcounts what the insert s of the call c, whose outcome in the engine is outcome,
+// reachInsert counts what the insert s of the call c, whose outcome in the engine is outcome,
 // reaches on the database of o, as [reach] says.
 func reachInsert(t testing.TB, o *oracle, s *stmt.Insert, c stmttest.Call, outcome string, count func(string)) {
 	t.Helper()

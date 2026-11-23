@@ -261,7 +261,7 @@ mixed	11	3	reached: select * with NULL ok
 mixed	37	12	reached: select of a name that the table does not have no such column
 mixed	104	34	reached: select of names ok
 mixed	4	1	reached: select of names with NULL ok
-mixed	184	61	reached: table read back after an update or a delete
+mixed	185	61	reached: table read back after an update or a delete
 mixed	6	2	reached: update WHERE that reads a get of one key ok, rows changed
 mixed	9	3	reached: update WHERE that reads no row ok, no row found
 mixed	8	2	reached: update WHERE with a column in double quotes that the table does not have no such column
@@ -340,7 +340,6 @@ mixed	16	5	write transaction commit ok after a statement with RETURNING
 mixed	38	12	write transaction commit ok after an insert
 mixed	80	26	write transaction commit ok on a pinned connection
 mixed	86	28	write transaction commit ok through the pool
-mixed	3	1	write transaction commit ok while rows are open
 mixed	27	9	write transaction rollback ok after a create table
 mixed	12	4	write transaction rollback ok after a drop table
 mixed	65	21	write transaction rollback ok after a failed call
@@ -2669,7 +2668,6 @@ returning	25	8	write transaction commit ok after a statement with RETURNING
 returning	28	9	write transaction commit ok after an insert
 returning	23	7	write transaction commit ok on a pinned connection
 returning	38	12	write transaction commit ok through the pool
-returning	4	1	write transaction commit ok while rows are open
 returning	15	5	write transaction rollback ok after a failed call
 returning	10	3	write transaction rollback ok after a statement with RETURNING
 returning	9	3	write transaction rollback ok after an insert

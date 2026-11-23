@@ -1304,9 +1304,9 @@ type transaction struct {
 	opened, sFirst, oFirst string
 	// openedArgs are the arguments of the query of the rows that are left open.
 	openedArgs []any
-	// oAll are SQLite's rows but the first, each with its scan, of an insert, an update, or a delete
-	// with RETURNING whose rows s4ql left open, as [pair.openWrite] says, which ran once on each side;
-	// oRows is nil then.
+	// oAll are SQLite's rows, each with its scan, of an insert, an update, or a delete with RETURNING
+	// whose rows s4ql left open, as [pair.openWrite] says, which ran once on each side; oRows is nil
+	// then.
 	oAll []string
 	// wrote is set once an insert succeeded in the transaction, failed once a call failed in it,
 	// created and dropped once a create table or a drop table succeeded in it, and returned once an
@@ -1551,13 +1551,10 @@ func (p *pair) openWrite(src string, supported bool, runs [][]any, s, o runner, 
 	all := want.pairs()
 	t.sRows, t.oRows, t.opened, t.openedArgs, t.sFirst, t.oFirst = rows, nil, src, runs[0], first, first
 	p.note(src, got)
-	at := slices.Index(all, first)
-	if want.failed != "" || want.columns != got.columns || want.types != got.types || at < 0 {
-		t.oAll = all
+	t.oAll = all
+	if want.failed != "" || want.columns != got.columns || want.types != got.types || !slices.Contains(all, first) {
 		return got, fmt.Sprintf("%q with the arguments %#v: the first row of s4ql's rows of RETURNING that are left open is\n%v\nof the columns %q of the types %q, which is none of the rows that SQLite gives:\n%v", src, runs, first, got.columns, got.types, want.full())
 	}
-	// SQLite's rows but the one that is s4ql's first, which [pair.closeRows] compares with s4ql's rest.
-	t.oAll = slices.Delete(slices.Clone(all), at, at+1)
 	if p.y != nil {
 		p.y[t.kind()+": rows of RETURNING left open"]++
 	}
@@ -1608,7 +1605,7 @@ func (p *pair) closeRows() string {
 	sErr := t.sRows.Err()
 	write := t.oRows == nil
 	if write {
-		want = append(want, t.oAll...)
+		want = t.oAll
 	} else {
 		for t.oRows.Next() {
 			want = append(want, pairText(typedRow(tb, t.oRows)))
@@ -1796,6 +1793,13 @@ func (p *pair) end(c call) (outcome, string) {
 	t := p.tx
 	if t == nil {
 		return got, ""
+	}
+	if t.sRows != nil && t.oRows == nil {
+		// The rows of RETURNING of a write, of which only the first was compared: the rest, and the
+		// table after the statement, before the end of the transaction.
+		if failure := p.closeRows(); failure != "" {
+			return got, failure
+		}
 	}
 	p.tx = nil
 	open := t.sRows != nil
@@ -2003,8 +2007,9 @@ func returns(s stmt.Statement) bool {
 }
 
 // execByQuery is [run] on mattn's side of src, a statement with RETURNING, through the call c, with
-// the arguments of each run, which runs the statement once for each run. A QueryRow is a Query whose
-// rows are each a row that the QueryRow may give. mattn's Exec steps such a statement once and gives the count of changes
+// the arguments of each run. A QueryRow runs it once, with the arguments of the first run, through
+// Query, and its outcome holds each row that the QueryRow may give. mattn's Exec steps such a
+// statement once and gives the count of changes
 // that SQLite has then, which is that of the statement before: SQLite runs every change of the
 // statement in its first step, and counts them once the statement has run to its end. So a call of
 // Exec runs the statement through Query, as the query call of c, and reads its rows, and its count of

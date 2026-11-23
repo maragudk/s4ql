@@ -363,7 +363,9 @@ func (c *Conn) queryText(ctx context.Context, r *report, src string, args []*s4q
 	}
 	res, ret, err := c.write(ctx, r, p, text, args, true)
 	r.end(ctx, err)
-	if ret == nil {
+	if ret == nil || err != nil {
+		// A statement that fails gives no rows, whatever it holds: a row that a caller reads belongs to
+		// a change that is committed, or that its transaction made.
 		return &Rows{done: true, result: res}, err
 	}
 	// The statement has ended, and its event is logged: the rows read nothing, and their end ends

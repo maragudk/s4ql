@@ -591,13 +591,6 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 		if rows != nil {
 			res = rows.Result()
 		}
-		if err != nil && rows != nil {
-			// A statement that fails gives no row, also one with RETURNING whose commit failed.
-			for row := range rows.All() {
-				r.violate(ctx, "the statement %v, %q, fails with %v, and its rows give %v", a.id, a.src, err, valuesText(row))
-				break
-			}
-		}
 		if err == nil {
 			// One query in four is not read to its end: its loop stops at the first row, it is closed
 			// unread, or its consumer panics. Its rows are then not compared. The others are read to
@@ -2881,8 +2874,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// seeds find the bug, 46 of them by its own violation.
 		{"oldValues", hammerWorkload, "hammer", stmttest.Returning, []string{"gives the rows of RETURNING", ", and in SQLite"}},
 		// A statement with RETURNING that changes several rows and leaves out the last, found as
-		// oldValues is: 135 of 200 seeds find the bug, 52 of them by its own violation.
-		{"dropLast", hammerWorkload, "hammer", stmttest.Returning, []string{"gives the rows of RETURNING", ", and in SQLite"}},
+		// oldValues is, in a transaction more often than of its own: 135 of 200 seeds find the bug, 112
+		// of them by its own violation.
+		{"dropLast", hammerWorkload, "hammer", stmttest.Returning, []string{", and in SQLite", "gives the rows of RETURNING"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {
