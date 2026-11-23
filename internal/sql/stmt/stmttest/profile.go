@@ -91,6 +91,13 @@ type Profile struct {
 	// Returning, if not 0, makes one insert, update, or delete in Returning end with the RETURNING of
 	// slice 14, as [Sequence.returning] draws it; the area of the RETURNING is off with 0.
 	Returning int
+	// ByKey, if not 0, makes one update in ByKey change the row of a key: a WHERE of the key alone,
+	// equal to a value that an insert gave it, and a SET of columns outside the key only, as goqite's
+	// receive by id does.
+	ByKey int
+	// KeyLeftOut, if not 0, makes one insert in KeyLeftOut with a list leave out a key that has a
+	// default, so that the row gets the default as its key, as goqite's send does.
+	KeyLeftOut int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
@@ -141,7 +148,7 @@ var (
 	// and the columns of an index, and that fail on a constraint, also part-way through their rows,
 	// and in transactions, which its test begins more often.
 	Returning = &Profile{Name: "returning", Faults: []string{areaReturning}, Aim: 3, Weights: weights(2, 12, 5, 1, 7, 5, 2, 1), Where: 2, Indexes: 1,
-		Columns: 2, Defaults: 1, Parameters: 3, Transactions: 2, Keys: 2, Returning: 2}
+		Columns: 2, Defaults: 1, Parameters: 3, Transactions: 2, Keys: 2, Returning: 2, ByKey: 2, KeyLeftOut: 3}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].

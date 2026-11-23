@@ -544,6 +544,8 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 				return true
 			case c.Default.Value == nil:
 				return false
+			case c.PrimaryKey && q.profile.KeyLeftOut > 0 && r.IntN(q.profile.KeyLeftOut) == 0:
+				return true
 			case c.PrimaryKey:
 				return d.IntN(4) == 0
 			}
@@ -1388,6 +1390,9 @@ func (q *Sequence) missing(r Rand, shape []stmt.Column) string {
 func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition) {
 	r := q.rChanges
 	shape := q.shapeOf(table)
+	key := slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })
+	stored := q.stored[[2]string{table.Fold(), shape[key].Name.Value}]
+	byKey := q.profile.ByKey > 0 && len(shape) > 1 && len(stored) > 0 && r.IntN(q.profile.ByKey) == 0
 	order := make([]int, len(shape))
 	for i := range order {
 		order[i] = i
@@ -1396,8 +1401,12 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		j := r.IntN(i + 1)
 		order[i], order[j] = order[j], order[i]
 	}
+	if byKey {
+		// The columns outside the key, as many as for another update.
+		order = slices.DeleteFunc(order, func(position int) bool { return position == key })
+	}
 	order = order[:1+r.IntN(len(order))]
-	if len(order) > 1 && r.IntN(2) == 0 {
+	if len(order) > 1 && !byKey && r.IntN(2) == 0 {
 		order = slices.DeleteFunc(order, func(position int) bool { return shape[position].PrimaryKey })
 	}
 	missing := -1
@@ -1431,6 +1440,9 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		list, values = append(list, raw), append(values, v)
 	}
 	q.store(table, shape, list, values)
+	if byKey {
+		return set, []stmt.Condition{{Column: stmt.Name{Raw: q.spell(r, shape[key].Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[r.IntN(len(stored))]}}}
+	}
 	if r.IntN(4) == 0 {
 		return set, nil
 	}

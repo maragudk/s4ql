@@ -153,7 +153,7 @@ func TestNewSequence(t *testing.T) {
 			"mixed": "76f589c6340d488e", "tables": "29ebcd8aa183db68", "where": "4bda84f3f43b104a", "changes": "e9ff49a7282d4cf7",
 			"indexes": "414a9a700d02c392", "exists": "2b60aa13e8d46150", "defaults": "7691b53223e1efdf", "valuefirst": "d395629f1c472444",
 			"transactions": "d131350fa1745ac7", "arguments": "8c37d49ea586cc44", "order": "272db593f02cec3f",
-			"returning": "b778bf9d0efbc0f0",
+			"returning": "476d386f82e18b74",
 		}
 		is.Equal(t, len(Profiles), len(want))
 		for _, p := range Profiles {
