@@ -59,3 +59,64 @@ The rows of a RETURNING outside a transaction must not become `Conn.rows`: a sel
 ### Future work
 
 The driver's tests, the golden plans, the notes in `/docs/todo/slice-14.md`, the open item on memory, and the README of the engine.
+
+## Step 2: the driver, mattn, the golden plans, and the notes
+
+**Author:** builder of the engine step of slice 14
+
+### Prompt Context
+
+**Verbatim prompt:** the same brief as Step 1; this step is its part "Table tests [...] through the driver against mattn/go-sqlite3 in `internal/sqlite/crosscheck/drivercheck` [...] goqite's two statements as far as slices 1 to 14 take them [...] The commit-before-rows rule [...] Golden plans, if the plan of a writing statement is kept as a golden file anywhere".
+**Interpretation:** cover RETURNING through `database/sql` against mattn, pin goqite's statements, keep the access of the new statements in the golden plans, and write down the decisions.
+**Inferred intent:** the same as Step 1.
+
+### What I did
+
+`TestReturning` in `/conn_test.go` runs RETURNING through `database/sql`: direct, prepared, in a transaction with a roll back and a commit, the column types, `RowsAffected` of Exec, the errors, a replay on a second instance, and a commit whose outcome is unknown (the `faulty` store of `TestOutcomeUnknown`), which gives `ErrOutcomeUnknown` and no rows and commits once. `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go` has two sequences of slice 14, on `t5`, through every call, in transactions, with rows left open and a read-only transaction, and a subtest of `TestPair` with goqite's send through Query, a prepared query, and QueryRow, its select of the next message, and its receive by id, and a restart with an empty cache. The golden plans of goqite hold "receive by id" and "delete a queue with RETURNING" (`/internal/engine/access_test.go`, `/internal/engine/testdata/plans/goqite*.txt`). The decisions are in `/docs/todo/slice-14.md` under "The engine and the driver", and the open item on memory in `/docs/todo/storage-core.md`. A writer updates `/internal/engine/README.md` on a branch of its own.
+
+### Why
+
+The engine's differential tests compare with SQLite directly; the driver check adds what only `database/sql` and mattn show: the conversions of the values, `ColumnTypes`, and the count of changes of a connection.
+
+### What worked
+
+Once the mattn difference below was handled, both sequences passed on a pinned connection and through the pool at the first run.
+
+### What didn't work
+
+The first run of the sequences failed with three findings:
+
+```
+"update t5 set v2 = 'y' where v1 = 3 returning *" with the arguments [][]interface {}{[]interface {}(nil)}: s4ql gives
+    exec: 1 affected, last insert id 0
+and SQLite
+    exec: 2 affected, last insert id 0
+```
+
+mattn's Exec steps the statement once and reads `sqlite3_changes` then, and SQLite counts the changes of a statement with RETURNING only when it has run to its end, so mattn gives the count of the statement before (here 2). The pinned shell gives `changes()` 1 after the statement, as s4ql does. `execByQuery` now runs SQLite's side of an Exec of a statement with RETURNING through Query and counts its rows. The third failure was my sequence: `pair.whileRowsOpen` closes the rows that were left open after the first call, so a second refusal needs a second `callQueryOpen`.
+
+`make test` then failed in a test of slice 8 that pinned the old refusal:
+
+```
+--- FAIL: TestUpdateDelete/should_give_SQLite's_errors,_refuse_a_value_of_another_type_as_not_supported,_and_change_nothing (0.00s)
+    conn_test.go:1503: Not true
+    conn_test.go:1503: no error
+```
+
+It prepares `update u set s = 'x' returning s as x` now, which is refused for the alias. The first run of `TestReturning` hung: I opened a second instance with `w.serve` while the first still held the lease; it closes the first now, as `TestDefaults` does.
+
+### What I learned
+
+SQLite runs every change of a statement with RETURNING in its first step, so a QueryRow through mattn, which steps once, changes every row too, and so does s4ql; but the count of changes waits for the end of the statement.
+
+### What was tricky
+
+`callQueryOpen` of the driver check runs its text a second time to leave the rows open, which is harmless for a select and changes the database twice for a write. My sequences use it only with updates, whose second run changes the same rows to the same values.
+
+### What warrants review
+
+`execByQuery` in the driver check, which turns the outcome of a Query into that of an Exec; and whether treating the rows of a RETURNING in a transaction as a query's rows, with `ErrRowsOpen`, is what the lead wants, since they hold nothing.
+
+### Future work
+
+The generated checks (`stmttest.Generator.Returning` with a hook and a profile, and the simulation), and mutation testing, by the next builders. `pair.openRows` and the QueryRow of more than one column in the driver check run a text twice, which a generated write with RETURNING meets.

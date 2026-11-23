@@ -1499,8 +1499,8 @@ func TestUpdateDelete(t *testing.T) {
 		}
 		_, err := db.ExecContext(t.Context(), "update u set s = ? where k = ?", "x")
 		is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 2 parameters", fmt.Sprint(err))
-		_, err = db.PrepareContext(t.Context(), "update u set s = 'x' returning *")
-		is.Equal(t, "RETURNING clause (at offset 21)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "update u set s = 'x' returning s as x")
+		is.Equal(t, "alias (at offset 33)", notSupported(t, err))
 		is.Equal(t, "k INT, s TEXT, r REAL: 1 a 1.5; 2 <nil> 2.5; 3 c 3.5", rowsText(t, db, "select * from u"))
 	})
 

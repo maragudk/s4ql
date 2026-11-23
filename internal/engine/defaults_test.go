@@ -394,7 +394,7 @@ func TestEngine_defaults(t *testing.T) {
 		") strict, without rowid"
 	const goqiteIndex = "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"
 	const now = "2026-11-21T12:00:00.000Z"
-	// send is goqite's send, without its `returning id`, which a later slice brings, and with the id and
+	// send is goqite's send, without its `returning id`, which [TestConn_returning] runs, and with the id and
 	// the times, whose defaults are cut.
 	const send = "insert into goqite (id, created, updated, queue, body, timeout, priority) values (?, ?, ?, ?, ?, ?, ?)"
 
