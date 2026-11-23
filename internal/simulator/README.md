@@ -20,7 +20,7 @@ It exists for the simulator on the project's site, which is to show how the curr
 | `run` | A request: see [The request](#the-request). | The response: see [The response](#the-response). The run goes to its end before the engine answers. |
 | `state` | `{"t": T}` | The state of the last batch run at the time T: see [The state at a time](#the-state-at-a-time). |
 | `start` | The settings of a session: see [The settings](#the-settings). | Starts a session, and answers with its first events. A session that runs is ended first. |
-| `advance` | `{"by": D}` or `{"to": T}` | Moves the fake time of the session on by D, or to the time T, and answers with the events of the stretch. |
+| `advance` | `{"by": D}` or `{"to": T}`, each also with `"until": "sql"` | Moves the fake time of the session on by D, or to the time T, and answers with the events of the stretch. With `until`, it ends early, once the statement of the box has ended. |
 | `act` | An action as in a schedule, without `at`. | Does the action at the time of the session. |
 | `now` | `{}` or `{"commits": N}` | The state of the session now. |
 | `end` | `{}` | Ends the session, with the last checks of the invariants, the summary, and the hash. |
@@ -183,6 +183,25 @@ With `standby`, `a` starts alone, and the client waits. A task of the run waits 
 
 A page that shows an application and one database, as the simulator page does, starts a session with the client on `a`, `standby`, and no callers in the processes, `workload.callers` at 0. The instance that the client does not call then gets no call.
 
+### The box
+
+The box is the visitor's own way into the application: one statement of SQL at a time, which the action `sql` sends. The statement goes to the client's target as a call of the caller `box`, with the op `sql`. It runs on the engine of the target's process, as the calls of the application do, and its writes are commit objects of the same log.
+
+The call goes the way of the client's calls: see [Client](#client). A task of the run makes it. It ends with `down` when the target cannot take it, and with `lost` when the process crashes while the call is on it. Its timeout is `workload.timeout`, on the monotonic clock of the target's process. It has no `args` and no `value`, and it picks no key: it takes no value from the counter and no number from the seed.
+
+The box takes one statement at a time. An action `sql` that comes while a statement is on its way is ignored.
+
+The statement pass of the engine, `stmt.Check` of `internal/sql/stmt`, reads the text, and what it finds decides how the statement runs:
+
+- A select runs as the reads of the application do, as `Conn.Query` outside a transaction. It ends with `served`, with its position, or as a refusal, by its error: `failed` for an error of SQL, such as `no such column: x`. A text that the pass does not take runs in the same way, and the engine refuses it before it reads the database, with its own error.
+- Every other statement runs as the writes do: `Conn.Begin`, `Conn.Exec`, and `Conn.Commit`. It ends with `refused`, `stopped`, `busy`, `timed_out`, or `failed` if `Conn.Begin` fails, with `abandoned` if the statement fails, and with `committed`, `unknown`, or `not_committed` by its commit.
+
+The table `barcodes` is the application's, so the box can only select from it. An action whose statement is not a select and names `barcodes` is ignored, with the text `barcodes is the app's table, so the box can only select from it`. A statement names `barcodes` if the name of its table folds to `barcodes` as SQLite compares names, by `Name.Fold`, or the name of its index, for `create index` and `drop index`. A text that the statement pass does not take names nothing, because the engine refuses it before it can change a table.
+
+A write of the box learns the name of its commit object from the core's event `commit`, which the core logs on the context of the commit. A transaction that changed nothing, with the outcome `empty`, has a name too, of an object that is never written. So a write that changes nothing ends with `committed` and has no commit object.
+
+A select of the box reads every row that it gives, and its event holds the first 50 of them: see [call](#call). The engine yields between two rows, and the scheduler delays half of all yields by up to 50 ms, so a row costs about 12.5 ms of fake time. A select of 300 rows took about 3.8 s of fake time, and a select of some 2,400 rows would reach the timeout of 30 s.
+
 ### Schedule
 
 An action has the time `at`, from 0 to before `end`, the name `do`, and the parameters of its kind. Actions at the same time happen in the order of the schedule. `instance` is the name of an instance of the run. Every action also works in a session, as the body of the command `act`, without `at`.
@@ -212,8 +231,9 @@ An action has the time `at`, from 0 to before `end`, the name `do`, and the para
 | `failRequest` | `request`, optional `instance` | Arms a fault. The next matching request fails before it is sent. |
 | `workload` | `on` | Switches the callers on or off. |
 | `client` | `instance` | Points the client at the instance: see [Client](#client). |
+| `sql` | `sql` | One statement of the page's visitor. It goes to the client's target as a call of the caller `box`, in a task of the run, as a call of the client does: see [The box](#the-box). `sql` is the statement, valid UTF-8 of at most 1000 characters. The action takes no `instance`. |
 
-A missing `on` is false, so an action without it switches off.
+A missing `on` is false, so an action without it switches off. A `sql` on another action is an error, such as `write takes no sql`.
 
 An action that cannot be done is ignored. Its event says so, with the reason:
 
@@ -223,6 +243,9 @@ An action that cannot be done is ignored. Its event says so, with the reason:
 - `close` is ignored when the database is not open.
 - `open` is ignored while the database is open, also while a database that has stopped waits for its process to open it again.
 - `client` is ignored in a run without a client.
+- `sql` is ignored in a run without a client, with `the run has no client`.
+- `sql` is ignored while a statement of the box is on its way, with `a statement of the box is on its way`.
+- `sql` is ignored for a statement other than a select that names the table `barcodes`, with `barcodes is the app's table, so the box can only select from it`.
 
 `hangNetwork`, `disconnectNetwork`, and `failDisk` are done whether the process has crashed or not, because the fault belongs to the instance, whichever process runs it.
 
@@ -289,6 +312,8 @@ The engine refuses a bucket that no run of this engine could have left. The erro
 
 A bucket without a manifest is allowed, and so are commit objects outside the log.
 
+The log of a stored bucket can hold commit objects of [the box](#the-box), which change other tables than `barcodes`. The checks above read only the keys of `barcodes`, so they take these commit objects as they are, and the version is the same with them.
+
 The engine seeds the store before any instance starts, through a client of `simstore` with the name `seed`. The client has no sender, so it never crashes.
 
 1. It creates the commit objects, 32 side by side.
@@ -301,7 +326,7 @@ The requests of the seed are not in the trace. The engine drops every event `req
 
 The instances start at the end of the seed, at the time `from` of the history. `by` of the event `seeded` is the time of the history at the time 0 of the run: `from` less the time of the run at the end of the seed, or 0 if that is less, so the history never goes back before its start. The engine shifts the wall clock of every process of the run by `by` when the process starts, also after a restart, so the clock reads the time of the history. The `wall` of the events and the `renewed` of a lease are then times of the history. `t` still counts from the start of the run. The core reads the `renewed` of a manifest for no decision: it only writes it, in [internal/core/lease.go](../core/lease.go). So the shift changes no decision. It keeps the times that the commit objects and the manifest hold in one history.
 
-The checker takes the writes of the log of the bucket, its inserts and its deletes, as acknowledged before the run, in the order of the log. So every read of the run must see them. The application knows the rows of the state at the head, which are the keys that the log inserts less those that it deletes, in the order of their inserts. It knows no acknowledged delete at the start, so no call picks a key that the log deletes. The fold of the state puts the objects of the bucket into its bucket at the event `seeded`: see [The state at a time](#the-state-at-a-time).
+The checker takes the writes of the log of the bucket, its inserts, its deletes, and its commit objects by their names, as acknowledged before the run, in the order of the log. So every read of the run must see them. The application knows the rows of the state at the head, which are the keys that the log inserts less those that it deletes, in the order of their inserts. It knows no acknowledged delete at the start, so no call picks a key that the log deletes. The fold of the state puts the objects of the bucket into its bucket at the event `seeded`: see [The state at a time](#the-state-at-a-time).
 
 Without a bucket none of this happens: the store starts empty, no event `seeded` comes, and no clock is shifted.
 
@@ -322,7 +347,7 @@ The summary:
 
 | Field | Meaning |
 | --- | --- |
-| `calls` | The calls that ended, counted by `op` and `what`, such as `"write committed"`, `"delete committed"`, and `"read served"`. |
+| `calls` | The calls that ended, counted by `op` and `what`, such as `"write committed"`, `"delete committed"`, `"read served"`, and `"sql committed"`. |
 | `requests` | The events of the kind `request`, counted by `what`. A request counts once under each of its events: `sent`, `applied`, `answered`, and so on. |
 | `log` | The number of commit objects in the log at `end`, the same as the log of the state at `end`. |
 | `violations` | The events of the kind `check`. |
@@ -366,6 +391,8 @@ The default of `seed` is 1. A page that wants another run each time picks the se
 | `to` | 0 or above, and at most 1800000 after the time of the session | The time that fake time moves on to. A time that is not after the time of the session does nothing: the answer has the same `t` and no events. |
 
 The answer to an advance to the time T has the events up to the moment at which the controller wakes at T. Other tasks can have events at exactly T that come after that moment. They are in the answer to the next advance that moves fake time on.
+
+An advance also takes `until`, which must be `"sql"`. The advance then ends early, at the moment the task of the statement of [the box](#the-box) ends, which is right after the event that ends its call. If the statement is still on its way at the time of `by` or `to`, the advance ends there, as without `until`. Without a statement on its way, the advance does nothing: the answer has the same `t` and no events.
 
 `act` takes an action as [Schedule](#schedule) describes it, without `at`. The action happens at the time of the session. The answer has what the action does at once: its event `action`, and for some actions an effect, such as `crashed` before the event of a `crash`, and `started` and `opened` after that of a `restart`. What other tasks then do, such as the call of a `write`, comes with the next advance. The index `action` of the event counts the actions of the session from 0.
 
@@ -414,11 +441,13 @@ They are the same because the controller does what the first task of a batch run
 
 An advance that ends at a time without an action wakes the controller once more than a batch run wakes its first task. That is one more step of the scheduler and one more number drawn from the seed. From that time on, the session takes another turn than the batch run with the same seed, and its turn is as valid.
 
+An advance with `until` is not one of the advances that this section compares. It waits on the task of the box's statement, and a batch run has no such wait.
+
 The state that `now` gives is the fold of the events that the answers have brought so far, at the time of the session. A page that folds the events itself, by the rules of [The state at a time](#the-state-at-a-time), has the same state. The same test checks this after each action.
 
 ## The events
 
-Every event has `t`, its fake time, and `kind`. Most have `what`, which says what happened in a word. A field that does not apply is left out, and so is a number that is 0, a boolean that is false, and an empty text. `wall`, `monotonic`, `action`, and `on` are the exception: they are there when they apply, also at 0 and at false.
+Every event has `t`, its fake time, and `kind`. Most have `what`, which says what happened in a word. A field that does not apply is left out, and so is a number that is 0, a boolean that is false, and an empty text. `wall`, `monotonic`, `action`, `affected`, and `on` are the exception: they are there when they apply, also at 0 and at false.
 
 | Field | Meaning |
 | --- | --- |
@@ -474,39 +503,57 @@ A commit renews the lease too, so an instance that commits often logs few events
 
 ### call
 
-A call of the application: one write or read transaction.
+A call of the application, which is one write or read transaction, or a call of [the box](#the-box), which is one statement.
 
 | Field | Meaning |
 | --- | --- |
 | `call` | The number of the call, from 1, in the order in which the calls started. |
-| `caller` | `caller-0`, `caller-1`, and so on for the workload, `visitor` for an action, and `client` for the client. |
-| `op` | `write` for an insert, `delete`, or `read`. |
-| `value` | The key that an insert inserts, a barcode of 13 digits. A delete has none. |
-| `sql`, `args` | The statement of the call, `insert into barcodes (code) values (?)`, `delete from barcodes where code = ?`, or `select code from barcodes where code = ?`, and its argument in a list: the key that the call inserts, deletes, or selects. They are on every event of the call. |
+| `caller` | `caller-0`, `caller-1`, and so on for the workload, `visitor` for an action, `client` for the client, and `box` for the box. |
+| `op` | `write` for an insert, `delete`, or `read`, and `sql` for a call of the box. |
+| `value` | The key that an insert inserts, a barcode of 13 digits. A delete and a call of the box have none. |
+| `sql`, `args` | The statement of the call, `insert into barcodes (code) values (?)`, `delete from barcodes where code = ?`, or `select code from barcodes where code = ?`, and its argument in a list: the key that the call inserts, deletes, or selects. A call of the box has the visitor's text as `sql`, and no `args`. They are on every event of the call. |
 | `expect` | What a read expects, `row` or `none`: see [Workload](#workload). It is on every event of a read. |
 | `started` | When the call started. It is on the event that ends the call. |
-| `keys`, `position` | What a read that was served saw: its key if it found the row, and its position. |
+| `keys`, `position` | What a read that was served saw: its key if it found the row, and its position. A select of the box that was served has its position, and no `keys`. |
+
+The event that ends a call of the box also has what the statement gave:
+
+| Field | Meaning |
+| --- | --- |
+| `columns` | The names of the columns of a select that was served. |
+| `rows` | Its first 50 rows. Each is a list with one cell for each column. A select that gave no row has an empty list. |
+| `count` | The number of all its rows. It is left out at 0, as any number. |
+| `affected` | The number of rows that a write changed, when the statement counts them: an insert, an update, or a delete. It is there also at 0. |
+| `commit` | The name of the commit object of a write, if it wrote one. |
+
+A cell is `null` for NULL. Any other cell is an object:
+
+| Field | Meaning |
+| --- | --- |
+| `type` | `integer`, `real`, `text`, or `blob`. |
+| `value` | The value as text. An integer is its decimal digits. A real is as SQLite prints it, with 15 significant digits and a decimal point. Text is cut at 200 characters. A blob is the hexadecimal of its first 200 bytes. |
+| `cut` | True when the text or the blob is longer than `value` holds. |
 
 Every call has the event `started`, and one event when it ends:
 
 | `what` | Meaning |
 | --- | --- |
-| `committed` | The write is committed, and the caller knows it. |
+| `committed` | The write is committed, and the caller knows it. A write of the box that changed nothing ends this way too, without `commit`. |
 | `unknown` | The commit ended with an unknown outcome. |
 | `not_committed` | The commit failed, and the transaction is not committed. |
 | `abandoned` | The write failed before its commit and was rolled back. |
-| `served` | The read was served. On a database without the table, with no keys and the error `no such table: barcodes`. |
+| `served` | The read, or the select of the box, was served. A read on a database without the table is served with no keys and the error `no such table: barcodes`. |
 | `refused` | The instance has no valid lease. `error` ends with the reason of the core. |
 | `stopped` | The instance has stopped, or its database is closed. |
 | `busy` | The cache was busy. |
 | `timed_out` | The timeout of the call ended before the transaction started. |
-| `failed` | Any other error, also that the process has no database open. |
-| `down` | A call of the client that its target could not take. `error` says why: see [Client](#client). |
-| `lost` | A call of the client that was on its target when the process crashed. For a write the outcome is unknown. |
+| `failed` | Any other error, also that the process has no database open, and an error of SQL in a select of the box. |
+| `down` | A call of the client or of the box that its target could not take. `error` says why: see [Client](#client). |
+| `lost` | A call of the client or of the box that was on its target when the process crashed. For a write the outcome is unknown. |
 
-`instance` and `process` of every event of a call are where the call went. The event that starts a call of the client is at the time it was sent. Its call is then made in a task of the process, which can start up to 50 ms later. A call of the client to an instance that has not started has no `process`.
+`instance` and `process` of every event of a call are where the call went. The event that starts a call of the client or of the box is at the time it was sent. Its call is then made in a task of the process, which can start up to 50 ms later. A call of either to an instance that has not started has no `process`.
 
-A call of a caller or of a visitor that is on its way when its process crashes has no event that ends it. One of the client ends with `lost`.
+A call of a caller or of a visitor that is on its way when its process crashes has no event that ends it. One of the client or of the box ends with `lost`.
 
 ### request
 
@@ -591,6 +638,7 @@ One event for each action of the schedule, at its time, and one for each `act` o
 | `what` | `done`, `ignored`, or `failed` for a `restart` whose cache could not be copied. |
 | `text` | `done`, or why the action was ignored or failed. |
 | `instance`, `process`, `for`, `by` | Those of the action. `process` is the process of the instance when the action came, so the crashed one for a `restart`. It is missing on an action that was ignored for a crashed process. |
+| `sql` | The statement of a `sql`. A `sql` that is done has `instance` too, the target that its call goes to, and no `process`. |
 | `on` | What the action switched to, true or false, on `workload`, `hangNetwork`, `disconnectNetwork`, and `failDisk`. |
 
 `process` is also missing on an action for an instance that has not started.
@@ -695,22 +743,37 @@ A crash ends the calls of its process in the fold, and every wait of the process
 
 ## The invariants
 
-The engine checks six invariants during the run and at its end. The end of a session is its command `end`, so a session that is not ended gets only the checks during the run. A violation is an event of the kind `check`. The checker sees what an application and the store see: how each call ends, what each read returns, and the objects that the store applies. A write is an insert or a delete. A key is inserted by one transaction and deleted by at most one, so a key and whether its write deletes tell the transactions apart.
+The engine checks six invariants during the run and at its end. The end of a session is its command `end`, so a session that is not ended gets only the checks during the run. A violation is an event of the kind `check`. The checker sees what an application and the store see: how each call ends, what each read returns, and the objects that the store applies.
 
-"The log" is the chain of commit objects from the head of the manifest back to the empty log. The rows of the log up to a position are the keys that its commit objects up to there insert, less those that they delete. A read selects the row of one key; its position says which writes its state has besides. After a start on a [stored bucket](#a-stored-bucket), the writes of its log, inserts and deletes, count as acknowledged before the run, in the order of the log.
+The checker knows a write in one of two ways:
+
+- A write of the workload is an insert or a delete, and is known by its key. A key is inserted by one transaction and deleted by at most one, so a key and whether its write deletes tell the transactions apart.
+- A commit object is known by its name. Every commit object of the log is the write of its name, beside the writes of the workload that it holds. A write of [the box](#the-box) is known by the name of its commit object only, the `commit` of the event that ends its call: it changes no row of `barcodes`, so it has no key.
+
+"The log" is the chain of commit objects from the head of the manifest back to the empty log. The rows of the log up to a position are the keys that its commit objects up to there insert, less those that they delete. A read selects the row of one key; its position says which writes its state has besides. After a start on a [stored bucket](#a-stored-bucket), the writes of its log, which are its inserts, its deletes, and its commit objects, count as acknowledged before the run, in the order of the log.
 
 | `invariant` | Checked | Meaning |
 | --- | --- | --- |
 | `chain` | At every write of the manifest that the store applies. | The manifest moves its head only to a commit object that is in the store and whose parent is the head before. So the log is one chain. |
 | `acknowledged` | When a write ends with `committed`, and at the end. | A commit that was acknowledged is in the log: once when it is acknowledged, and still at the end. |
-| `not_committed` | At the end. | A write that ended with `not_committed` is not in the log, and neither is a write of the client that ended with `down`, which was never made. |
+| `not_committed` | At the end. | A write that ended with `not_committed` is not in the log, and neither is a write of the client that ended with `down`, which was never made. Every insert and every delete of a key of `barcodes` in the log comes from a call of the application or from the log of a stored bucket. |
 | `once` | At the end. | No insert and no delete is in the log twice, and the log deletes a row only at a position where it holds the row. |
 | `state` | When a read is served. | The read saw a state that the log had: its position is the empty log or a commit object of the log, and it gives the row of its key, once, if the rows of the log up to that position have it, and no row otherwise. |
 | `fresh` | When a read is served, and at the end. | The read saw every write that was acknowledged before the read started. It also saw every write that returned with an unknown outcome before the read started and that the log holds at the end, which includes a write of the client that ended with `lost`. It saw a write, an insert or a delete, of its own key or of another, if the state at its position holds the commit object of the write: the commit object of the position, or one of its ancestors in the store. A read gets at most one violation in each of the two checks. |
 
 `acknowledged` and `not_committed` hold for a delete as for an insert. `fresh` checks only the position of a read, and `state` checks its row at that position. So a read that gives the wrong row, or none, at a position that holds every write that it must see is a violation of `state` alone. A delete that has not ended asks nothing of a read: a read at a position before the delete gives the row, a read at a position after it gives none, and both are legal. A delete of unknown outcome that the log does not hold at the end asks nothing of a read either.
 
-The checker checks a read in a time that does not grow with the log while the log is one chain: it keeps the index in the log of the commit object that inserts each key and of the one that deletes it, and of the latest acknowledged write. A read that this fast check does not pass is checked again against the chain from the head, which decides. A second insert of a key in the log, and a delete of a row that the log does not hold there, end the fast check: the checker then checks every read against the chain from the head. `check_internal_test.go` checks every read of the keys 0 to 4, giving every set of four keys, at every position both ways: both find the same violations, and the fast check passes every read without one. It does so on a log of three inserts, and on that log with a delete of the key 1, once acknowledged and once of unknown outcome, and an acknowledged insert of the key 4 after it.
+The invariants hold for the box as follows:
+
+- **`chain`.** It holds for every write of the manifest, whichever call committed.
+- **`acknowledged`.** A write of the box that ended with `committed` and has a commit object is in the log, when it is acknowledged and at the end.
+- **`not_committed`.** A write of the box that ended with `not_committed` and has a commit object is not in the log at the end.
+- **`not_committed`, for the table of the application.** Every insert and every delete of a key of `barcodes` that the log holds at the end comes from a call of the application or from the log of a stored bucket. One that no call made is a violation, such as `the log holds the insert of 7, which the app did not make`. The checker learns each write of the application when its call starts. This is how the checker catches a change to the rows of `barcodes` that the application did not make.
+- **`once`.** It is as it is without the box. A commit object cannot be in the log twice, because it names its parent.
+- **`state`.** Of a select of the box, only the position is checked: it is the empty log or a commit object of the log. Its rows are not checked, because the checker cannot tell which rows an arbitrary select must give.
+- **`fresh`.** It holds for the reads of the application and for the selects of the box alike. The state at the position of either holds every write that was acknowledged before it started, of the application or of the box, and every write of unknown outcome that returned before it started and that the log holds at the end. After a start on a stored bucket, every commit object of its log counts as acknowledged, also one of the box. A select of the box is excused as a read is.
+
+The checker checks a read in a time that does not grow with the log while the log is one chain: it keeps the index in the log of the commit object that inserts each key and of the one that deletes it, and of the latest acknowledged write. It finds the index of a commit object, for a write of the box, by the position of the commit object in the log. A read that this fast check does not pass is checked again against the chain from the head, which decides. A second insert of a key in the log, and a delete of a row that the log does not hold there, end the fast check: the checker then checks every read against the chain from the head. `check_internal_test.go` checks every read of the keys 0 to 4, giving every set of four keys, at every position both ways: both find the same violations, and the fast check passes every read without one. It does so on a log of three inserts, and on that log with a delete of the key 1, once acknowledged and once of unknown outcome, and an acknowledged insert of the key 4 after it. It runs each of these again with a commit object of the box between the second and the third, once acknowledged, once of unknown outcome, and once not ended, and it checks a select of the box at every position of each log in the same way.
 
 Only `fresh` can be excused. The design accepts a read that misses a commit on a process whose two clocks both went wrong in the direction that keeps a lease alive too long. A violation of `fresh` is excused if, by the time of the check, the monotonic clock of the read's process has been stopped, and its wall clock has been stopped or shifted backward. `pauseClocks` stops both.
 
@@ -720,6 +783,7 @@ What the checker cannot see, and how far it is tested:
 
 - It sees nothing inside the core: no cache except through the reads, and nothing of what an instance believes about its lease.
 - It checks reads that were served. For a write that ended in another way than `committed`, `unknown`, `lost`, `not_committed`, or `down`, such as `abandoned`, it does not check that the log lacks it.
+- Of the box it checks only what the list above names. It does not check the rows of a select of the box. It does not check a write of the box whose commit object it does not know: one that changed nothing, one that failed before its commit, and one whose process crashed before the core logged the commit. It checks nothing of `barcodes` besides its rows, such as an index on it, which the refusal of the action keeps out instead.
 - It can be tested only on input made for it, in `check_internal_test.go`. The core cannot be made to break an invariant from outside its package, and planted bugs are left out of the simulator on purpose. The tests of the runs expect no violation that is not excused.
 
 ## What the code does under each action
@@ -867,7 +931,7 @@ const { summary, hash } = await engine.end();
 | `run(request)` | Runs the request, an object, and resolves with the response as an object. It rejects with an `Error` that has the response's `error` if the engine refuses the request. |
 | `state(t)` | Resolves with the state of the last batch run at `t`. It rejects if there is no run yet. |
 | `start(session)` | Starts a session with the settings, an object, by default `{}`, and resolves with the answer to `start`. It ends the session that runs. |
-| `advance(ms)` | Sends `advance` with `by`: moves the fake time of the session on by `ms`. |
+| `advance(ms, until)` | Sends `advance` with `by`: moves the fake time of the session on by `ms`. It sends `until` too when it is given: `advance(ms, 'sql')` ends once the statement of the box has ended. |
 | `advanceTo(t)` | Sends `advance` with `to`: moves the fake time of the session on to `t`. |
 | `act(action)` | Does the action, an object without `at`, at the time of the session. |
 | `now(commits)` | Resolves with the answer to `now`, whose `state` is the state of the session. With `commits` above 0, the bucket lists only that many of the last commit objects. |
@@ -928,9 +992,10 @@ The tests of `internal/simulator` run natively and in Chromium. They show:
 - **Actions on the holder of the lease** (`run_test.go`), in runs of two instances. Under a hang and under a disconnect of its network, no request of the holder is sent, its renewals end with an unknown outcome, and the other instance takes the lease. A disconnect ends the wait for a request that is on its way. A failing disk stops the core, the opens fail again and again, and the first open after the disk works succeeds. Paused clocks stop the calls and the requests of the process, and every violation after the resume is excused. A close releases the lease, and the other instance takes it within 5 s. A fault of an instance is switched also when its process has crashed, and `pauseClocks` is ignored then.
 - **A live session** (`live_test.go`): the same events, steps, summary, and hash as a batch run with the same actions at the same times, for three seeds, with every action, every fault, and buggify, and the state of `now` after each action against the fold of the events so far. The same for three seeds with the client, `standby`, and switches of the client, also before the other instances have started. Fake time does not move between commands: `t` and `steps` stay the same over 50 commands `now`, with `runtime.Gosched` between them. The events of an advance lie in its stretch. A malformed command is refused, and the session goes on. A command without a session gets an error, also after `end`. A new `start` ends the session that runs. `now` with `commits` lists only the last commit objects, with the two counts. The steps, the events, and the bytes of the events of a fake minute, as the mean of minutes 50 to 60 of a session, are less than 15% above those of minutes 10 to 20, with the defaults and with the client, `standby`, and no callers.
 - **The client** (`client_test.go`), with `standby` and no callers. `a` takes the lease before `b` starts, and the first call of the client comes after that. The client keeps calling `a` through a crash and a restart, a close and an open, and a failing disk: `down` while `a` cannot take its calls, and `refused` once `a` stands by. A switch moves its calls to `b`, and a call that was on `a` at the switch ends on `a`. The instance that the client does not call gets no call. A write that a hang holds on `a` when `a` crashes ends with `lost` at the crash. Actions on an instance that has not started are ignored, except the faults of the instance. Over 24 seeds with every fault, crashes, closes, and switches, every call ends once on the instance and process it started on, and no violation is not excused. Writes are lost at crashes in those runs, and some of them are in the log at the end: with `lost` counted as `not_committed`, the same runs have violations of `not_committed`.
+- **The box** (`box_test.go`), in sessions with the page's settings. Statements run on the client's target: a create, three inserts, a select with `order by` and `limit` that gives each type of value, and an update and a delete with their counts. A write that changes nothing has no commit object. A select of `barcodes` holds at most 50 rows, with the count of all of them. The engine's errors come in its own words: `UNIQUE constraint failed: t.k`, `no such column: missing`, and a syntax error. The commit objects of the box are in the log with their statements, and no invariant is violated. Eight statements that name `barcodes` are refused, and a select of it is allowed. The box takes one statement at a time, and an advance with `until` stops just after the statement ends. A write ends with `not_committed` under a hung network, with `down` on a crashed instance, and with `refused` on the instance that stands by. The visitor's table and index are there after a reload. A session gives the same events and hash as a batch run with the same statements of the box. Three seeds with every fault, a crash, and statements of the box have no violation that is not excused. A statement of more than 1000 characters is refused, and so are a `sql` on another action, an `instance` on `sql`, and another `until` than `sql`.
 - **Faults** (`run_test.go`): each fault of the store, damaged downloads, and buggify show their events, with no violation. Under every fault at once, the engine knows every line of the store.
 - **The state** (`state_test.go`): the position of each cache, folded from the events of the core alone, against what each read saw. The log. A request and a call in flight, from their start to their end.
-- **The checker** (`check_internal_test.go`): each invariant on input made to break it, also by a write of the client that ended with `down` or `lost`, by a read that misses its row, gives another or gives it twice, by one that misses the write of its key, and by one at a state without the write of another key, and the excuse of `fresh`. After a start on a stored log, a read at the empty log violates `fresh`, and a read at the head that misses its row of the stored log violates `state`, both by the fast check and by the slow one. For deletes: an acknowledged delete that the log lacks, by both checks; a delete that failed and that the log holds; a delete that the log holds twice, a delete of a row that the log never held, and a delete before its insert; a read that gives a deleted row at its position, by both checks; a read at a state without an acknowledged delete of its key, or of another key, and its excuse on a process whose two clocks went wrong; a read at a state without a delete of unknown outcome that the log holds at the end; a read that misses a row that the log never deleted; and a stored log that deletes, with reads that agree with it, a read that misses a row of it, and a read before its delete. The fast check and the slow one find the same violations for every read of five keys, also on a log with a delete. The picks of the calls: a delete picks only a known key that no delete has picked, and leaves the last known key alone. No read selects a key while its delete runs. A key in limbo and a key that is known again are deleted no more. One read in eight selects one of the 10 newest acknowledged deletes.
+- **The checker** (`check_internal_test.go`): each invariant on input made to break it, also by a write of the client that ended with `down` or `lost`, by a read that misses its row, gives another or gives it twice, by one that misses the write of its key, and by one at a state without the write of another key, and the excuse of `fresh`. After a start on a stored log, a read at the empty log violates `fresh`, and a read at the head that misses its row of the stored log violates `state`, both by the fast check and by the slow one. For deletes: an acknowledged delete that the log lacks, by both checks; a delete that failed and that the log holds; a delete that the log holds twice, a delete of a row that the log never held, and a delete before its insert; a read that gives a deleted row at its position, by both checks; a read at a state without an acknowledged delete of its key, or of another key, and its excuse on a process whose two clocks went wrong; a read at a state without a delete of unknown outcome that the log holds at the end; a read that misses a row that the log never deleted; and a stored log that deletes, with reads that agree with it, a read that misses a row of it, and a read before its delete. For the box: an insert and a delete of `barcodes` that the app did not make; an acknowledged write of the box that the log lacks, by both checks; a write of the box that failed and that the log holds; a read of the app at a state without an acknowledged write of the box, by both checks; a select of the box at a state without an acknowledged write of the app, and at one without an acknowledged write of the box, which is excused on a process whose two clocks went wrong; a select of the box at a position that is not in the log; a select of the box at a state without a write of the box of unknown outcome that the log holds at the end; and writes and selects of the box that agree with the log, also with a stored log that holds commit objects of the box. The fast check and the slow one find the same violations for every read of five keys, also on a log with a delete and on one with a commit object of the box, and for a select of the box at every position. The picks of the calls: a delete picks only a known key that no delete has picked, and leaves the last known key alone. No read selects a key while its delete runs. A key in limbo and a key that is known again are deleted no more. One read in eight selects one of the 10 newest acknowledged deletes.
 - **The SQL** (`run_test.go`): the first commit object holds the `create table` and the insert. Each later one inserts one key, or deletes one that a commit object before it inserted and none deleted, with the key as argument. The events of a delete have its statement and no `value`, and a delete that is committed is in a commit object. The keys are barcodes of EAN-13, distinct and not rising. Every read gives what it expects, the row of its key or no row for a key that a commit object deleted, or no row where a delete of its key committed while it ran. A run whose first inserts all fail makes only inserts.
 - **A stored bucket** (`bucket_test.go`, `bucket_internal_test.go`). A session that ends and starts again on the bucket that it kept goes on, with the page's settings: `a` opens once, reads give rows from before, new inserts take new keys, an instance takes the lease from the earlier holder, and no invariant is violated. The first session deletes, and no call of the second picks a key that the first deleted. The same holds for three seeds with three instances and every fault, with a crash, a hang, a disconnect, a restart, and a lost answer before the second start, and a crash and a `calm` after it. The changes of every answer are the objects of its events `applied`, also for a write whose answer is lost. The same bucket, counter, time, and seed give the same events and hash. The wall clocks and the commit objects start at the time of the history, and the fold has the version of the manifest from `seeded`. A damaged bucket is refused, and the session that runs goes on: another version, the head missing, a commit object in the middle of the log missing, a manifest that is none, a commit object with a byte changed, a key outside the prefix, a counter behind the log, and a key twice. `TestSeed_readLog` takes a log that deletes rows that it holds, and refuses a delete of a row that the log never held, a delete before its insert, and a delete twice. The objects of a database stay under its prefix. Undoing the barcode finds every value up to the counter, and no other key.
 
