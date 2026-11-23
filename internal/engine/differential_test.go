@@ -3829,8 +3829,9 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		profile *stmttest.Profile
 		// least is the number of the n sequences that must find the bug by its own failure, a third of
 		// what they found on 2026-11-21 and at least 1: 21 and 15 of 30, each by the rows of a select
-		// or by the count of an update or a delete that differ from SQLite's, and for the bugs of slice
-		// 13 2 of 30, 6 of 12, 4 of 9, 4 of 30, and 7 of 12.
+		// or by the count of an update or a delete that differ from SQLite's, for the bugs of slice 13 2
+		// of 30, 6 of 12, 4 of 9, 4 of 30, and 7 of 12, and for those of slice 14 11, 16, 11, and 16 of
+		// 30 on 2026-11-23, each by the rows of RETURNING that differ from SQLite's.
 		least int
 		// finds holds a part of each failure that the bug causes, its own first, by which least of the
 		// sequences must find it, or is nil for any failure. For the bugs of slice 13 its own is the
@@ -3851,8 +3852,8 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"ascendLast", stmttest.Order, 1, []string{"where SQLite has the rows"}, 9},
 		{"skipGap", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses", "the select gives the rows"}, 0},
 		{"lastIndexWins", stmttest.Order, 2, []string{"and the model chooses"}, 12},
-		{"oldValues", stmttest.Returning, 4, []string{"\nand SQLite\n"}, 0},
-		{"deleteNone", stmttest.Returning, 4, []string{"\nand SQLite\n"}, 0},
+		{"oldValues", stmttest.Returning, 3, []string{"\nand SQLite\n"}, 0},
+		{"deleteNone", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
 		{"dropLast", stmttest.Returning, 3, []string{"\nand SQLite\n"}, 0},
 		{"starKeyFirst", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
 	} {

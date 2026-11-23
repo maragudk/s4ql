@@ -2868,8 +2868,20 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// A sort by a descending last column of ORDER BY sorts it ascending: in the hammer environment,
 		// as for turnMixed, 118 of 200 seeds find the bug, each by its own violation.
 		{"ascendLast", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
+		// A statement with RETURNING of its own through Query whose commit failed gives its rows
+		// without the error, so its caller takes it for committed, and it is not in the log. The bug
+		// needs a commit that fails, which every fault of the store gives, of a statement with RETURNING
+		// through Query, which the profile of RETURNING weighs; the hammer environment, which has no
+		// crashes, plays the same seeds under the address sanitizer: 71 of 200 seeds find the bug, each
+		// by its own violation.
 		{"rowsOfFailed", hammerWorkload, "hammer", stmttest.Returning, []string{"is not in the log"}},
+		// An update with RETURNING that gives the rows as they were: of its own, its rows differ from
+		// those that SQLite gives for its commit in the log, and in a transaction from SQLite's on the
+		// state that the transaction saw. In the hammer environment, as for rowsOfFailed: 132 of 200
+		// seeds find the bug, 46 of them by its own violation.
 		{"oldValues", hammerWorkload, "hammer", stmttest.Returning, []string{"gives the rows of RETURNING", ", and in SQLite"}},
+		// A statement with RETURNING that changes several rows and leaves out the last, found as
+		// oldValues is: 135 of 200 seeds find the bug, 52 of them by its own violation.
 		{"dropLast", hammerWorkload, "hammer", stmttest.Returning, []string{"gives the rows of RETURNING", ", and in SQLite"}},
 	}
 	shard := testshard.Get(t)
