@@ -2688,6 +2688,92 @@ func TestTx_tooBig(t *testing.T) {
 		}
 	})
 
+	t.Run("should commit the longest row that a table takes by a primary key of 64 columns, which SQLite sorts, and its delete", func(t *testing.T) {
+		// SQLite sorts the rows of the commit by a key of more than 63 columns, in a record of the key
+		// and the row for each row, which is longer than the row.
+		w := newWorld(t)
+		// The statement of the table in the cache is longer than the limit of the other tests.
+		wide, limit := tableOf("wide", 64, manyColumns(65)...), 3000
+		d := w.serve(t, "a", core.Options{LengthLimit: limit})
+		wide.GetColumns()[64].SetType(s4qlpb.Type_TYPE_TEXT)
+		transact(t, d, createWith(wide))
+		values := make([]any, 65)
+		for i := range 64 {
+			values[i] = 1000 + i
+		}
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		// The longest text with which SQLite takes the row.
+		longest := -1
+		for n := limit; n > 0; n-- {
+			values[64] = strings.Repeat("x", n)
+			err := tx.Upsert(t.Context(), "wide", row(values...))
+			if err == nil {
+				longest = n
+				break
+			}
+			is.Error(t, core.ErrTooBig, err)
+		}
+		is.True(t, longest > limit/2, fmt.Sprint(longest))
+		is.NotError(t, tx.Commit(t.Context()))
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		got, err := r.Get(t.Context(), "wide", row(values[:64]...))
+		is.NotError(t, err)
+		is.Equal(t, longest, len(got[64].GetText()))
+		is.NotError(t, r.Close(t.Context()))
+
+		write(t, d, func(tx *core.Tx) {
+			found, err := tx.Delete(t.Context(), "wide", row(values[:64]...))
+			is.NotError(t, err)
+			is.True(t, found)
+		})
+		r, err = startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		got, err = r.Get(t.Context(), "wide", row(values[:64]...))
+		is.NotError(t, err)
+		is.True(t, got == nil)
+	})
+
+	t.Run("should give the longest key that a set takes by a primary key of 64 columns, which SQLite sorts", func(t *testing.T) {
+		w := newWorld(t)
+		// The statement of the table in the cache is longer than the limit of the other tests.
+		wide, limit := tableOf("wide", 64, manyColumns(64)...), 3000
+		d := w.serve(t, "a", core.Options{LengthLimit: limit})
+		wide.GetColumns()[63].SetType(s4qlpb.Type_TYPE_TEXT)
+		transact(t, d, createWith(wide))
+		values := make([]any, 64)
+		for i := range 63 {
+			values[i] = 1000 + i
+		}
+		write(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.Keys(t.Context(), "wide", func(k *core.KeySet) error {
+				// The longest text with which the set takes the key.
+				longest := -1
+				for n := limit; n > 0; n-- {
+					values[63] = strings.Repeat("x", n)
+					err := k.Add(t.Context(), row(values...))
+					if err == nil {
+						longest = n
+						break
+					}
+					is.Error(t, core.ErrTooBig, err)
+				}
+				is.True(t, longest > limit/2, fmt.Sprint(longest))
+				is.NotError(t, k.Add(t.Context(), row(append(slices.Clone(values[:63]), "a")...)))
+				n := 0
+				for key, err := range k.All(t.Context()) {
+					is.NotError(t, err)
+					is.Equal(t, 64, len(key))
+					n++
+				}
+				is.Equal(t, 2, n)
+				return nil
+			}))
+		})
+	})
+
 	t.Run("should fail the transaction for an upsert or a delete that fails locally, also where it records the keys that it touched", func(t *testing.T) {
 		// The keys take more pages than SQLite's page caches hold, so SQLite writes pages of the
 		// table to the write-ahead log, and pages of the temporary tables of the keys that the

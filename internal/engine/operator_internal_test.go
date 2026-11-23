@@ -596,6 +596,29 @@ func TestValues(t *testing.T) {
 	})
 }
 
+func TestLimit(t *testing.T) {
+	f := newFake().with("t1", []string{"a"}, []int64{1}, []int64{2}, []int64{3})
+	v := &scan{r: fakeTx{f}, table: f.tables["t1"].ct}
+
+	t.Run("should give the first n rows of its source, and none for 0", func(t *testing.T) {
+		for n, want := range map[int64]string{0: "[]", 1: "[1]", 2: "[1 2]", 3: "[1 2 3]", 5: "[1 2 3]"} {
+			rows, err := collect(t.Context(), &limit{src: v, n: n})
+			is.NotError(t, err)
+			is.Equal(t, want, fmt.Sprint(rows), fmt.Sprint(n))
+		}
+	})
+
+	t.Run("should end with the error of a context that ended, also with an n of 0, and give no row", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		for _, n := range []int64{0, 2} {
+			rows, err := collect(ctx, &limit{src: v, n: n})
+			is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(n))
+			is.Equal(t, "[]", fmt.Sprint(rows), fmt.Sprint(n))
+		}
+	})
+}
+
 func TestProject(t *testing.T) {
 	t.Run("should give the columns at its positions, and pass on an error and an early stop", func(t *testing.T) {
 		f := newFake().with("t1", []string{"a", "b", "c"}, []int64{1, 2, 3}, []int64{4, 5, 6})
@@ -773,6 +796,18 @@ func TestFilter(t *testing.T) {
 			is.True(t, errors.Is(err, f.indexesFails), src)
 			is.Equal(t, "[table t indexes t]", fmt.Sprint(f.calls), src)
 			is.Equal(t, 0, f.scanned, src)
+		}
+	})
+
+	t.Run("should not read the indexes of the table of a select without WHERE and ORDER BY, with a LIMIT or without", func(t *testing.T) {
+		for _, src := range []string{"select * from t", "select * from t limit 1", "select k from t limit 0"} {
+			f := newTable()
+			f.indexesFails = errors.New("the indexes fail")
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			_, err = buildQuery(t.Context(), fakeTx{f}, NewPlan(s).(*Query), nil, 1_000_000_000, reading{})
+			is.NotError(t, err, src)
+			is.Equal(t, "[table t]", fmt.Sprint(f.calls), src)
 		}
 	})
 
@@ -1553,6 +1588,8 @@ func TestBuild(t *testing.T) {
 			{name: "a table without a key", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}}}, err: "a table of 1 columns with the key []"},
 			{name: "a table whose key takes NULL", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}, Nullable: true}}, PrimaryKey: []int{1}}, err: "a table whose key b takes NULL"},
 			{name: "an insert of a blob literal that is nil", plan: &Insert{Table: stmt.Name{Value: "t"}, Columns: v, Source: &Values{Rows: [][]Expr{{&Blob{}}}}}, err: "a blob literal of no bytes that is nil"},
+			{name: "a LIMIT of a parameter without its argument", plan: &Query{Root: &Project{Source: &Limit{Source: &Scan{Table: stmt.Name{Value: "t"}}, Count: &Parameter{Number: 1}}, Star: true}}, err: "the parameter 1 of a statement with 0 arguments"},
+			{name: "a LIMIT of a blob literal that is nil", plan: &Query{Root: &Project{Source: &Limit{Source: &Scan{Table: stmt.Name{Value: "t"}}, Count: &Blob{}}, Star: true}}, err: "a blob literal of no bytes that is nil"},
 			{name: "a table with a default of a blob literal that is nil", plan: &CreateTable{Table: stmt.Name{Value: "u"}, Columns: []ColumnDef{{Name: stmt.Name{Value: "a"}}, {Name: stmt.Name{Value: "b"}, Type: s4qlpb.Type_TYPE_BLOB, Default: &Blob{}}}, PrimaryKey: []int{0}}, err: "a blob literal of no bytes that is nil"},
 		}
 		for _, c := range cases {

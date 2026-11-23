@@ -398,7 +398,8 @@ func (c *Conn) PrepareFirst(sql string) (*Stmt, int, error) {
 }
 
 // SetLengthLimit of the connection, SQLITE_LIMIT_LENGTH: the largest string or blob, in bytes, that
-// it makes. n must be positive.
+// it makes. n must be positive. It fails with SQLITE_MISUSE, and changes nothing, on a closed
+// connection or for an n that is not positive, and does not fail otherwise.
 func (c *Conn) SetLengthLimit(n int) error {
 	if c.db == 0 || n <= 0 {
 		return errorFromConn(0, codeMisuse)

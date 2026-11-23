@@ -1658,12 +1658,56 @@ func TestScanIndex(t *testing.T) {
 			is.Error(t, core.ErrTooBig, err)
 		}
 		is.True(t, longest > 2000 && longest < 3000, fmt.Sprint(longest))
-		// The sorter holds the columns of the key once, as columns of the row, so its record is no
-		// longer than the row, and SQLite takes it.
+		// SQLite sorts by the 70 columns, under the largest length limit.
 		for _, scan := range []core.IndexScan{{Index: "wide_i"}, {Index: "wide_i", Backward: true}, {Index: "wide_i", Lower: core.Bound{Value: row(1006)[0]}}} {
 			is.Equal(t, 1, len(scanBy(t, tx, "wide", scan)), describeScan(scan))
 		}
 		is.NotError(t, tx.Commit(t.Context()))
+	})
+
+	t.Run("should scan the longest row that a table takes by a key of more than 63 columns of reals that hold integers, which SQLite sorts", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{LengthLimit: 3000})
+		// A key of 70 columns, 6 in the primary key and 64 reals in the index, and a text that fills
+		// the row up to the limit. The table keeps a real that holds an integer in fewer bytes than
+		// the 8 of what SQLite sorts, so the record of the sort is longer than the row.
+		wide := tableOf("wide", 6, manyColumns(71)...)
+		values := make([]any, 71)
+		positions := make([]any, 64)
+		for i := range values {
+			values[i] = 1000 + i
+		}
+		for i := range positions {
+			positions[i] = 6 + i
+			wide.GetColumns()[6+i].SetType(s4qlpb.Type_TYPE_REAL)
+			values[6+i] = float64(i)
+		}
+		wide.GetColumns()[70].SetType(s4qlpb.Type_TYPE_TEXT)
+		transact(t, d, createWith(wide), createIndex("wide_i", "wide", positions...))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		// The longest text with which SQLite takes the row.
+		longest := -1
+		for n := 3000; n > 2000; n-- {
+			values[70] = strings.Repeat("x", n)
+			err := tx.Upsert(t.Context(), "wide", row(values...))
+			if err == nil {
+				longest = n
+				break
+			}
+			is.Error(t, core.ErrTooBig, err)
+		}
+		is.True(t, longest > 2000 && longest < 3000, fmt.Sprint(longest))
+		// The last scan pins 6 columns, and leaves 64, the fewest that SQLite sorts by.
+		for _, scan := range []core.IndexScan{{Index: "wide_i"}, {Index: "wide_i", Backward: true}, {Index: "wide_i", Lower: core.Bound{Value: row(0.0)[0]}}, {Index: "wide_i", Equal: row(0.0, 1.0, 2.0, 3.0, 4.0, 5.0)}} {
+			is.Equal(t, 1, len(scanBy(t, tx, "wide", scan)), describeScan(scan))
+		}
+		is.NotError(t, tx.Commit(t.Context()))
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		is.Equal(t, 1, len(scanBy(t, r, "wide", core.IndexScan{Index: "wide_i"})))
 	})
 
 	t.Run("should read the same rows in the same order, sorted by SQLite, by a key of more columns than SQLite compares with the order of an index", func(t *testing.T) {
@@ -2296,6 +2340,37 @@ func TestScanIndex_order(t *testing.T) {
 		}
 	})
 
+	t.Run("should sort a table of the most columns that the cache holds by every column, its key among them", func(t *testing.T) {
+		// SQLite takes no more terms in an ORDER BY than a table can have columns, 2000, so the
+		// statement of the sort names no column twice.
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		wide := tableOf("w", 1, manyColumns(2000)...)
+		first, second := make([]any, 2000), make([]any, 2000)
+		for i := range first {
+			first[i], second[i] = 0, 0
+		}
+		first[0], first[1], second[0], second[1] = 1, 2, 2, 1
+		transact(t, d, createWith(wide), func(t *testing.T, tx *core.Tx) {
+			is.NotError(t, tx.Upsert(t.Context(), "w", row(first...)))
+			is.NotError(t, tx.Upsert(t.Context(), "w", row(second...)))
+		})
+		var order []any
+		for i := 1; i < 2000; i++ {
+			order = append(order, i)
+		}
+		order = append(order, desc(0))
+		r, err := startRead(t, d)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, r.Close(t.Context())) }()
+		var got []int64
+		for row, err := range r.ScanIndex(t.Context(), "w", core.IndexScan{Order: orderOf(order...)}) {
+			is.NotError(t, err)
+			got = append(got, row[0].GetInteger())
+		}
+		is.EqualSlice(t, []int64{2, 1}, got)
+	})
+
 	t.Run("should refuse an order of a column that the table does not have, and of more columns than it has", func(t *testing.T) {
 		w := newWorld(t)
 		d := w.serve(t, "a", core.Options{})
@@ -2307,20 +2382,29 @@ func TestScanIndex_order(t *testing.T) {
 		is.NotError(t, err)
 		defer func() { is.NotError(t, tx.Rollback(t.Context())) }()
 
-		for _, order := range [][]core.KeyColumn{orderOf(4), orderOf(1, -1), orderOf(0, 1, 2, 3, 0)} {
+		for _, test := range []struct {
+			order []core.KeyColumn
+			why   string
+		}{
+			{order: orderOf(4), why: `a scan in the order of the column at 4 of the table "t", which has 4 columns`},
+			{order: orderOf(1, -1), why: `a scan in the order of the column at -1 of the table "t", which has 4 columns`},
+			{order: orderOf(0, 1, 2, 3, 0), why: `a scan in the order of 5 columns of the table "t", which has 4`},
+		} {
 			for _, s := range []interface {
 				ScanIndex(ctx context.Context, table string, scan core.IndexScan) iter.Seq2[[]*s4qlpb.Value, error]
 			}{r, tx} {
 				n := 0
-				for row, err := range s.ScanIndex(t.Context(), "t", core.IndexScan{Order: order}) {
+				for row, err := range s.ScanIndex(t.Context(), "t", core.IndexScan{Order: test.order}) {
 					n++
 					is.True(t, row == nil)
 					is.Error(t, core.ErrInvalid, err)
+					is.True(t, strings.HasSuffix(err.Error(), test.why), err.Error())
 				}
 				is.Equal(t, 1, n)
 			}
-			_, _, err := r.ScanPlan(t.Context(), "t", core.IndexScan{Order: order})
+			_, _, err := r.ScanPlan(t.Context(), "t", core.IndexScan{Order: test.order})
 			is.Error(t, core.ErrInvalid, err)
+			is.True(t, strings.HasSuffix(err.Error(), test.why), err.Error())
 		}
 		is.Equal(t, int64(0), r.RowsRead())
 		is.Equal(t, int64(0), tx.RowsRead())
@@ -2470,6 +2554,27 @@ func beginBig(t *testing.T, d *core.DB, read bool) (bigScanner, *core.Tx, int) {
 // index_cgo_test.go, for the binding whose [sqlite.Stmt.StepContext] stops a step.
 func TestScanIndex_context(t *testing.T) {
 	for _, read := range []bool{true, false} {
+		t.Run(fmt.Sprint("should give every row of a scan, sorted or not, whose context ends after its first row, in a read transaction ", read), func(t *testing.T) {
+			// SQLite counts the instructions of a statement over all its steps, so the steps after the
+			// first, which run to their end, run past the instructions at which it would look at the
+			// context.
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fillBig(t, d, "x")
+			s, _, total := beginBig(t, d, read)
+			for _, scan := range []core.IndexScan{{}, bigSorted} {
+				ctx, cancel := context.WithCancel(t.Context())
+				n := 0
+				for _, err := range s.ScanIndex(ctx, "big", scan) {
+					is.NotError(t, err)
+					n++
+					cancel()
+				}
+				cancel()
+				is.Equal(t, total, n, describeScan(scan))
+			}
+		})
+
 		t.Run(fmt.Sprint("should not count the rows that a sort read and did not give when the context has ended before the loop over it stops, in a read transaction ", read), func(t *testing.T) {
 			w := newWorld(t)
 			d := w.serve(t, "a", core.Options{})
@@ -2489,6 +2594,34 @@ func TestScanIndex_context(t *testing.T) {
 				is.NotError(t, tx.Upsert(t.Context(), "big", row(bigRows+1, -2, "tx", "")))
 				is.NotError(t, tx.Commit(t.Context()))
 			}
+		})
+
+		t.Run(fmt.Sprint("should not count the rows of a sort of a few rows, which SQLite would count before it looks at the context, when the context has ended before the loop over it stops, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			transact(t, d, createWith(tableOf("few", 1, "k", "v")), upsert("few", 1, 3), upsert("few", 2, 2), upsert("few", 3, 1))
+			var s bigScanner
+			if read {
+				r, err := startRead(t, d)
+				is.NotError(t, err)
+				defer func() { _ = r.Close(t.Context()) }()
+				s = r
+			} else {
+				tx, err := d.Begin(t.Context())
+				is.NotError(t, err)
+				defer func() { _ = tx.Rollback(t.Context()) }()
+				s = tx
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			before := s.RowsRead()
+			for _, err := range s.ScanIndex(ctx, "few", core.IndexScan{Order: orderOf(1)}) {
+				is.NotError(t, err)
+				cancel()
+				break
+			}
+			is.Equal(t, int64(1), s.RowsRead()-before)
 		})
 
 		t.Run(fmt.Sprint("should stop the instance as for a local failure, count none of the rows, and fail a write transaction, when the count of the rows that a sort read and did not give cannot read the cache, in a read transaction ", read), func(t *testing.T) {

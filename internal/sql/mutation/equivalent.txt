@@ -977,3 +977,193 @@ internal/core/default.go parseDefault remove statement: return nil, false => #7
 	v stays nil, for which defaultSQL writes null; a text null is read by the first case, so the round trip at the end refuses every other text.
 internal/core/default.go withoutNegativeZero condition: d.WhichKind() != s4qlpb.Value_Real_case => false
 	GetReal is 0 for a value of another kind, whose sign bit is clear, so the condition holds anyway.
+
+# ORDER BY and LIMIT of slice 13 in the recognizer, internal/sql/stmt.
+stmt/recognize.go recognizer.orderColumn remove statement: r.accept(x) =>
+	A column reference without a table name has one token, its column, which is the next one: name rejects it at once or takes it, so describe never looks inside the node, and names it the same whether it was accepted or not.
+stmt/recognize.go recognizer.limit remove statement: r.accept(l) =>
+	LIMIT is the next token after the ORDER BY, the count is taken at once or refused by a name of its own, and so is a token after it, so describe never walks into the node.
+
+# ORDER BY and LIMIT of slice 13 in the engine, internal/engine.
+internal/engine/access.go delivered constant: iota + 1 => iota + 2
+	The values of ordering are only compared with delivered and sorted by name, and its zero value, of a statement without ORDER BY, is neither of them for either start; no value is printed or stored.
+internal/engine/access.go orderBy.better operator: len(a.equal) > len(best.equal) => len(a.equal) >= len(best.equal)
+	The comparison is made only where the two lengths differ, so > and >= agree.
+internal/engine/access.go orderBy.place condition: !ok => true #2
+	Where the key delivers the order, skippedGaps leaves out of the key only columns after the first that the ORDER BY names and that it does not name, which are pinned ones, which delivers skips anyway, or ones after the end of the ORDER BY, so delivers gives the same answer for it.
+internal/engine/operator.go build.ordered condition: f != nil => true #4
+	A filter of no conditions gives every row of its source, in its order, and its errors.
+internal/engine/operator.go build.access condition: err != nil => false #4
+	fit fails only for bounds of values of two types, which checkType refuses before the access is chosen.
+internal/engine/telemetry.go report.end condition: r.access != "" => true #3
+	report.reads sets the order only together with the access.
+
+# The planted bugs of slice 13 in the engine, internal/engine.
+internal/engine/access.go orderBy.place condition: !ok => true
+	The planted bug turnMixed: it also turns an ORDER BY that the key delivers, by the direction of its first column in the key, which may be a pinned one, so it reads some delivered orders in the wrong direction, a wrong order that the tests find as they find the bug.
+internal/engine/access.go orderBy.place swap arguments: turnedLike(key, o.columns) => turnedLike(o.columns, key)
+	The planted bug turnMixed: another direction for the columns of a mixed ORDER BY, which the key then delivers in a wrong order, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go turnedLike boolean: true => false
+	The planted bug turnMixed: another direction for the columns of a mixed ORDER BY, which the key then delivers in a wrong order, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go turnedLike condition: first => !first
+	The planted bug turnMixed: another direction for the columns of a mixed ORDER BY, which the key then delivers in a wrong order, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go turnedLike remove statement: first, against = false, key[at].Descending != c.Descending =>
+	The planted bug turnMixed: another direction for the columns of a mixed ORDER BY, which the key then delivers in a wrong order, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go turnedLike operator: k.Position == c.Position => k.Position != c.Position
+	The planted bug turnMixed: another direction for the columns of a mixed ORDER BY, which the key then delivers in a wrong order, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go turnedLike operator: key[at].Descending != c.Descending => key[at].Descending == c.Descending
+	The planted bug turnMixed: another direction for the columns of a mixed ORDER BY, which the key then delivers in a wrong order, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go turnedLike operator: key[at].Descending != against => key[at].Descending == against
+	The planted bug turnMixed: another direction for the columns of a mixed ORDER BY, which the key then delivers in a wrong order, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go turnedLike boolean: false => true
+	The planted bug turnMixed: against is set at the first column that the key holds, while first is true, before it is read.
+internal/engine/access.go orderBy.place swap arguments: skippedGaps(key, o.columns) => skippedGaps(o.columns, key)
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go skippedGaps boolean: false => true
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go skippedGaps operator: matched && !named(k) => matched || !named(k)
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go skippedGaps condition: matched => true
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go skippedGaps condition: matched => !matched
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go skippedGaps condition: matched => true #2
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go skippedGaps condition: matched => false #2
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go skippedGaps condition: matched => !matched #2
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go skippedGaps condition: named(k) => true
+	The planted bug skipGap: another key with columns left out, which then delivers an ORDER BY that skips a column of the key, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go ascendedLast boolean: false => true
+	The planted bug ascendLast: it sorts by the last column descending, also where it is ascending, another wrong order of the bug, which the tests find as they find it.
+internal/engine/operator.go build.ordered condition: len(s.access.by) > 0 => true
+	The planted bug limitFirst: an access that is sorted has the columns of the ORDER BY of its query in by, of which there is at least one.
+internal/engine/operator.go build.ordered operator: len(s.access.by) > 0 => len(s.access.by) >= 0
+	The planted bug limitFirst: an access that is sorted has the columns of the ORDER BY of its query in by, of which there is at least one.
+internal/engine/operator.go build.ordered condition: s.access.order == sorted => true
+	The planted bug limitFirst: only an access that is sorted has columns in by (orderBy.sort), so the test of by decides alone.
+internal/engine/operator.go build.ordered constant: len(s.access.by) > 0 => len(s.access.by) > 1
+	The planted bug limitFirst, planted only for an ORDER BY of two columns or more, where the tests still find it.
+internal/engine/operator.go build.access remove statement: indexes = slices.Clone(indexes) =>
+	The planted bug lastIndexWins: it reverses the list of the reader in place, so that the order of the indexes turns at every query, another wrong order of the choice, which the tests find as they find the bug.
+internal/engine/bugs.go sortedAfter.rows boolean: true => false
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows boolean: true => false #2
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: c.Descending => !c.Descending
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: c.Descending => false
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: c.Descending => true
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: err != nil => false
+	The planted bug limitFirst: another handling of an error of its source, a variant of the bug that the tests find as they find the bug, by the wrong rows that it gives where its source does not fail.
+internal/engine/bugs.go sortedAfter.rows condition: n != 0 => false
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: n != 0 => true
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: x.HasNull() => !x.HasNull()
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: x.HasNull() => false
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: x.HasNull() => true
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: x.HasNull() || y.HasNull() => !(x.HasNull() || y.HasNull())
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: x.HasNull() || y.HasNull() => false
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: x.HasNull() || y.HasNull() => true
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: y.HasNull() => !y.HasNull()
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: y.HasNull() => false
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows condition: y.HasNull() => true
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows constant: n != 0 => n != 1
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows constant: return 0 => return 1
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows constant: true: 1 => true: 0
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows constant: true: 1 => true: 0 #2
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows constant: true: 1 => true: 2
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows constant: true: 1 => true: 2 #2
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows element: true: 1 =>
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows element: true: 1 => #2
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows negation: !x.HasNull() => x.HasNull()
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows negation: !y.HasNull() => y.HasNull()
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows operator: map[bool]int{true: 1}[!x.HasNull()] - map[bool]int{true: 1}[!y.HasNull()] => map[bool]int{true: 1}[!x.HasNull()] + map[bool]int{true: 1}[!y.HasNull()]
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows operator: n != 0 => n == 0
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows operator: x.HasNull() || y.HasNull() => x.HasNull() && y.HasNull()
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows remove statement: n = -n =>
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows remove statement: n = map[bool]int{true: 1}[!x.HasNull()] - map[bool]int{true: 1}[!y.HasNull()] =>
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows remove statement: n, _ = compare(x, y) =>
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows remove statement: return =>
+	The planted bug limitFirst: another handling of an error of its source, a variant of the bug that the tests find as they find the bug, by the wrong rows that it gives where its source does not fail.
+internal/engine/bugs.go sortedAfter.rows remove statement: return n =>
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows remove statement: slices.SortStableFunc(rows, func(a, b []*s4qlpb.Value) int { for _, c := range s.by { x, y := a[c.Position], b[c.Position] var n int switch { case x.HasNull(... =>
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows remove statement: yield(nil, err) =>
+	The planted bug limitFirst: another handling of an error of its source, a variant of the bug that the tests find as they find the bug, by the wrong rows that it gives where its source does not fail.
+internal/engine/bugs.go sortedAfter.rows swap arguments: compare(x, y) => compare(y, x)
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+internal/engine/bugs.go sortedAfter.rows swap cases: case x.HasNull() || y.HasNull(): n = map[bool]int{true: 1}[!x.HasNull()] - map[bool]int{true: 1}[!y.HasNull()] default: n, _ = compare(x, y) => case x.HasNull() || y.HasNull(): n, _ = compare(x, y) default: n = map[bool]int{true: 1}[!x.HasNull()] - map[bool]int{true: 1}[!y.HasNull()]
+	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+
+# The sort of slice 13 and its interruption in the core, internal/core.
+internal/core/index.go conn.step condition: !sorting => false
+	The first step of a scan that does not sort then runs under SQLite's largest length limit. SQLite builds no record in it, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/index.go conn.step remove statement: return s.StepContext(ctx) =>
+	The first step of a scan that does not sort then runs under SQLite's largest length limit. SQLite builds no record in it, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/index.go conn.unread swap arguments: max(rows-given, 0) => max(0, rows-given)
+	max is commutative.
+internal/core/cache.go maxOrderedTerms constant: 63 => 62
+	A scan, a commit, or a set of keys by a key of 63 columns, which SQLite does not sort, then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/cache.go conn.unlimited condition: c.limit == maxLength => false
+	It sets the largest length limit, which the connection has already, for f, and puts back the same.
+internal/core/cache.go conn.unlimited remove statement: return f() =>
+	It sets the largest length limit, which the connection has already, for f, and puts back the same.
+internal/core/index.go table.scanSQL boolean: false => true
+	Every caller of scanSQL returns its error first, and reads nothing else that it gives with an error.
+internal/core/index.go table.scanSQL operator: len(order) > maxOrderedTerms => len(order) >= maxOrderedTerms
+	The first step of a scan that leaves 63 columns of its key unpinned then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/tx.go KeySet.after condition: len(k.t.key) > maxOrderedTerms => true
+	The read of a key of a set then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/tx.go KeySet.after operator: len(k.t.key) > maxOrderedTerms => len(k.t.key) >= maxOrderedTerms
+	The read of a key of a set of a key of 63 columns then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/tx.go Tx.spoolTouched condition: len(t.key) > maxOrderedTerms => true
+	The reads of the commit of a table then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+internal/core/tx.go Tx.spoolTouched operator: len(t.key) > maxOrderedTerms => len(t.key) >= maxOrderedTerms
+	The reads of the commit of a table whose key has 63 columns then runs under SQLite's largest length limit, also where SQLite does not sort. SQLite builds no record of a sort then, and reads values that the cache took under the limit of its connection, so it differs only for a value longer than the limit, which a cache made under a higher limit and opened under a lower one could hold; only tests set the limit, and none does so.
+
+# The interrupted step of slice 13 in the binding, internal/sqlite.
+internal/sqlite/sqlite.go Stmt.StepContext remove statement: return s.Step() =>
+	A context without Done can never end, so its Err stays nil: the progress handler returns 0 at every look, and the step gives what Step gives, at the cost of the looks.
+internal/sqlite/sqlite.go Stmt.StepContext condition: err != nil => true
+	SQLite ends a step with SQLITE_INTERRUPT only when its progress handler returns nonzero, or after sqlite3_interrupt, which nothing calls. s4qlInterrupted returns nonzero only once ctx.Err is not nil, and the Err of a context that has ended stays so, so err is never nil here.
+internal/sqlite/progress.go s4qlInterrupted constant: return 1 => return 2
+	SQLite stops the step for any value of the progress handler other than 0.
+internal/sqlite/sqlite.go progressPeriod constant: 10_000 => 10001
+	A period one instruction longer: SQLite stops a step one instruction later for each look, within the 100 instructions after a look that TestStmt_StepContext allows a stop to take, and no caller depends on the period to the instruction.
+internal/sqlite/sqlite.go Stmt.StepContext condition: s.stmt == nil => false
+	For a finalized statement, s4ql_step_interruptible gives SQLITE_MISUSE too: the build has SQLITE_ENABLE_API_ARMOR, under which sqlite3_db_handle of NULL is NULL and sqlite3_progress_handler of no connection does nothing, and sqlite3_step of NULL is SQLITE_MISUSE, which s.error gives through errorFromConn(nil), as this return does.
+internal/sqlite/sqlite.go Stmt.StepContext remove statement: return false, errorFromConn(nil, C.SQLITE_MISUSE) =>
+	For a finalized statement, s4ql_step_interruptible gives SQLITE_MISUSE too: the build has SQLITE_ENABLE_API_ARMOR, under which sqlite3_db_handle of NULL is NULL and sqlite3_progress_handler of no connection does nothing, and sqlite3_step of NULL is SQLITE_MISUSE, which s.error gives through errorFromConn(nil), as this return does.
+internal/sqlite/sqlite.go Stmt.StepContext condition: ctx.Done() == nil => false
+	A context without Done cannot end, so its Err is nil at every look of the progress handler, which never stops the step: it runs as Step runs it.

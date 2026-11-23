@@ -28,7 +28,7 @@ type progress struct {
 //export s4qlInterrupted
 func s4qlInterrupted(h C.uintptr_t) C.int {
 	p := cgo.Handle(h).Value().(*progress)
-	if p.ctx != nil && p.ctx.Err() != nil {
+	if p.ctx.Err() != nil {
 		return 1
 	}
 	return 0

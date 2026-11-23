@@ -707,8 +707,9 @@ func scanConditions(names []string, key []KeyColumn, scan IndexScan, bugs bugs) 
 }
 
 // scanSQL is the statement of a scan of the table by its index ix, or by its primary key if ix is
-// nil, which [table.checkScan] has accepted, with the arguments of its parameters, and with the
-// planted bugs of [scanConditions]. It fails as [table.checkIndexed] does.
+// nil, which [table.checkScan] has accepted, with the arguments of its parameters, whether SQLite
+// sorts its rows, and with the planted bugs of [scanConditions]. It fails as [table.checkIndexed]
+// does.
 //
 // SQLite must read exactly that index, and seek exactly the bounds. The statement therefore names
 // the index with "indexed by", which leaves SQLite no other, and names the index of the primary
@@ -716,15 +717,14 @@ func scanConditions(names []string, key []KeyColumn, scan IndexScan, bugs bugs) 
 // conditions are those of the scan, on a prefix of the key of the index without a gap, which SQLite
 // uses in full to seek. It orders by the columns of the key that the scan does not pin, each in its
 // direction in the key, or each in the other for a scan backward, which is the order in which
-// SQLite reads the index, so it sorts nothing: unless those columns are more than 63, which is the
-// most that SQLite compares with the order of an index, and it then reads the same rows and sorts
-// them.
+// SQLite reads the index, so it sorts nothing: unless those columns are more than
+// [maxOrderedTerms], and it then reads the same rows and sorts them.
 //
 // A scan with Order orders by the terms of [table.sortTerms] instead, which SQLite sorts by,
 // whatever the index.
-func (t *table) scanSQL(ix *index, scan IndexScan, bugs bugs) (string, []any, error) {
+func (t *table) scanSQL(ix *index, scan IndexScan, bugs bugs) (string, []any, bool, error) {
 	if err := t.checkIndexed(); err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
 	key := t.scanKey(ix, bugs)
 	names := make([]string, len(key))
@@ -748,13 +748,14 @@ func (t *table) scanSQL(ix *index, scan IndexScan, bugs bugs) (string, []any, er
 		}
 		order = append(order, term)
 	}
+	sorts := len(order) > maxOrderedTerms
 	if len(scan.Order) > 0 {
-		order = t.sortTerms(scan)
+		order, sorts = t.sortTerms(scan), true
 	}
 	if len(order) > 0 {
 		sql += " order by " + strings.Join(order, ", ")
 	}
-	return sql, args, nil
+	return sql, args, sorts, nil
 }
 
 // sortTerms of the ORDER BY of the statement of a scan with Order: a term for each column of Order,
@@ -857,7 +858,7 @@ func (t *table) countSQL(ix *index, scan IndexScan, bugs bugs) (string, []any) {
 // from the sort, and run to their end.
 func (c *conn) scanIndex(ctx context.Context, t *table, ix *index, scan IndexScan, read *int64) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
-		sql, args, err := t.scanSQL(ix, scan, c.bugs)
+		sql, args, sorting, err := t.scanSQL(ix, scan, c.bugs)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -883,7 +884,7 @@ func (c *conn) scanIndex(ctx context.Context, t *table, ix *index, scan IndexSca
 			var ok bool
 			var err error
 			if first {
-				ok, err = c.step(ctx, s, len(scan.Order) > 0)
+				ok, err = c.step(ctx, s, sorting)
 				first = false
 			} else {
 				ok, err = s.Step()
@@ -921,28 +922,23 @@ func (c *conn) scanIndex(ctx context.Context, t *table, ix *index, scan IndexSca
 
 // step the statement s of a scan for the first time, and report whether it has a row. It is the step
 // that reads the most: SQLite reads and sorts every row of the scan in it if the scan is sorting,
-// with Order, or if its key has more than 63 columns that the scan does not pin. So SQLite stops it
+// with Order, or if its key has more than [maxOrderedTerms] columns that the scan does not pin. So SQLite stops it
 // once ctx has ended, with [sqlite.Stmt.StepContext], and it then fails with the error of ctx. The
 // statement only reads, so the transaction of the connection and its writes stay: SQLite rolls
 // nothing back for a read that it stops.
 //
-// The step of a scan with Order, for which sorting is set, runs under SQLite's largest length
-// limit, and the limit of the connection is put back after it, also when it fails. SQLite builds a record of what it sorts for
-// each row, under the length limit, and that record is longer than the row is in the table where a
-// real of the row holds an integer, which the table keeps in fewer bytes: without the larger limit,
-// a row that the table holds under a small limit could not be sorted. The limit bounds nothing else
-// in the step.
+// The step of a scan that sorts, for which sorting is set, runs under SQLite's largest length
+// limit, as [conn.unlimited] says.
 func (c *conn) step(ctx context.Context, s *sqlite.Stmt, sorting bool) (bool, error) {
-	if !sorting || c.limit == maxLength {
+	if !sorting {
 		return s.StepContext(ctx)
 	}
-	if err := c.c.SetLengthLimit(maxLength); err != nil {
-		return false, err
-	}
-	ok, err := s.StepContext(ctx)
-	if limitErr := c.c.SetLengthLimit(c.limit); err == nil && limitErr != nil {
-		return false, limitErr
-	}
+	var ok bool
+	err := c.unlimited(func() error {
+		var err error
+		ok, err = s.StepContext(ctx)
+		return err
+	})
 	return ok, err
 }
 
@@ -1035,7 +1031,7 @@ func (r *ReadTx) ScanPlan(ctx context.Context, name string, scan IndexScan) (str
 	if err != nil {
 		return "", nil, err
 	}
-	sql, _, err := t.scanSQL(ix, scan, r.c.bugs)
+	sql, _, _, err := t.scanSQL(ix, scan, r.c.bugs)
 	if err != nil {
 		return "", nil, err
 	}

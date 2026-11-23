@@ -869,8 +869,13 @@ func (k *KeySet) after(ctx context.Context, last []*s4qlpb.Value) ([]*s4qlpb.Val
 	if last != nil {
 		sql, args = k.next, values(last)
 	}
+	// SQLite sorts the set by a key of more than maxOrderedTerms columns, as conn.unlimited says.
+	query := tx.c.query
+	if len(k.t.key) > maxOrderedTerms {
+		query = tx.c.queryUnlimited
+	}
 	var key []*s4qlpb.Value
-	err := tx.c.query(sql, func(s *sqlite.Stmt) error {
+	err := query(sql, func(s *sqlite.Stmt) error {
 		var err error
 		key, err = readRow(s, 0, len(k.t.key))
 		return err
@@ -1206,12 +1211,17 @@ func (tx *Tx) spoolTouched(w *format.CommitWriter, e *txTable) (int, error) {
 	order := keyColumns("k.", len(t.key))
 	columns := positions(len(t.columns))
 
-	var changes int
 	// The cross join makes the temporary table the outer loop, read in the order of its primary key,
-	// so that SQLite sorts nothing: a sorter would hold the key and the row in one record, which
-	// SQLite refuses as too big for a row near the length limit.
+	// so that SQLite sorts nothing for a key of up to maxOrderedTerms columns. SQLite sorts by a key
+	// of more, in one record of the key and the row for each row, which runs under the largest length
+	// limit, as conn.unlimited says.
+	query := tx.c.query
+	if len(t.key) > maxOrderedTerms {
+		query = tx.c.queryUnlimited
+	}
+	var changes int
 	upserts := fmt.Sprint("select t.* from temp.", quote(e.touched), " as k cross join main.", quote(t.name), " as t where ", match, " order by ", order)
-	if err := tx.c.query(upserts, func(s *sqlite.Stmt) error {
+	if err := query(upserts, func(s *sqlite.Stmt) error {
 		row, err := readRow(s, 0, len(t.columns))
 		if err != nil {
 			return err
@@ -1235,7 +1245,7 @@ func (tx *Tx) spoolTouched(w *format.CommitWriter, e *txTable) (int, error) {
 	}
 	deletes := fmt.Sprint("select ", order, " from temp.", quote(e.existed), " as k where not exists (select 1 from main.",
 		quote(t.name), " as t where ", match, ") order by ", order)
-	if err := tx.c.query(deletes, func(s *sqlite.Stmt) error {
+	if err := query(deletes, func(s *sqlite.Stmt) error {
 		key, err := readRow(s, 0, len(t.key))
 		if err != nil {
 			return err
