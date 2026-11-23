@@ -421,6 +421,50 @@ func TestEngine_reading(t *testing.T) {
 		is.Equal(t, 0, h.drawn)
 	})
 
+	t.Run("should draw one direction for each insert, update, and delete with RETURNING, of its own or in a transaction, through Exec and Query, and none for one without it", func(t *testing.T) {
+		h := &drawHost{Host: host.New(), draws: []uint64{1}}
+		c := newEngine(newFake().with("t1", []string{"v1", "v2"}), h, Options{}).Conn()
+		statements := []string{
+			"insert into t1 (v1, v2) values (1, 2) returning v1", "update t1 set v2 = 3 returning *", "delete from t1 returning v2",
+			"insert into t1 (v1, v2) values (1, 2)", "update t1 set v2 = 3", "delete from t1",
+		}
+		run := func(query bool) {
+			for _, src := range statements {
+				if !query {
+					_, err := c.Exec(t.Context(), src)
+					is.NotError(t, err, src)
+					continue
+				}
+				rows, err := c.Query(t.Context(), src)
+				is.NotError(t, err, src)
+				is.NotError(t, rows.Close(), src)
+			}
+		}
+		run(false)
+		is.Equal(t, 3, h.drawn)
+		run(true)
+		is.Equal(t, 6, h.drawn)
+		is.NotError(t, c.Begin(t.Context()))
+		is.Equal(t, 6, h.drawn)
+		run(false)
+		run(true)
+		is.NotError(t, c.Rollback(t.Context()))
+		is.Equal(t, 12, h.drawn)
+
+		// An odd draw is backward, and a plan without RETURNING draws nothing and is forward.
+		drawn := &drawHost{draws: []uint64{1}}
+		e := newEngine(nil, drawn, Options{})
+		ret := &Returning{Star: true}
+		for _, p := range []Plan{&Insert{Returning: ret}, &Update{Returning: ret}, &Delete{Returning: ret}} {
+			is.True(t, e.order(p).backward, fmt.Sprintf("%T", p))
+		}
+		is.Equal(t, 3, drawn.drawn)
+		for _, p := range []Plan{&Insert{}, &Update{}, &Delete{}, &Query{}, &CreateTable{}} {
+			is.True(t, !e.order(p).backward, fmt.Sprintf("%T", p))
+		}
+		is.Equal(t, 3, drawn.drawn)
+	})
+
 	t.Run("should draw the directions from its seed, and nothing from the host, the same for the same seed, both ways, and forward for a statement that is no query", func(t *testing.T) {
 		h := &drawHost{draws: []uint64{1}}
 		first := directions(newEngine(nil, h, Options{Directions: new(uint64(3))}), true, 64)

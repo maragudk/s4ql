@@ -1177,3 +1177,15 @@ conn.go conn.QueryContext condition: len(r.Columns()) == 0 => false
 	The rows of a statement that is no query have ended (done) in the engine, so rows over them are not held (Holds is false), their loop gives io.EOF at once, and their close releases the count of held rows that the query added; database/sql then gives no row and closes them, as for noRows. Only the slice of no names differs, nil or empty, which database/sql passes on and nothing promises.
 conn.go conn.QueryContext remove statement: return noRows{}, nil =>
 	As for the condition above: without the return, the rows of a statement that is no query go through rows over engine rows that have ended, which give the same.
+
+# The planted bugs of slice 14 in the engine, internal/engine.
+internal/engine/engine.go Conn.write condition: returns => true #2
+	The planted bug rowsOfFailed: where returns is false, dropReturns has set the sink's returning to nil, so returnsOf(s) != nil is false and the bug does not fire either way.
+internal/engine/engine.go Conn.write condition: returnsOf(s) != nil => true
+	The planted bug rowsOfFailed also for a statement without RETURNING through Query: a commit that fails then succeeds, with no rows, which is the bug of a lost error that TestSimulation_plantedBugs finds as it finds rowsOfFailed, by an acknowledged write that is not in the log.
+internal/engine/engine.go Conn.write operator: returnsOf(s) != nil => returnsOf(s) == nil
+	The planted bug rowsOfFailed for the statements without RETURNING through Query only: a commit that fails then succeeds, which TestSimulation_plantedBugs finds by an acknowledged write that is not in the log, as for the mutant above.
+internal/engine/engine.go Conn.write remove statement: r.rows = n => #2
+	In the planted bug rowsOfFailed, only the attribute statement.rows of the event of the statement whose commit failed changes; the bug, the rows and the success of a commit that failed, stays, and TestSimulation_plantedBugs finds it by a write that is not in the log, which reads no event.
+internal/engine/engine.go Conn.write element: , SetsChanges: setsChanges(p) =>
+	In the planted bug rowsOfFailed, the result of the statement whose commit failed then sets no count of changes, so the simulation compares no count for it (run.statement reads one only where SetsChanges is set); the bug, the rows and the success of a commit that failed, stays, and TestSimulation_plantedBugs finds it by its own violation, a write that is not in the log.
