@@ -504,7 +504,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 14: `returning` on `insert`, `update`, and `delete`
 
-Status: agreed on 2026-11-23, not built.
+Status: built on 2026-11-23. The statement pass, the engine, and the `database/sql` driver run `returning` on `insert`, `update`, and `delete`. Table tests check it against SQLite, and through the driver against mattn/go-sqlite3, with goqite's send and its receive by id among them. An independent review checked the branch. The generated checks and the mutation testing are still to come.
 
 ```sql
 insert into t1 (v1, v2) values (?, ?) returning v1;

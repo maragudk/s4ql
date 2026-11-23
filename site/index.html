@@ -842,7 +842,7 @@ footer ul {
   <div class="wrap">
     <div class="block-head">
       <h2 id="status-h">Status</h2>
-      <p>As of 21 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
+      <p>As of 23 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
     </div>
     <table class="status-table">
       <tbody>
@@ -858,6 +858,7 @@ footer ul {
               <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>. A comparison may have its value on either side. Rows without <code>order by</code> come in a varying order.</li>
               <li><code>order by</code> of one or more columns, each ascending or descending, and <code>limit</code> with a number or <code>?</code>, on <code>select</code>.</li>
               <li><code>update</code> and <code>delete</code>, with or without that <code>where</code>. An update may change the primary key, and <code>RowsAffected</code> is what SQLite reports.</li>
+              <li><code>returning</code> at the end of an <code>insert</code>, an <code>update</code>, and a <code>delete</code>, with column names or <code>*</code>. Outside a transaction, the statement commits before it gives its first row.</li>
               <li><code>create index</code> and <code>drop index</code>, on one or more columns, each ascending or descending, not unique. The engine picks the index for a <code>where</code> by fixed rules.</li>
               <li><code>if not exists</code> on <code>create table</code> and <code>create index</code>, and <code>if exists</code> on <code>drop table</code> and <code>drop index</code>.</li>
               <li>Arguments for a plain <code>?</code>, directly and through prepared statements.</li>
@@ -876,7 +877,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p><code>returning</code> on <code>insert</code>, <code>update</code>, and <code>delete</code>, then the rest of the SQL that glue needs, agreed one slice at a time (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>The generated checks and the mutation testing of <code>returning</code>, then the rest of the SQL that glue needs, agreed one slice at a time (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -990,10 +991,10 @@ footer ul {
         <div><h3>Slice 13: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Where the engine sorts, rows that tie come in an order that varies from query to query. The commit format stays as it is. The statements run, and generated ordered and limited queries are compared with SQLite up to ties, the engine's choice is compared with a model of the rules, and a check shows that the order SQLite leaves unspecified varies.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 14: <code>returning</code> on <code>insert</code>, <code>update</code>, and <code>delete</code></h3><p>An <code>insert</code>, an <code>update</code>, or a <code>delete</code> may end with <code>returning</code> and a list of columns or <code>*</code>. It gives one row for each row that it changes. Outside a transaction, the statement commits before it gives its first row. The commit format stays as it is.</p></div>
-        <span class="where caps">Agreed</span>
+        <div><h3>Slice 14: <code>returning</code> on <code>insert</code>, <code>update</code>, and <code>delete</code></h3><p>An <code>insert</code>, an <code>update</code>, or a <code>delete</code> may end with <code>returning</code> and a list of columns or <code>*</code>. It gives one row for each row that it changes. Outside a transaction, the statement commits before it gives its first row. The commit format stays as it is. The statements run, and table tests compare them with SQLite, and through the driver with mattn/go-sqlite3, with goqite's send and its receive by id among them. The generated checks and the mutation testing are still to come.</p></div>
+        <span class="where caps">Built</span>
       </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>
