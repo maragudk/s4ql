@@ -93,3 +93,13 @@
 210	selects with LIMIT that succeeded
 63	selects with ORDER BY that gave rows
 183	selects with ORDER BY with SQLite's error
+# Slice 14, RETURNING on insert, update, and delete: a third of the total of 2026-11-23.
+617	statements with RETURNING
+16	statements with RETURNING of their own that gave rows
+16	statements with RETURNING of their own whose rows are compared with the log
+29	statements with RETURNING that gave rows in a transaction
+15	statements with RETURNING that gave rows in a transaction that was rolled back
+64	statements with RETURNING in a transaction whose rows are compared with SQLite
+350	statements with RETURNING with SQLite's error
+3	statements with RETURNING of their own through Query that failed in their write transaction
+2	statements with RETURNING of their own through Query whose outcome is unknown

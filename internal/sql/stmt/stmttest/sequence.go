@@ -75,8 +75,8 @@ type Sequence struct {
 	step uint64
 	// The streams of the areas that start anew at each statement, as [stepStream] says. The stream
 	// of an area that is off in the profile panics at a draw.
-	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder Rand
-	g                                                                                              *Generator
+	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning Rand
+	g                                                                                                          *Generator
 	// selected are the conditions of the WHERE of the select that the sequence writes, as
 	// [Sequence.where] gave them, for its ORDER BY.
 	selected []stmt.Condition
@@ -280,7 +280,7 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	q := &Sequence{seed: seed, profile: p, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}, indexed: map[string][]sequenceIndex{}}
 	q.rPlan, q.rTables, q.rInserts, q.rSelects, q.rChanges = q.stream(areaPlan), q.stream(areaTables), q.stream(areaInserts), q.stream(areaSelects), q.stream(areaChanges)
 	q.rIndexes, q.rDefaults, q.rArguments, q.rOthers = q.stream(areaIndexes), q.stream(areaDefaults), q.stream(areaArguments), q.stream(areaOthers)
-	q.rOrder = q.stream(areaOrder)
+	q.rOrder, q.rReturning = q.stream(areaOrder), q.stream(areaReturning)
 	r := q.entity(areaNames, "")
 	tableNames, columnNames := common[0], common[1]
 	for range 1 + r.IntN(2) {
@@ -327,6 +327,9 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	if p.on(areaOrder) {
 		q.g.Order = q.order
 	}
+	if p.on(areaReturning) {
+		q.g.Return = q.returning
+	}
 	return q, nil
 }
 
@@ -365,8 +368,11 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 		if q.profile.Defaults == 1 {
 			defaults = d.IntN(3)
 		}
+		// With [Profile.DefaultFirst], a default on the first column and none on the last.
+		first := q.profile.DefaultFirst > 0 && len(shape) > 1 && d.IntN(q.profile.DefaultFirst) == 0
 		for i := range shape {
-			if defaults == 1 || defaults == 2 && d.IntN(2) == 0 {
+			switch {
+			case first && i == 0, first && i < len(shape)-1 && d.IntN(2) == 0, !first && (defaults == 1 || defaults == 2 && d.IntN(2) == 0):
 				shape[i].Default.Value = q.defaultOf(d, shape[i].Type)
 			}
 		}
@@ -541,6 +547,8 @@ func (q *Sequence) insert(table stmt.Name) ([]string, []stmt.Value) {
 				return true
 			case c.Default.Value == nil:
 				return false
+			case c.PrimaryKey && q.profile.KeyLeftOut > 0 && r.IntN(q.profile.KeyLeftOut) == 0:
+				return true
 			case c.PrimaryKey:
 				return d.IntN(4) == 0
 			}
@@ -805,6 +813,35 @@ func (q *Sequence) order(table stmt.Name) ([]stmt.OrderColumn, stmt.Term) {
 		}
 	}
 	return columns, limit
+}
+
+// returning gives the RETURNING of an insert, an update, or a delete of table, as [Generator.Return]
+// gives it: one for one statement in [Profile.Returning]. It is * one time in three, and otherwise
+// from one to [sequenceColumns]+1 names of the columns of the shape of the table, of which one in
+// four after the first is an earlier one, which the clause then names twice, and one in twelve any
+// name of a column of the sequence, which the table may not have: a fault of the area, a quarter as
+// likely in a profile without it among [Profile.Faults], as [Sequence.fault] says.
+func (q *Sequence) returning(table stmt.Name) (bool, []string) {
+	r := q.rReturning
+	if r.IntN(q.profile.Returning) != 0 {
+		return false, nil
+	}
+	if r.IntN(3) == 0 {
+		return true, nil
+	}
+	shape := q.shapeOf(table)
+	var names []string
+	for i := range 1 + r.IntN(sequenceColumns+1) {
+		switch {
+		case i > 0 && r.IntN(4) == 0:
+			names = append(names, names[r.IntN(i)])
+		case q.fault(r, areaReturning, 12):
+			names = append(names, q.columns[r.IntN(len(q.columns))])
+		default:
+			names = append(names, q.spell(r, shape[r.IntN(len(shape))].Name.Value))
+		}
+	}
+	return true, names
 }
 
 // orderColumn is a column of an ORDER BY that a [Sequence] draws: the fold of its name, and whether
@@ -1352,10 +1389,17 @@ func (q *Sequence) missing(r Rand, shape []stmt.Column) string {
 // insert gave the column, a neighbour of one, or an edge of its type, now and then one of another
 // type, and as an insert gets one otherwise, so that a change of the key meets a key that exists and
 // also one that does not. Three updates in four have a WHERE, as [Sequence.changeConditions] draws one. The
-// values of the assignments are kept, as [Sequence.store] keeps those of an insert.
+// values of the assignments are kept, as [Sequence.store] keeps those of an insert. An update of
+// [Profile.ByKey], of [Profile.NewKey], or of [Profile.EveryRow] has the SET and the WHERE that the
+// field says.
 func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition) {
 	r := q.rChanges
 	shape := q.shapeOf(table)
+	key := slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })
+	stored := q.stored[[2]string{table.Fold(), shape[key].Name.Value}]
+	byKey := q.profile.ByKey > 0 && len(shape) > 1 && len(stored) > 0 && r.IntN(q.profile.ByKey) == 0
+	newKey := !byKey && q.profile.NewKey > 0 && len(stored) > 0 && r.IntN(q.profile.NewKey) == 0
+	everyRow := !byKey && !newKey && q.profile.EveryRow > 0 && len(shape) > 1 && r.IntN(q.profile.EveryRow) == 0
 	order := make([]int, len(shape))
 	for i := range order {
 		order[i] = i
@@ -1364,8 +1408,16 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		j := r.IntN(i + 1)
 		order[i], order[j] = order[j], order[i]
 	}
+	switch {
+	case byKey, everyRow:
+		// The columns outside the key, as many as for another update.
+		order = slices.DeleteFunc(order, func(position int) bool { return position == key })
+	case newKey:
+		// The key first, and then as many columns as for another update.
+		order = append([]int{key}, slices.DeleteFunc(order, func(position int) bool { return position == key })...)
+	}
 	order = order[:1+r.IntN(len(order))]
-	if len(order) > 1 && r.IntN(2) == 0 {
+	if len(order) > 1 && !byKey && !newKey && !everyRow && r.IntN(2) == 0 {
 		order = slices.DeleteFunc(order, func(position int) bool { return shape[position].PrimaryKey })
 	}
 	missing := -1
@@ -1383,6 +1435,9 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		}
 		var v stmt.Value
 		switch {
+		case newKey && i == 0 && i != missing:
+			// A key that no insert gives, so that the row moves to a key that it did not have.
+			v = keyOfStep(c.Type, q.step)
 		case r.IntN(10) == 0:
 			v = stmt.Null{}
 		case t == stmt.TypeReal && r.IntN(4) == 0:
@@ -1399,7 +1454,10 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		list, values = append(list, raw), append(values, v)
 	}
 	q.store(table, shape, list, values)
-	if r.IntN(4) == 0 {
+	if byKey || newKey {
+		return set, []stmt.Condition{{Column: stmt.Name{Raw: q.spell(r, shape[key].Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[r.IntN(len(stored))]}}}
+	}
+	if everyRow || r.IntN(4) == 0 {
 		return set, nil
 	}
 	return set, q.changeConditions(table)
@@ -1856,6 +1914,19 @@ func (q *Sequence) around(args []any) []any {
 	return args
 }
 
+// returns reports whether s is an insert, an update, or a delete with RETURNING.
+func returns(s stmt.Statement) bool {
+	switch s := s.(type) {
+	case *stmt.Insert:
+		return s.Returning.Present()
+	case *stmt.Update:
+		return s.Returning.Present()
+	case *stmt.Delete:
+		return s.Returning.Present()
+	}
+	return false
+}
+
 // next call of the sequence, with an argument for each parameter of a statement of the
 // slices that a sequence writes, and for each ? of a text that is not.
 func (q *Sequence) next() Call {
@@ -1903,7 +1974,7 @@ func (q *Sequence) next() Call {
 			q.indexed[table] = slices.DeleteFunc(indexed, func(ix sequenceIndex) bool { return ix.name == s.Index.Fold() })
 		}
 	}
-	// A query runs through Exec one time in eight, and every other statement through Query one time
-	// in eight.
-	return Call{Src: src, Args: args, Query: (k == KindSelect) != (r.IntN(8) == 0), Supported: true}
+	// A query, and an insert, an update, or a delete with RETURNING, of slice 14, runs through Exec
+	// one time in eight, and every other statement through Query one time in eight.
+	return Call{Src: src, Args: args, Query: (k == KindSelect || returns(s)) != (r.IntN(8) == 0), Supported: true}
 }

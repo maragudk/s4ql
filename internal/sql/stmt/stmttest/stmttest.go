@@ -287,9 +287,14 @@ type Generator struct {
 	// an earlier column of the clause, as it is written there; otherwise one time in two a column that
 	// the statement names before, in the list of an insert, in SET, or in WHERE, where SQLite reads it
 	// as a column of a select list; and otherwise a name from the pool of [SelectColumn]. With 0 the
-	// generator draws as it did before slice 14.
+	// generator draws as it did before slice 14. [Generator.Return] gives the RETURNING instead if it
+	// is not nil, whatever Returning is.
 	Returning int
-	b         strings.Builder
+	// Return, if not nil, gives the RETURNING of an insert, an update, or a delete of the table, in
+	// place of one at random: whether the statement has one, and the raw text of the name of each of
+	// its columns, in their order and each as often as the clause names it, or nil for *.
+	Return func(table stmt.Name) (present bool, columns []string)
+	b      strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -916,10 +921,34 @@ func (g *Generator) limitValue() stmt.Value {
 	return stmt.Integer(i)
 }
 
-// returning writes the RETURNING of an insert, an update, or a delete, of slice 14, after the rest of
-// the statement, which names the columns named, one time in [Generator.Returning], and gives it, or
-// the zero Returning, without a draw if Returning is 0.
-func (g *Generator) returning(named []stmt.Name) stmt.Returning {
+// returning writes the RETURNING of an insert, an update, or a delete of table, of slice 14, after
+// the rest of the statement, which names the columns named: the one that [Generator.Return] gives,
+// or one time in [Generator.Returning] one at random; and gives it, or the zero Returning, without a
+// draw if Return is nil and Returning is 0.
+func (g *Generator) returning(table stmt.Name, named []stmt.Name) stmt.Returning {
+	if g.Return != nil {
+		present, given := g.Return(table)
+		if !present {
+			return stmt.Returning{}
+		}
+		g.gap(true)
+		r := stmt.Returning{Span: stmt.Span{Start: g.b.Len()}}
+		g.keyword("returning")
+		if given == nil {
+			g.gap(false)
+			g.punct("*")
+		}
+		for i, raw := range given {
+			if i > 0 {
+				g.gap(false)
+				g.punct(",")
+			}
+			g.gap(true)
+			r.Columns = append(r.Columns, g.write(raw))
+		}
+		r.Span.End = g.b.Len()
+		return r
+	}
 	if g.Returning == 0 || g.r.IntN(g.Returning) != 0 {
 		return stmt.Returning{}
 	}
@@ -1158,7 +1187,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		}
 		g.gap(false)
 		g.punct(")")
-		c.Returning = g.returning(c.Columns)
+		c.Returning = g.returning(c.Table, c.Columns)
 		s, span = c, &c.Span
 	case KindSelect:
 		c := &stmt.Select{}
@@ -1208,7 +1237,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		for _, w := range c.Where {
 			named = append(named, w.Column)
 		}
-		c.Returning = g.returning(named)
+		c.Returning = g.returning(c.Table, named)
 		s, span = c, &c.Span
 	case KindDelete:
 		c := &stmt.Delete{}
@@ -1226,7 +1255,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		for _, w := range c.Where {
 			named = append(named, w.Column)
 		}
-		c.Returning = g.returning(named)
+		c.Returning = g.returning(c.Table, named)
 		s, span = c, &c.Span
 	case KindCreateIndex:
 		c := &stmt.CreateIndex{}

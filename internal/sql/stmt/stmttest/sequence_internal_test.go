@@ -173,6 +173,85 @@ func TestSequence_update(t *testing.T) {
 			is.True(t, counts[kind] >= 50, kind)
 		}
 	})
+
+	t.Run("should give, with ByKey, NewKey, and EveryRow, an update of the row of a key, one that moves the row of a key to a key that no insert gives, and one of every row, each in its share", func(t *testing.T) {
+		is.Equal(t, 2, Returning.ByKey)
+		is.Equal(t, 2, Returning.NewKey)
+		is.Equal(t, 2, Returning.EveryRow)
+		q, err := newSequence(Returning.Seed(0), Returning)
+		is.NotError(t, err)
+		var table stmt.Name
+		for i := 0; ; i++ {
+			table = stmt.Name{Raw: fmt.Sprint("t", i), Value: fmt.Sprint("t", i)}
+			if len(q.shapeOf(table)) == sequenceColumns {
+				break
+			}
+		}
+		shape := q.shapeOf(table)
+		key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+		for range 50 {
+			q.insert(table)
+		}
+		stored := map[string]bool{}
+		for _, v := range q.stored[[2]string{table.Value, key.Name.Value}] {
+			stored[valueKey(v)] = true
+		}
+		counts := map[string]int{}
+		for range 4000 {
+			set, where := q.update(table)
+			setsKey := slices.ContainsFunc(set, func(a stmt.Assignment) bool { return nameOf(a.Column.Raw, 0).Fold() == key.Name.Value })
+			// A SET with a name that the shape does not have, the fault of the changes, can hide the key of
+			// a move, so such an update counts as none of them.
+			fault := slices.ContainsFunc(set, func(a stmt.Assignment) bool { return columnOfShape(shape, nameOf(a.Column.Raw, 0).Fold()) == nil })
+			byKey := len(where) == 1 && where[0].Operator == stmt.OpEqual && nameOf(where[0].Column.Raw, 0).Fold() == key.Name.Value && stored[valueKey(where[0].Value.Value)]
+			switch {
+			case fault:
+			case byKey && !setsKey:
+				counts["the row of a key"]++
+			case byKey && nameOf(set[0].Column.Raw, 0).Fold() == key.Name.Value && valueKey(set[0].Value.Value) == valueKey(keyOfStep(key.Type, q.step)):
+				counts["the row of a key to a key that no insert gives"]++
+			case where == nil && !setsKey:
+				counts["every row"]++
+			}
+		}
+		t.Log(counts)
+		// One update in two of the row of a key, by ByKey, and some of the others, by the WHERE of the
+		// key that changeConditions draws one time in two.
+		is.True(t, counts["the row of a key"] > 1800 && counts["the row of a key"] < 2400, "the row of a key")
+		// One in four, of the half that ByKey leaves.
+		is.True(t, counts["the row of a key to a key that no insert gives"] > 850 && counts["the row of a key to a key that no insert gives"] < 1150, "a move to a key that no insert gives")
+		// One in eight, of the quarter that NewKey leaves, and a few without WHERE of the rest.
+		is.True(t, counts["every row"] > 400 && counts["every row"] < 750, "every row")
+	})
+}
+
+func TestSequence_shapeOf(t *testing.T) {
+	t.Run("should give, with DefaultFirst of 2, one table in two of two columns or more a default on its first column and none on its last", func(t *testing.T) {
+		// firstOnly counts the tables of 2000 names of the sequence of the profile p that have a default
+		// on the first column and none on the last.
+		firstOnly := func(p *Profile) int {
+			q, err := newSequence(p.Seed(0), p)
+			is.NotError(t, err)
+			n := 0
+			for i := range 2000 {
+				shape := q.shapeOf(stmt.Name{Raw: fmt.Sprint("t", i), Value: fmt.Sprint("t", i)})
+				is.True(t, len(shape) >= 2, "two columns or more")
+				if shape[0].Default.Value != nil && shape[len(shape)-1].Default.Value == nil {
+					n++
+				}
+			}
+			return n
+		}
+		is.Equal(t, 2, Returning.DefaultFirst)
+		without := *Returning
+		without.DefaultFirst = 0
+		with, other := firstOnly(Returning), firstOnly(&without)
+		t.Log(with, other)
+		// A third of the tables of Defaults of 1 have a default on each column one time in two, so a
+		// twelfth have one on the first column and none on the last without DefaultFirst.
+		is.True(t, other > 100 && other < 250, "a twelfth without DefaultFirst")
+		is.True(t, with > 950 && with < 1200, "one in two, and a twelfth of the others")
+	})
 }
 
 func TestSequence_delete(t *testing.T) {

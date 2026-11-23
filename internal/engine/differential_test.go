@@ -865,6 +865,14 @@ const (
 	// The rows of s4ql must be SQLite's for the same select without the length limit. See
 	// [pair.sortTooBig].
 	excusedSortTooBig = "a sorted select that SQLite refuses for the length of what it sorts, checked against SQLite without the length limit"
+	// excusedReturningTooBig is an insert, an update, or a delete whose RETURNING names a column twice,
+	// which SQLite refuses with `string or blob too big` under a lowered length limit, where s4ql gives
+	// the rows: SQLite writes each row of RETURNING into a record of its own, which a column named
+	// twice makes longer than the row. The difference was found by the generated checks of slice 14
+	// and waits for the lead's decision in docs/todo/slice-14.md. The statement without RETURNING must
+	// succeed in SQLite under the limit, and s4ql's rows must be SQLite's without the limit. See
+	// [pair.returningTooBig].
+	excusedReturningTooBig = "a statement whose RETURNING names a column twice, which SQLite refuses for the length of a row of RETURNING, checked against SQLite without the length limit"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -1132,6 +1140,15 @@ func (p *pair) step(c stmttest.Call) string {
 	p.y.compared()
 	inOrder := p.returnedInOrder(u, args)
 	want := o.run(t, src, args...)
+	if want.err == tooBig && got.err == "" {
+		if unlimited, ok := p.returningTooBig(u, src, args); ok {
+			// SQLite's rows without the limit, which the comparison below compares with the engine's.
+			want = unlimited
+			if want.String() == got.String() {
+				p.y.excused(excusedReturningTooBig)
+			}
+		}
+	}
 	if mayslip {
 		is.Equal(t, "", o.run(t, "rollback to s4ql_record").err)
 		is.Equal(t, "", o.run(t, "release s4ql_record").err)
@@ -1189,7 +1206,7 @@ func (p *pair) step(c stmttest.Call) string {
 		}
 	}
 	if c.Query && got.err == "" && want.err == "" {
-		if failure := p.checkReturned(got, inOrder); failure != "" {
+		if failure := p.checkReturned(u, got, inOrder); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
 	}
@@ -1233,6 +1250,47 @@ func (p *pair) sortTooBig(src string, args []any, got answer) bool {
 	}
 	want := o.unlimited(t, src, args...)
 	return want.err == "" && orderedOf(sel, args).compare(t, o, got, want) == ""
+}
+
+// returningTooBig reports whether the call of src, the statement s, with the arguments args, which
+// SQLite has just refused with `string or blob too big`, may be the known difference of slice 14
+// under a lowered length limit, and gives SQLite's answer without the limit then: an insert, an
+// update, or a delete whose RETURNING names a column twice, which SQLite refuses for the record of a
+// row of RETURNING, longer than the row, and which SQLite runs without RETURNING under the limit, in
+// a savepoint that is rolled back. The run without the limit changes SQLite's database, so the
+// caller compares its answer with the engine's in place of the refusal.
+func (p *pair) returningTooBig(s stmt.Statement, src string, args []any) (answer, bool) {
+	t, o := p.t, p.o
+	t.Helper()
+	var r stmt.Returning
+	switch s := s.(type) {
+	case *stmt.Insert:
+		r = s.Returning
+	case *stmt.Update:
+		r = s.Returning
+	case *stmt.Delete:
+		r = s.Returning
+	}
+	if !r.Present() || p.i.limit == 0 || len(args) != s.Parameters() || p.longCondition(src) {
+		return answer{}, false
+	}
+	folds := map[string]bool{}
+	twice := false
+	for _, c := range r.Columns {
+		twice = twice || folds[c.Fold()]
+		folds[c.Fold()] = true
+	}
+	if !twice {
+		return answer{}, false
+	}
+	is.Equal(t, "", o.run(t, "savepoint s4ql_returning").err)
+	without := o.run(t, src[:r.Span.Start]+src[r.Span.End:], args...)
+	is.Equal(t, "", o.run(t, "rollback to s4ql_returning").err)
+	is.Equal(t, "", o.run(t, "release s4ql_returning").err)
+	if without.err != "" {
+		return answer{}, false
+	}
+	return o.unlimited(t, src, args...), true
 }
 
 // checkOrder of the rows got of the engine of the select s with the arguments args, which SQLite
@@ -1393,14 +1451,19 @@ func termArg(term stmt.Term, args []any) any {
 	return args[term.Parameter-1]
 }
 
-// checkReturned of the rows got of the engine of an update or a delete with RETURNING, which SQLite
-// gives as well, by inOrder, the rows of [pair.returnedInOrder]: they must be inOrder, or its reverse
-// where the engine drew backward, as [engine.Rows.Backward] says. Where the reverse differs, it
-// counts what the spec's rule "Unspecified row order varies" says varies: whether the rows came in
-// the order of the key or in its reverse. It gives what differs, or "".
-func (p *pair) checkReturned(got answer, inOrder []string) string {
+// checkReturned of the rows got of the engine of s, an update or a delete with RETURNING, which
+// SQLite gives as well, by inOrder, the rows of [pair.returnedInOrder]: they must be inOrder, or its
+// reverse where the engine drew backward, as [engine.Rows.Backward] says. Where the reverse differs,
+// it counts what the spec's rule "Unspecified row order varies" says varies, by the kind of s, so
+// that an engine whose rows of one kind never vary cannot hide behind those of the other: whether
+// the rows came in the order of the key or in its reverse. It gives what differs, or "".
+func (p *pair) checkReturned(s stmt.Statement, got answer, inOrder []string) string {
 	if got.backward == nil || inOrder == nil || len(got.rows) < 2 {
 		return ""
+	}
+	kind := "update"
+	if _, ok := s.(*stmt.Delete); ok {
+		kind = "delete"
 	}
 	want, turned := inOrder, slices.Clone(inOrder)
 	slices.Reverse(turned)
@@ -1411,7 +1474,7 @@ func (p *pair) checkReturned(got answer, inOrder []string) string {
 		return fmt.Sprintf("the engine gives the rows of RETURNING\n%v\nbackward: %v, and SQLite, in the order of the key,\n%v", got.rows, *got.backward, inOrder)
 	}
 	if !slices.Equal(turned, inOrder) {
-		p.count("RETURNING whose rows came in the " + map[bool]string{false: "order", true: "reverse of the order"}[*got.backward] + " of the key")
+		p.count(kind + " with RETURNING whose rows came in the " + map[bool]string{false: "order", true: "reverse of the order"}[*got.backward] + " of the key")
 	}
 	return ""
 }
@@ -2090,8 +2153,9 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 			if p.inTx && slices.ContainsFunc([]string{"create table if not exists ", "drop table if exists ", "create index if not exists ", "drop index if exists "}, func(k string) bool { return strings.HasPrefix(what, k) }) {
 				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
 			}
-			// So do the defaults of slice 11, and the statements with a value on the left of slice 12.
-			if p.inTx && (strings.Contains(what, " default") || strings.Contains(what, "DEFAULT NULL") || strings.Contains(what, "with a value on the left ")) {
+			// So do the defaults of slice 11, the statements with a value on the left of slice 12, and
+			// those with RETURNING of slice 14.
+			if p.inTx && (strings.Contains(what, " default") || strings.Contains(what, "DEFAULT NULL") || strings.Contains(what, "with a value on the left ") || strings.Contains(what, " with RETURNING ")) {
 				p.y["reached: "+what+map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly]]++
 			}
 		})
@@ -2169,6 +2233,7 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, 
 	if reachExists(t, o, s, c, got, count) {
 		return
 	}
+	reachReturning(t, o, s, c, got, outcome, count)
 	switch s := s.(type) {
 	case *stmt.Insert:
 		reachInsert(t, o, s, c, outcome, count)
@@ -2650,7 +2715,17 @@ func reachChange(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got
 			}
 		}
 		if got.err != tooBig {
-			checkChoice(t, o, sel, selArgs, c, table, columns, count)
+			choose := count
+			if hasReturning(c.Src) {
+				// The choice of an update or a delete with RETURNING is checked as without it.
+				choose = func(what string) {
+					count(what)
+					if strings.HasPrefix(what, "chosen ") && !strings.HasSuffix(what, " by a value on the left") {
+						count(kind + " with RETURNING read by the access that the model chooses")
+					}
+				}
+			}
+			checkChoice(t, o, sel, selArgs, c, table, columns, choose)
 		}
 	}
 	if got.err != "" {
@@ -2900,6 +2975,154 @@ func createTableOf(name string, columns []stmttest.TableColumn) *s4qlpb.CreateTa
 		}
 	}
 	return ct.Build()
+}
+
+// reachReturning counts what the insert, the update, or the delete s with RETURNING, of slice 14,
+// reaches, whose answer of the engine through the call c is got, with the kind of its outcome, on the
+// table as SQLite has it on o before the statement: the statement by the call, Query or Exec, and its
+// outcome; the form of the clause, *, names, a name twice, and a name that the table does not have;
+// for an update, a SET of the key and of a column of an index; for an update or a delete that fails
+// on a constraint, whether its WHERE finds two rows or more, so that it fails after its first row;
+// and for a query that succeeds, whether it gives no row, one, or several, and the types of the
+// columns that it gives, and NULL among its values. It counts nothing for another statement.
+func reachReturning(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, got answer, outcome string, count func(string)) {
+	t.Helper()
+	var (
+		kind  string
+		table stmt.Name
+		r     stmt.Returning
+	)
+	switch s := s.(type) {
+	case *stmt.Insert:
+		kind, table, r = "insert", s.Table, s.Returning
+	case *stmt.Update:
+		kind, table, r = "update", s.Table, s.Returning
+	case *stmt.Delete:
+		kind, table, r = "delete", s.Table, s.Returning
+	}
+	if !r.Present() {
+		return
+	}
+	kind += " with RETURNING"
+	count(kind + map[bool]string{true: " through Query ", false: " through Exec "}[c.Query] + outcome)
+	name, columns := o.columns(t, table.Value)
+	if columns == nil {
+		return
+	}
+	var positions []int
+	for _, n := range r.Columns {
+		position := stmttest.ColumnOf(columns, n)
+		if position < 0 {
+			count(kind + " of a name that the table does not have " + outcome)
+			return
+		}
+		positions = append(positions, position)
+	}
+	switch {
+	case r.Columns == nil:
+		count(kind + " * " + outcome)
+		for i := range columns {
+			positions = append(positions, i)
+		}
+	case len(slices.Compact(slices.Sorted(slices.Values(positions)))) < len(positions):
+		count(kind + " of a name twice " + outcome)
+	default:
+		count(kind + " of names " + outcome)
+	}
+	args := oracleArgs(c.Args)
+	if u, ok := s.(*stmt.Update); ok {
+		_, indexes := o.tableIndexes(t, name, columns)
+		for _, a := range u.Set {
+			position := stmttest.ColumnOf(columns, a.Column)
+			switch {
+			case position < 0:
+			case columns[position].PrimaryKey:
+				count(kind + " that sets the key " + outcome)
+			case slices.ContainsFunc(indexes, func(ix stmttest.TableIndex) bool {
+				return slices.ContainsFunc(ix.Columns, func(k stmttest.IndexKeyColumn) bool { return k.Position == position })
+			}):
+				count(kind + " that sets a column of an index " + outcome)
+			}
+		}
+	}
+	if strings.Contains(outcome, "constraint failed") {
+		if sel, selArgs := stmttest.SelectOf(s, args); sel != nil {
+			src, whereArgs := stmttest.SelectText(sel, selArgs, "")
+			if rows := o.run(t, "select count(*) from ("+src+")", whereArgs...); rows.err == "" && rows.rows[0] != "0" && rows.rows[0] != "1" {
+				count(kind + " that fails on a constraint where its WHERE finds two rows or more")
+			}
+		}
+	}
+	if !c.Query || got.err != "" {
+		return
+	}
+	switch len(got.rows) {
+	case 0:
+		count(kind + " that gives no row")
+	case 1:
+		count(kind + " that gives one row")
+	default:
+		count(kind + " that gives several rows")
+	}
+	if len(got.rows) == 0 {
+		return
+	}
+	for _, typ := range slices.Compact(slices.Sorted(func(yield func(string) bool) {
+		for _, position := range positions {
+			if !yield(columns[position].Type) {
+				return
+			}
+		}
+	})) {
+		count(kind + " that gives a column of " + typ)
+	}
+	if got.null {
+		count(kind + " that gives NULL")
+	}
+	// * of a table with a column without a default after one with a default, where the order of the
+	// table shows against an order that puts the columns with a default last.
+	if r.Columns == nil {
+		withDefault := false
+		for _, c := range columns {
+			if withDefault && c.Default == "" {
+				count(kind + " * that gives a row of a table with a column without a default after one with a default")
+				break
+			}
+			withDefault = withDefault || c.Default != ""
+		}
+	}
+	// goqite's send and its receive by id, as far as s4ql takes them: an insert that leaves out a key
+	// with a default and gives the key, and an update of the row of a key by an argument, of columns
+	// outside the key, that gives the key and more.
+	key := slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })
+	switch s := s.(type) {
+	case *stmt.Insert:
+		if len(got.rows) == 1 && slices.Contains(positions, key) && s.Columns != nil && columns[key].Default != "" &&
+			!slices.ContainsFunc(s.Columns, func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) == key }) {
+			count("goqite's send: an insert that leaves out a key with a default and gives the key by RETURNING")
+		}
+	case *stmt.Update:
+		if len(got.rows) == 1 && slices.Contains(positions, key) && len(positions) > 1 && len(s.Where) == 1 && s.Where[0].Operator == stmt.OpEqual &&
+			s.Where[0].Value.Parameter > 0 && stmttest.ColumnOf(columns, s.Where[0].Column) == key &&
+			!slices.ContainsFunc(s.Set, func(a stmt.Assignment) bool { return stmttest.ColumnOf(columns, a.Column) == key }) {
+			count("goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING")
+		}
+		// An update that gives the key of a row that it moved to another key: the key of its SET, which
+		// no row had before the update, which SQLite has not run yet.
+		if at := slices.IndexFunc(s.Set, func(a stmt.Assignment) bool { return stmttest.ColumnOf(columns, a.Column) == key }); at >= 0 && slices.Contains(positions, key) {
+			src := "select count(*) from " + stmttest.Quote(name) + " where " + stmttest.Quote(columns[key].Name) + " = ?"
+			if before := o.run(t, src, termArg(s.Set[at].Value, args)); before.err == "" && before.rows[0] == "0" {
+				count(kind + " of the key that moves a row to another key")
+			}
+		}
+	}
+	if insert, ok := s.(*stmt.Insert); ok && insert.Columns != nil {
+		for _, position := range positions {
+			if !slices.ContainsFunc(insert.Columns, func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) == position }) {
+				count(kind + " that gives a column that its list leaves out, " + map[bool]string{true: "with", false: "without"}[columns[position].Default != ""] + " a default")
+			}
+		}
+	}
 }
 
 // reachInsert counts what the insert s of the call c, whose outcome in the engine is outcome,
@@ -3468,7 +3691,7 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning:
 		n *= 2
 	}
 	return uint64(n)
@@ -3631,8 +3854,10 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		profile *stmttest.Profile
 		// least is the number of the n sequences that must find the bug by its own failure, a third of
 		// what they found on 2026-11-21 and at least 1: 21 and 15 of 30, each by the rows of a select
-		// or by the count of an update or a delete that differ from SQLite's, and for the bugs of slice
-		// 13 2 of 30, 6 of 12, 4 of 9, 4 of 30, and 7 of 12.
+		// or by the count of an update or a delete that differ from SQLite's, for the bugs of slice 13 2
+		// of 30, 6 of 12, 4 of 9, 4 of 30, and 7 of 12, and for those of slice 14 21, 16, 13, and 16 of
+		// 30 after the review of their checks on 2026-11-23, each by the rows of RETURNING that differ
+		// from SQLite's.
 		least int
 		// finds holds a part of each failure that the bug causes, its own first, by which least of the
 		// sequences must find it, or is nil for any failure. For the bugs of slice 13 its own is the
@@ -3653,6 +3878,10 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"ascendLast", stmttest.Order, 1, []string{"where SQLite has the rows"}, 9},
 		{"skipGap", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses", "the select gives the rows"}, 0},
 		{"lastIndexWins", stmttest.Order, 2, []string{"and the model chooses"}, 12},
+		{"oldValues", stmttest.Returning, 7, []string{"\nand SQLite\n"}, 0},
+		{"deleteNone", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
+		{"dropLast", stmttest.Returning, 4, []string{"\nand SQLite\n"}, 0},
+		{"starKeyFirst", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			// own is the number of the sequences that find the bug by its own failure.

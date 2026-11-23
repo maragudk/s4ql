@@ -65,3 +65,24 @@
 2	reached: LIMIT that cuts
 12	reached: LIMIT by an argument ok
 697	reached: select read by the access that the model chooses
+# Slice 14, RETURNING on insert, update, and delete: a third of the total of 2026-11-23.
+21	reached: commit of a transaction whose statement with RETURNING gave rows
+6	reached: roll back of a transaction whose statement with RETURNING gave rows
+37	reached: insert with RETURNING through Query ok in a write transaction
+19	reached: update with RETURNING through Query ok in a write transaction
+16	reached: delete with RETURNING through Query ok in a write transaction
+22	reached: insert with RETURNING through Query attempt to write a readonly database in a read-only transaction
+13	reached: update with RETURNING through Query attempt to write a readonly database in a read-only transaction
+7	reached: delete with RETURNING through Query attempt to write a readonly database in a read-only transaction
+# The order of the rows by the kind of statement, and the aims, of the review of the generated checks
+# of slice 14 on 2026-11-23: a third of the total. "delete with RETURNING * that gives a row of a
+# table with a column without a default after one with a default" is reached twice here, and is
+# required by TestDifferential.
+2	reached: update with RETURNING whose rows came in the order of the key
+2	reached: update with RETURNING whose rows came in the reverse of the order of the key
+2	reached: delete with RETURNING whose rows came in the order of the key
+2	reached: delete with RETURNING whose rows came in the reverse of the order of the key
+2	reached: goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING
+5	reached: update with RETURNING of the key that moves a row to another key
+10	reached: insert with RETURNING * that gives a row of a table with a column without a default after one with a default
+5	reached: update with RETURNING * that gives a row of a table with a column without a default after one with a default

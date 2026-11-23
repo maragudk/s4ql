@@ -732,6 +732,20 @@ func hasValueFirst(s stmt.Statement) bool {
 	return slices.ContainsFunc(where, func(c stmt.Condition) bool { return c.ValueFirst })
 }
 
+// hasReturning reports whether the text src is an insert, an update, or a delete with RETURNING, of
+// slice 14.
+func hasReturning(src string) bool {
+	switch s, _ := stmt.Check(src); s := s.(type) {
+	case *stmt.Insert:
+		return s.Returning.Present()
+	case *stmt.Update:
+		return s.Returning.Present()
+	case *stmt.Delete:
+		return s.Returning.Present()
+	}
+	return false
+}
+
 // isChange reports whether s is an update or a delete.
 func isChange(s stmt.Statement) bool {
 	switch s.(type) {
@@ -1692,7 +1706,9 @@ func (r *run) verify(ctx context.Context) {
 				is.Equal(r.t, "", o.run(r.t, "rollback to s4ql_seen").err)
 				is.Equal(r.t, "", o.run(r.t, "release s4ql_seen").err)
 			}
-			if !a.query {
+			if !a.query || a.partial {
+				// A write through Query whose rows were not read to their end, as one with RETURNING, is
+				// compared by its error alone.
 				want.columns, want.rows = "", nil
 			}
 			if got := a.answer.String(); differs(r.t, o, a, want) {
@@ -1718,13 +1734,22 @@ func (r *run) verify(ctx context.Context) {
 				if want := typeRule(r.t, o, note, oracleValues(log[k].params[i])); want != "" {
 					r.violate(ctx, "commit %v, %q, stores a value of another type than its column: %v", k+1, note, want)
 				}
-				if a := o.run(r.t, note, oracleValues(log[k].params[i])...); a.err != "" {
-					r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, note, a.err)
+				ran := o.run(r.t, note, oracleValues(log[k].params[i])...)
+				if ran.err != "" {
+					r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, note, ran.err)
 				}
 				// The count of changes of an update or a delete of its own, which its caller was given.
 				changes, _ := o.changes(r.t)
 				if m := idPattern.FindStringSubmatch(note); m != nil {
 					id, _ := strconv.ParseUint(m[1], 10, 64)
+					if a := r.attempts[id]; a != nil && a.tx == nil && a.state == succeeded && a.query && !a.partial && hasReturning(a.src) {
+						// The rows of RETURNING that the caller of a statement of its own read are those of the
+						// change that the log holds, as SQLite gives them on the state before it.
+						if a.answer.String() != ran.String() {
+							r.violate(ctx, "commit %v, %q, gives the rows of RETURNING %v in SQLite, and its caller read %v", k+1, note, ran, a.answer)
+						}
+						r.event("statements with RETURNING of their own whose rows are compared with the log")
+					}
 					if a := r.attempts[id]; a != nil && a.tx == nil && a.state == succeeded && a.write {
 						if s, _ := stmt.Check(a.src); isChange(s) {
 							if a.changes != changes {
@@ -1871,6 +1896,9 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			}
 			if got := a.answer.String(); differs(r.t, o, a, want) {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
+			}
+			if a.query && a.state == succeeded && hasReturning(a.src) {
+				r.event("statements with RETURNING in a transaction whose rows are compared with SQLite")
 			}
 			if s, _ := stmt.Check(a.src); a.state == succeeded && isChange(s) {
 				if want.err == "" && a.changes != changes {
@@ -2352,6 +2380,25 @@ func tallyOf(s simulation) map[string]int {
 				counts["selects with LIMIT that succeeded"]++
 			}
 		}
+		if hasReturning(a.src) {
+			counts["statements with RETURNING"]++
+			switch {
+			case a.state == succeeded && a.query && len(a.answer.rows) > 0 && a.tx == nil:
+				counts["statements with RETURNING of their own that gave rows"]++
+			case a.state == succeeded && a.query && len(a.answer.rows) > 0 && a.tx.end == "rolled back":
+				counts["statements with RETURNING that gave rows in a transaction that was rolled back"]++
+			case a.state == succeeded && a.query && len(a.answer.rows) > 0:
+				counts["statements with RETURNING that gave rows in a transaction"]++
+			case a.state == sqliteFailed:
+				counts["statements with RETURNING with SQLite's error"]++
+			case a.state == failed && a.query && a.tx == nil && a.position != "":
+				// It failed after its write transaction began, with an error of the core or of its context,
+				// which is mostly that of its commit.
+				counts["statements with RETURNING of their own through Query that failed in their write transaction"]++
+			case a.state == unknown && a.query:
+				counts["statements with RETURNING of their own through Query whose outcome is unknown"]++
+			}
+		}
 		if hasValueFirst(s) {
 			counts["statements with a value on the left"]++
 			switch {
@@ -2483,10 +2530,10 @@ type simEnvironment struct {
 // environment adds to what the environment reaches, and takes nothing from another cell.
 var simEnvironments = []simEnvironment{
 	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 34}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}}, 0.07},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 6}}, 0.07},
 	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
 	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}}, 0.06},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 16}}, 0.06},
 }
 
 // TestSimulation runs each environment of [simEnvironments], the default, the idle, and the hammer
@@ -2814,6 +2861,22 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// A sort by a descending last column of ORDER BY sorts it ascending: in the hammer environment,
 		// as for turnMixed, 118 of 200 seeds find the bug, each by its own violation.
 		{"ascendLast", hammerWorkload, "hammer", stmttest.Order, []string{", and in SQLite"}},
+		// A statement with RETURNING of its own through Query whose commit failed gives its rows
+		// without the error, so its caller takes it for committed, and it is not in the log. The bug
+		// needs a commit that fails, which every fault of the store gives, of a statement with RETURNING
+		// through Query, which the profile of RETURNING weighs; the hammer environment, which has no
+		// crashes, plays the same seeds under the address sanitizer: 62 of 200 seeds find the bug, each
+		// by its own violation, after the review of the checks of slice 14 aimed the profile.
+		{"rowsOfFailed", hammerWorkload, "hammer", stmttest.Returning, []string{"is not in the log"}},
+		// An update with RETURNING that gives the rows as they were: of its own, its rows differ from
+		// those that SQLite gives for its commit in the log, and in a transaction from SQLite's on the
+		// state that the transaction saw. In the hammer environment, as for rowsOfFailed: 149 of 200
+		// seeds find the bug, 54 of them by its own violation.
+		{"oldValues", hammerWorkload, "hammer", stmttest.Returning, []string{"gives the rows of RETURNING", ", and in SQLite"}},
+		// A statement with RETURNING that changes several rows and leaves out the last, found as
+		// oldValues is, in a transaction more often than of its own: 143 of 200 seeds find the bug, 125
+		// of them by its own violation.
+		{"dropLast", hammerWorkload, "hammer", stmttest.Returning, []string{", and in SQLite", "gives the rows of RETURNING"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {

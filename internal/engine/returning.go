@@ -27,14 +27,24 @@ type returning struct {
 // buildReturning for a statement with the RETURNING r on the table t: the positions of its columns,
 // which SQLite resolves in the order of the text once it has resolved every other name of the
 // statement, with SQLite's `no such column` for the first that the table does not have, as for a
-// select list. It gives nil for a statement without RETURNING.
-func buildReturning(t *s4qlpb.CreateTable, r *Returning) (*returning, error) {
+// select list. It gives nil for a statement without RETURNING. The bugs b are those planted in the
+// statement.
+func buildReturning(t *s4qlpb.CreateTable, r *Returning, b bugs) (*returning, error) {
 	if r == nil {
 		return nil, nil
 	}
 	ret := &returning{table: t}
 	columns := t.GetColumns()
 	switch {
+	case r.Star && b.starKeyFirst:
+		// The planted bug: the key first, and then the other columns in the order of the table.
+		key := int(t.GetPrimaryKey()[0])
+		ret.positions = append(ret.positions, key)
+		for i := range columns {
+			if i != key {
+				ret.positions = append(ret.positions, i)
+			}
+		}
 	case r.Star:
 		for i := range columns {
 			ret.positions = append(ret.positions, i)
@@ -129,6 +139,10 @@ type returned struct {
 // newReturned rows of the RETURNING r, in the order of the reading how.
 func newReturned(r *returning, how reading) *returned {
 	data := r.rows
+	if how.bugs.dropLast && len(data) > 1 {
+		// The planted bug: the last row is left out.
+		data = data[:len(data)-1]
+	}
 	if how.backward {
 		data = slices.Clone(data)
 		slices.Reverse(data)

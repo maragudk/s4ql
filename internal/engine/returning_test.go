@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -107,12 +108,21 @@ func TestEngine_returning(t *testing.T) {
 			for _, src := range returningSetUp {
 				is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
 			}
-			// The calls run again until the rows have come in both directions, each a draw of the engine
-			// from the sequence of its seed, so that the number of rounds is a function of the seed.
-			forward, backward := "reached: RETURNING whose rows came in the order of the key", "reached: RETURNING whose rows came in the reverse of the order of the key"
-			for round := 0; round < 2 || y[forward] == 0 || y[backward] == 0; round++ {
+			// The calls run again until the rows of an update and those of a delete have each come in both
+			// directions, each a draw of the engine from the sequence of its seed, so that the number of
+			// rounds is a function of the seed.
+			var directions []string
+			for _, kind := range []string{"update", "delete"} {
+				for _, order := range []string{"order", "reverse of the order"} {
+					directions = append(directions, "reached: "+kind+" with RETURNING whose rows came in the "+order+" of the key")
+				}
+			}
+			for round := 0; round < 2 || slices.ContainsFunc(directions, func(d string) bool { return y[d] == 0 }); round++ {
 				if round == 20 {
-					t.Fatal("the rows of RETURNING came in one direction only in 20 rounds")
+					for _, d := range directions {
+						t.Logf("%v times: %v", y[d], d)
+					}
+					t.Fatal("the rows of RETURNING of an update or of a delete came in one direction only in 20 rounds")
 				}
 				for _, c := range returningCalls {
 					if failure := p.step(c.call()); failure != "" {
@@ -277,21 +287,26 @@ func TestConn_returning(t *testing.T) {
 		}
 	})
 
-	t.Run("should vary the order of the rows of RETURNING from one statement to the next, by the seed of the engine", func(t *testing.T) {
-		orders := map[string]int{}
+	t.Run("should vary the order of the rows of RETURNING of an update and of a delete from one statement to the next, by the seed of the engine", func(t *testing.T) {
+		orders := map[string]map[string]int{"update": {}, "delete": {}}
 		for seed := range uint64(40) {
 			i := newInstance(t, engine.Options{Directions: &seed})
 			is.Equal(t, "", i.exec("create table t (k int primary key, v text) strict, without rowid").err)
 			for k := range 3 {
 				is.Equal(t, "", i.exec("insert into t (k, v) values (?, 'a')", int64(k)).err)
 			}
-			got := i.queryValues("update t set v = 'b' returning k", nil)
-			is.Equal(t, "", got.err)
-			orders[strings.Join(got.rows, " ")]++
+			// The update first, so that the delete finds the three rows that it changed.
+			for _, c := range []struct{ kind, src string }{{"update", "update t set v = 'b' returning k"}, {"delete", "delete from t where v = 'b' returning k"}} {
+				got := i.queryValues(c.src, nil)
+				is.Equal(t, "", got.err, c.src)
+				orders[c.kind][strings.Join(got.rows, " ")]++
+			}
 		}
-		is.Equal(t, 2, len(orders))
-		is.True(t, orders["0 1 2"] >= 5)
-		is.True(t, orders["2 1 0"] >= 5)
+		for kind, o := range orders {
+			is.Equal(t, 2, len(o), kind)
+			is.True(t, o["0 1 2"] >= 5, kind)
+			is.True(t, o["2 1 0"] >= 5, kind)
+		}
 	})
 
 	t.Run("should give the error of a commit that fails and no rows, and leave nothing of the change", func(t *testing.T) {
@@ -481,6 +496,26 @@ func TestPair_returning(t *testing.T) {
 				}
 				is.Equal(t, "", p.step(stmttest.Call{Src: src, Query: !exec, Supported: true}), src)
 			}
+		}
+	})
+
+	t.Run("should excuse a statement whose RETURNING names a column twice, which SQLite refuses under the lowered length limit, by SQLite's answer without the limit", func(t *testing.T) {
+		for _, src := range []string{"delete from t where k = 1 returning b, b", "update t set k = 2 where k = 1 returning b, k, b", "insert into t (k, b) values (3, ?) returning b, b"} {
+			y := tally{}
+			p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, stmttest.LengthLimit), y)
+			// A blob of 85 hundredths of the limit, which fits a row, and twice in a row of RETURNING does not.
+			long := []byte(strings.Repeat("v", 85*stmttest.LengthLimit/100))
+			for _, c := range []stmttest.Call{{Src: "create table t (k int primary key, b blob) strict, without rowid", Supported: true},
+				{Src: "insert into t (k, b) values (1, ?)", Args: []any{long}, Supported: true}} {
+				is.Equal(t, "", p.step(c), c.Src)
+			}
+			var args []any
+			if strings.Contains(src, "?") {
+				args = []any{long}
+			}
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Args: args, Query: true, Supported: true}), src)
+			is.Equal(t, 1, y["excused: "+excusedReturningTooBig], src)
+			is.Equal(t, p.o.state(t), p.i.state(), src)
 		}
 	})
 }

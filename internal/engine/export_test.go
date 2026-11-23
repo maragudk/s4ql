@@ -362,6 +362,11 @@ var plantable = map[string]func(b *bugs){
 	"ascendLast":      func(b *bugs) { b.ascendLast = true },
 	"skipGap":         func(b *bugs) { b.skipGap = true },
 	"lastIndexWins":   func(b *bugs) { b.lastIndexWins = true },
+	"rowsOfFailed":    func(b *bugs) { b.rowsOfFailed = true },
+	"oldValues":       func(b *bugs) { b.oldValues = true },
+	"deleteNone":      func(b *bugs) { b.deleteNone = true },
+	"dropLast":        func(b *bugs) { b.dropLast = true },
+	"starKeyFirst":    func(b *bugs) { b.starKeyFirst = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.
