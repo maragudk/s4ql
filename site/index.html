@@ -876,7 +876,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>The mutation testing of <code>order by</code> and <code>limit</code>. After that comes the rest of what the first application needs (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>The SQL that glue still needs after <code>order by</code> and <code>limit</code>, agreed one slice at a time (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -987,7 +987,7 @@ footer ul {
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 13: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Where the engine sorts, rows that tie come in an order that varies from query to query. The commit format stays as it is. The statements run, and generated ordered and limited queries are compared with SQLite up to ties, the engine's choice is compared with a model of the rules, and a check shows that the order SQLite leaves unspecified varies. Mutation testing is still to come.</p></div>
+        <div><h3>Slice 13: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Where the engine sorts, rows that tie come in an order that varies from query to query. The commit format stays as it is. The statements run, and generated ordered and limited queries are compared with SQLite up to ties, the engine's choice is compared with a model of the rules, and a check shows that the order SQLite leaves unspecified varies.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="open">
