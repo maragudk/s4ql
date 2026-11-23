@@ -299,10 +299,27 @@ func run(tb testing.TB, r runner, c call, src string, runs [][]any, errText func
 		}
 		return read(tb, o, rows, errText)
 	case callQueryRow:
-		// database/sql gives the error of the query at Scan, and gives no columns of a row: the query
-		// runs with one destination, and again with as many as database/sql says that the row has, if
-		// it has more.
-		values := make([]any, 1)
+		return queryRow(tb, r, src, args, 0, errText)
+	}
+	tb.Fatalf("no call %q", c)
+	return o
+}
+
+// queryRow is [run] of src through [callQueryRow] on r, with the arguments args, into width
+// destinations, or, for a width of 0, into as many as the row has. database/sql gives the error of
+// the query at Scan, and gives no columns of a row: with a width of 0 the query runs with one
+// destination, and again with as many as database/sql says that the row has, if it has more. A
+// statement that writes, as one with RETURNING, must run once, so its width is given.
+func queryRow(tb testing.TB, r runner, src string, args []any, width int, errText func(testing.TB, error) string) outcome {
+	tb.Helper()
+	ctx := tb.Context()
+	o := outcome{call: callQueryRow}
+	failed := func(step string, err error) outcome {
+		o.failed, o.err = step, errText(tb, err)
+		return o
+	}
+	{
+		values := make([]any, max(width, 1))
 		for {
 			dest := make([]any, len(values))
 			for i := range values {
@@ -310,7 +327,7 @@ func run(tb testing.TB, r runner, c call, src string, runs [][]any, errText func
 			}
 			err := r.QueryRowContext(ctx, src, args...).Scan(dest...)
 			var n int
-			if _, scanned := fmt.Sscanf(fmt.Sprint(err), "sql: expected %d destination arguments in Scan, not 1", &n); err != nil && scanned == nil && len(values) == 1 {
+			if _, scanned := fmt.Sscanf(fmt.Sprint(err), "sql: expected %d destination arguments in Scan, not 1", &n); width == 0 && err != nil && scanned == nil && len(values) == 1 {
 				values = make([]any, n)
 				continue
 			}
@@ -325,8 +342,44 @@ func run(tb testing.TB, r runner, c call, src string, runs [][]any, errText func
 		o.rows = []string{rowText(values)}
 		return o
 	}
-	tb.Fatalf("no call %q", c)
-	return o
+}
+
+// runS4QL is [run] of src through the call c on s4ql's s, with the arguments of each run, where the
+// call runs on SQLite's o. The QueryRow of an insert, an update, or a delete with RETURNING runs once,
+// into as many destinations as the columns of its RETURNING, which it gives on the table as o has it,
+// since a second run would change the database again.
+func (p *pair) runS4QL(s, o runner, c call, src string, runs [][]any) outcome {
+	tb := p.tb
+	tb.Helper()
+	if st, _ := stmt.Check(src); c == callQueryRow && returns(st) {
+		var args []any
+		if len(runs) > 0 {
+			args = runs[0]
+		}
+		return queryRow(tb, s, src, args, p.returningWidth(st, o), s4qlText)
+	}
+	return run(tb, s, c, src, runs, s4qlText)
+}
+
+// returningWidth is the number of the columns of the RETURNING of s, an insert, an update, or a
+// delete, on its table as o has it: those that it names, or every column of the table for *, and 1
+// for * on a table that o does not have, whose statement fails.
+func (p *pair) returningWidth(s stmt.Statement, o runner) int {
+	var table stmt.Name
+	var r stmt.Returning
+	switch s := s.(type) {
+	case *stmt.Insert:
+		table, r = s.Table, s.Returning
+	case *stmt.Update:
+		table, r = s.Table, s.Returning
+	case *stmt.Delete:
+		table, r = s.Table, s.Returning
+	}
+	if r.Columns != nil {
+		return len(r.Columns)
+	}
+	_, columns := p.columnsIn(o, table.Value)
+	return max(len(columns), 1)
 }
 
 // result of an exec into o.
@@ -698,6 +751,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 	if table, where := tableWhere(s); p.found[table.Fold()] && slices.ContainsFunc(where, func(c stmt.Condition) bool { return c.ValueFirst }) {
 		count("value on the left on a table that a create table if not exists found")
 	}
+	p.reachReturning(s, runs, got, o, kind, count)
 	switch s.(type) {
 	case *stmt.Update, *stmt.Delete:
 		p.reachChange(s, runs, got, o, kind, count)
@@ -812,6 +866,87 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			count("insert with two faults: " + kind(o))
 		}
 	}
+}
+
+// reachReturning counts what the insert, the update, or the delete s with RETURNING, of slice 14,
+// with the arguments of each run, whose outcome of s4ql is got, reaches on its table on o, as
+// [pair.reach] says, with the kind of each outcome as kind gives it: for each run, the statement by
+// its call and its outcome, and the form of its RETURNING, *, names, a name twice, or a name that
+// the table does not have; for a query that reads its rows to their end and succeeds, whether it
+// gives no row, one, or several; and goqite's two statements as far as s4ql takes them: its send, an
+// insert that leaves out a key with a default and gives the key by RETURNING, and its receive by
+// id, an update of the row of a key by an argument, of columns outside the key, that gives the row
+// by RETURNING.
+func (p *pair) reachReturning(s stmt.Statement, runs [][]any, got outcome, o runner, kind func(outcome) string, count func(string)) {
+	r := returningOf(s)
+	if !r.Present() {
+		return
+	}
+	statement := map[bool]string{true: "insert", false: "update"}[isInsert(s)]
+	if _, ok := s.(*stmt.Delete); ok {
+		statement = "delete"
+	}
+	statement += " with RETURNING"
+	table, _ := tableWhere(s)
+	if insert, ok := s.(*stmt.Insert); ok {
+		table = insert.Table
+	}
+	_, columns := p.columnsIn(o, table.Value)
+	form := "of names"
+	var positions []int
+	for _, n := range r.Columns {
+		position := stmttest.ColumnOf(columns, n)
+		if position < 0 {
+			form = "of a name that the table does not have"
+			break
+		}
+		if slices.Contains(positions, position) {
+			form = "of a name twice"
+		}
+		positions = append(positions, position)
+	}
+	if r.Columns == nil {
+		form = "*"
+		for i := range columns {
+			positions = append(positions, i)
+		}
+	}
+	query := slices.Contains([]call{callQuery, callPrepareQuery, callStmtQuery, callQueryArgument, callBeside}, got.call)
+	for i, out := range got.runs() {
+		count(statement + " through " + string(got.call) + " " + kind(out))
+		if columns == nil {
+			continue
+		}
+		count(statement + " " + form + " " + kind(out))
+		if !query || out.failed != "" {
+			continue
+		}
+		count(statement + " that gives " + map[bool]string{true: "no row", false: map[bool]string{true: "one row", false: "several rows"}[len(out.rows) == 1]}[len(out.rows) == 0])
+		if len(out.rows) != 1 || i >= len(runs) {
+			continue
+		}
+		key := slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })
+		if key < 0 || !slices.Contains(positions, key) {
+			continue
+		}
+		switch s := s.(type) {
+		case *stmt.Insert:
+			if s.Columns != nil && columns[key].Default != "" && !slices.ContainsFunc(s.Columns, func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) == key }) {
+				count("goqite's send: an insert that leaves out a key with a default and gives the key by RETURNING")
+			}
+		case *stmt.Update:
+			if len(s.Where) == 1 && s.Where[0].Operator == stmt.OpEqual && s.Where[0].Value.Parameter > 0 && stmttest.ColumnOf(columns, s.Where[0].Column) == key &&
+				!slices.ContainsFunc(s.Set, func(a stmt.Assignment) bool { return stmttest.ColumnOf(columns, a.Column) == key }) && len(positions) > 1 {
+				count("goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING")
+			}
+		}
+	}
+}
+
+// isInsert reports whether s is an insert.
+func isInsert(s stmt.Statement) bool {
+	_, ok := s.(*stmt.Insert)
+	return ok
 }
 
 // reachWhere counts what the select sel with the arguments of each run, whose outcome of s4ql is got,
@@ -949,9 +1084,19 @@ func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner
 			break
 		}
 		outcome := kind(out)
+		affected := out.affected
 		switch {
-		case outcome != "ok" || out.affected == "":
-		case out.affected == "0":
+		case !returns(s) || affected != "" || out.failed != "":
+		case out.columns != "":
+			// The rows of RETURNING of a query, one for each row that the statement changed.
+			affected = fmt.Sprint(len(out.rows))
+		case got.call == callQueryRow:
+			// The first of them, of one row changed or more.
+			affected = "1"
+		}
+		switch {
+		case outcome != "ok" || affected == "":
+		case affected == "0":
 			outcome = "ok, no row found"
 		default:
 			outcome = "ok, rows changed"
@@ -971,8 +1116,8 @@ func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner
 		}
 		sel, selArgs := stmttest.SelectOf(s, bound)
 		rows := -1
-		if out.affected != "" {
-			rows = map[bool]int{true: 0, false: 1}[out.affected == "0"]
+		if affected != "" {
+			rows = map[bool]int{true: 0, false: 1}[affected == "0"]
 		}
 		// Also for a SET of a column that the table does not have, as the engine's checks count it.
 		reachValueFirst(sel, selArgs, kind(out), rows, count)
@@ -1112,7 +1257,7 @@ const (
 	// create index whose first column in the order of the text that the table does not have is in double
 	// quotes, which mattn's SQLite reads as a string, and which [pair.checkQuoted] checks against the
 	// pinned build's error instead.
-	excusedQuoted = "a select, an update, a delete, or a create index with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error"
+	excusedQuoted = "a select, an update, a delete, a create index, or an insert with RETURNING with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error"
 )
 
 // rowsOpen is the error of s4ql for a statement in a transaction while the rows of a query of the
@@ -1159,9 +1304,14 @@ type transaction struct {
 	opened, sFirst, oFirst string
 	// openedArgs are the arguments of the query of the rows that are left open.
 	openedArgs []any
-	// wrote is set once an insert succeeded in the transaction, failed once a call failed in it, and
-	// created and dropped once a create table or a drop table succeeded in it.
-	wrote, failed, created, dropped bool
+	// oAll are SQLite's rows but the first, each with its scan, of an insert, an update, or a delete
+	// with RETURNING whose rows s4ql left open, as [pair.openWrite] says, which ran once on each side;
+	// oRows is nil then.
+	oAll []string
+	// wrote is set once an insert succeeded in the transaction, failed once a call failed in it,
+	// created and dropped once a create table or a drop table succeeded in it, and returned once an
+	// insert, an update, or a delete with RETURNING, of slice 14, succeeded in it.
+	wrote, failed, created, dropped, returned bool
 }
 
 // kind of the transaction, as the tally names it.
@@ -1240,7 +1390,11 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	if p.tx != nil && p.tx.sRows != nil {
 		return p.whileRowsOpen(src, c, supported, runs, s, o, scope)
 	}
-	got := run(tb, s, c, src, runs, s4qlText)
+	if st, _ := stmt.Check(src); c == callQueryOpen && p.tx != nil && scope == p.tx.kind() && returns(st) &&
+		!slices.ContainsFunc(runs, func(args []any) bool { return !reaches(src, args) }) {
+		return p.openWrite(src, supported, runs, s, o, scope)
+	}
+	got := p.runS4QL(s, o, c, src, runs)
 	p.y.add(scope, src, got, runs)
 	p.reach(src, runs, got, o)
 	failure := p.compare(src, c, supported, runs, got, o)
@@ -1282,7 +1436,9 @@ func (p *pair) where(c call, src string) (runner, runner, string) {
 func (p *pair) note(src string, got outcome) {
 	t := p.tx
 	kind := statementKind(src)
+	st, _ := stmt.Check(src)
 	for _, o := range got.runs() {
+		t.returned = t.returned || o.failed == "" && returns(st)
 		switch {
 		case o.failed != "":
 			t.failed = true
@@ -1338,6 +1494,76 @@ func (p *pair) openRows(src string, args []any, compared outcome) string {
 	return ""
 }
 
+// openWrite is [pair.stepRuns] of src, an insert, an update, or a delete with RETURNING, through
+// [callQueryOpen] in the open transaction, with the arguments of its run, on s and o: it runs once on
+// each side, since a second run would change the database again, where [pair.openRows] runs a
+// select again. s4ql's rows of RETURNING are left open after their first row, as the rows of a
+// select are, and SQLite's are read to their end: s4ql's first row, with its scan, must be one of
+// SQLite's rows, with the same columns and types, and [pair.closeRows] compares the rest and the
+// table after the statement. A statement that fails or gives no row on s4ql's side is compared as
+// through [callQuery].
+func (p *pair) openWrite(src string, supported bool, runs [][]any, s, o runner, scope string) (outcome, string) {
+	tb := p.tb
+	tb.Helper()
+	t := p.tx
+	got := outcome{call: callQueryOpen}
+	rows, err := s.QueryContext(tb.Context(), src, runs[0]...)
+	var first string
+	if err != nil {
+		got.failed, got.err = "query", s4qlText(tb, err)
+	} else {
+		columns, err := rows.Columns()
+		is.NotError(tb, err)
+		types, err := rows.ColumnTypes()
+		is.NotError(tb, err)
+		var names []string
+		for _, ct := range types {
+			names = append(names, ct.DatabaseTypeName())
+		}
+		got.columns, got.types = strings.Join(columns, ","), strings.Join(names, ",")
+		if rows.Next() {
+			row, scan, null := readRow(tb, rows, names)
+			got.rows, got.scans, got.null, first = []string{row}, []string{scan}, null, pairText(row, scan)
+		} else {
+			// database/sql closes rows whose Next found no row.
+			if err := rows.Err(); err != nil {
+				got.failed, got.err = "rows", s4qlText(tb, err)
+				got.columns, got.types = "", ""
+			}
+			is.NotError(tb, rows.Close())
+			rows = nil
+		}
+	}
+	p.y.add(scope, src, got, runs)
+	p.reach(src, runs, got, o)
+	if rows == nil {
+		failure := p.compare(src, callQueryOpen, supported, runs, got, o)
+		if failure == "" && got.failed == "" {
+			failure = p.compareChanged(src, s, o)
+		}
+		if failure == "" {
+			p.note(src, got)
+		}
+		return got, failure
+	}
+	p.y.compared()
+	want := run(tb, o, callQueryOpen, firstStatement(src), runs, mattnText)
+	all := want.pairs()
+	t.sRows, t.oRows, t.opened, t.openedArgs, t.sFirst, t.oFirst = rows, nil, src, runs[0], first, first
+	p.note(src, got)
+	at := slices.Index(all, first)
+	if want.failed != "" || want.columns != got.columns || want.types != got.types || at < 0 {
+		t.oAll = all
+		return got, fmt.Sprintf("%q with the arguments %#v: the first row of s4ql's rows of RETURNING that are left open is\n%v\nof the columns %q of the types %q, which is none of the rows that SQLite gives:\n%v", src, runs, first, got.columns, got.types, want.full())
+	}
+	// SQLite's rows but the one that is s4ql's first, which [pair.closeRows] compares with s4ql's rest.
+	t.oAll = slices.Delete(slices.Clone(all), at, at+1)
+	if p.y != nil {
+		p.y[t.kind()+": rows of RETURNING left open"]++
+	}
+	return got, ""
+}
+
 // firstRow of rows, with its scan into sql.Null* values and into pointers, as [pairText] gives them
 // and as [outcome.pairs] has them, and whether the rows have one.
 func firstRow(tb testing.TB, rows *sql.Rows) (string, bool) {
@@ -1380,15 +1606,30 @@ func (p *pair) closeRows() string {
 		got = append(got, pairText(typedRow(tb, t.sRows)))
 	}
 	sErr := t.sRows.Err()
-	for t.oRows.Next() {
-		want = append(want, pairText(typedRow(tb, t.oRows)))
+	write := t.oRows == nil
+	if write {
+		want = append(want, t.oAll...)
+	} else {
+		for t.oRows.Next() {
+			want = append(want, pairText(typedRow(tb, t.oRows)))
+		}
+		is.NotError(tb, t.oRows.Err())
+		is.NotError(tb, t.oRows.Close())
 	}
-	is.NotError(tb, t.oRows.Err())
 	is.NotError(tb, t.sRows.Close())
-	is.NotError(tb, t.oRows.Close())
-	t.sRows, t.oRows = nil, nil
+	t.sRows, t.oRows, t.oAll = nil, nil, nil
 	if sErr != nil {
 		return fmt.Sprintf("%q: the rest of s4ql's rows that were left open fails with %v", t.opened, sErr)
+	}
+	if write {
+		// The rows of a statement with RETURNING, which is no select, and then its table, which s4ql
+		// refused to read while the rows were open.
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			return fmt.Sprintf("%q: s4ql's rows of RETURNING that were left open, the first and then the rest, are\n%v\nand SQLite's\n%v", t.opened, strings.Join(got, " "), strings.Join(want, " "))
+		}
+		return p.compareChanged(t.opened, inTx{Tx: t.s, outer: p.s}, inTx{Tx: t.o, outer: p.o})
 	}
 	if sel := orderedSelect(t.opened); sel != nil {
 		if failure := p.orderedDiffers(sel, t.openedArgs, got, want, true, inTx{Tx: t.o, outer: p.o}); failure != "" {
@@ -1419,7 +1660,7 @@ func (p *pair) whileRowsOpen(src string, c call, supported bool, runs [][]any, s
 			failure = rest
 		}
 	}()
-	got = run(tb, s, c, src, runs, s4qlText)
+	got = p.runS4QL(s, o, c, src, runs)
 	p.y.add(scope, src, got, runs)
 	runsAll := !slices.ContainsFunc(runs, func(args []any) bool { return !reaches(src, args) })
 	if !runsAll || scope != p.tx.kind() {
@@ -1558,7 +1799,7 @@ func (p *pair) end(c call) (outcome, string) {
 	}
 	p.tx = nil
 	open := t.sRows != nil
-	if open {
+	if open && t.oRows != nil {
 		is.NotError(tb, t.oRows.Close())
 	}
 	if t.readOnly {
@@ -1598,7 +1839,7 @@ func (p *pair) end(c call) (outcome, string) {
 		for _, with := range []struct {
 			ok   bool
 			what string
-		}{{t.failed, "after a failed call"}, {t.wrote, "after an insert"}, {t.created, "after a create table"}, {t.dropped, "after a drop table"}, {open, "while rows are open"}} {
+		}{{t.failed, "after a failed call"}, {t.wrote, "after an insert"}, {t.created, "after a create table"}, {t.dropped, "after a drop table"}, {open, "while rows are open"}, {t.returned, "after a statement with RETURNING"}} {
 			if with.ok {
 				y[name+" "+with.what]++
 			}
@@ -1699,7 +1940,10 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		// A QueryRow gives the row that comes first, and each side reads in an order of its own, so
 		// the two rows need not be the same row: s4ql's must be one of the rows that SQLite gives for
 		// the query when all of them are read.
-		all := run(tb, o, callQuery, first, mattnRuns, mattnText)
+		all := want
+		if !returns(s) {
+			all = run(tb, o, callQuery, first, mattnRuns, mattnText)
+		}
 		if all.failed != "" || len(got.rows) != 1 || !slices.Contains(all.rows, got.rows[0]) {
 			return fmt.Sprintf("%q with the arguments %#v: s4ql's QueryRow gives\n%v\nwhose row is none of the rows that SQLite gives:\n%v", src, runs, got, all)
 		}
@@ -1731,6 +1975,20 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 	return fmt.Sprintf("%q with the arguments %#v: s4ql gives\n%v\nand SQLite\n%v", src, runs, got.full(), want.full())
 }
 
+// returningOf the insert, the update, or the delete s: its RETURNING, or the zero Returning for
+// another statement.
+func returningOf(s stmt.Statement) stmt.Returning {
+	switch s := s.(type) {
+	case *stmt.Insert:
+		return s.Returning
+	case *stmt.Update:
+		return s.Returning
+	case *stmt.Delete:
+		return s.Returning
+	}
+	return stmt.Returning{}
+}
+
 // returns reports whether s is an insert, an update, or a delete with RETURNING.
 func returns(s stmt.Statement) bool {
 	switch s := s.(type) {
@@ -1745,7 +2003,8 @@ func returns(s stmt.Statement) bool {
 }
 
 // execByQuery is [run] on mattn's side of src, a statement with RETURNING, through the call c, with
-// the arguments of each run. mattn's Exec steps such a statement once and gives the count of changes
+// the arguments of each run, which runs the statement once for each run. A QueryRow is a Query whose
+// rows are each a row that the QueryRow may give. mattn's Exec steps such a statement once and gives the count of changes
 // that SQLite has then, which is that of the statement before: SQLite runs every change of the
 // statement in its first step, and counts them once the statement has run to its end. So a call of
 // Exec runs the statement through Query, as the query call of c, and reads its rows, and its count of
@@ -1753,6 +2012,23 @@ func returns(s stmt.Statement) bool {
 // that SQLite gives after it. Every other call is [run].
 func execByQuery(tb testing.TB, o runner, c call, src string, runs [][]any) outcome {
 	tb.Helper()
+	if c == callQueryRow {
+		// The rows of the statement, which runs once, as the outcome of a QueryRow, which gives every
+		// error at Scan, and no rows as [sql.ErrNoRows], with each row that SQLite gives: the row of
+		// s4ql's QueryRow must be one of them.
+		r := run(tb, o, callQuery, src, runs[:min(len(runs), 1)], mattnText)
+		r.call, r.columns, r.types, r.scans = c, "", "", nil
+		switch {
+		case r.failed != "":
+			r.failed = "scan"
+		case len(r.rows) == 0:
+			r.failed, r.err = "scan", "no rows"
+		}
+		if r.failed != "" {
+			r.rows, r.null = nil, false
+		}
+		return r
+	}
 	query := map[call]call{callExec: callQuery, callExecArgument: callQueryArgument, callPrepareExec: callPrepareQuery, callStmtExec: callStmtQuery, callPrepareExecRuns: callPrepareQuery}[c]
 	if query == "" {
 		return run(tb, o, c, src, runs, mattnText)
@@ -1874,7 +2150,8 @@ func (p *pair) orderedDiffers(sel *stmt.Select, args []any, got, want []string, 
 
 // checkQuoted s4ql's outcome got of src, which holds the statement s, run where SQLite runs on o,
 // when s is a select whose name that SQLite's `no such column` names, as [stmttest.MissingColumn]
-// gives it, is in double quotes, in the select list or in a condition. mattn's SQLite reads such a
+// gives it, is in double quotes, in the select list or in a condition, or, after those, in the
+// RETURNING of an insert, an update, or a delete, of slice 14. mattn's SQLite reads such a
 // name as a string, where the pinned build of SQLite, which the engine's tests compare with, gives
 // `no such column`, because it takes double quotes for names only (DQS=0). So such a select is not
 // run in mattn's SQLite: each run must fail when the statement runs, since Prepare checks only the
@@ -1899,6 +2176,14 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 		sel = &stmt.Select{Table: s.Table, Where: s.Where}
 	case *stmt.CreateIndex:
 		sel = &stmt.Select{Table: s.Table}
+	case *stmt.Insert:
+		// The names of the list of an insert and the number of its values get SQLite's errors first, in
+		// both builds, and then the names of its RETURNING.
+		_, columns := p.columnsIn(o, s.Table.Value)
+		if _, ok := stmttest.Positions(columns, s); !ok || !s.Returning.Present() {
+			return "", false
+		}
+		sel = &stmt.Select{Table: s.Table}
 	default:
 		return "", false
 	}
@@ -1907,6 +2192,13 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 		return "", false
 	}
 	name, missing := stmttest.MissingColumn(columns, sel)
+	if r := returningOf(s); !missing {
+		// The names of RETURNING, of slice 14, come after every other name of the statement, in the
+		// order of the text, as the names of a select list do.
+		if at := slices.IndexFunc(r.Columns, func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 }); at >= 0 {
+			name, missing = r.Columns[at], true
+		}
+	}
 	if ci, ok := s.(*stmt.CreateIndex); ok {
 		// The first column of the index in the order of the text that the table does not have: the
 		// build of SQLite with DQS on makes an index on a string literal of it, if it is in double
@@ -3088,7 +3380,9 @@ var sequences = map[string][]step{
 		{callBegin, "", "begin"},
 		{callQuery, "insert into t5 (v1, v2) values (4, 'd') returning v1, v2", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:4" "string:d"]`},
 		{callStmtQuery, "update t5 set v2 = 'x' where v1 > 2 returning v1", `prepare outside, query in the transaction: columns "v1" of types "INT", rows ["int64:3"] ["int64:4"]`},
-		{callQueryOpen, "update t5 set v3 = 2.5 where v2 = 'x' returning v1, v3", `query, rows left open: columns "v1,v3" of types "INT,REAL", rows ["int64:3" "float64:2.5"] ["int64:4" "float64:2.5"]`},
+		// The statement runs once, and its outcome is the first row of its rows, which are left open, in
+		// either order; the comparison of the rest with SQLite's follows the next call.
+		{callQueryOpen, "update t5 set v3 = 2.5 where v2 = 'x' returning v1, v3", oneOf(`query, rows left open: columns "v1,v3" of types "INT,REAL", rows ["int64:3" "float64:2.5"]`, `query, rows left open: columns "v1,v3" of types "INT,REAL", rows ["int64:4" "float64:2.5"]`)},
 		{callExec, "delete from t5 where v1 = 1", "exec: exec failed with " + rowsOpen},
 		{callQueryOpen, "update t5 set v3 = 3.5 where v1 > 3 returning v1", `query, rows left open: columns "v1" of types "INT", rows ["int64:4"]`},
 		{callQuery, "delete from t5 where v1 = 1 returning v1", "query: query failed with " + rowsOpen},
@@ -3749,10 +4043,17 @@ func TestGenerated(t *testing.T) {
 	// that the test runs, which the run must reach once at least: a value on the left of != in a
 	// select that finds rows, which the values on the left reach about 4 times in 100 sequences, and
 	// a column that the table does not have under IS NULL or IS NOT NULL alone in a WHERE, which the
-	// profile of the WHERE reaches about 3 times in 100.
+	// profile of the WHERE reaches about 3 times in 100; and, of slice 14, goqite's receive by id and
+	// its send, and an update and a delete with RETURNING of several rows, which the profile of
+	// RETURNING reaches once or twice in 30 sequences, and the engine's differential tests require by
+	// profile.
 	for _, kind := range []string{
 		"reached: value on the left of != finds rows",
 		"reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column",
+		"reached: goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING",
+		"reached: goqite's send: an insert that leaves out a key with a default and gives the key by RETURNING",
+		"reached: update with RETURNING that gives several rows",
+		"reached: delete with RETURNING that gives several rows",
 	} {
 		if total[kind] == 0 {
 			t.Errorf("no profile reaches %q", kind)
@@ -3782,7 +4083,8 @@ func TestGenerated(t *testing.T) {
 // The profile of the ORDER BY runs 50 for its rarest refusals of an argument of LIMIT, a blob and
 // NULL, each about once in ten sequences.
 // The defaults and the transactions also reach the statements of a transaction while its rows are
-// open the most, of which a read-only transaction's insert is the rarest.
+// open the most, of which a read-only transaction's insert is the rarest. The profile of RETURNING
+// runs 30 for goqite's receive by id and for the rows of RETURNING left open in a transaction.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:
@@ -3801,6 +4103,8 @@ func generatedOf(p *stmttest.Profile) uint64 {
 		return 16
 	case stmttest.Order:
 		return 50
+	case stmttest.Returning:
+		return 30
 	case stmttest.Tables:
 		return 14
 	}
