@@ -1167,3 +1167,13 @@ internal/sqlite/sqlite.go Stmt.StepContext remove statement: return false, error
 	For a finalized statement, s4ql_step_interruptible gives SQLITE_MISUSE too: the build has SQLITE_ENABLE_API_ARMOR, under which sqlite3_db_handle of NULL is NULL and sqlite3_progress_handler of no connection does nothing, and sqlite3_step of NULL is SQLITE_MISUSE, which s.error gives through errorFromConn(nil), as this return does.
 internal/sqlite/sqlite.go Stmt.StepContext condition: ctx.Done() == nil => false
 	A context without Done cannot end, so its Err is nil at every look of the progress handler, which never stops the step: it runs as Step runs it.
+
+# RETURNING of slice 14 in the engine, internal/engine.
+internal/engine/engine.go Conn.queryText condition: err != nil => false #2
+	Conn.write and Conn.writeIn give a *returned only beside a nil error: each of their returns with an error gives nil for it, also those of the planted bugs rowsOfFailed and ackUnknown, which drop the error. So where err is not nil, ret is nil, and the first operand already holds.
+
+# RETURNING of slice 14 in the driver, the root package.
+conn.go conn.QueryContext condition: len(r.Columns()) == 0 => false
+	The rows of a statement that is no query have ended (done) in the engine, so rows over them are not held (Holds is false), their loop gives io.EOF at once, and their close releases the count of held rows that the query added; database/sql then gives no row and closes them, as for noRows. Only the slice of no names differs, nil or empty, which database/sql passes on and nothing promises.
+conn.go conn.QueryContext remove statement: return noRows{}, nil =>
+	As for the condition above: without the return, the rows of a statement that is no query go through rows over engine rows that have ended, which give the same.

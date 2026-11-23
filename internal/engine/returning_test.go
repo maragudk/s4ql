@@ -433,6 +433,38 @@ func TestConn_returning(t *testing.T) {
 		is.Equal(t, 2, len(i.queryValues("select * from t", nil).rows))
 	})
 
+	t.Run("should hold nothing with the rows of a RETURNING outside a transaction, which a begin and a statement beside them do not wait for, and hold the connection with them in one", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		is.Equal(t, "", i.exec("create table t (k int primary key, v text) strict, without rowid").err)
+
+		rows, err := i.c.Query(t.Context(), "insert into t (k, v) values (1, 'a') returning k")
+		is.NotError(t, err)
+		is.True(t, !rows.Holds(), "rows of a RETURNING outside a transaction")
+		// Nothing waits for them, also a begin while they are open.
+		is.NotError(t, i.c.Begin(t.Context()))
+		tx, err := i.c.Query(t.Context(), "insert into t (k, v) values (2, 'b') returning k")
+		is.NotError(t, err)
+		is.True(t, tx.Holds(), "rows of a RETURNING in a transaction")
+		is.NotError(t, tx.Close())
+		is.True(t, !tx.Holds(), "rows of a RETURNING in a transaction once closed")
+		is.NotError(t, i.c.Commit(t.Context()))
+		var got [][]*s4qlpb.Value
+		for row, err := range rows.All() {
+			is.NotError(t, err)
+			got = append(got, row)
+		}
+		is.Equal(t, 1, len(got))
+		is.Equal(t, int64(1), got[0][0].GetInteger())
+
+		none, err := i.c.Query(t.Context(), "insert into t (k, v) values (3, 'c')")
+		is.NotError(t, err)
+		is.True(t, !none.Holds(), "rows of a statement without RETURNING")
+		query, err := i.c.Query(t.Context(), "select k from t")
+		is.NotError(t, err)
+		is.True(t, query.Holds(), "rows of a query")
+		is.NotError(t, query.Close())
+	})
+
 	t.Run("should run goqite's send and receive as far as the slices take them, as SQLite does", func(t *testing.T) {
 		p := newPair(t, newInstance(t, engine.Options{}), nil)
 		for _, src := range []string{goqiteTable, goqiteIndex} {
