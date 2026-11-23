@@ -1420,6 +1420,10 @@ func TestStmt_StepContext(t *testing.T) {
 	t.Run("should keep no reference to the context of a step after it", func(t *testing.T) {
 		c := memory(t)
 		s := prepare(t, c, "select 1")
+		// heldContext is a context of its own allocation, whose collection the test can watch.
+		type heldContext struct {
+			context.Context
+		}
 		ctx := &heldContext{Context: t.Context()}
 		collected := weak.Make(ctx)
 		_, err := s.StepContext(ctx)
@@ -1428,11 +1432,6 @@ func TestStmt_StepContext(t *testing.T) {
 		runtime.GC()
 		is.True(t, collected.Value() == nil)
 	})
-}
-
-// heldContext is a context of its own allocation, whose collection a test can watch.
-type heldContext struct {
-	context.Context
 }
 
 // BenchmarkStmt_StepContext compares [sqlite.Stmt.StepContext] with [sqlite.Stmt.Step] for the first

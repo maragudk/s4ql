@@ -1058,7 +1058,7 @@ internal/engine/bugs.go sortedAfter.rows condition: c.Descending => false
 internal/engine/bugs.go sortedAfter.rows condition: c.Descending => true
 	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
 internal/engine/bugs.go sortedAfter.rows condition: err != nil => false
-	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+	The planted bug limitFirst: another handling of an error of its source, a variant of the bug that the tests find as they find the bug, by the wrong rows that it gives where its source does not fail.
 internal/engine/bugs.go sortedAfter.rows condition: n != 0 => false
 	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
 internal/engine/bugs.go sortedAfter.rows condition: n != 0 => true
@@ -1114,13 +1114,13 @@ internal/engine/bugs.go sortedAfter.rows remove statement: n = map[bool]int{true
 internal/engine/bugs.go sortedAfter.rows remove statement: n, _ = compare(x, y) =>
 	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
 internal/engine/bugs.go sortedAfter.rows remove statement: return =>
-	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+	The planted bug limitFirst: another handling of an error of its source, a variant of the bug that the tests find as they find the bug, by the wrong rows that it gives where its source does not fail.
 internal/engine/bugs.go sortedAfter.rows remove statement: return n =>
 	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
 internal/engine/bugs.go sortedAfter.rows remove statement: slices.SortStableFunc(rows, func(a, b []*s4qlpb.Value) int { for _, c := range s.by { x, y := a[c.Position], b[c.Position] var n int switch { case x.HasNull(... =>
 	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
 internal/engine/bugs.go sortedAfter.rows remove statement: yield(nil, err) =>
-	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
+	The planted bug limitFirst: another handling of an error of its source, a variant of the bug that the tests find as they find the bug, by the wrong rows that it gives where its source does not fail.
 internal/engine/bugs.go sortedAfter.rows swap arguments: compare(x, y) => compare(y, x)
 	The planted bug limitFirst: another comparison, or none, in its sort after the LIMIT, which still gives the rows of the LIMIT taken before the sort, as the bug does, and the tests find it as they find the bug.
 internal/engine/bugs.go sortedAfter.rows swap cases: case x.HasNull() || y.HasNull(): n = map[bool]int{true: 1}[!x.HasNull()] - map[bool]int{true: 1}[!y.HasNull()] default: n, _ = compare(x, y) => case x.HasNull() || y.HasNull(): n, _ = compare(x, y) default: n = map[bool]int{true: 1}[!x.HasNull()] - map[bool]int{true: 1}[!y.HasNull()]

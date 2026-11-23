@@ -430,7 +430,8 @@ func (c *Conn) AddTestFunctions() error {
 // SetLengthLimit of the connection, SQLITE_LIMIT_LENGTH: the largest string or blob, in bytes, that
 // it makes. A larger one fails with SQLITE_TOOBIG and "string or blob too big". SQLite lowers a
 // limit above its compile-time default, 1,000,000,000, to that default, and one below 30 to 30. n
-// must be positive.
+// must be positive. It fails with SQLITE_MISUSE, and changes nothing, on a closed connection or for
+// an n that is not positive, and does not fail otherwise.
 func (c *Conn) SetLengthLimit(n int) error {
 	if c.db == nil || n <= 0 {
 		return errorFromConn(nil, C.SQLITE_MISUSE)
