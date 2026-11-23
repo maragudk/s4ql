@@ -3181,6 +3181,10 @@ func TestClose(t *testing.T) {
 			}
 			is.NotError(t, r.Close())
 		}
+		// The refused query left no rows open on the connection, so the next is refused alike, and not
+		// for the rows of the one before.
+		_, err = conn.QueryContext(ctx, select1)
+		is.Equal(t, "s4ql: the instance has stopped: closed", failed(t, err).Error())
 		// The instance has not stopped: the refusal is the connector's.
 		is.NotError(t, conn.PingContext(t.Context()))
 
