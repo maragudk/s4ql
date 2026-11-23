@@ -84,6 +84,9 @@ type answer struct {
 	// access of the rows of a query of the engine, as [engine.Rows.Access] gives it with the
 	// direction that the engine drew, or nil. It is not in the text of the answer.
 	access *engine.Access
+	// backward is the direction of the rows of a statement with RETURNING of the engine, as
+	// [engine.Rows.Backward] gives it, or nil. It is not in the text of the answer.
+	backward *bool
 }
 
 // String of the answer, which is what the tests compare between the engine and SQLite: its error, or
@@ -664,6 +667,9 @@ func (i *instance) queryValues(src string, args []*s4qlpb.Value) answer {
 	if access, ok := rows.Access(); ok {
 		a.access = &access
 	}
+	if backward, ok := rows.Backward(); ok {
+		a.backward = &backward
+	}
 	for row, err := range rows.All() {
 		if err != nil {
 			return i.errAnswer(src, err)
@@ -1081,21 +1087,17 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	// A statement with RETURNING, of slice 14, is refused before its values and its arguments until
-	// the engine runs it, as [returned] says, so no rule of its values holds for it.
-	if s == nil || !returned(s) {
-		if kind, failure := p.checkLength(c, got); kind != "" {
-			if failure == "" {
-				p.y.excused(kind)
-			}
-			return failure
+	if kind, failure := p.checkLength(c, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
 		}
-		if kind, failure := p.checkType(c, args, got); kind != "" {
-			if failure == "" {
-				p.y.excused(kind)
-			}
-			return failure
+		return failure
+	}
+	if kind, failure := p.checkType(c, args, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
 		}
+		return failure
 	}
 	if got.err == "not supported" && p.tooLongForCache(src, got.message) {
 		p.y.excused(excusedCacheLimit)
@@ -1105,9 +1107,8 @@ func (p *pair) step(c stmttest.Call) string {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
-		// empty database without a syntax error. A statement with RETURNING, of slice 14, is not
-		// supported until the engine runs it, as [returned] says.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil && !returned(s) {
+		// empty database without a syntax error.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -1129,6 +1130,7 @@ func (p *pair) step(c stmttest.Call) string {
 		is.Equal(t, "", o.run(t, "savepoint s4ql_record").err)
 	}
 	p.y.compared()
+	inOrder := p.returnedInOrder(u, args)
 	want := o.run(t, src, args...)
 	if mayslip {
 		is.Equal(t, "", o.run(t, "rollback to s4ql_record").err)
@@ -1183,6 +1185,11 @@ func (p *pair) step(c stmttest.Call) string {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
 		if failure := p.checkAccess(sel, args, got); failure != "" {
+			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
+		}
+	}
+	if c.Query && got.err == "" && want.err == "" {
+		if failure := p.checkReturned(got, inOrder); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
 	}
@@ -1294,6 +1301,117 @@ func (p *pair) checkOrder(s *stmt.Select, args []any, got answer) string {
 		if !slices.Equal(other(sorted, false), other(sorted, true)) {
 			p.count("delivered select whose rows that tie came in the order of the key of its access")
 		}
+	}
+	return ""
+}
+
+// returnedInOrder of the update or the delete s with RETURNING, with the arguments args as SQLite
+// binds them, before SQLite runs it: the rows that the statement gives, in the order in which the
+// engine changes them, which is the order of the primary key of the rows that its WHERE finds. They
+// are the rows of a select of the columns of RETURNING with the WHERE of s, before the change, in
+// the order of the key, where a column that an update sets is its value, which the update gives
+// every row that it finds. A real of the SET is 0.0 for -0.0, as the table stores it. It gives nil
+// for another statement, and where SQLite fails the select.
+func (p *pair) returnedInOrder(s stmt.Statement, args []any) []string {
+	t, o := p.t, p.o
+	t.Helper()
+	var (
+		table stmt.Name
+		where []stmt.Condition
+		set   []stmt.Assignment
+		r     stmt.Returning
+	)
+	switch s := s.(type) {
+	case *stmt.Update:
+		table, where, set, r = s.Table, s.Where, s.Set, s.Returning
+	case *stmt.Delete:
+		table, where, r = s.Table, s.Where, s.Returning
+	default:
+		return nil
+	}
+	if !r.Present() || len(args) != s.Parameters() {
+		return nil
+	}
+	_, columns := o.columns(t, table.Value)
+	if columns == nil {
+		return nil
+	}
+	var names []string
+	key := ""
+	for _, c := range columns {
+		if r.Columns == nil {
+			names = append(names, c.Name)
+		}
+		if c.PrimaryKey {
+			key = c.Name
+		}
+	}
+	for _, c := range r.Columns {
+		names = append(names, c.Value)
+	}
+	var list []string
+	var bound []any
+	for _, name := range names {
+		term := stmttest.Quote(name)
+		for _, a := range set {
+			if a.Column.Fold() != fold(name) {
+				continue
+			}
+			v := termArg(a.Value, args)
+			term = "?"
+			if _, ok := v.(float64); ok {
+				term = "(? + 0.0)"
+			}
+			bound = append(bound, v)
+		}
+		list = append(list, term)
+	}
+	whole, whereArgs := stmttest.SelectText(&stmt.Select{Table: table, Where: where}, args, " order by "+stmttest.Quote(key))
+	src := "select " + strings.Join(list, ", ") + strings.TrimPrefix(whole, "select *")
+	rows := o.unlimited(t, src, append(bound, whereArgs...)...)
+	if rows.err != "" {
+		return nil
+	}
+	return rows.rows
+}
+
+// termArg is the value of the term, a literal or the argument of args for its parameter, as SQLite
+// binds it.
+func termArg(term stmt.Term, args []any) any {
+	switch v := term.Value.(type) {
+	case stmt.Integer:
+		return int64(v)
+	case stmt.Real:
+		return float64(v)
+	case stmt.Text:
+		return string(v)
+	case stmt.Blob:
+		return []byte(v)
+	case stmt.Null:
+		return nil
+	}
+	return args[term.Parameter-1]
+}
+
+// checkReturned of the rows got of the engine of an update or a delete with RETURNING, which SQLite
+// gives as well, by inOrder, the rows of [pair.returnedInOrder]: they must be inOrder, or its reverse
+// where the engine drew backward, as [engine.Rows.Backward] says. Where the reverse differs, it
+// counts what the spec's rule "Unspecified row order varies" says varies: whether the rows came in
+// the order of the key or in its reverse. It gives what differs, or "".
+func (p *pair) checkReturned(got answer, inOrder []string) string {
+	if got.backward == nil || inOrder == nil || len(got.rows) < 2 {
+		return ""
+	}
+	want, turned := inOrder, slices.Clone(inOrder)
+	slices.Reverse(turned)
+	if *got.backward {
+		want = turned
+	}
+	if !slices.Equal(got.rows, want) {
+		return fmt.Sprintf("the engine gives the rows of RETURNING\n%v\nbackward: %v, and SQLite, in the order of the key,\n%v", got.rows, *got.backward, inOrder)
+	}
+	if !slices.Equal(turned, inOrder) {
+		p.count("RETURNING whose rows came in the " + map[bool]string{false: "order", true: "reverse of the order"}[*got.backward] + " of the key")
 	}
 	return ""
 }

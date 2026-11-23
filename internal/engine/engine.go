@@ -322,7 +322,8 @@ func (c *Conn) exec(ctx context.Context, r *report, src string, args []*s4qlpb.V
 		}
 		return Result{}, nil
 	}
-	res, err := c.write(ctx, r, p, text, args)
+	// The rows of a RETURNING are dropped, and not held.
+	res, _, err := c.write(ctx, r, p, text, args, false)
 	r.end(ctx, err)
 	return res, err
 }
@@ -330,7 +331,9 @@ func (c *Conn) exec(ctx context.Context, r *report, src string, args []*s4qlpb.V
 // Query runs the statement of the text src, with args for its parameters, and gives its rows. The
 // text and the arguments are checked as [Conn.Exec] checks them. A statement that is not a query is
 // run as Exec runs it, and gives rows with no columns and no rows, and its result in [Rows.Result],
-// also when it fails: Query then gives those rows with the error.
+// also when it fails: Query then gives those rows with the error. An insert, an update, or a delete
+// with RETURNING gives its rows, with its result in Rows.Result, once it has succeeded; see
+// [Conn.write].
 //
 // The rows of a query are read in its read transaction, which is open until the rows end; see
 // [Rows]. Until then, the reader of the connection is taken, and a statement of the connection that
@@ -358,9 +361,19 @@ func (c *Conn) queryText(ctx context.Context, r *report, src string, args []*s4q
 	if q, ok := p.(*Query); ok {
 		return c.query(ctx, r, q, args)
 	}
-	res, err := c.write(ctx, r, p, text, args)
+	res, ret, err := c.write(ctx, r, p, text, args, true)
 	r.end(ctx, err)
-	return &Rows{done: true, result: res}, err
+	if ret == nil {
+		return &Rows{done: true, result: res}, err
+	}
+	// The statement has ended, and its event is logged: the rows read nothing, and their end ends
+	// nothing. In a transaction, they are the rows of the connection, as those of a query are.
+	// Outside a transaction, they hold nothing, and nothing refuses them: the change is committed.
+	rows := &Rows{ctx: ctx, tx: inTx{}, src: ret, columns: ret.columns(), report: r, result: res, free: c.tx == nil}
+	if c.tx != nil {
+		c.rows = rows
+	}
+	return rows, nil
 }
 
 // newReport of a statement of the text src on the connection, which counts it in the transaction of
@@ -387,8 +400,7 @@ func Check(src string, n int) error {
 }
 
 // check the text src, as [Conn.Exec], [Conn.Query], and [Check] check it: its statement, or its
-// error, as [stmt.Check] gives it, or [ErrNoStatement], or the refusal of a statement that the pass
-// supports and the engine does not run, as [returningRefusal] gives it.
+// error, as [stmt.Check] gives it, or [ErrNoStatement].
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
@@ -396,9 +408,6 @@ func check(src string) (stmt.Statement, error) {
 	}
 	if s == nil {
 		return nil, ErrNoStatement
-	}
-	if err := returningRefusal(s); err != nil {
-		return nil, err
 	}
 	return s, nil
 }
@@ -437,27 +446,34 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 // that does nothing on the newest state succeeds in a read transaction, as [Conn.nothingToWrite]
 // says, without the write transaction; one that does nothing in the write transaction succeeds there
 // without an annotation, and the transaction is rolled back.
-func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (_ Result, err error) {
+//
+// An insert, an update, or a delete with RETURNING also gives the rows of its RETURNING, which the
+// engine holds, once its commit has succeeded, and none if the statement or its commit fails: a row
+// that it gives belongs to a change that is committed. The rows come in the order in which the
+// statement changed them, or in its reverse, as the engine draws it for the statement, as it draws
+// the direction of a query; see [returned]. If returns is false, the statement gives no rows and
+// holds none, as [dropReturns] says, and fails and counts its changes as with them.
+func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value, returns bool) (_ Result, _ *returned, err error) {
 	if c.tx != nil {
-		return c.writeIn(ctx, r, p, sql, args)
+		return c.writeIn(ctx, r, p, sql, args, returns)
 	}
 	if c.pending() {
-		return Result{}, ErrRowsOpen
+		return Result{}, nil, ErrRowsOpen
 	}
 	e := c.e
 	if nothing, err := c.nothingToWrite(ctx, r, p, args); nothing {
-		return Result{}, err
+		return Result{}, nil, err
 	}
 	_, insert := p.(*Insert)
 	if insert && e.bugs.checkOutside {
 		// The planted bug: the checks of the insert, in a read transaction of their own.
 		if err := c.checkOutside(ctx, r, p, args); err != nil {
-			return Result{}, err
+			return Result{}, nil, err
 		}
 	}
 	tx, err := c.begin(ctx)
 	if err != nil {
-		return Result{}, err
+		return Result{}, nil, err
 	}
 	r.at(tx.position(), true)
 	ended := false
@@ -469,27 +485,34 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}()
 	b := e.bugs
 	b.skipUnique = b.skipUnique || b.checkOutside
+	order := e.order(p)
 	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit(), e.reading(false))
 	if err != nil {
-		return Result{}, err
+		return Result{}, nil, err
 	}
 	r.reads(tx, s)
+	if returns {
+		r.drew(order)
+	} else {
+		// The draw is made all the same, so that the draws do not depend on Exec, but no row shows it.
+		dropReturns(s)
+	}
 	if r.doesNothing(s) {
 		// The statement does nothing, which [Conn.nothingToWrite] could not tell, or which a commit
 		// since its read transaction made so. The transaction is rolled back above, and nothing of it
 		// is in the log. It wrote nothing, so its event has no parent.
 		r.write = false
-		return Result{}, nil
+		return Result{}, nil, nil
 	}
 	// From here on, a failed insert, update, or delete sets the count of changes to 0, but for "not
 	// supported".
 	failed := Result{SetsChanges: setsChanges(p)}
 	if err := s.check(ctx); err != nil {
-		return checked(failed, err), err
+		return checked(failed, err), nil, err
 	}
 	n, err := s.run(ctx)
 	if err != nil {
-		return failed, err
+		return failed, nil, err
 	}
 	annotated := args
 	if e.bugs.annotateNext {
@@ -500,7 +523,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 		}
 	}
 	if err := tx.annotate(ctx, sql, annotated); err != nil {
-		return failed, err
+		return failed, nil, err
 	}
 	// The transaction ends with its commit, whatever the commit gives.
 	ended = true
@@ -508,12 +531,41 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 		if e.bugs.ackUnknown && errors.Is(err, core.ErrOutcomeUnknown) {
 			// The planted bug: a commit whose outcome is unknown counts as committed.
 			r.rows = n
-			return Result{Changes: n, SetsChanges: setsChanges(p)}, nil
+			return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
 		}
-		return failed, err
+		return failed, nil, err
 	}
 	r.rows = n
-	return Result{Changes: n, SetsChanges: setsChanges(p)}, nil
+	return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
+}
+
+// order of the rows of the RETURNING of the plan p, as [Engine.reading] draws it for a query: the
+// engine draws it for an insert, an update, and a delete with RETURNING, one draw for each, and for
+// no other plan.
+func (e *Engine) order(p Plan) reading {
+	var r *Returning
+	switch p := p.(type) {
+	case *Insert:
+		r = p.Returning
+	case *Update:
+		r = p.Returning
+	case *Delete:
+		r = p.Returning
+	}
+	if r == nil {
+		return reading{}
+	}
+	return e.reading(true)
+}
+
+// returnedOf the sink s, which has run, with the order of its rows: the rows of its RETURNING, or nil
+// for a statement without one.
+func returnedOf(s sink, order reading) *returned {
+	ret := returnsOf(s)
+	if ret == nil {
+		return nil
+	}
+	return newReturned(ret, order)
 }
 
 // nothingToWrite reports whether the plan p of a statement of its own, with the arguments args, is
@@ -712,6 +764,16 @@ type Rows struct {
 	cut error
 	// result of a statement that is not a query.
 	result Result
+	// free is set for the rows of a RETURNING outside a transaction, which hold nothing.
+	free bool
+}
+
+// Holds reports whether the rows hold something until they end: the read transaction of a query,
+// or, in a transaction, the connection, whose further statements fail until then. The rows of an
+// insert, an update, or a delete outside a transaction hold nothing, also with RETURNING, whose
+// statement has ended and is committed.
+func (r *Rows) Holds() bool {
+	return !r.done && !r.free
 }
 
 // Result of the statement, if it is not a query, as [Conn.Exec] gives it. A query sets no count of
@@ -799,8 +861,9 @@ func (r *Rows) Close() error {
 		r.endErr = nil
 		return err
 	}
-	if r.report != nil && r.report.e.bugs.keepRead {
-		// The planted bug: the rows are closed, and their read transaction is left open.
+	if _, held := r.src.(*returned); !held && r.report != nil && r.report.e.bugs.keepRead {
+		// The planted bug: the rows are closed, and their read transaction is left open. The rows of
+		// a RETURNING have none.
 		return nil
 	}
 	return r.end(nil)

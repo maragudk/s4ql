@@ -197,6 +197,12 @@
 // has ended before the statement starts, as it is, that of a database that is closed, and
 // [database/sql.ErrNoRows] from [database/sql.Row.Scan], also for a statement that is no query and
 // is committed.
+//
+// An insert, an update, or a delete with RETURNING outside a transaction is committed before its
+// first row is given: once [database/sql.DB.QueryContext] of it has returned without an error, the
+// statement is committed. An error from its rows after that, from [database/sql.Rows.Err] or
+// [database/sql.Row.Scan], says nothing about the commit. database/sql closes the rows of a context
+// that has ended by itself, also after the commit, and its rows then give the error of the context.
 package s4ql
 
 import (

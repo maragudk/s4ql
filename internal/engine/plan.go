@@ -85,19 +85,30 @@ type DropIndex struct {
 
 // Insert inserts the rows of Source into a table, each as a new row. Source gives a value for each
 // of Columns, in their order, or, if Columns is nil, for each column of the table, in the order of
-// the table.
+// the table. It gives each row that it inserts, as the table stores it, if Returning is not nil.
 type Insert struct {
-	Table   stmt.Name
-	Columns []stmt.Name
-	Source  Node
+	Table     stmt.Name
+	Columns   []stmt.Name
+	Source    Node
+	Returning *Returning
 }
 
 // Update sets the columns of Set in each row of Source, a [*Scan] of the table, or a [*Filter] of
-// one if the statement has a WHERE.
+// one if the statement has a WHERE. It gives each row that it updates, with the values after the
+// update, if Returning is not nil.
 type Update struct {
-	Table  stmt.Name
-	Set    []Assignment
-	Source Node
+	Table     stmt.Name
+	Set       []Assignment
+	Source    Node
+	Returning *Returning
+}
+
+// Returning of an [Insert], an [Update], or a [Delete]: the columns of each row that the statement
+// gives, Columns, in their order, each as often as it is named, or, if Star, `*`: every column, in
+// the order of the table, as a [Project] gives the columns of a query.
+type Returning struct {
+	Star    bool
+	Columns []stmt.Name
 }
 
 // Assignment of an [Update]: the column of the name, as the statement writes it, gets Value.
@@ -107,10 +118,12 @@ type Assignment struct {
 }
 
 // Delete deletes each row of Source, a [*Scan] of the table, or a [*Filter] of one if the statement
-// has a WHERE.
+// has a WHERE. It gives each row that it deletes, with the values that the row had, if Returning is
+// not nil.
 type Delete struct {
-	Table  stmt.Name
-	Source Node
+	Table     stmt.Name
+	Source    Node
+	Returning *Returning
 }
 
 // Query gives the rows of Root: a [*Project], over a [*Limit] if the select has a LIMIT, over an
@@ -241,12 +254,9 @@ func (*Parameter) expr()   {}
 // one without have the same plan. A column with DEFAULT has the literal of its DEFAULT as its
 // Default. A select, an update, and a delete with WHERE read their rows through a [*Filter] of the
 // conditions, in the order of the text. A select with ORDER BY has an [*Order] of its columns over
-// that, and one with LIMIT a [*Limit] over that, as [Query] says. It panics for an insert, an update,
-// or a delete with RETURNING, which the engine does not run yet, as [returningRefusal] says.
+// that, and one with LIMIT a [*Limit] over that, as [Query] says. An insert, an update, and a delete
+// with RETURNING have its [*Returning].
 func NewPlan(s stmt.Statement) Plan {
-	if returningRefusal(s) != nil {
-		panic("engine: no plan of a statement with RETURNING")
-	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, IfNotExists: s.IfNotExists, PrimaryKey: []int{s.Key()}, SQL: s.SQL}
@@ -269,15 +279,15 @@ func NewPlan(s stmt.Statement) Plan {
 		for i, t := range s.Values {
 			row[i] = term(t)
 		}
-		return &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{row}}}
+		return &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{row}}, Returning: returningOf(s.Returning)}
 	case *stmt.Update:
-		p := &Update{Table: s.Table, Source: rowsOf(s.Table, s.Where)}
+		p := &Update{Table: s.Table, Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning)}
 		for _, a := range s.Set {
 			p.Set = append(p.Set, Assignment{Column: a.Column, Value: term(a.Value)})
 		}
 		return p
 	case *stmt.Delete:
-		return &Delete{Table: s.Table, Source: rowsOf(s.Table, s.Where)}
+		return &Delete{Table: s.Table, Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning)}
 	case *stmt.Select:
 		source := rowsOf(s.Table, s.Where)
 		if s.OrderBy != nil {
@@ -293,6 +303,14 @@ func NewPlan(s stmt.Statement) Plan {
 		return &Query{Root: &Project{Source: source, Star: s.Columns == nil, Columns: s.Columns}}
 	}
 	panic(fmt.Sprintf("engine: a statement of type %T", s))
+}
+
+// returningOf the RETURNING clause r: its [*Returning], or nil for a statement without one.
+func returningOf(r stmt.Returning) *Returning {
+	if !r.Present() {
+		return nil
+	}
+	return &Returning{Star: r.Columns == nil, Columns: r.Columns}
 }
 
 // rowsOf the table that the conditions of a WHERE hold for: a [*Scan] of the table, or a [*Filter]
@@ -383,7 +401,7 @@ func Format(p Plan) string {
 		if p.Columns != nil {
 			fmt.Fprint(&b, " (", names(p.Columns), ")")
 		}
-		b.WriteString("\n")
+		fmt.Fprint(&b, formatReturning(p.Returning), "\n")
 		formatNode(&b, p.Source, 1)
 	case *Update:
 		fmt.Fprint(&b, "update ", p.Table.Raw, " set ")
@@ -393,10 +411,10 @@ func Format(p Plan) string {
 			}
 			fmt.Fprint(&b, a.Column.Raw, " = ", formatExpr(a.Value))
 		}
-		b.WriteString("\n")
+		fmt.Fprint(&b, formatReturning(p.Returning), "\n")
 		formatNode(&b, p.Source, 1)
 	case *Delete:
-		fmt.Fprint(&b, "delete from ", p.Table.Raw, "\n")
+		fmt.Fprint(&b, "delete from ", p.Table.Raw, formatReturning(p.Returning), "\n")
 		formatNode(&b, p.Source, 1)
 	case *Query:
 		b.WriteString("query\n")
@@ -470,6 +488,18 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 	default:
 		panic(fmt.Sprintf("engine: a node of type %T", n))
 	}
+}
+
+// formatReturning of an insert, an update, or a delete: " returning" and its columns, or "" for a
+// statement without RETURNING.
+func formatReturning(r *Returning) string {
+	switch {
+	case r == nil:
+		return ""
+	case r.Star:
+		return " returning *"
+	}
+	return " returning " + names(r.Columns)
 }
 
 // names ns as the statement writes them, with a comma between two.

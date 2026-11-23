@@ -30,6 +30,27 @@ func OpenStore(ctx context.Context, h host.Host, s store.Store, o Options, co co
 	return storeOpener(h, s, o, co).openDB(ctx)
 }
 
+// Connector is [connector].
+type Connector = connector
+
+// OpenStoreConnector is [OpenStore], and gives the connector of the instance with its DB.
+func OpenStoreConnector(ctx context.Context, h host.Host, s store.Store, o Options, co core.Options) (*sql.DB, *Connector, error) {
+	var c *connector
+	db, err := (&opener{connect: func(ctx context.Context, d driver.Driver, maxOpen int) (*connector, error) {
+		var err error
+		c, err = newConnector(ctx, h, s, o, co, d, maxOpen)
+		return c, err
+	}}).openDB(ctx)
+	return db, c, err
+}
+
+// Closing reports whether the close of the connector has begun, which is its first step.
+func (c *connector) Closing() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
 // OpenOwnedStore is [OpenStore] on a store that the instance owns, and closes, as it does the store
 // that [Open] makes.
 func OpenOwnedStore(ctx context.Context, h host.Host, s interface {

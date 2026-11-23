@@ -146,7 +146,8 @@ func (c *connector) Driver() driver.Driver {
 // Close the instance, and release the lease, within the close timeout. It fails if the instance did
 // not close in that time or if the lease is not released, which then runs out by itself.
 //
-// It first closes the rows that are open. The loop over the rows of a query is a call on the
+// It first closes the rows that are open, but for the rows of a RETURNING outside a transaction,
+// which hold nothing and are not closed. The loop over the rows of a query is a call on the
 // instance, which the close of the instance waits for. The next row of such rows is then the error
 // of an instance that was closed. A panic of a loop that it ends is logged and not raised, so that
 // the close goes on. So is a panic of the close of rows itself, which then fails as an internal
@@ -402,7 +403,8 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 
 // QueryContext runs the statement of the text query, with args for its parameters, and gives its
 // rows. The text and the arguments are judged as [conn.ExecContext] judges them. A statement that is
-// no query gives no columns and no rows.
+// no query gives no columns and no rows. Outside a transaction, a statement with RETURNING gives its
+// rows once it is committed, and without an error from then on.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	values, err := arguments(query, args)
 	if err != nil {
@@ -422,7 +424,9 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return noRows{}, nil
 	}
 	held := &rows{ctx: ctx, c: c.c, conn: c, rows: r}
-	if !c.c.hold(held) {
+	// The rows of a RETURNING outside a transaction hold nothing, and their statement is committed,
+	// so they are given also when the connector has closed meanwhile, which does not close them.
+	if r.Holds() && !c.c.hold(held) {
 		_ = r.Close()
 		return nil, c.c.public(ctx, errClosed)
 	}
@@ -454,18 +458,13 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	return &prepared{conn: c, query: query}, nil
 }
 
-// check the text query with [stmt.Check], and then as the engine checks it: SQLite's syntax error,
-// "not supported", also for a statement that the pass supports and the engine does not run, or nil
-// for a statement that s4ql supports. The text alone decides, so the check reads no table, and does
-// not need the instance to serve.
+// check the text query with [stmt.Check]: SQLite's syntax error, "not supported", or nil for a
+// statement that s4ql supports. The text alone decides, so the check reads no table, and does not
+// need the instance to serve.
 func check(query string) error {
 	s, err := stmt.Check(query)
 	if err == nil && s == nil {
 		err = engine.ErrNoStatement
-	}
-	if err == nil {
-		// With as many arguments as the statement has parameters, only the text can fail the check.
-		err = engine.Check(query, s.Parameters())
 	}
 	return publicError(err)
 }

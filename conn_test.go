@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -431,11 +432,11 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "ordering term other than a column (at offset 26)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "select * from t1 limit -1")
 		is.Equal(t, "negative LIMIT (at offset 23)", notSupported(t, err))
-		// A statement with RETURNING, which the pass supports and the engine does not run yet, is refused
-		// when it is prepared, at its RETURNING, and so is one with a column of RETURNING that the pass
-		// does not support, for that column.
-		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (?) returning v1")
-		is.Equal(t, "RETURNING clause (at offset 31)", notSupported(t, err))
+		// A statement with RETURNING is prepared, and one with a column of RETURNING that the pass does
+		// not support is refused for that column.
+		p, err := db.PrepareContext(t.Context(), "insert into t1 (v1) values (?) returning v1")
+		is.NotError(t, err)
+		is.NotError(t, p.Close())
 		_, err = db.PrepareContext(t.Context(), "delete from t1 returning v1 + 1")
 		is.Equal(t, "result column other than a column or * (at offset 25)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")
@@ -1499,8 +1500,8 @@ func TestUpdateDelete(t *testing.T) {
 		}
 		_, err := db.ExecContext(t.Context(), "update u set s = ? where k = ?", "x")
 		is.Equal(t, "s4ql: wrong number of arguments: 1 for a statement with 2 parameters", fmt.Sprint(err))
-		_, err = db.PrepareContext(t.Context(), "update u set s = 'x' returning *")
-		is.Equal(t, "RETURNING clause (at offset 21)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "update u set s = 'x' returning s as x")
+		is.Equal(t, "alias (at offset 33)", notSupported(t, err))
 		is.Equal(t, "k INT, s TEXT, r REAL: 1 a 1.5; 2 <nil> 2.5; 3 c 3.5", rowsText(t, db, "select * from u"))
 	})
 
@@ -2486,6 +2487,174 @@ func TestOrderBy(t *testing.T) {
 		}
 		exec(t, db, t1)
 		readersFree(t, db)
+	})
+}
+
+func TestReturning(t *testing.T) {
+	const create = "create table r (k int primary key, n integer, x real default 0.5, s text not null default 'x', b blob) strict, without rowid"
+
+	t.Run("should give the rows of RETURNING through Query, directly, prepared, and in a transaction, with the columns and types of a select of them, and drop them in Exec", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, create, "create index rs on r (s)")
+		is.Equal(t, "k INT, n INTEGER, x REAL, s TEXT, b BLOB: 1 <nil> 0.5 x <nil>", rowsText(t, db, "insert into r (k) values (?) returning *", 1))
+		is.Equal(t, "s TEXT, k INT, s TEXT: a 2 a", rowsText(t, db, "insert into r (k, s, x) values (2, ?, -0.0) returning s, K, s", "a"))
+		res, err := db.ExecContext(t.Context(), "insert into r (k, b) values (3, ?) returning b", []byte{1})
+		is.Equal(t, int64(1), affected(t, res, err))
+
+		p, err := db.PrepareContext(t.Context(), "update r set n = ? where k >= ? returning k, n, x")
+		is.NotError(t, err)
+		rows, err := p.QueryContext(t.Context(), 7, 2)
+		is.NotError(t, err)
+		types, err := rows.ColumnTypes()
+		is.NotError(t, err)
+		is.Equal(t, "INT INTEGER REAL", types[0].DatabaseTypeName()+" "+types[1].DatabaseTypeName()+" "+types[2].DatabaseTypeName())
+		var got []int64
+		for rows.Next() {
+			var k, n int64
+			var x float64
+			is.NotError(t, rows.Scan(&k, &n, &x))
+			is.Equal(t, int64(7), n)
+			got = append(got, k)
+		}
+		is.NotError(t, rows.Err())
+		is.NotError(t, rows.Close())
+		is.True(t, inKeyOrder(got), fmt.Sprint(got))
+		is.Equal(t, 2, len(got))
+		// The same values again count as a change of each row, and give each row.
+		res, err = p.ExecContext(t.Context(), 7, 2)
+		is.Equal(t, int64(2), affected(t, res, err))
+		is.NotError(t, p.Close())
+		// No row: the columns are known.
+		is.Equal(t, "k INT: ", rowsText(t, db, "delete from r where k > 100 returning k"))
+
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		is.Equal(t, "k INT, s TEXT: 4 y", rowsText(t, tx, "insert into r (k, s) values (4, 'y') returning k, s"))
+		is.Equal(t, "k INT, s TEXT: 1 z; 2 z; 3 z; 4 z", rowsText(t, tx, "update r set s = 'z' returning k, s"))
+		is.NotError(t, tx.Rollback())
+		is.Equal(t, "k INT, s TEXT: 1 x; 2 a; 3 x", rowsText(t, db, "select k, s from r"))
+		tx, err = db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		is.Equal(t, "k INT, n INTEGER: 1 <nil>", rowsText(t, tx, "delete from r where s = ? and n is null returning k, n", "x"))
+		is.NotError(t, tx.Commit())
+		is.Equal(t, "k INT, s TEXT: 2 a; 3 x", rowsText(t, db, "select k, s from r"))
+
+		// Another instance replays the changes of the statements with RETURNING.
+		is.NotError(t, db.Close())
+		other := w.serve(t, "b")
+		is.Equal(t, "k INT, n INTEGER, x REAL, s TEXT, b BLOB: 2 7 0 a <nil>; 3 7 0.5 x [1]", rowsText(t, other, "select * from r"))
+	})
+
+	t.Run("should give SQLite's errors of a statement with RETURNING, and no rows", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, create, "insert into r (k) values (1)")
+		_, err := db.QueryContext(t.Context(), "insert into r (k) values (1) returning k")
+		sqliteError(t, 19, 1555, "UNIQUE constraint failed: r.k", failed(t, err))
+		_, err = db.QueryContext(t.Context(), "update r set s = null returning k")
+		sqliteError(t, 19, 1299, "NOT NULL constraint failed: r.s", failed(t, err))
+		_, err = db.QueryContext(t.Context(), "delete from r returning nope")
+		sqliteError(t, 1, 1, "no such column: nope", failed(t, err))
+		_, err = db.QueryContext(t.Context(), "update r set s = 1 returning k")
+		is.Equal(t, "an integer literal for the column r.s of type TEXT", notSupported(t, err))
+		tx, err := db.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+		is.NotError(t, err)
+		_, err = tx.QueryContext(t.Context(), "delete from r returning k")
+		sqliteError(t, 8, 8, "attempt to write a readonly database", failed(t, err))
+		is.NotError(t, tx.Rollback())
+		is.Equal(t, "k INT: 1", rowsText(t, db, "select k from r"))
+	})
+
+	t.Run("should give no rows where the outcome of the commit is unknown, and commit the statement once", func(t *testing.T) {
+		w := newWorld(t)
+		s := &faulty{Store: w.client()}
+		db := w.openOn(t, "a", s, coreOptions())
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		s.loseNext(cancel)
+		rows, err := db.QueryContext(ctx, "insert into t1 (v1) values (1) returning v1")
+		is.Error(t, s4ql.ErrOutcomeUnknown, failed(t, err))
+		is.True(t, rows == nil)
+		s.down(false)
+		is.NotError(t, db.PingContext(t.Context()))
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+		is.Equal(t, 2, len(commits(t, w)))
+	})
+
+	t.Run("should give the rows of a committed statement with RETURNING when the database closes between the commit and the end of Query", func(t *testing.T) {
+		w := newWorld(t)
+		s := &faulty{Store: w.client()}
+		db, c, err := s4ql.OpenStoreConnector(t.Context(), w.host, s, w.options("a"), coreOptions())
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1)
+		closed := make(chan error, 1)
+		// The close begins once the commit is applied, and before the instance knows it: the
+		// connector is closed when Query has its rows from the engine.
+		s.afterSwap(func() {
+			go func() { closed <- db.Close() }()
+			for !c.Closing() {
+				runtime.Gosched()
+			}
+		})
+		rows, err := db.QueryContext(t.Context(), "insert into t1 (v1) values (1) returning v1")
+		is.NotError(t, err)
+		var got []int64
+		for rows.Next() {
+			var v int64
+			is.NotError(t, rows.Scan(&v))
+			got = append(got, v)
+		}
+		is.NotError(t, rows.Err())
+		is.NotError(t, rows.Close())
+		is.EqualSlice(t, []int64{1}, got)
+		is.NotError(t, <-closed)
+		other := w.serve(t, "b")
+		is.EqualSlice(t, []int64{1}, values(t, other, select1))
+	})
+
+	t.Run("should commit a statement with RETURNING whose Query returns no error, also when its context ends once the commit is applied, whatever its rows then give", func(t *testing.T) {
+		w := newWorld(t)
+		s := &faulty{Store: w.client()}
+		db := w.openOn(t, "a", s, coreOptions())
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		s.afterSwap(cancel)
+		rows, err := db.QueryContext(ctx, "insert into t1 (v1) values (1) returning v1")
+		is.NotError(t, err)
+		// database/sql closes the rows of a context that has ended, at a time of its own, so they give
+		// the row or the error of the context, also between Next and Scan, which says nothing about
+		// the commit.
+		for rows.Next() {
+			var v int64
+			if err := rows.Scan(&v); err != nil {
+				is.Error(t, context.Canceled, err)
+				continue
+			}
+			is.Equal(t, int64(1), v)
+		}
+		if err := rows.Err(); err != nil {
+			is.Error(t, context.Canceled, err)
+		}
+		_ = rows.Close()
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+
+		ctx, cancel = context.WithCancel(t.Context())
+		s.afterSwap(cancel)
+		var v int64
+		if err := db.QueryRowContext(ctx, "insert into t1 (v1) values (2) returning v1").Scan(&v); err != nil {
+			is.Error(t, context.Canceled, err)
+		} else {
+			is.Equal(t, int64(2), v)
+		}
+		is.EqualSlice(t, []int64{1, 2}, values(t, db, select1))
+		is.Equal(t, 3, len(commits(t, w)))
 	})
 }
 

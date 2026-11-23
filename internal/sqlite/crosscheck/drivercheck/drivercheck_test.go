@@ -1659,6 +1659,8 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		// way, as below.
 		want = run(tb, o, callPrepareExec, first, mattnRuns, mattnText)
 		want.call = c
+	} else if returns(s) {
+		want = execByQuery(tb, o, c, first, mattnRuns)
 	} else {
 		want = run(tb, o, c, first, mattnRuns, mattnText)
 	}
@@ -1727,6 +1729,62 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		return ""
 	}
 	return fmt.Sprintf("%q with the arguments %#v: s4ql gives\n%v\nand SQLite\n%v", src, runs, got.full(), want.full())
+}
+
+// returns reports whether s is an insert, an update, or a delete with RETURNING.
+func returns(s stmt.Statement) bool {
+	switch s := s.(type) {
+	case *stmt.Insert:
+		return s.Returning.Present()
+	case *stmt.Update:
+		return s.Returning.Present()
+	case *stmt.Delete:
+		return s.Returning.Present()
+	}
+	return false
+}
+
+// execByQuery is [run] on mattn's side of src, a statement with RETURNING, through the call c, with
+// the arguments of each run. mattn's Exec steps such a statement once and gives the count of changes
+// that SQLite has then, which is that of the statement before: SQLite runs every change of the
+// statement in its first step, and counts them once the statement has run to its end. So a call of
+// Exec runs the statement through Query, as the query call of c, and reads its rows, and its count of
+// changes is the number of its rows, one for each row that the statement changed, which is the count
+// that SQLite gives after it. Every other call is [run].
+func execByQuery(tb testing.TB, o runner, c call, src string, runs [][]any) outcome {
+	tb.Helper()
+	query := map[call]call{callExec: callQuery, callExecArgument: callQueryArgument, callPrepareExec: callPrepareQuery, callStmtExec: callStmtQuery, callPrepareExecRuns: callPrepareQuery}[c]
+	if query == "" {
+		return run(tb, o, c, src, runs, mattnText)
+	}
+	each := runs
+	if c != callPrepareExecRuns && len(runs) > 1 {
+		each = runs[:1]
+	}
+	var first outcome
+	for i, args := range each {
+		r := run(tb, o, query, src, [][]any{args}, mattnText)
+		r.call = ""
+		if r.failed == "prepare" {
+			// A prepare that fails fails the call once, as in [run].
+			r.call = c
+			return r
+		}
+		if r.failed == "query" {
+			r.failed = "exec"
+		}
+		if r.failed == "" {
+			r.affected, r.lastID = fmt.Sprint(len(r.rows)), "0"
+		}
+		r.columns, r.types, r.rows, r.scans, r.null = "", "", nil, nil, false
+		if i == 0 {
+			r.call = c
+			first = r
+		} else {
+			first.next = append(first.next, r)
+		}
+	}
+	return first
 }
 
 // orderedSelect is the select of the text src if it is one with ORDER BY or LIMIT, and nil otherwise.
@@ -2428,6 +2486,9 @@ const (
 	// t4 is the table of the sequences of slice 9, with a column for each index: text and an integer
 	// that take NULL, and a real.
 	t4 = "create table t4 (v1 int primary key, v2 text, v3 real not null, v4 int) strict, without rowid"
+	// t5 is the table of the sequences of slice 14: a column of each type, NULL in all but the key and
+	// v3, and a default on v3.
+	t5 = "create table t5 (v1 int primary key, v2 text, v3 real not null default 0.5, v4 blob, v5 integer) strict, without rowid"
 )
 
 // sequences written by hand, which cover every statement of slice 1, every error that an
@@ -2983,6 +3044,69 @@ var sequences = map[string][]step{
 		{callExec, "drop index i2", "exec: 2 affected, last insert id 0"},
 		{callQuery, "select * from t4", `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:2" "string:b" "float64:2.5" "int64:2"]`},
 	},
+	"returning on an insert, an update, and a delete, through each call": {
+		{callExec, t5, ""},
+		{callExec, "create index i5 on t5 (v2)", ""},
+		// An insert gives the row as the table stores it, with the default and NULL, and 0.0 for -0.0.
+		{callQuery, "insert into t5 (v1, v2) values (1, 'a') returning *", `query: columns "v1,v2,v3,v4,v5" of types "INT,TEXT,REAL,BLOB,INTEGER", rows ["int64:1" "string:a" "float64:0.5" "<nil>:<nil>" "<nil>:<nil>"]`},
+		{callExec, "insert into t5 (v1, v2, v4) values (2, 'b', x'00') returning v1", "exec: 1 affected, last insert id 0"},
+		{callPrepareQuery, "insert into t5 (v1, v2, v3) values (3, 'a', -0.0) returning v3, V1, v3", `prepare, query: columns "v3,v1,v3" of types "REAL,INT,REAL", rows ["float64:0" "int64:3" "float64:0"]`},
+		{callQueryRow, "insert into t5 (v1, v5) values (4, -9223372036854775808) returning v5", `query row: row ["int64:-9223372036854775808"]`},
+		{callPrepareExec, "insert into t5 (v1, v4) values (5, x'') returning *", "prepare, exec: 1 affected, last insert id 0"},
+		{callQueryArgument, "insert into t5 (v1, v2) values (6, 'c') returning v1", ""},
+		// The errors of an insert, after those of the rest of the statement.
+		{callQuery, "insert into t5 (v1) values (1) returning v1", "query: query failed with 19/1555: UNIQUE constraint failed: t5.v1"},
+		{callQuery, "insert into t5 (v1, v3) values (7, null) returning v1", "query: query failed with 19/1299: NOT NULL constraint failed: t5.v3"},
+		{callQuery, "insert into t5 (v1) values (7) returning nope", "query: query failed with 1/1: no such column: nope"},
+		{callPrepareQuery, "insert into t5 (nope) values (7) returning nope2", ""},
+		{callExec, "insert into t5 (v1, v2) values (7, 1) returning v1", ""},
+		// An update of the rows of an index, with the values that they have, of the key, of one row by
+		// an argument, and of no row.
+		{callQuery, "update t5 set v2 = 'z' where v2 = 'a' returning v1, v2", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:1" "string:z"] ["int64:3" "string:z"]`},
+		{callQuery, "update t5 set v2 = 'z' where v2 = 'z' returning v1", `query: columns "v1" of types "INT", rows ["int64:1"] ["int64:3"]`},
+		{callExec, "update t5 set v2 = 'y' where v1 = 3 returning *", "exec: 1 affected, last insert id 0"},
+		{callQuery, "update t5 set v1 = 30 where v1 = 3 returning v1, v2", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:30" "string:y"]`},
+		{callQueryArgument, "update t5 set v3 = -0.0 where v1 = ? returning v3, v1", `query with an argument: columns "v3,v1" of types "REAL,INT", rows ["float64:0" "int64:1"]`},
+		{callQuery, "update t5 set v3 = 1.5 where v1 > 100 returning *", `query: columns "v1,v2,v3,v4,v5" of types "INT,TEXT,REAL,BLOB,INTEGER", rows `},
+		{callPrepareQuery, "update t5 set v5 = 7 where v2 is null returning v1, v5", ""},
+		{callQuery, "update t5 set v1 = 1 where v1 = 2 returning v1", "query: query failed with 19/1555: UNIQUE constraint failed: t5.v1"},
+		{callQuery, "update t5 set v3 = null returning v1", "query: query failed with 19/1299: NOT NULL constraint failed: t5.v3"},
+		{callQuery, "update t5 set v2 = 'q' where nope = 1 returning nope2", "query: query failed with 1/1: no such column: nope"},
+		{callQuery, "select * from t5", ""},
+		// A delete gives the values that the row had.
+		{callQuery, "delete from t5 where v2 = 'z' returning *", ""},
+		{callPrepareExecRuns, "delete from t5 where v1 = ? returning v1", "prepare, exec several times: 0 affected, last insert id 0; then: 1 affected, last insert id 0; then: 0 affected, last insert id 0"},
+		{callQuery, "delete from t5 where v1 = 1000 returning v1", `query: columns "v1" of types "INT", rows `},
+		{callQuery, "delete from t5 returning v1, v1", ""},
+		{callQuery, "select * from t5", `query: columns "v1,v2,v3,v4,v5" of types "INT,TEXT,REAL,BLOB,INTEGER", rows `},
+	},
+	"returning in transactions, with a commit, a roll back, and rows left open": {
+		{callExec, t5, ""},
+		{callExec, "insert into t5 (v1, v2) values (1, 'a')", ""},
+		{callExec, "insert into t5 (v1, v2) values (2, 'b')", ""},
+		{callExec, "insert into t5 (v1, v2) values (3, 'b')", ""},
+		{callBegin, "", "begin"},
+		{callQuery, "insert into t5 (v1, v2) values (4, 'd') returning v1, v2", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:4" "string:d"]`},
+		{callStmtQuery, "update t5 set v2 = 'x' where v1 > 2 returning v1", `prepare outside, query in the transaction: columns "v1" of types "INT", rows ["int64:3"] ["int64:4"]`},
+		{callQueryOpen, "update t5 set v3 = 2.5 where v2 = 'x' returning v1, v3", `query, rows left open: columns "v1,v3" of types "INT,REAL", rows ["int64:3" "float64:2.5"] ["int64:4" "float64:2.5"]`},
+		{callExec, "delete from t5 where v1 = 1", "exec: exec failed with " + rowsOpen},
+		{callQueryOpen, "update t5 set v3 = 3.5 where v1 > 3 returning v1", `query, rows left open: columns "v1" of types "INT", rows ["int64:4"]`},
+		{callQuery, "delete from t5 where v1 = 1 returning v1", "query: query failed with " + rowsOpen},
+		{callRollback, "", "rollback"},
+		{callQuery, "select v1, v2 from t5", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:1" "string:a"] ["int64:2" "string:b"] ["int64:3" "string:b"]`},
+		{callBegin, "", "begin"},
+		{callStmtExec, "delete from t5 where v1 >= 2 returning v1", "prepare outside, exec in the transaction: 2 affected, last insert id 0"},
+		{callQuery, "update t5 set v2 = 'c' returning *", `query: columns "v1,v2,v3,v4,v5" of types "INT,TEXT,REAL,BLOB,INTEGER", rows ["int64:1" "string:c" "float64:0.5" "<nil>:<nil>" "<nil>:<nil>"]`},
+		{callBeside, "select v1 from t5", ""},
+		{callCommit, "", "commit"},
+		{callQuery, "select v1, v2 from t5", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:1" "string:c"]`},
+		{callBeginReadOnly, "", "begin read-only"},
+		{callQuery, "insert into t5 (v1) values (5) returning v1", "query: query failed with 8/8: attempt to write a readonly database"},
+		{callExec, "delete from t5 returning *", "exec: exec failed with 8/8: attempt to write a readonly database"},
+		{callQuery, "update t5 set v2 = 'q' returning nope", "query: query failed with 1/1: no such column: nope"},
+		{callRollback, "", "rollback"},
+		{callQuery, "select v1, v2 from t5", `query: columns "v1,v2" of types "INT,TEXT", rows ["int64:1" "string:c"]`},
+	},
 }
 
 // edges of each type of a column, each as a literal and as an argument of database/sql, in an order
@@ -3321,6 +3445,41 @@ func TestPair(t *testing.T) {
 		_, err = c.ExecContext(t.Context(), "insert into t1 (v1) values (1)")
 		is.Equal(t, "5/5: database is locked", mattnText(t, err))
 		p.close()
+	})
+
+	t.Run("should run goqite's send and receive with RETURNING as far as the slices take them, with arguments and prepared statements, and keep their changes after a restart with an empty cache", func(t *testing.T) {
+		w := newWorld(t)
+		for _, pinned := range []bool{true, false} {
+			p := newPair(t, w, pinned, nil)
+			goqite := "create table goqite (id text primary key, created text not null, updated text not null, queue text not null, " +
+				"body blob not null, timeout text not null, received int not null default 0, priority int not null default 0) strict, without rowid"
+			for _, src := range []string{goqite, "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"} {
+				_, failure := p.step(src, callExec, false)
+				is.Equal(t, "", failure)
+			}
+			now := "2026-11-23T12:00:00.000Z"
+			// goqite's send, with the id from the caller, since the default of the id is an expression.
+			send := "insert into goqite (id, created, updated, queue, body, timeout, priority) values (?, ?, ?, ?, ?, ?, ?) returning id"
+			for n, id := range []string{"m_1", "m_2", "m_3"} {
+				got, failure := p.stepRuns(send, []call{callQuery, callPrepareQuery, callQueryRow}[n], false, [][]any{{id, now, now, "default", []byte("body " + id), now, n % 2}})
+				is.Equal(t, "", failure)
+				is.True(t, len(got.rows) == 1 && strings.Contains(got.rows[0], id), got.String())
+			}
+			// goqite's receive, with the id that its select of the next message gives, since a scalar
+			// subquery and arithmetic are not supported.
+			next := "select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1"
+			got, failure := p.stepRuns(next, callQuery, false, [][]any{{"default", now, 3}})
+			is.Equal(t, "", failure)
+			is.EqualSlice(t, []string{`["string:m_2"]`}, got.rows)
+			receive := "update goqite set timeout = ?, received = ? where id = ? returning id, body"
+			got, failure = p.stepRuns(receive, callPrepareQuery, false, [][]any{{"2026-11-23T12:01:00.000Z", 1, "m_2"}})
+			is.Equal(t, "", failure)
+			is.EqualSlice(t, []string{`["string:m_2" "[]uint8:[98 111 100 121 32 109 95 50]"]`}, got.rows)
+			is.Equal(t, "", p.compareTables())
+			p.restart(true)
+			is.Equal(t, "", p.compareTables())
+			p.close()
+		}
 	})
 
 	t.Run("should take the engine's refusal of an argument of LIMIT that is no integer from 0 by the rule, after the errors of the names, and run one that is", func(t *testing.T) {

@@ -248,6 +248,8 @@ func PathAccessOf(src string, ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIn
 	how := reading{path: p.path()}
 	how.backward = how.path.direction == directionBackward
 	var built any
+	// The access of an update or a delete does not depend on its RETURNING, so a column of RETURNING
+	// that ct does not have does not keep it from one.
 	switch s := s.(type) {
 	case *stmt.Select:
 		if s.Where == nil && s.OrderBy == nil {
@@ -258,12 +260,16 @@ func PathAccessOf(src string, ct *s4qlpb.CreateTable, indexes []*s4qlpb.CreateIn
 		if s.Where == nil {
 			return Access{}, false
 		}
-		built, err = buildSink(context.Background(), readOnly{tableOf{ct, indexes}}, NewPlan(s), args, bugs{}, math.MaxInt, how)
+		without := *s
+		without.Returning = stmt.Returning{}
+		built, err = buildSink(context.Background(), readOnly{tableOf{ct, indexes}}, NewPlan(&without), args, bugs{}, math.MaxInt, how)
 	case *stmt.Delete:
 		if s.Where == nil {
 			return Access{}, false
 		}
-		built, err = buildSink(context.Background(), readOnly{tableOf{ct, indexes}}, NewPlan(s), args, bugs{}, math.MaxInt, how)
+		without := *s
+		without.Returning = stmt.Returning{}
+		built, err = buildSink(context.Background(), readOnly{tableOf{ct, indexes}}, NewPlan(&without), args, bugs{}, math.MaxInt, how)
 	default:
 		return Access{}, false
 	}
@@ -285,6 +291,17 @@ func (r *Rows) Access() (Access, bool) {
 		return Access{}, false
 	}
 	return exported(scan.access), true
+}
+
+// Backward reports whether the rows of an insert, an update, or a delete with RETURNING come in the
+// reverse of the order in which the statement changed them, as the engine drew it, and false for
+// rows of another statement.
+func (r *Rows) Backward() (backward, ok bool) {
+	ret, ok := r.src.(*returned)
+	if !ok {
+		return false, false
+	}
+	return ret.backward, true
 }
 
 // tableOf is a [readTx] of the one table ct, under any name, with the indexes, which reads no rows.

@@ -63,3 +63,13 @@ access: get, id = 'm_0001'
 ## delete a queue
 delete from goqite where queue = 'default'
 access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'
+
+## receive by id
+update goqite set timeout = ?, received = ? where id = ? returning id, body
+args: '2026-11-20T12:00:30.000Z', 1, 'm_0001'
+access: get, id = 'm_0001'
+
+## delete a queue with RETURNING
+delete from goqite where queue = ? returning id
+args: 'default'
+access: index goqite_queue_priority_created_idx (queue, priority desc, created, id), pins queue = 'default'
