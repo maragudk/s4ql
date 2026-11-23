@@ -1142,6 +1142,13 @@ func TestChangeRows(t *testing.T) {
 			byKey: "[table t keys t get t 3 add 3 key 3 delete t 3]",
 			all:   "[table t keys t add 3 key 3 delete t 3]"},
 		{src: "delete from t where w = null", n: 0, byKey: "[table t keys t]", all: "[table t keys t]"},
+		// A delete with RETURNING reads the row of each key before it deletes it, for its values.
+		{src: "delete from t where k < 3 returning w", n: 2, indexes: 1,
+			byKey: "[table t indexes t keys t range t < 3 add 1 add 2 key 1 get t 1 delete t 1 key 2 get t 2 delete t 2]",
+			all:   "[table t keys t add 1 add 2 key 1 get t 1 delete t 1 key 2 get t 2 delete t 2]"},
+		{src: "update t set w = 25 where k = 2 returning *", n: 1,
+			byKey: "[table t keys t get t 2 add 2 key 2 get t 2 upsert t 25,2]",
+			all:   "[table t keys t add 2 key 2 get t 2 upsert t 25,2]"},
 		{src: "delete from t", n: 4,
 			byKey: "[table t keys t add 1 add 2 add 3 add 4 key 1 delete t 1 key 2 delete t 2 key 3 delete t 3 key 4 delete t 4]",
 			all:   "[table t keys t add 1 add 2 add 3 add 4 key 1 delete t 1 key 2 delete t 2 key 3 delete t 3 key 4 delete t 4]"},
@@ -1175,6 +1182,17 @@ func TestChangeRows(t *testing.T) {
 			f := newTable()
 			f.getFails = errors.New("the get fails")
 			err, n, calls := change(t, f, "update t set w = 5 where w = 20", scanAll)
+			is.Equal(t, "the get fails", err)
+			is.Equal(t, int64(0), n)
+			is.Equal(t, byRules("[table t keys t add 2 key 2 get t 2]", scanAll), calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
+
+	t.Run("should give the error of the read of the row of a key that a delete with RETURNING found, and delete nothing", func(t *testing.T) {
+		for _, scanAll := range []bool{false, true} {
+			f := newTable()
+			f.getFails = errors.New("the get fails")
+			err, n, calls := change(t, f, "delete from t where w = 20 returning k", scanAll)
 			is.Equal(t, "the get fails", err)
 			is.Equal(t, int64(0), n)
 			is.Equal(t, byRules("[table t keys t add 2 key 2 get t 2]", scanAll), calls, fmt.Sprint("scan all: ", scanAll))
@@ -1293,6 +1311,15 @@ func TestChangeRows(t *testing.T) {
 		is.Equal(t, "s4ql: internal error: the row of a key that a delete found is gone", err.Error())
 		is.Equal(t, int64(0), n)
 		is.Equal(t, "[keys t add 9 key 9 get t 9 keys t add 9 key 9 delete t 9]", fmt.Sprint(f.calls))
+
+		// A delete with RETURNING finds that the row is gone by the read of its values, and deletes
+		// nothing.
+		f.calls = nil
+		n, err = (&remove{w: fakeTx{f}, table: ct, key: 1, src: src, ret: &returning{table: ct, positions: []int{0}}}).run(t.Context())
+		is.True(t, errors.Is(err, ErrInternal))
+		is.Equal(t, "s4ql: internal error: the row of a key that a delete found is gone", err.Error())
+		is.Equal(t, int64(0), n)
+		is.Equal(t, "[keys t add 9 key 9 get t 9]", fmt.Sprint(f.calls))
 	})
 }
 
