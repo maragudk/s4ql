@@ -19,8 +19,9 @@
 // the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, the
 // UPDATE and DELETE of slice 8, the CREATE INDEX and DROP INDEX of slice 9, the IF NOT EXISTS and
 // IF EXISTS of slice 10, the DEFAULT of slice 11, the value on the left of a comparison of slice 12,
-// and the ORDER BY and LIMIT of a select of slice 13. The README next to this file defines them token
-// for token, and lists the names that a "not supported" error gives.
+// the ORDER BY and LIMIT of a select of slice 13, and the RETURNING of an insert, an update, and a
+// delete of slice 14. The README next to this file defines them token for token, and lists the names
+// that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist, its values are as many as the columns, or a value has the type of its
@@ -281,6 +282,28 @@ type Insert struct {
 	// Values of the row, in the order of the text. Their number may differ from that of the columns,
 	// which SQLite refuses once it has found the table.
 	Values []Term
+	// Returning of the RETURNING clause, which gives the row that the statement inserts, with its
+	// values as the table stores them, or the zero Returning if the statement has none.
+	Returning Returning
+}
+
+// Returning clause of an [Insert], an [Update], or a [Delete]: the statement gives a row for each row
+// that it inserts, updates, or deletes, with the columns that the clause names, as a select gives the
+// columns of its select list. An insert and an update give the values of the row after the change,
+// and a delete the values of the row before it. The rows come in no order that the statement says.
+type Returning struct {
+	// Span of the clause in the text, from the keyword RETURNING to the end of its last column, or
+	// the zero Span if the statement has no RETURNING; see [Returning.Present].
+	Span Span
+	// Columns that the clause names, in the order of the text, each as often as it names it, as the
+	// select list of a [Select] does, or nil for *, which is every column in the order of the table.
+	// Whether the table has them is not decided here.
+	Columns []Name
+}
+
+// Present reports whether the statement has a RETURNING clause.
+func (r Returning) Present() bool {
+	return r.Span != Span{}
 }
 
 // Term of a row, of an [Assignment], or of a [Condition]: the literal Value, or the argument of a parameter if Parameter
@@ -430,6 +453,10 @@ type Update struct {
 	// Where holds the conditions of the WHERE clause, in the order of the text, as for a [Select], or
 	// nil if the statement has no WHERE.
 	Where []Condition
+	// Returning of the RETURNING clause, after the WHERE, which gives each row that the statement
+	// updates, with the values of the row after the update, or the zero Returning if the statement has
+	// none.
+	Returning Returning
 }
 
 // Assignment of a SET clause: a column and the value that it gets.
@@ -447,6 +474,9 @@ type Delete struct {
 	// Where holds the conditions of the WHERE clause, in the order of the text, as for a [Select], or
 	// nil if the statement has no WHERE.
 	Where []Condition
+	// Returning of the RETURNING clause, after the WHERE, which gives each row that the statement
+	// deletes, with the values that the row had, or the zero Returning if the statement has none.
+	Returning Returning
 }
 
 // DropTable of one table.

@@ -1077,20 +1077,25 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := stmt.Check(src); err != nil || s == nil {
+	s, err := stmt.Check(src)
+	if err != nil || s == nil {
 		args = nil
 	}
-	if kind, failure := p.checkLength(c, got); kind != "" {
-		if failure == "" {
-			p.y.excused(kind)
+	// A statement with RETURNING, of slice 14, is refused before its values and its arguments until
+	// the engine runs it, as [returned] says, so no rule of its values holds for it.
+	if s == nil || !returned(s) {
+		if kind, failure := p.checkLength(c, got); kind != "" {
+			if failure == "" {
+				p.y.excused(kind)
+			}
+			return failure
 		}
-		return failure
-	}
-	if kind, failure := p.checkType(c, args, got); kind != "" {
-		if failure == "" {
-			p.y.excused(kind)
+		if kind, failure := p.checkType(c, args, got); kind != "" {
+			if failure == "" {
+				p.y.excused(kind)
+			}
+			return failure
 		}
-		return failure
 	}
 	if got.err == "not supported" && p.tooLongForCache(src, got.message) {
 		p.y.excused(excusedCacheLimit)
@@ -1100,8 +1105,9 @@ func (p *pair) step(c stmttest.Call) string {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
-		// empty database without a syntax error.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
+		// empty database without a syntax error. A statement with RETURNING, of slice 14, is not
+		// supported until the engine runs it, as [returned] says.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil && !returned(s) {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {

@@ -369,7 +369,7 @@ func canonical(s stmt.Statement) string {
 		if s.Columns != nil {
 			list = " (" + quoteNames(s.Columns) + ")"
 		}
-		return fmt.Sprintf("insert into %v%v values (%v)", quote(s.Table.Value), list, strings.Join(values, ", "))
+		return fmt.Sprintf("insert into %v%v values (%v)%v", quote(s.Table.Value), list, strings.Join(values, ", "), canonicalReturning(s.Returning))
 	case *stmt.Select:
 		list := "*"
 		if s.Columns != nil {
@@ -381,9 +381,9 @@ func canonical(s stmt.Statement) string {
 		for _, a := range s.Set {
 			set = append(set, quote(a.Column.Value)+" = "+canonicalTerm(a.Value))
 		}
-		return fmt.Sprintf("update %v set %v%v", quote(s.Table.Value), strings.Join(set, ", "), canonicalWhere(s.Where))
+		return fmt.Sprintf("update %v set %v%v%v", quote(s.Table.Value), strings.Join(set, ", "), canonicalWhere(s.Where), canonicalReturning(s.Returning))
 	case *stmt.Delete:
-		return fmt.Sprintf("delete from %v%v", quote(s.Table.Value), canonicalWhere(s.Where))
+		return fmt.Sprintf("delete from %v%v%v", quote(s.Table.Value), canonicalWhere(s.Where), canonicalReturning(s.Returning))
 	case *stmt.DropTable:
 		if s.IfExists {
 			return "drop table if exists " + quote(s.Table.Value)
@@ -435,6 +435,18 @@ func canonicalWhere(where []stmt.Condition) string {
 		return ""
 	}
 	return " where " + strings.Join(conditions, " and ")
+}
+
+// canonicalReturning of the RETURNING clause r: " returning " and its columns, or *, or "" if the
+// statement has none.
+func canonicalReturning(r stmt.Returning) string {
+	switch {
+	case !r.Present():
+		return ""
+	case r.Columns == nil:
+		return " returning *"
+	}
+	return " returning " + quoteNames(r.Columns)
 }
 
 // canonicalOrder of the select s: " order by " and its columns, each with " desc" if it is
@@ -504,9 +516,9 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 	case *stmt.Select:
 		checkSelect(t, open, src, s)
 	case *stmt.Update:
-		checkChange(t, open, src, s, s.Table, s.Set, s.Where)
+		checkChange(t, open, src, s, s.Table, s.Set, s.Where, s.Returning)
 	case *stmt.Delete:
-		checkChange(t, open, src, s, s.Table, nil, s.Where)
+		checkChange(t, open, src, s, s.Table, nil, s.Where, s.Returning)
 	case *stmt.DropTable:
 		drop := func(sql string) []string {
 			d := open(t)
@@ -843,12 +855,27 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 	sqliteError(t, src, open(t).exec(src, parameterArgs(src, s)...), 1, "no such table: "+s.Table.Value)
 	n := len(s.Values)
 
+	// The columns of RETURNING, once each, in the order of the text. Without a list, the table has as
+	// many columns as the statement has values, so it holds the columns of RETURNING only if they are
+	// not more.
+	returned := distinct(s.Returning.Columns)
+	unfit := s.Returning.Present() && s.Columns == nil && len(returned) > n
+
 	// The columns of the table, by the values that they get, in the order of the values, with the
-	// case of their names swapped. Without a list of columns, they are named c1, c2, and so on.
+	// case of their names swapped. Without a list of columns, they are named c1, c2, and so on, or for
+	// a statement with RETURNING, the first by the columns of RETURNING and the others s4ql c2, s4ql c3,
+	// and so on.
 	var names []string
 	if s.Columns == nil {
 		for i := range n {
-			names = append(names, fmt.Sprint("c", i+1))
+			switch {
+			case s.Returning.Present() && !unfit && i < len(returned):
+				names = append(names, swapCase(returned[i].Value))
+			case s.Returning.Present():
+				names = append(names, fmt.Sprint("s4ql c", i+1))
+			default:
+				names = append(names, fmt.Sprint("c", i+1))
+			}
 		}
 	} else {
 		for _, c := range s.Columns {
@@ -891,11 +918,22 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 			stored[i] = stmt.Real(0)
 		}
 	}
-	// With a list, the table has its columns in the reverse order, so that the values go by name.
-	tableColumns := columns
+	// With a list, the table has its columns in the reverse order, so that the values go by name, and
+	// after them the columns of RETURNING that the list does not name, each with a DEFAULT of its own,
+	// which the insert stores in it.
+	tableColumns := slices.Clone(columns)
 	if s.Columns != nil {
-		tableColumns = slices.Clone(columns)
 		slices.Reverse(tableColumns)
+		listed := map[string]bool{}
+		for _, c := range s.Columns {
+			listed[c.Fold()] = true
+		}
+		for i, r := range returned {
+			if !listed[r.Fold()] {
+				tableColumns = append(tableColumns, stmt.Column{Name: stmt.Name{Value: swapCase(r.Value)}, Type: stmt.TypeInt,
+					Default: stmt.Default{Value: stmt.Integer(1000 + i)}})
+			}
+		}
 	}
 	nulls := map[string]bool{}
 	for i, v := range stored {
@@ -903,10 +941,14 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 			nulls[names[i]] = true
 		}
 	}
-	checkNotNull(t, open, src, table, tableColumns, nulls, args)
+	// A table that lacks a column of RETURNING gives SQLite's error for it before any other, which
+	// checkReturningMissing checks.
+	if !unfit {
+		checkNotNull(t, open, src, table, tableColumns, nulls, args)
+	}
 	// When every value is NULL, no column of the table can be its primary key, and no table stores the
 	// row.
-	if key >= 0 {
+	if key >= 0 && !unfit {
 		read := "select " + strings.Join(quoted(names), ", ") + " from " + quote(table)
 		run := func(sql string) *db {
 			d := open(t)
@@ -932,7 +974,11 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 		for i := range n {
 			is.Equal(t, got[i], show(c.valueAt(read, i)), src)
 		}
+		if s.Returning.Present() {
+			checkInsertReturning(t, open, src, s, createColumns(table, tableColumns), table, args)
+		}
 	}
+	checkReturningMissing(t, open, src, s, table, names, args)
 
 	// SQLite prints the name of the table as the statement writes it, and the table has it with the
 	// case swapped.
@@ -973,6 +1019,94 @@ func checkNotNull(t testing.TB, open func(testing.TB) *db, src, table string, co
 	d := open(t)
 	d.must(createColumns(table, columns))
 	sqliteError(t, src, d.exec(src, args...), 1299, "NOT NULL constraint failed: "+table+"."+first)
+}
+
+// distinct names of names, the first of each by its fold, in the order of names.
+func distinct(names []stmt.Name) []stmt.Name {
+	var once []stmt.Name
+	seen := map[string]bool{}
+	for _, n := range names {
+		if !seen[n.Fold()] {
+			seen[n.Fold()] = true
+			once = append(once, n)
+		}
+	}
+	return once
+}
+
+// returningList of the RETURNING clause r, as a select list of the canonical text writes it: the
+// columns by the values of their names in double quotes, or *.
+func returningList(r stmt.Returning) string {
+	if r.Columns == nil {
+		return "*"
+	}
+	return quoteNames(r.Columns)
+}
+
+// checkInsertReturning of the insert s of src with RETURNING, with args, on a new database of the
+// table that create creates: src gives one row, with the columns of RETURNING, or every column for *,
+// by the names that the table stores and with the values that a select of the same columns reads
+// after it, as the canonical text does. So an insert gives the values as the table stores them, and
+// its DEFAULT in a column that the list leaves out.
+func checkInsertReturning(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Insert, create, table string, args []int64) {
+	t.Helper()
+	read := func(sql string) (string, string, int) {
+		d := open(t)
+		d.must(create)
+		names, rows, err := d.run(sql, integers(args))
+		if err != nil {
+			t.Fatalf("%q: %v", sql, err)
+		}
+		selected, after, err := d.run("select "+returningList(s.Returning)+" from "+quote(table), nil)
+		is.NotError(t, err)
+		return fmt.Sprint(names, "\n", showRows(rows)), fmt.Sprint(selected, "\n", showRows(after)), len(rows)
+	}
+	got, want, n := read(src)
+	is.Equal(t, 1, n, src)
+	is.Equal(t, want, got, src)
+	canonicalGot, _, _ := read(canonical(s))
+	is.Equal(t, got, canonicalGot, src)
+}
+
+// checkReturningMissing of the insert s of src, with args: SQLite looks for the columns of RETURNING
+// after the table, the columns of the list, and the number of the values, in the order of the text.
+// On a table of the columns of the list, by names, or without a list of as many columns as values,
+// none of which RETURNING names, SQLite gives `no such column` for the first column of RETURNING that
+// the table does not have, with the question about a string literal for a name in double quotes.
+func checkReturningMissing(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Insert, table string, names []string, args []int64) {
+	t.Helper()
+	if s.Returning.Columns == nil || s.Columns != nil && len(s.Columns) != len(s.Values) {
+		return
+	}
+	columns := names
+	if s.Columns == nil {
+		columns = nil
+		for i := range s.Values {
+			columns = append(columns, fmt.Sprint("s4ql c", i+1))
+		}
+	}
+	has := map[string]bool{}
+	for _, c := range columns {
+		has[stmt.Name{Value: c}.Fold()] = true
+	}
+	for _, r := range s.Returning.Columns {
+		if !has[r.Fold()] {
+			d := open(t)
+			d.must(createColumns(table, intColumns(columns, 0)))
+			_, _, err := d.run(src, integers(args))
+			sqliteError(t, src, err, 1, noSuchColumn(r))
+			return
+		}
+	}
+}
+
+// integers of args, as values.
+func integers(args []int64) []stmt.Value {
+	var values []stmt.Value
+	for _, a := range args {
+		values = append(values, stmt.Integer(a))
+	}
+	return values
 }
 
 // checkSelect is [checkMeaning] of a SELECT: on a table created with the case of its names swapped,
@@ -1072,6 +1206,11 @@ var whereReads [3]atomic.Int64
 // changeReads counts the updates and the deletes with WHERE that [checkChange] ran, by whether they
 // changed no row of the table, some, or every row, as [whereReads] counts the selects.
 var changeReads [3]atomic.Int64
+
+// returningReads counts the updates and the deletes with WHERE and RETURNING that
+// [checkChangeReturning] ran, by whether they gave no row, some, or a row for every row of the table,
+// so that a test can see that the check compares rows.
+var returningReads [3]atomic.Int64
 
 // count in reads a statement that read or changed n of the all rows of a table: none, some, or every
 // one.
@@ -1501,7 +1640,7 @@ func compareValues(a, b stmt.Value) int {
 // without it and without the columns of the conditions, with the value of the name, also of one in
 // double quotes, and `no such column` for the columns of the conditions that no assignment names, as
 // [anyTable.checkMissing] says.
-func checkChange(t testing.TB, open func(testing.TB) *db, src string, s stmt.Statement, table stmt.Name, set []stmt.Assignment, where []stmt.Condition) {
+func checkChange(t testing.TB, open func(testing.TB) *db, src string, s stmt.Statement, table stmt.Name, set []stmt.Assignment, where []stmt.Condition, returning stmt.Returning) {
 	t.Helper()
 	var terms []stmt.Term
 	var named []stmt.Name
@@ -1513,6 +1652,7 @@ func checkChange(t testing.TB, open func(testing.TB) *db, src string, s stmt.Sta
 	for _, c := range where {
 		named = append(named, c.Column)
 	}
+	named = append(named, returning.Columns...)
 	args := whereArgs(src, s.Parameters())
 	a := newAnyTable(swapCase(table.Value), named)
 	rows := a.rows(src, where, args, 3)
@@ -1605,6 +1745,92 @@ func checkChange(t testing.TB, open func(testing.TB) *db, src string, s stmt.Sta
 		a.refuses(t, open, src, args, missing, "no such column: "+last.Value)
 	}
 	a.checkMissing(t, open, src, args, where, listed)
+	if !returning.Present() {
+		return
+	}
+	checkChangeReturning(t, open, src, s, a, rows, args, set, where, returning)
+	// SQLite looks for the columns of RETURNING after those of the assignments and the conditions, in
+	// the order of the text.
+	for _, c := range where {
+		listed[c.Column.Fold()] = true
+	}
+	var missing []stmt.Name
+	for _, c := range returning.Columns {
+		if !listed[c.Fold()] {
+			missing = append(missing, c)
+		}
+	}
+	if missing != nil {
+		a.noSuchColumn(t, open, src, args, missing[0], map[string]bool{missing[0].Fold(): true})
+		all := map[string]bool{}
+		for _, n := range missing {
+			all[n.Fold()] = true
+		}
+		a.noSuchColumn(t, open, src, args, missing[0], all)
+	}
+}
+
+// checkChangeReturning of the update or the delete s of src with RETURNING, with args, on the table a
+// with the rows: src gives a row for each row that the conditions where choose, as many as SQLite
+// counts as changed, with the columns of RETURNING, or every column for *, by the names that the
+// table stores. An update gives the values of each such row after it, and a delete those before it,
+// as a select of the same columns reads them, in some order. The canonical text gives the same rows,
+// in the same order.
+func checkChangeReturning(t testing.TB, open func(testing.TB) *db, src string, s stmt.Statement, a anyTable, rows [][]stmt.Value, args []stmt.Value, set []stmt.Assignment, where []stmt.Condition, returning stmt.Returning) {
+	t.Helper()
+	// The arguments of the conditions come after those of the assignments.
+	assigned := 0
+	for _, as := range set {
+		if as.Value.Parameter > 0 {
+			assigned++
+		}
+	}
+	read := func(sql string) (string, int) {
+		d := open(t)
+		d.must(a.create(a.names))
+		d.insert(a.name, rows)
+		_, chosen, err := d.run(`select "s4ql key" from `+quote(a.name)+canonicalWhere(where), args[assigned:])
+		is.NotError(t, err)
+		var keys []string
+		for _, row := range chosen {
+			keys = append(keys, literal(row[0]))
+		}
+		selectChosen := func() string {
+			names, rows, err := d.run("select "+returningList(returning)+" from "+quote(a.name)+` where "s4ql key" in (`+strings.Join(keys, ", ")+")", nil)
+			is.NotError(t, err)
+			return fmt.Sprint(names, "\n", sortedRows(rows))
+		}
+		want := ""
+		if set == nil {
+			want = selectChosen()
+		}
+		names, got, err := d.run(sql, args)
+		if err != nil {
+			t.Fatalf("%q: %v", sql, err)
+		}
+		is.Equal(t, int(d.value("select changes()").(stmt.Integer)), len(got), sql)
+		if set != nil {
+			want = selectChosen()
+		}
+		is.Equal(t, want, fmt.Sprint(names, "\n", sortedRows(got)), sql)
+		return fmt.Sprint(names, "\n", showRows(got)), len(got)
+	}
+	got, n := read(src)
+	canonicalGot, _ := read(canonical(s))
+	is.Equal(t, got, canonicalGot, src)
+	if where != nil {
+		count(&returningReads, n, len(rows))
+	}
+}
+
+// sortedRows of a result, as [showRows] shows them, in the order of their text.
+func sortedRows(rows [][]stmt.Value) string {
+	var lines []string
+	for _, row := range rows {
+		lines = append(lines, showRows([][]stmt.Value{row}))
+	}
+	slices.Sort(lines)
+	return strings.Join(lines, "")
 }
 
 // whereArgs gives each of the n parameters of the statement src a value of a type that the length of
@@ -1862,6 +2088,8 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		for _, v := range s.Values {
 			checkTerm(t, src, b, &end, &parameters, v)
 		}
+		names = append(names, checkReturning(t, src, b, end, s.Returning)...)
+		is.Equal(t, parameters, s.Parameters(), src)
 	case *stmt.Select:
 		names = append([]stmt.Name{s.Table}, s.Columns...)
 		if s.Columns != nil && len(s.Columns) == 0 {
@@ -1918,9 +2146,14 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		checkOnce(t, src, columns)
 		names = append(names, columns...)
 		names = append(names, checkConditions(t, src, b, end, &parameters, s.Where)...)
+		names = append(names, checkReturning(t, src, b, conditionsEnd(end, s.Where), s.Returning)...)
+		is.Equal(t, parameters, s.Parameters(), src)
 	case *stmt.Delete:
 		parameters := 0
-		names = append([]stmt.Name{s.Table}, checkConditions(t, src, b, s.Table.Offset+len(s.Table.Raw), &parameters, s.Where)...)
+		end := s.Table.Offset + len(s.Table.Raw)
+		names = append([]stmt.Name{s.Table}, checkConditions(t, src, b, end, &parameters, s.Where)...)
+		names = append(names, checkReturning(t, src, b, conditionsEnd(end, s.Where), s.Returning)...)
+		is.Equal(t, parameters, s.Parameters(), src)
 	case *stmt.DropTable:
 		names = []stmt.Name{s.Table}
 	case *stmt.CreateIndex:
@@ -1949,6 +2182,58 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 			t.Fatalf("%q: name %q at %v", src, n.Raw, n.Offset)
 		}
 	}
+}
+
+// conditionsEnd gives the end of the conditions where, which come after end, or end if there are
+// none.
+func conditionsEnd(end int, where []stmt.Condition) int {
+	for _, c := range where {
+		end = max(end, c.Column.Offset+len(c.Column.Raw), c.Value.Span.End)
+	}
+	return end
+}
+
+// checkReturning of the RETURNING clause r of a statement of src in the bounds b, after the end of
+// what comes before it: a statement without RETURNING has the zero Returning. The span of a clause
+// starts at the keyword RETURNING, after end, and ends at the end of its last column, or of its * for
+// a clause without columns, after which only a semicolon of the statement may come. Its columns come
+// after the keyword, each after the one before it, and there is one at least if Columns is not nil.
+// It gives the names of the columns.
+func checkReturning(t testing.TB, src string, b stmt.Span, end int, r stmt.Returning) []stmt.Name {
+	t.Helper()
+	if !r.Present() {
+		if r.Columns != nil {
+			t.Fatalf("%q: no RETURNING, and the columns %v", src, r.Columns)
+		}
+		return nil
+	}
+	sp := r.Span
+	if sp.Start < end || sp.End > b.End || sp.Start+len("returning") > sp.End || !strings.EqualFold(src[sp.Start:sp.Start+len("returning")], "returning") {
+		t.Fatalf("%q: RETURNING at %v, after %v", src, sp, end)
+	}
+	if !onlySpace(src[sp.End:b.End]) {
+		t.Fatalf("%q: RETURNING at %v, before %q", src, sp, src[sp.End:b.End])
+	}
+	if r.Columns == nil {
+		if src[sp.End-1] != '*' || !onlySpace(src[sp.Start+len("returning"):sp.End-1]) {
+			t.Fatalf("%q: RETURNING * at %v", src, sp)
+		}
+		return nil
+	}
+	if len(r.Columns) == 0 {
+		t.Fatalf("%q: RETURNING of no column", src)
+	}
+	end = sp.Start + len("returning")
+	for _, c := range r.Columns {
+		if c.Offset < end {
+			t.Fatalf("%q: RETURNING %q at %v", src, c.Raw, c.Offset)
+		}
+		end = c.Offset + len(c.Raw)
+	}
+	if end != sp.End {
+		t.Fatalf("%q: RETURNING at %v, its last column ends at %v", src, sp, end)
+	}
+	return r.Columns
 }
 
 // checkOnce that no two of names are one name, as [stmt.Name.Fold] compares them.

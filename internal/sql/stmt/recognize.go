@@ -338,8 +338,8 @@ func isWord(t ast.Token, w string) bool {
 	return asciiLower(t.Text) == w
 }
 
-// insert: INSERT INTO table, an optional list of columns, and VALUES with one row of values, where
-// each value is a literal or a parameter.
+// insert: INSERT INTO table, an optional list of columns, VALUES with one row of values, where each
+// value is a literal or a parameter, and an optional RETURNING.
 func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.accept(c)
 	if r.isNext(c.Insert) && c.Insert.Kind == token.Replace {
@@ -395,7 +395,30 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 		s.Values = append(s.Values, v)
 	}
 	r.take(row.RParen)
+	s.Returning = r.returning(c.Returning)
 	return s
+}
+
+// returning: an optional RETURNING and its columns, the last clause of an insert, an update, or a
+// delete, read as a select list is read: * alone, or one or more bare names of columns, separated by
+// commas, which may name a column more than once. SQLite takes any result column there, also an
+// expression, an alias, and a column with the name of its table; the pass supports what it supports
+// in a select list. A clause that the parser read before a token that the recognizer has not taken,
+// such as the ON of an upsert, stops at that token.
+func (r *recognizer) returning(ret *ast.Returning) Returning {
+	if ret == nil {
+		return Returning{}
+	}
+	r.accept(ret)
+	start := r.take(ret.Returning).Offset
+	var columns []Name
+	for i, rc := range ret.Columns {
+		if i > 0 {
+			r.take(ret.Commas[i-1])
+		}
+		columns = r.resultColumn(rc, len(ret.Columns), columns)
+	}
+	return Returning{Span: Span{Start: start, End: r.tokens[r.next-1].End()}, Columns: columns}
 }
 
 // term e, after before parameters of the statement: a parameter, or a literal.
@@ -735,7 +758,7 @@ func (r *recognizer) where(w *ast.Where, before int) []Condition {
 }
 
 // update: UPDATE table SET and one or more assignments, separated by commas, each a column = a value,
-// where the value is a literal or a parameter, and an optional WHERE.
+// where the value is a literal or a parameter, an optional WHERE, and an optional RETURNING.
 func (r *recognizer) update(c *ast.Update) *Update {
 	r.accept(c)
 	r.take(c.Update)
@@ -773,10 +796,11 @@ func (r *recognizer) update(c *ast.Update) *Update {
 	if c.Where != nil {
 		s.Where = r.where(c.Where, parameters)
 	}
+	s.Returning = r.returning(c.Returning)
 	return s
 }
 
-// delete: DELETE FROM table and an optional WHERE.
+// delete: DELETE FROM table, an optional WHERE, and an optional RETURNING.
 func (r *recognizer) delete(c *ast.Delete) *Delete {
 	r.accept(c)
 	r.take(c.Delete)
@@ -786,6 +810,7 @@ func (r *recognizer) delete(c *ast.Delete) *Delete {
 	if c.Where != nil {
 		s.Where = r.where(c.Where, 0)
 	}
+	s.Returning = r.returning(c.Returning)
 	return s
 }
 
@@ -979,9 +1004,9 @@ func isTrueOrFalse(c *ast.ColumnRef) bool {
 	return !c.Table.Present() && (isWord(c.Column, "true") || isWord(c.Column, "false"))
 }
 
-// resultColumn rc of a select list of n result columns, after the names of the columns before it: a
-// * that is the only result column, or the bare name of a column. It gives the names with that of rc
-// added.
+// resultColumn rc of a select list or a RETURNING of n result columns, after the names of the columns
+// before it: a * that is the only result column, or the bare name of a column. It gives the names with
+// that of rc added.
 func (r *recognizer) resultColumn(rc *ast.ResultColumn, n int, before []Name) []Name {
 	if rc.Star.Present() && !rc.Table.Present() {
 		if n > 1 && r.isNext(rc.Star) {

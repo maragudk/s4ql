@@ -1,4 +1,4 @@
-// Package stmttest is a generator of random statements of slices 1, 2, and 4 to 13, for tests:
+// Package stmttest is a generator of random statements of slices 1, 2, and 4 to 14, for tests:
 // each statement is a text with the typed form of [maragu.dev/s4ql/internal/sql/stmt] that it holds,
 // with names from pools, keywords and types in any case, values of every type with weight on their
 // edges, and spaces and comments in every gap. The statements of slice 5, of several columns, come
@@ -8,7 +8,8 @@
 // INDEX and DROP INDEX of slice 9 with [Generator.Indexes] or a kind of their own, the IF NOT
 // EXISTS and IF EXISTS of slice 10 with [Generator.Exists], the DEFAULT of slice 11 with
 // [Generator.Defaults], the value on the left of a comparison of slice 12 with [Generator.ValueFirst],
-// and the ORDER BY and LIMIT of a select of slice 13 with [Generator.OrderBy] or [Generator.Order].
+// the ORDER BY and LIMIT of a select of slice 13 with [Generator.OrderBy] or [Generator.Order], and
+// the RETURNING of an insert, an update, and a delete of slice 14 with [Generator.Returning].
 //
 // The generator draws its random numbers from a [Rand] that the test gives it, so that a test
 // chooses its seed and its generator of numbers.
@@ -155,7 +156,7 @@ const (
 	KindDropIndex
 )
 
-// Generator of random statements of slices 1, 2, and 4 to 13.
+// Generator of random statements of slices 1, 2, and 4 to 14.
 type Generator struct {
 	r Rand
 	// plan draws the name of the table or the index of a statement, clause whether a create or a drop
@@ -280,7 +281,15 @@ type Generator struct {
 	// or the zero Term for a select without LIMIT. No two of the columns may be one name. The
 	// generator writes ASC or nothing for a column that is not descending.
 	Order func(table stmt.Name) ([]stmt.OrderColumn, stmt.Term)
-	b     strings.Builder
+	// Returning, if not 0, makes the generator write the RETURNING of slice 14: one insert, update, or
+	// delete in Returning ends with RETURNING and, one time in three, *, and otherwise from 1 to
+	// Columns+1 columns, or 1 without [Generator.Columns]. A column is one time in four after the first
+	// an earlier column of the clause, as it is written there; otherwise one time in two a column that
+	// the statement names before, in the list of an insert, in SET, or in WHERE, where SQLite reads it
+	// as a column of a select list; and otherwise a name from the pool of [SelectColumn]. With 0 the
+	// generator draws as it did before slice 14.
+	Returning int
+	b         strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -907,6 +916,50 @@ func (g *Generator) limitValue() stmt.Value {
 	return stmt.Integer(i)
 }
 
+// returning writes the RETURNING of an insert, an update, or a delete, of slice 14, after the rest of
+// the statement, which names the columns named, one time in [Generator.Returning], and gives it, or
+// the zero Returning, without a draw if Returning is 0.
+func (g *Generator) returning(named []stmt.Name) stmt.Returning {
+	if g.Returning == 0 || g.r.IntN(g.Returning) != 0 {
+		return stmt.Returning{}
+	}
+	// A column that the statement names before is one of the select list only where SQLite reads it
+	// as a column there: some keywords, such as CURRENT_DATE, are names after SET and values in a
+	// select list.
+	var columns []string
+	for _, n := range named {
+		if slices.Contains(g.pools[SelectColumn], n.Raw) || slices.Contains(g.pools[SelectColumn], strings.ToLower(n.Raw)) {
+			columns = append(columns, n.Raw)
+		}
+	}
+	g.gap(true)
+	r := stmt.Returning{Span: stmt.Span{Start: g.b.Len()}}
+	g.keyword("returning")
+	if g.r.IntN(3) == 0 {
+		g.gap(false)
+		g.punct("*")
+		r.Span.End = g.b.Len()
+		return r
+	}
+	for i := range 1 + g.r.IntN(g.Columns+1) {
+		if i > 0 {
+			g.gap(false)
+			g.punct(",")
+		}
+		g.gap(true)
+		switch {
+		case i > 0 && g.r.IntN(4) == 0:
+			r.Columns = append(r.Columns, g.write(r.Columns[g.r.IntN(len(r.Columns))].Raw))
+		case len(columns) > 0 && g.r.IntN(2) == 0:
+			r.Columns = append(r.Columns, g.write(columns[g.r.IntN(len(columns))]))
+		default:
+			r.Columns = append(r.Columns, g.name(SelectColumn))
+		}
+	}
+	r.Span.End = g.b.Len()
+	return r
+}
+
 // indexColumns of a create index of the name index on the table, of slice 9, between its
 // parentheses: those that [Generator.CreateIndex] gives, or from 1 to [Generator.Columns] at random,
 // or 1 without Columns, each another name from the pool of [IndexColumn]. Each is descending one time
@@ -1105,6 +1158,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		}
 		g.gap(false)
 		g.punct(")")
+		c.Returning = g.returning(c.Columns)
 		s, span = c, &c.Span
 	case KindSelect:
 		c := &stmt.Select{}
@@ -1147,6 +1201,14 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(true)
 		g.keyword("set")
 		args = g.update(c)
+		var named []stmt.Name
+		for _, a := range c.Set {
+			named = append(named, a.Column)
+		}
+		for _, w := range c.Where {
+			named = append(named, w.Column)
+		}
+		c.Returning = g.returning(named)
 		s, span = c, &c.Span
 	case KindDelete:
 		c := &stmt.Delete{}
@@ -1160,6 +1222,11 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		} else {
 			c.Where, args = g.conditions(g.randomConditions(), true, nil, nil)
 		}
+		var named []stmt.Name
+		for _, w := range c.Where {
+			named = append(named, w.Column)
+		}
+		c.Returning = g.returning(named)
 		s, span = c, &c.Span
 	case KindCreateIndex:
 		c := &stmt.CreateIndex{}

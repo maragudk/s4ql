@@ -580,3 +580,86 @@ func TestGenerator_OrderBy(t *testing.T) {
 		is.True(t, parameters > 10, "too few parameters")
 	})
 }
+
+func TestGenerator_Returning(t *testing.T) {
+	pools, err := stmttest.NamePools()
+	is.NotError(t, err)
+	// count the inserts, updates, and deletes of g, which must each be the statement that the pass
+	// gives for its text, by what their RETURNING has.
+	count := func(g *stmttest.Generator) map[string]int {
+		kinds := map[string]int{}
+		for _, k := range []stmttest.Kind{stmttest.KindInsert, stmttest.KindUpdate, stmttest.KindDelete} {
+			for range 300 {
+				src, s, args := g.CallOf(k)
+				got, err := stmt.Check(src)
+				is.NotError(t, err, src)
+				is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+				is.Equal(t, len(args), s.Parameters(), src)
+				var r stmt.Returning
+				var named []stmt.Name
+				switch s := s.(type) {
+				case *stmt.Insert:
+					r, named = s.Returning, s.Columns
+				case *stmt.Update:
+					r = s.Returning
+					for _, a := range s.Set {
+						named = append(named, a.Column)
+					}
+					for _, c := range s.Where {
+						named = append(named, c.Column)
+					}
+				case *stmt.Delete:
+					r = s.Returning
+					for _, c := range s.Where {
+						named = append(named, c.Column)
+					}
+				}
+				switch {
+				case !r.Present():
+					kinds["none"]++
+					is.True(t, !strings.Contains(strings.ToLower(src), "returning"), src)
+					continue
+				case r.Columns == nil:
+					kinds["*"]++
+				}
+				kinds[fmt.Sprint(len(r.Columns), " columns")]++
+				seen := map[string]bool{}
+				for _, c := range r.Columns {
+					before := false
+					for _, n := range named {
+						before = before || n.Fold() == c.Fold()
+					}
+					kinds[fmt.Sprint("named before ", before)]++
+					kinds[fmt.Sprint("again ", seen[c.Fold()])]++
+					seen[c.Fold()] = true
+				}
+			}
+		}
+		return kinds
+	}
+
+	t.Run("should write RETURNING only with Returning", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(21, 22)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.ValueFirst = 3, 3, 3, 4, 3
+		kinds := count(g)
+		is.Equal(t, 900, kinds["none"], fmt.Sprint(kinds))
+	})
+
+	t.Run("should write RETURNING of * and of one or more columns, named before or not, with Returning", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(21, 22)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.ValueFirst, g.Returning = 3, 3, 3, 4, 3, 2
+		kinds := count(g)
+		for _, k := range []string{"none", "*", "1 columns", "2 columns", "3 columns", "4 columns", "named before true", "named before false",
+			"again true", "again false"} {
+			is.True(t, kinds[k] > 5, fmt.Sprint(k, " ", kinds))
+		}
+	})
+
+	t.Run("should write RETURNING of * or one column without Columns", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(21, 22)), pools)
+		g.Returning = 1
+		kinds := count(g)
+		is.Equal(t, 0, kinds["none"], fmt.Sprint(kinds))
+		is.Equal(t, 900, kinds["*"]+kinds["1 columns"], fmt.Sprint(kinds))
+	})
+}
