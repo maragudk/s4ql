@@ -39,3 +39,60 @@ What the reading gave:
 - `readCommit` already keeps only the keys of `barcodes` in `CommitObject.Keys` and `Deletes`, so a commit of another table carries no write of the app, and the bucket's checks on reload hold as they are.
 - The engine's README says that the event of a write statement and the core's event of its commit are logged on one context. So a write of the box can learn the name of its commit object from the core's event `commit` on its own context, as a read learns its position from the engine's event. The checker can then know a box's write by the name of its commit object.
 - The page's storage drops the stored database and goes on in memory when a write fails; the brief wants the "S3 is full" stop instead.
+
+## Step 2: The engine side
+
+**Author:** builder (simulator SQL box)
+
+### What I did
+
+- `request.go`: the action `sql`, with the field `sql`, at most 1000 characters (`maxSQL`) of valid UTF-8, for no instance. A `sql` on another action is an error.
+- `box.go` (new): `run.sql` starts the call in a task of the run, which goes to the client's target through the client's path (`callTarget`, split out of `clientCall`), so `down` and `lost` hold for it as for a request of the app. `namesApp` reads the text with `stmt.Check` and refuses every statement but a select whose table, or index name, folds to `barcodes`. `boxStatement` runs a select (and a text that the pass refuses) as `Conn.Query`, and every other statement as `Begin`, `Exec`, `Commit`. The event that ends the call has `columns`, the first 50 `rows` as typed cells, `count`, `affected`, and `commit`.
+- `run.go`: op `sql`, caller `box`; `coreEvent` gives a write of the box the name of its commit object from the core's event `commit` on its context, unless the outcome is `empty`.
+- `live.go`: `advance` takes `until: "sql"`, and `untilBox` waits on the box's task with the timeout of the advance, so a paused page can step exactly to the answer. The JS module's `advance(ms, until)` sends it.
+- `check.go`: `txn` has a third identity, `commit`; every commit object is the write of its name (`writesOf`), and a write of the box is known by it alone. `indexOf` finds it by its position. Selects of the box go through `boxRead`: `fresh`, and the position part of `state`. New: `checker.writes` holds every write of the workload that a call started, or the stored log held; at the end, an insert or delete of `barcodes` in the log that no call made is a violation of `not_committed`.
+
+### Why
+
+- **The refusal by the statement pass.** `stmt.Check` exposes the table of each statement kind and the index names; nothing outside `internal/simulator` changed. A text the pass does not take cannot change a table, since the engine refuses it before reading the database, so it goes to the engine and the visitor gets the engine's own "not supported".
+- **Which invariants, and the new half of `not_committed`.** Without it the checker did not notice a foreign delete of a row of `barcodes`: a read after it gives no row, and the log at its position has none, so `state` agrees. Knowing every write the app made closes that, and is what "still catches a change to barcodes that the app did not make" needs. I put it under `not_committed`, next to the write of a client that found its instance `down`, which was never made either.
+- **A box write by its commit name.** The core's commit event and the engine's statement event are logged on one context, as the engine's README says, so the name is there without changing the engine. App writes keep their key identity, which also catches a key in the log twice.
+- **`until` in the engine, not small steps in the page.** "No further" means stopping at the end of the call; the controller waiting on the box's task does exactly that. An advance with `until` is not part of the session-equals-batch comparison.
+- **The box's timeout is the workload's (30 s).** A select yields between rows, about 12.5 ms of fake time a row (measured: 300 rows in about 3.8 s), so only a select of some 2,400 rows would time out; the cap of 2,000 commit objects keeps tables below that.
+
+### What didn't work
+
+- The first box test expected a delete of no row, and a `create table if not exists` of an existing table, to have no commit object, and the checker reported `the commit 3dbf4fe4 is acknowledged, and the log holds it 0 times`. The core logs `commit.name` also for the outcome `empty` (the commit is spooled, never written). `coreEvent` now ignores the name for `empty`. The checker caught this itself, which is what it is for.
+- `select nothing from t` gives `near "nothing": syntax error` in SQLite (`nothing` is a keyword); the test uses `missing`.
+- `create table if not exists barcodes (k integer primary key)` without `strict, without rowid` is not taken by the statement pass, so the simulator does not refuse it; the engine does ("not supported"). The test uses a supported form.
+- The worktree's guard refused shell heredocs that hold backticks or `${}`; edit scripts went through files in the scratch area instead.
+
+## Step 3: The page
+
+**Author:** builder (simulator SQL box)
+
+### What I did
+
+- `index.html`: a section `#sql` in the grid of the log: on wide screens at the top of the right column, above the commit objects, with the log running down the left as tall as both; below 960 px it comes first, then the log and the commit objects. A line with the link to `../#roadmap` that names `barcodes`, a textarea with the example `select code from barcodes order by code desc limit 5`, Run, the hint `Ctrl+Enter` (`⌘ Enter` on a Mac), a status line (inverted on an error, as the requests' status is), and a table of at most 50 rows. The intro says "Send one of your own" with a link to `#sql`. Only the page's tokens, `.btn`, `.caps`, `.log-head`, and rules; NULL is in small capitals at opacity 0.55, text in quotes, a blob as `x'…'`, a real always with a decimal point; long cells cut by CSS with an ellipsis and a title, and the engine's own cut ends in `…`.
+- `page.js`: `runSQL` queues the action and, while paused, a step `{until: true}` that advances with `until: "sql"`; `boxStep` skips it and shows "Waiting: the connection of a to S3 hangs. Play to let time move." (or the clocks standing still) instead. Run is disabled while a statement is pending; Reset clears it. The box's text is kept in `sessionStorage` under `s4ql:box`, which a reset of the database keeps. The box's calls are not counted in the requests strip or the cards.
+- Storage: a refused write (`keep` returns `full` or `failed`) now halts the page with "S3 is full. The browser's storage for this tab takes no more, at N commit objects. Reset to start over." where it went on in memory before.
+- `run.js`: lines for the box ("You send … to a.", "a serves …: N rows.", errors in the engine's words, "nothing to commit"); a commit is the core's line as for the app. Statements in the log are cut at 200 characters (`boxText`), also in the core's commit line. A commit object of the box shows its number of changes.
+- `sound.js`: a tick `box`, E6 then A6, 18 and 22 ms, level 0.44, the select's; an error tone for a failed or refused statement. The Run action blips as every action does.
+- Site check: unit checks of the lines and ticks, the box's peak against the select's, and `sqlBox` on the paused page (the example, a table of its own, three inserts by Run and Ctrl+Enter, `order by` and `limit` with each type, an empty result, an engine error, the refusal, the length limit, the wait under a hang until Play); after a reload, the text and the table are back; a refused storage write stops the page.
+
+### Why
+
+- **The place.** At 1280 by 800 the diagram already runs past the first screen and the log starts at about 1075 px, so anything above the log or the diagram pushes them down. Beside the log, where the visitor's statements and their commits show, it pushes nothing; the link in the intro points to it.
+- **Run while paused stops stepping on a hang or paused clocks** because the call could only end by its timeout there, which is the "waits, visibly, until the visitor lets time move" of the brief. Other faults end the call by themselves (a disconnect fails fast and retries to the timeout), so the step goes on to the answer.
+- **One theme.** The page has only its dark theme (and the inverted head of the instance that serves); there is no light theme to check.
+
+### What didn't work
+
+- Port 8093 was taken by another process, and my first page load hit it; the site was served on 8197 instead.
+- The check compared `data-t`, which is floored, with the end of the call; it reads `s4qlPage.t` now.
+- Run stayed enabled on the stopped page, because `halt` did not draw the box; it does now.
+- `navigator.userAgentData.platform` is `macOS`, so the Mac hint needed a case-insensitive match.
+
+### How to review
+
+`go test -tags s4ql_browser ./internal/simulator/...`, then `make site SITEVERSION= && go run -tags s4ql_browser ./internal/simulator/sitecheck -root site`. By hand: `make site-serve`, press Play for a few seconds, and run statements in the box; hang `a` while paused and run an insert to see it wait.

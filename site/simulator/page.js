@@ -420,7 +420,7 @@ function wire() {
     e.preventDefault();
     runSQL();
   });
-  const mac = /Mac|iPhone|iPad/.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
+  const mac = /mac|iphone|ipad/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
   set($("sql-keys"), mac ? "⌘ Enter" : "Ctrl+Enter");
 }
 
