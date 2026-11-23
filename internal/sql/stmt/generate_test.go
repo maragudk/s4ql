@@ -43,8 +43,8 @@ var positionTexts = stmttest.PositionTexts
 // create index or a drop index in one statement in four, with up to three columns, those of slice
 // 10, IF NOT EXISTS or IF EXISTS in one create or drop in three, those of slice 11, a DEFAULT on
 // one column in three of a create table, those of slice 12, the value on the left of one
-// comparison in three, and those of slice 13, an ORDER BY on one select in three and a LIMIT on one
-// in three.
+// comparison in three, those of slice 13, an ORDER BY on one select in three and a LIMIT on one in
+// three, and those of slice 14, a RETURNING on one insert, update, or delete in three.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
@@ -57,6 +57,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.Defaults = 3
 	g.ValueFirst = 3
 	g.OrderBy = 3
+	g.Returning = 3
 	return g
 }
 
@@ -133,7 +134,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 41, 131)
+	excused(t, c, 45, 167)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -206,6 +207,13 @@ func difference(a, b stmt.Statement) string {
 			values([]stmt.Term{a[i].Value}, []stmt.Term{b[i].Value})
 		}
 	}
+	returning := func(a, b stmt.Returning) {
+		if a.Present() != b.Present() {
+			diffs = append(diffs, "returning or none")
+			return
+		}
+		names(a.Columns, b.Columns, "returned column")
+	}
 	switch a := a.(type) {
 	case *stmt.CreateTable:
 		b := b.(*stmt.CreateTable)
@@ -240,6 +248,7 @@ func difference(a, b stmt.Statement) string {
 			diffs = append(diffs, "table name")
 		}
 		names(a.Columns, b.Columns, "column")
+		returning(a.Returning, b.Returning)
 		if len(a.Values) != len(b.Values) {
 			diffs = append(diffs, "number of values")
 			break
@@ -290,12 +299,14 @@ func difference(a, b stmt.Statement) string {
 			values(av, bv)
 		}
 		conditions(a.Where, b.Where)
+		returning(a.Returning, b.Returning)
 	case *stmt.Delete:
 		b := b.(*stmt.Delete)
 		if a.Table.Value != b.Table.Value {
 			diffs = append(diffs, "table name")
 		}
 		conditions(a.Where, b.Where)
+		returning(a.Returning, b.Returning)
 	case *stmt.DropTable:
 		if a.Table.Value != b.(*stmt.DropTable).Table.Value {
 			diffs = append(diffs, "table name")
@@ -506,7 +517,8 @@ var nearMisses = map[string][]string{
 		"insert into %[1]v values (%[3]v,)",
 		"insert into %[1]v () values (%[3]v)",
 		"insert into %[1]v values ()",
-		"insert into %[1]v values (%[3]v) returning *",
+		"insert into %[1]v values (%[3]v) returning %[2]v + 1",
+		"insert into %[1]v values (%[3]v) returning *, *",
 		"insert into %[1]v (%[2]v, [w]) values (%[3]v, 1)",
 		"insert into %[1]v (%[2]v, '') values (%[3]v, 1)",
 		"insert into %[1]v (%[2]v) values ((%[3]v))",
@@ -521,7 +533,21 @@ var nearMisses = map[string][]string{
 		"insert into %[1]v (%[2]v) values (?, ?2)",
 		"insert into %[1]v (%[2]v) select %[3]v",
 		"insert into %[1]v (%[2]v) values (%[3]v) union select 1",
-		"insert into %[1]v (%[2]v) values (%[3]v) returning *",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning %[2]v as x",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning %[2]v x",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning %[1]v.%[2]v",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning %[1]v.*",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning *, %[2]v",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning %[2]v, *",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning %[3]v",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning ?",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning %[2]v,",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning %[2]v returning %[2]v",
+		"insert into %[1]v (%[2]v) values (%[3]v), (%[3]v) returning *",
+		"insert into %[1]v (%[2]v) values (%[3]v) on conflict do nothing returning *",
+		"insert into %[1]v default values returning *",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning *; select 1",
 		"insert into %[1]v (%[2]v) values (%[3]v) on conflict do nothing",
 		"insert into %[1]v (%[2]v) values (%[3]v) on conflict (%[2]v) do update set %[2]v = 1",
 		"insert into %[1]v default values",
@@ -741,8 +767,13 @@ var nearMisses = map[string][]string{
 		"update %[1]v set w = 1, (%[2]v) = %[3]v",
 		"update %[1]v set %[2]v = %[3]v from u",
 		"update %[1]v set %[2]v = %[3]v from u where u.w = 1",
-		"update %[1]v set %[2]v = %[3]v returning *",
-		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 returning %[2]v",
+		"update %[1]v set %[2]v = %[3]v returning %[2]v as x",
+		"update %[1]v set %[2]v = %[3]v returning abs(%[2]v)",
+		"update %[1]v set %[2]v = %[3]v returning (%[2]v)",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 returning %[2]v, *",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 returning %[1]v.%[2]v",
+		"update %[1]v set %[2]v = %[3]v returning %[2]v where %[2]v = 1",
+		"update or replace %[1]v set %[2]v = %[3]v returning *",
 		"update %[1]v set %[2]v = %[3]v limit 1",
 		"update %[1]v set %[2]v = %[3]v order by %[2]v",
 		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 order by %[2]v limit 1",
@@ -800,8 +831,12 @@ var nearMisses = map[string][]string{
 		"delete from %[1]v as x where x.%[2]v = %[3]v",
 		"delete from %[1]v indexed by i",
 		"delete from %[1]v not indexed where %[2]v = %[3]v",
-		"delete from %[1]v returning *",
-		"delete from %[1]v where %[2]v = %[3]v returning *",
+		"delete from %[1]v returning %[1]v.*",
+		"delete from %[1]v returning %[2]v collate nocase",
+		"delete from %[1]v where %[2]v = %[3]v returning (%[2]v)",
+		"delete from %[1]v where %[2]v = %[3]v returning %[3]v",
+		"delete from %[1]v returning * where %[2]v = %[3]v",
+		"delete from %[1]v returning",
 		"delete from %[1]v limit 1",
 		"delete from %[1]v order by %[2]v",
 		"delete from %[1]v where %[2]v = %[3]v order by %[2]v limit 1",
@@ -975,5 +1010,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 2089)
+	excused(t, c, 0, 1983)
 }

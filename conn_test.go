@@ -431,6 +431,13 @@ func TestPrepare(t *testing.T) {
 		is.Equal(t, "ordering term other than a column (at offset 26)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "select * from t1 limit -1")
 		is.Equal(t, "negative LIMIT (at offset 23)", notSupported(t, err))
+		// A statement with RETURNING, which the pass supports and the engine does not run yet, is refused
+		// when it is prepared, at its RETURNING, and so is one with a column of RETURNING that the pass
+		// does not support, for that column.
+		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values (?) returning v1")
+		is.Equal(t, "RETURNING clause (at offset 31)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), "delete from t1 returning v1 + 1")
+		is.Equal(t, "result column other than a column or * (at offset 25)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")
 		is.Equal(t, "named parameter (at offset 28)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "create table t2 (v2 int(10) primary key) strict, without rowid")

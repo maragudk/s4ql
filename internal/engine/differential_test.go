@@ -1100,8 +1100,9 @@ func (p *pair) step(c stmttest.Call) string {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
-		// empty database without a syntax error.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
+		// empty database without a syntax error. A statement with RETURNING, of slice 14, is not
+		// supported until the engine runs it, as [returned] says.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil && !returned(s) {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {

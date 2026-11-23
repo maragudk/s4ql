@@ -553,7 +553,6 @@ var checkCases = []checkCase{
 	{name: "a select", src: "insert into t (v) select 1", err: "s4ql: not supported: INSERT with SELECT (at offset 18)"},
 	{name: "values with a compound", src: "insert into t (v) values (1) union select 2", err: "s4ql: not supported: compound SELECT (at offset 29)"},
 	{name: "an upsert", src: "insert into t (v) values (1) on conflict do nothing", err: "s4ql: not supported: ON CONFLICT clause (at offset 29)"},
-	{name: "returning", src: "insert into t (v) values (1) returning *", err: "s4ql: not supported: RETURNING clause (at offset 29)"},
 	{name: "a plus sign", src: "insert into t (v) values (+1)", err: "s4ql: not supported: + sign (at offset 26)"},
 	{name: "two signs", src: "insert into t (v) values (- -1)", err: "s4ql: not supported: second sign (at offset 28)"},
 	{name: "a minus and a plus", src: "insert into t (v) values (-+1)", err: "s4ql: not supported: second sign (at offset 27)"},
@@ -659,7 +658,6 @@ var checkCases = []checkCase{
 	{name: "a parameter in a cast", src: "insert into t (v) values (cast(? as int))", err: "s4ql: not supported: CAST (at offset 26)"},
 	{name: "a parameter and a second row", src: "insert into t (v) values (?), (?)", err: "s4ql: not supported: second row (at offset 28)"},
 	{name: "a parameter in a second statement", src: "insert into t (v) values (?); insert into t (v) values (?)", err: "s4ql: not supported: second statement (at offset 30)"},
-	{name: "a parameter in RETURNING", src: "insert into t (v) values (?) returning ?", err: "s4ql: not supported: RETURNING clause (at offset 29)"},
 	{name: "a parameter in an upsert", src: "insert into t (v) values (?) on conflict (v) do update set v = ?", err: "s4ql: not supported: ON CONFLICT clause (at offset 29)"},
 	{name: "a parameter as a table", src: "insert into ? (v) values (1)", err: `near "?": syntax error`},
 	{name: "a parameter in a select", src: "select ?", err: "s4ql: not supported: result column other than a column or * (at offset 7)"},
@@ -1236,10 +1234,6 @@ var checkCases = []checkCase{
 	{name: "an infinite real in set", src: "update t set v = -1e999", err: "s4ql: not supported: infinite real number (at offset 18)"},
 	{name: "the current time in set", src: "update t set v = current_time", err: "s4ql: not supported: current date or time (at offset 17)"},
 	{name: "null after a sign in set", src: "update t set v = -null", err: "s4ql: not supported: NULL after a sign (at offset 18)"},
-	{name: "returning after set", src: "update t set v = 1 returning *", err: "s4ql: not supported: RETURNING clause (at offset 19)"},
-	{name: "returning after the where of an update", src: "update t set v = 1 where v = 1 returning v", err: "s4ql: not supported: RETURNING clause (at offset 31)"},
-	{name: "returning after a delete", src: "delete from t returning *", err: "s4ql: not supported: RETURNING clause (at offset 14)"},
-	{name: "returning after the where of a delete", src: "delete from t where v = 1 returning *", err: "s4ql: not supported: RETURNING clause (at offset 26)"},
 	{name: "update from", src: "update t set v = 1 from u", err: "s4ql: not supported: FROM clause (at offset 19)"},
 	{name: "update from with a column of the other table", src: "update t set v = u.v from u where t.w = u.w", err: "s4ql: not supported: column reference (at offset 17)"},
 	{name: "update from with a literal and where", src: "update t set v = 1 from u where w = 1", err: "s4ql: not supported: FROM clause (at offset 19)"},
@@ -1746,6 +1740,105 @@ var checkCases = []checkCase{
 	{name: "limit before order by", src: "select * from t limit 1 order by v", err: `near "order": syntax error`},
 	{name: "limit twice", src: "select * from t limit 1 limit 2", err: `near "limit": syntax error`},
 	{name: "order by and limit and a second statement", src: "select * from t order by v limit 1; select 1", err: "s4ql: not supported: second statement (at offset 36)"},
+
+	// Slice 14: RETURNING on an insert, an update, and a delete.
+	{name: "the insert of the roadmap's slice 14", src: "insert into t1 (v1, v2) values (?, ?) returning v1",
+		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 50}, Table: name("t1", "t1", 12), Columns: []stmt.Name{name("v1", "v1", 16), name("v2", "v2", 20)},
+			Values: []stmt.Term{param(1, 32), param(2, 35)}, Returning: ret(38, 50, name("v1", "v1", 48))}},
+	{name: "the update of the roadmap's slice 14", src: "update t1 set v2 = ? where v1 = ? returning v1, v2",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 50}, Table: name("t1", "t1", 7), Set: []stmt.Assignment{set(name("v2", "v2", 14), param(1, 19))},
+			Where: []stmt.Condition{cond(name("v1", "v1", 27), stmt.OpEqual, param(2, 32))}, Returning: ret(34, 50, name("v1", "v1", 44), name("v2", "v2", 48))}},
+	{name: "the delete of the roadmap's slice 14", src: "delete from t1 where v1 = ? returning *",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 39}, Table: name("t1", "t1", 12), Where: []stmt.Condition{cond(name("v1", "v1", 21), stmt.OpEqual, param(1, 26))},
+			Returning: ret(28, 39)}},
+	{name: "the send of goqite's queue", src: "insert into goqite (queue, body, timeout, priority) values (?, ?, ?, ?) returning id",
+		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 84}, Table: name("goqite", "goqite", 12),
+			Columns: []stmt.Name{name("queue", "queue", 20), name("body", "body", 27), name("timeout", "timeout", 33), name("priority", "priority", 42)},
+			Values:  []stmt.Term{param(1, 60), param(2, 63), param(3, 66), param(4, 69)}, Returning: ret(72, 84, name("id", "id", 82))}},
+	{name: "returning in upper case after an insert without a list, with a name in double quotes, comments in every gap, and a semicolon",
+		src: `INSERT INTO t VALUES (1)/*a*/RETURNING/*b*/"a b"/*c*/,/*d*/v;`,
+		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 61}, Table: name("t", "t", 12), Values: []stmt.Term{lit(stmt.Integer(1), 22, 23)},
+			Returning: ret(29, 60, name(`"a b"`, "a b", 43), name("v", "v", 59))}},
+	{name: "returning * after an insert", src: "insert into t (v) values (1) returning *",
+		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 40}, Table: name("t", "t", 12), Columns: []stmt.Name{name("v", "v", 15)}, Values: []stmt.Term{lit(stmt.Integer(1), 26, 27)},
+			Returning: ret(29, 40)}},
+	{name: "returning a column three times, as a select list can name it", src: "insert into t (v) values (1) returning v, V, v",
+		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 46}, Table: name("t", "t", 12), Columns: []stmt.Name{name("v", "v", 15)}, Values: []stmt.Term{lit(stmt.Integer(1), 26, 27)},
+			Returning: ret(29, 46, name("v", "v", 39), name("V", "V", 42), name("v", "v", 45))}},
+	{name: "returning a column that the list of the insert does not name", src: "insert into t (v) values (1) returning w",
+		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 40}, Table: name("t", "t", 12), Columns: []stmt.Name{name("v", "v", 15)}, Values: []stmt.Term{lit(stmt.Integer(1), 26, 27)},
+			Returning: ret(29, 40, name("w", "w", 39))}},
+	{name: "returning a column named * in double quotes", src: `insert into t (v) values (1) returning "*"`,
+		want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 42}, Table: name("t", "t", 12), Columns: []stmt.Name{name("v", "v", 15)}, Values: []stmt.Term{lit(stmt.Integer(1), 26, 27)},
+			Returning: ret(29, 42, name(`"*"`, "*", 39))}},
+	{name: "returning * after set", src: "update t set v = 1 returning *",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 30}, Table: name("t", "t", 7), Set: []stmt.Assignment{set(name("v", "v", 13), lit(stmt.Integer(1), 17, 18))},
+			Returning: ret(19, 30)}},
+	{name: "returning after the where of an update", src: "update t set v = 1 where v = 1 returning v",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 42}, Table: name("t", "t", 7), Set: []stmt.Assignment{set(name("v", "v", 13), lit(stmt.Integer(1), 17, 18))},
+			Where: []stmt.Condition{cond(name("v", "v", 25), stmt.OpEqual, lit(stmt.Integer(1), 29, 30))}, Returning: ret(31, 42, name("v", "v", 41))}},
+	{name: "returning * after a delete", src: "delete from t returning *",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 25}, Table: name("t", "t", 12), Returning: ret(14, 25)}},
+	{name: "returning after the where of a delete", src: "delete from t where v = 1 returning *",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 37}, Table: name("t", "t", 12), Where: []stmt.Condition{cond(name("v", "v", 20), stmt.OpEqual, lit(stmt.Integer(1), 24, 25))},
+			Returning: ret(26, 37)}},
+	{name: "returning after a value on the left in the where of a delete", src: "delete from t where 5 < v returning v",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 37}, Table: name("t", "t", 12), Where: []stmt.Condition{condFirst(name("v", "v", 24), stmt.OpGreater, lit(stmt.Integer(5), 20, 21))},
+			Returning: ret(26, 37, name("v", "v", 36))}},
+	{name: "returning columns named by keywords and rowid", src: "delete from t returning abort, key, rowid",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 41}, Table: name("t", "t", 12), Returning: ret(14, 41, name("abort", "abort", 24), name("key", "key", 31), name("rowid", "rowid", 36))}},
+	{name: "an expression in returning", src: "insert into t (v) values (1) returning v + 1", err: "s4ql: not supported: result column other than a column or * (at offset 39)"},
+	{name: "an expression after a column in returning", src: "insert into t (v) values (1) returning v, v + 1", err: "s4ql: not supported: result column other than a column or * (at offset 42)"},
+	{name: "a function in returning", src: "insert into t (v) values (1) returning abs(v)", err: "s4ql: not supported: result column other than a column or * (at offset 39)"},
+	{name: "an integer in returning", src: "insert into t (v) values (1) returning 1", err: "s4ql: not supported: result column other than a column or * (at offset 39)"},
+	{name: "null in returning", src: "insert into t (v) values (1) returning null", err: "s4ql: not supported: result column other than a column or * (at offset 39)"},
+	{name: "a string in returning", src: "insert into t (v) values (1) returning 'v'", err: "s4ql: not supported: result column other than a column or * (at offset 39)"},
+	{name: "a parameter in returning", src: "insert into t (v) values (?) returning ?", err: "s4ql: not supported: result column other than a column or * (at offset 39)"},
+	{name: "a parameter in returning after a parameter in where", src: "delete from t where v = ? returning ?", err: "s4ql: not supported: result column other than a column or * (at offset 36)"},
+	{name: "an alias with as in returning", src: "insert into t (v) values (1) returning v as x", err: "s4ql: not supported: alias (at offset 41)"},
+	{name: "an alias in returning", src: "insert into t (v) values (1) returning v x", err: "s4ql: not supported: alias (at offset 41)"},
+	{name: "a column with its table in returning", src: "update t set v = 1 returning t.v", err: "s4ql: not supported: result column other than a column or * (at offset 29)"},
+	{name: "the columns of the table with its name in returning", src: "update t set v = 1 returning t.*", err: "s4ql: not supported: result column other than a column or * (at offset 29)"},
+	{name: "a column with its schema and table in returning", src: "delete from t returning main.t.v", err: "s4ql: not supported: result column other than a column or * (at offset 24)"},
+	{name: "a column of excluded in returning", src: "delete from t returning excluded.v", err: "s4ql: not supported: result column other than a column or * (at offset 24)"},
+	{name: "a column in parentheses in returning", src: "delete from t returning (v)", err: "s4ql: not supported: result column other than a column or * (at offset 24)"},
+	{name: "collate in returning", src: "delete from t returning v collate nocase", err: "s4ql: not supported: result column other than a column or * (at offset 24)"},
+	{name: "* and a column in returning", src: "delete from t returning *, v", err: "s4ql: not supported: * and another result column (at offset 24)"},
+	{name: "a column and * in returning", src: "delete from t returning v, *", err: "s4ql: not supported: * and another result column (at offset 27)"},
+	{name: "* twice in returning", src: "delete from t returning *, *", err: "s4ql: not supported: * and another result column (at offset 24)"},
+	{name: "true in returning", src: "delete from t returning true", err: "s4ql: not supported: TRUE or FALSE (at offset 24)"},
+	{name: "false after a column in returning", src: "delete from t returning v, false", err: "s4ql: not supported: TRUE or FALSE (at offset 27)"},
+	{name: "a name in brackets in returning", src: "delete from t returning [v]", err: "s4ql: not supported: name in brackets (at offset 24)"},
+	{name: "a name in backticks in returning", src: "delete from t returning `v`", err: "s4ql: not supported: name in backticks (at offset 24)"},
+	{name: "an empty name in returning", src: `delete from t returning ""`, err: "s4ql: not supported: empty name (at offset 24)"},
+	{name: "returning after an upsert", src: "insert into t (v) values (1) on conflict do nothing returning *", err: "s4ql: not supported: ON CONFLICT clause (at offset 29)"},
+	{name: "returning after default values", src: "insert into t default values returning *", err: "s4ql: not supported: DEFAULT VALUES (at offset 14)"},
+	{name: "returning after a second row", src: "insert into t (v) values (1), (2) returning *", err: "s4ql: not supported: second row (at offset 28)"},
+	{name: "returning after an insert with select", src: "insert into t (v) select 1 returning *", err: "s4ql: not supported: INSERT with SELECT (at offset 18)"},
+	{name: "returning after update or replace", src: "update or replace t set v = 1 returning *", err: "s4ql: not supported: UPDATE OR (at offset 7)"},
+	{name: "returning after update from", src: "update t set v = 1 from u returning *", err: "s4ql: not supported: FROM clause (at offset 19)"},
+	{name: "returning after with", src: "with x as (select 1) delete from t returning *", err: "s4ql: not supported: WITH clause (at offset 0)"},
+	{name: "returning after explain", src: "explain delete from t returning *", err: "s4ql: not supported: EXPLAIN (at offset 0)"},
+	{name: "returning and a second statement", src: "delete from t returning *; select 1", err: "s4ql: not supported: second statement (at offset 27)"},
+	{name: "returning without a column", src: "insert into t (v) values (1) returning", err: "incomplete input"},
+	{name: "returning without a column before a semicolon", src: "insert into t (v) values (1) returning;", err: `near ";": syntax error`},
+	{name: "returning with a comma and no column after it", src: "delete from t returning v,", err: "incomplete input"},
+	{name: "returning twice", src: "delete from t returning v returning w", err: `near "returning": syntax error`},
+	{name: "returning distinct", src: "delete from t returning distinct v", err: `near "distinct": syntax error`},
+	{name: "returning before the where of an update", src: "update t set v = 1 returning v where v = 1", err: `near "where": syntax error`},
+	{name: "returning before the where of a delete", src: "delete from t returning * where v = 1", err: `near "where": syntax error`},
+	{name: "order by after returning", src: "update t set v = 1 returning v order by v", err: `near "order": syntax error`},
+	{name: "returning after a select", src: "select * from t returning *", err: `near "returning": syntax error`},
+	{name: "returning after a create table", src: "create table t (v int primary key) strict, without rowid returning *", err: `near "returning": syntax error`},
+	{name: "returning after a drop table", src: "drop table t returning *", err: `near "returning": syntax error`},
+	{name: "returning after a create index", src: "create index i on t (v) returning *", err: `near "returning": syntax error`},
+	{name: "returning after a drop index", src: "drop index i returning *", err: `near "returning": syntax error`},
+	{name: "returning in a trigger", src: "create trigger r after insert on t begin delete from t returning *; end", err: `near "returning": syntax error`},
+}
+
+// ret is the RETURNING clause at [start, end) of the columns, or of * without columns.
+func ret(start, end int, columns ...stmt.Name) stmt.Returning {
+	return stmt.Returning{Span: stmt.Span{Start: start, End: end}, Columns: columns}
 }
 
 // oc is a column of an ORDER BY.
@@ -2489,6 +2582,92 @@ func TestCheck(t *testing.T) {
 			sqliteError(t, c.src, err, 1, c.want)
 			o, _ := verify(t, c.src)
 			is.Equal(t, supported, o, c.src)
+		}
+	})
+
+	t.Run("should take every keyword of SQLite that SQLite reads as the name of a column in RETURNING, and no other", func(t *testing.T) {
+		d := open(t)
+		d.must("create table t (x int primary key) strict, without rowid")
+		var first []string
+		for _, form := range []string{"insert into t (x) values (1) returning %v", "update t set x = 1 returning %v", "delete from t returning x, %v",
+			"delete from t where x = 1 returning %v, x"} {
+			var names []string
+			for _, kw := range keywords(t) {
+				src := fmt.Sprintf(form, kw)
+				if oracle.Judge(src).Kind != oracle.Parses {
+					continue
+				}
+				column := false
+				var e *sqlite.Error
+				if err := d.exec(src); errors.As(err, &e) && e.Message == "no such column: "+kw {
+					column = true
+					names = append(names, kw)
+				}
+				o, _ := verify(t, src)
+				is.Equal(t, column, o == supported, src)
+			}
+			slices.Sort(names)
+			is.True(t, len(names) > 80, "too few keywords are names")
+			t.Logf("%v keywords are names of columns in %q: %v", len(names), form, names)
+			// SQLite reads the same keywords as a column in each place of RETURNING.
+			if first == nil {
+				first = names
+			}
+			is.EqualSlice(t, first, names, form)
+		}
+		// They are those of the select list, which the generator draws the columns of RETURNING from. A
+		// keyword of the base pool, such as temp, is in the pool twice.
+		pool := slices.DeleteFunc(slices.Clone(namePools(t)[stmttest.SelectColumn]), func(n string) bool {
+			return !slices.Contains(keywords(t), n)
+		})
+		slices.Sort(pool)
+		is.EqualSlice(t, first, slices.Compact(pool))
+	})
+
+	t.Run("should give SQLite's errors for RETURNING after those of the rest of the statement, in the order of the text", func(t *testing.T) {
+		// What SQLite does with the errors of a statement with RETURNING, for the engine: the errors of
+		// the table, of the list and the values of an insert, of SET, and of WHERE come first, as without
+		// RETURNING, and then the first column of RETURNING that the table does not have. A failure of a
+		// constraint comes when the statement runs, after every error of the names, and the statement
+		// gives no row then.
+		for _, c := range []struct {
+			src, want string
+			code      sqlite.ResultCode
+		}{
+			{"insert into t (k) values (1) returning nope", "no such column: nope", 1},
+			{"insert into t (k) values (1) returning a, nope, nope2", "no such column: nope", 1},
+			{`insert into t (k) values (1) returning "nope"`, `no such column: "nope" - should this be a string literal in single-quotes?`, 1},
+			{"insert into nope (k) values (1) returning nope", "no such table: nope", 1},
+			{"insert into t (nope) values (1) returning nope2", "table t has no column named nope", 1},
+			{"insert into t (k, a) values (1) returning nope", "1 values for 2 columns", 1},
+			{"insert into t values (1) returning nope", "table t has 2 columns but 1 values were supplied", 1},
+			{"insert into t (k) values (5) returning k", "UNIQUE constraint failed: t.k", 1555},
+			{"insert into t (k) values (null) returning k", "NOT NULL constraint failed: t.k", 1299},
+			{"insert into t (k) values (null) returning nope", "no such column: nope", 1},
+			{"insert into t (k) values (1) returning rowid", "no such column: rowid", 1},
+			{"update t set a = 1 returning nope", "no such column: nope", 1},
+			{"update t set nope = 1 returning nope2", "no such column: nope", 1},
+			{"update t set a = 1 where nope = 1 returning nope2", "no such column: nope", 1},
+			// A test for NULL of a missing column does not stop the walk over WHERE, but its error comes
+			// before RETURNING.
+			{"update t set a = 1 where nope is null returning nope2", "no such column: nope", 1},
+			{"update t set k = 5 where k = 6 returning k", "UNIQUE constraint failed: t.k", 1555},
+			{"delete from t returning nope", "no such column: nope", 1},
+			{"delete from t where nope = 1 returning nope2", "no such column: nope", 1},
+			{"delete from t where a is null and nope is null returning nope2", "no such column: nope", 1},
+			{"delete from nope returning nope", "no such table: nope", 1},
+		} {
+			o, _ := verify(t, c.src)
+			is.Equal(t, supported, o, c.src)
+			d := open(t)
+			d.must("create table t (k int primary key, a int) strict, without rowid")
+			d.must("insert into t values (5, 1), (6, 2)")
+			_, rows, err := d.run(c.src, nil)
+			sqliteError(t, c.src, err, c.code, c.want)
+			is.Equal(t, 0, len(rows), c.src)
+			_, left, err := d.run("select * from t", nil)
+			is.NotError(t, err)
+			is.Equal(t, "integer 5; integer 1; \ninteger 6; integer 2; \n", showRows(left), c.src)
 		}
 	})
 
