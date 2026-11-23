@@ -877,7 +877,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>The generated checks and the mutation testing of <code>returning</code>, then the rest of the SQL that glue needs, agreed one slice at a time (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>The mutation testing of <code>returning</code>, then the rest of the SQL that glue needs, agreed one slice at a time (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -993,7 +993,7 @@ footer ul {
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 14: <code>returning</code> on <code>insert</code>, <code>update</code>, and <code>delete</code></h3><p>An <code>insert</code>, an <code>update</code>, or a <code>delete</code> may end with <code>returning</code> and a list of columns or <code>*</code>. It gives one row for each row that it changes. Outside a transaction, the statement commits before it gives its first row. The commit format stays as it is. The statements run, and table tests compare them with SQLite, and through the driver with mattn/go-sqlite3, with goqite's send and its receive by id among them. The generated checks and the mutation testing are still to come.</p></div>
+        <div><h3>Slice 14: <code>returning</code> on <code>insert</code>, <code>update</code>, and <code>delete</code></h3><p>An <code>insert</code>, an <code>update</code>, or a <code>delete</code> may end with <code>returning</code> and a list of columns or <code>*</code>. It gives one row for each row that it changes. Outside a transaction, the statement commits before it gives its first row. The commit format stays as it is. The statements run, and table tests compare them with SQLite, and through the driver with mattn/go-sqlite3, with goqite's send and its receive by id among them. Generated sequences with <code>returning</code> run in the engine's differential tests and in the driver's against mattn/go-sqlite3, and the simulation checks that the rows a caller read belong to a committed change and finds the planted bugs. The mutation testing is still to come.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="open">
