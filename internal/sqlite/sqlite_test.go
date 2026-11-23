@@ -1436,6 +1436,20 @@ func TestStmt_StepContext(t *testing.T) {
 	})
 }
 
+func TestStmt_VMSteps(t *testing.T) {
+	t.Run("should count no instructions before the first step and some after it, and panic on a finalized statement", func(t *testing.T) {
+		c := memory(t)
+		s, err := c.Prepare("select 1")
+		is.NotError(t, err)
+		is.Equal(t, 0, s.VMSteps())
+		_, err = s.Step()
+		is.NotError(t, err)
+		is.True(t, s.VMSteps() > 0)
+		is.NotError(t, s.Finalize())
+		is.Equal(t, "sqlite: statement is finalized", panicMessage(t, func() { s.VMSteps() }))
+	})
+}
+
 // BenchmarkStmt_StepContext compares [sqlite.Stmt.StepContext] with [sqlite.Stmt.Step] for the first
 // step of a statement, with a context that can end and does not: for a scan that seeks one row of
 // a table, which runs too few instructions for the progress handler, and for a sort of 20,000 rows
