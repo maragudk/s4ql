@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -106,8 +107,13 @@ func TestEngine_returning(t *testing.T) {
 			for _, src := range returningSetUp {
 				is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
 			}
-			// The calls run twice, so that the rows that both directions give come in each.
-			for range 2 {
+			// The calls run again until the rows have come in both directions, each a draw of the engine
+			// from the sequence of its seed, so that the number of rounds is a function of the seed.
+			forward, backward := "reached: RETURNING whose rows came in the order of the key", "reached: RETURNING whose rows came in the reverse of the order of the key"
+			for round := 0; round < 2 || y[forward] == 0 || y[backward] == 0; round++ {
+				if round == 20 {
+					t.Fatal("the rows of RETURNING came in one direction only in 20 rounds")
+				}
 				for _, c := range returningCalls {
 					if failure := p.step(c.call()); failure != "" {
 						t.Fatal(failure)
@@ -115,8 +121,6 @@ func TestEngine_returning(t *testing.T) {
 				}
 				is.Equal(t, p.o.state(t), i.state())
 			}
-			is.True(t, y["reached: RETURNING whose rows came in the order of the key"] > 0)
-			is.True(t, y["reached: RETURNING whose rows came in the reverse of the order of the key"] > 0)
 		}
 	})
 
@@ -373,8 +377,11 @@ func TestConn_returning(t *testing.T) {
 		// goqite's send, with the id from the caller, since the default of the id is an expression.
 		send := "insert into goqite (id, created, updated, queue, body, timeout, received, priority) values (?, ?, ?, ?, ?, ?, 0, ?) returning id"
 		now := "2026-11-23T12:00:00.000Z"
+		// Each message is created a minute after the one before, so that no two tie in the order of the
+		// receive.
 		for n, id := range []string{"m_1", "m_2", "m_3"} {
-			is.Equal(t, "", p.step(stmttest.Call{Src: send, Args: []any{id, now, now, "default", []byte("body " + id), now, int64(n % 2)}, Query: true, Supported: true}))
+			created := fmt.Sprintf("2026-11-23T11:5%v:00.000Z", n)
+			is.Equal(t, "", p.step(stmttest.Call{Src: send, Args: []any{id, created, created, "default", []byte("body " + id), now, int64(n % 2)}, Query: true, Supported: true}))
 			is.Equal(t, `"`+id+`"`, strings.Join(p.last.rows, " "))
 		}
 		// goqite's receive, with the id that its select of the next message gives, since a scalar
