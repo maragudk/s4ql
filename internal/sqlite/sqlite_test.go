@@ -1424,11 +1424,13 @@ func TestStmt_StepContext(t *testing.T) {
 		type heldContext struct {
 			context.Context
 		}
-		ctx := &heldContext{Context: t.Context()}
-		collected := weak.Make(ctx)
-		_, err := s.StepContext(ctx)
-		is.NotError(t, err)
-		ctx = nil
+		// The context is reachable only within the function.
+		collected := func() weak.Pointer[heldContext] {
+			ctx := &heldContext{Context: t.Context()}
+			_, err := s.StepContext(ctx)
+			is.NotError(t, err)
+			return weak.Make(ctx)
+		}()
 		runtime.GC()
 		is.True(t, collected.Value() == nil)
 	})
