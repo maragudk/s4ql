@@ -2,6 +2,7 @@
 ▝▜██████▀  Opus 5.5 · Claude Ultra
  ▝▝   ▝▝   ~/Developer/s4ql
 
+⚠ Your login expires in 2 days · run /login to renew
 
 ⏺ The Status and Roadmap sections on www.s4ql.com are updated and live.
 
@@ -16,7 +17,7 @@
   - README: its Status line now also mentions the shape check, so it matches the
     site.
 
-✻ Churned for 2m 11s · done Monday 9:06 PM
+✻ Churned for 2m 11s · done Monday, Nov 16 at 9:06 PM
 
 ※ recap: The s4ql.com site is live, with link previews, Fathom analytics, a storage simulator page, and its Status and Roadmap now matching the parser work. Nothing is waiting; tell me what to do next.
 
@@ -72,9 +73,6 @@
      … +91 lines (ctrl+o to expand)
   ⎿  1 file changed (binary, mode only or too large to show)
      docs/conversations/2026-11-16-site-and-simulator.txt
-  ⎿  (files that changed while this command ran, by the command or by 
-     another process; a convenience view, not a review or audit of the 
-     command)
 
 ⏺ Bash(cd /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c0d47f-ada8-
       4603-995b-2482fe6fef3a/scratchpad && sed -i '' 's/        if
@@ -5249,7 +5247,7 @@
   I'd keep the monotonic clock's Pause and the wall clock's +60 s and −60 s, and
   drop the wall clock's Pause, because it showed nothing in any case we ran.
   Keep, trim that one, or drop the clock controls altogether?
-✻ Worked for 6s · done 10:21 AM
+✻ Worked for 6s · done Friday 10:21 AM
 
 ❯ Why doesn't the other instance take over when clocks are paused and thus the  
   lease doesn't get renewed?                                                    
@@ -5274,7 +5272,7 @@
 
   Keep, trim the wall clock's Pause, or drop the clock controls?
 
-✻ Sautéed for 13s · done 10:23 AM
+✻ Sautéed for 13s · done Friday 10:23 AM
 
 ※ recap: We're refining the live s4ql simulator page, which now runs the real storage code with a Requests strip and per-instance actions. Next, you decide whether to keep the clock controls, drop only the wall clock's Pause, or remove them all.
 
@@ -5299,7 +5297,7 @@
 
   Keep, trim the wall clock's Pause, or drop the clock controls?
 
-✻ Baked for 11s · done 10:30 AM
+✻ Baked for 11s · done Friday 10:30 AM
 
 ❯ Ah, right! I still like having the clocks, because it shows it has no effect  
   on the result. But maybe make the wall clock increments +-5, and just one     
@@ -5318,7 +5316,7 @@
   project's rule that no test depends on timing. Should I hand it to a builder
   to fix?
 
-✻ Cogitated for 27s · done 10:33 AM
+✻ Cogitated for 27s · done Friday 10:33 AM
 
 ❯ Also, it would be nice to make it more visual. For example, the instance in   
   the middle, with actions to crash or stop. Then an edge to S3, with           
@@ -5351,7 +5349,7 @@
   It's a real redesign of the middle of the page, so I'd give it to a builder as
   its own task after the clock change lands. Build it like this?
 
-✻ Churned for 15s · done 10:34 AM
+✻ Churned for 15s · done Friday 10:34 AM
 
 ❯ Yes. But keep how the log works, and the barcode commit objects, I like       
   those.                                                                        
@@ -5364,7 +5362,7 @@
   Back to the open item from before: the flaky TestClient_connections test in
   internal/store/s3store. Should I hand it to a builder to fix?
 
-✻ Brewed for 4s · done 10:35 AM
+✻ Brewed for 4s · done Friday 10:35 AM
 
 ❯ Ignore flaky test, I'm sure another session will fix that.                    
 
@@ -5373,7 +5371,7 @@
   In progress: the clock change is with a builder, and the diagram layout starts
   once that's merged.
 
-✻ Sautéed for 2s · done 10:36 AM
+✻ Sautéed for 2s · done Friday 10:36 AM
 
 ❯ Also drop "s4ql is MIT licensed." from the footers, also "Set in Commit       
   Mono". Also no need for "Back to the main page", that's what the header nav   
@@ -5433,7 +5431,7 @@
 
   The clock builder is still running.
 
-✻ Worked for 1m 18s · done 10:38 AM
+✻ Worked for 1m 18s · done Friday 10:38 AM
 
 ❯ Remember to delegate to subagents heavily to conserve your context. Doesn't   
   have to be whole builders each time.                                          
@@ -5452,7 +5450,7 @@
 
   I'll start with the clock change when its builder reports.
 
-✻ Sautéed for 18s · done 10:38 AM
+✻ Sautéed for 18s · done Friday 10:38 AM
 
 ⏺ Agent "Simplify the clock actions" is waiting on its own background work · 12m
   7s
@@ -5460,7 +5458,7 @@
 ⏺ The clock builder hasn't reported yet. It's waiting on a background job of its
   own and will hand back when that finishes.
 
-✻ Brewed for 12m 34s · done 10:45 AM
+✻ Brewed for 12m 34s · done Friday 10:45 AM
 
 ※ recap: We're refining the s4ql simulator page, which now runs the real storage code; a builder is simplifying the clock buttons to plus or minus 5 s and one pause. Next I merge that, then start the diagram layout.
 
@@ -5605,7 +5603,7 @@
   at an instance that had just lost the lease. The builder fixed that step, and
   the last runs all passed.
 
-✻ Baked for 1m 2s · done 10:53 AM
+✻ Baked for 1m 2s · done Friday 10:53 AM
 
 › Message from general-purpose
   Pull request: #83, https://github.com/maragudk/s4ql/pull/83. Merged (state
@@ -5633,7 +5631,7 @@
 
   The diagram builder is still working.
 
-✻ Brewed for 3s · done 11:04 AM
+✻ Brewed for 3s · done Friday 11:04 AM
 
 ⏺ Agent "Shepherd clock branch to live" finished · 11m 20s
 
@@ -5653,7 +5651,7 @@
   It commits straight to main and checks the live pages afterwards. The diagram
   builder is still working.
 
-✻ Cogitated for 27s · done 11:12 AM
+✻ Cogitated for 27s · done Friday 11:12 AM
 
 ❯ The main CTA should be "Try in simulator", secondary "See on Github"          
   ⎿  Resuming agent ad2e08f
@@ -5695,7 +5693,7 @@
   simulator" as the main one, linking to the simulator, and "See on GitHub" as
   the secondary. I'll confirm when that's live.
 
-✻ Cogitated for 11s · done 11:15 AM
+✻ Cogitated for 11s · done Friday 11:15 AM
 
 ❯ It also says "SQL not built" right under the CTAs, that's not strictly true   
   anymore                                                                       
@@ -5714,7 +5712,7 @@
   Status and Roadmap sections are already right, so those stay.
 
   I'll report the old and new wording when it's live.
-✻ Worked for 16s · done 11:15 AM
+✻ Worked for 16s · done Friday 11:15 AM
 
 ❯ What does "Field seed" in the  hero mean?                                     
 
@@ -5728,7 +5726,7 @@
 
   Should I remove that row?
 
-✻ Worked for 5s · done 11:16 AM
+✻ Worked for 5s · done Friday 11:16 AM
 
 ❯ No, I like it. Maybe make it clickable to rotate? But always fall back to     
   original value on reload. Kind of a small easter egg. But field seed is a bad 
@@ -5797,7 +5795,7 @@
   seed". Clicking the value picks a new seed and redraws the bars, and a reload
   brings back 0x7334716c.
 
-✻ Churned for 19s · done 11:18 AM
+✻ Churned for 19s · done Friday 11:18 AM
 
 ❯ When clicking the logo on the front page only, it scrolls down. Drop that.    
   ⎿  Message queued for delivery to ad2e08fdc75483305 at its next tool 
@@ -5811,7 +5809,7 @@
   make it a plain link to the front page that leaves you at the top. It checks
   "Home" for the same fault. This goes live together with the seed easter egg.
 
-✻ Cooked for 10s · done 11:20 AM
+✻ Cooked for 10s · done Friday 11:20 AM
 
 › Message from general-purpose
   The pattern-seed easter egg and the logo fix are both live, in commit d05e6e5
@@ -5869,7 +5867,7 @@
 
   The diagram builder for the simulator is still working.
 
-✻ Cooked for 3s · done 11:22 AM
+✻ Cooked for 3s · done Friday 11:22 AM
 
 ⏺ Agent "Trim the site's navbar" finished · 10m 43s
 
@@ -6035,7 +6033,7 @@
   - The clock dial is new. Its hand stops when paused and sits off the mark by
     the wall clock's offset.
 
-✻ Cooked for 34s · done 11:26 AM
+✻ Cooked for 34s · done Friday 11:26 AM
 
 ❯ WHen I click pause on the clocks in the simulator, it only says "wall -x s"   
   in the text. But it's both, right?                                            
@@ -6054,14 +6052,14 @@
   to "both paused" while paused, and show "wall −8 s" only after you start them
   again. Should I make that change once the diagram is live?
 
-✻ Worked for 9s · done 11:26 AM
+✻ Worked for 9s · done Friday 11:26 AM
 
 ❯ I'll see the new version first                                                
 
 ⏺ Fine, I'll leave the wording as it is. I'll tell you when the diagram is live
   so you can look.
 
-✻ Brewed for 2s · done 11:27 AM
+✻ Brewed for 2s · done Friday 11:27 AM
 ❯ Let me know when all builders are done, I'd like to restart your harness and  
   compact the session                                                           
 
@@ -6069,7 +6067,7 @@
   CI, merge and deploy. No builders are active. I'll tell you as soon as it's
   finished and nothing else is in flight.
 
-✻ Worked for 2s · done 11:29 AM
+✻ Worked for 2s · done Friday 11:29 AM
 
 ⏺ Agent "Shepherd diagram branch to live" is waiting on its own background work 
   · 4m 27s
@@ -6077,7 +6075,7 @@
 ⏺ The sub-agent for the diagram hasn't finished. It's waiting on a background
   job of its own, most likely the CI checks. I'll tell you when it's done.
 
-✻ Churned for 38m 22s · done 11:30 AM
+✻ Churned for 38m 22s · done Friday 11:30 AM
 
 ❯ I'll export the conversation before compaction. Do you know what to do with   
   it then?                                                                      
@@ -6101,7 +6099,7 @@
     Should I replace those two with placeholders before committing, or leave
     them?
 
-✻ Cogitated for 8s · done 11:31 AM
+✻ Cogitated for 8s · done Friday 11:31 AM
 
 ❯ We don't need to check for secrets, I've got a git commit hook for that now.  
                                                                                 
@@ -6119,7 +6117,7 @@
 
   The diagram's sub-agent is still running. I'll tell you when it's done.
 
-✻ Crunched for 16s · done 11:32 AM
+✻ Crunched for 16s · done Friday 11:32 AM
 
 ❯ Does it say to secret-check somewhere in AGENTS.md or similar?                
 
@@ -6143,7 +6141,7 @@
 
   Should I remove that leftover worktree?
 
-✻ Worked for 20s · done 11:33 AM
+✻ Worked for 20s · done Friday 11:33 AM
 
 ❯ Leave it for now, not sure if it's still used                                 
 
@@ -6152,7 +6150,7 @@
   The diagram's sub-agent is still running. I'll tell you when it's done, so you
   can export and restart.
 
-✻ Sautéed for 2s · done 11:34 AM
+✻ Sautéed for 2s · done Friday 11:34 AM
 
 ※ recap: We're making the s4ql.com simulator run the real storage code, and the new diagram layout is with a sub-agent going through CI, merge and deploy. Next: I tell you when it's live, so you can export and restart.
 
@@ -6198,6 +6196,1905 @@
   Waiting on you after your look at the new version: whether the clock text
   should say "both paused".
 
-✻ Baked for 4s · done 11:43 AM
+✻ Baked for 4s · done Friday 11:43 AM
 
 ⏺ Agent "Shepherd diagram branch to live" finished · 17m 42s
+
+❯ /export                                                                       
+  ⎿  Conversation exported to /Users/maragubot/Developer/s4ql/2026-11-20-121633-
+     this-session-is-being-continued-from-a-previous-c.txt
+
+❯ exported                                                                      
+  ⎿  1 agent type available
+  ⎿  1 skill available
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The export is committed and pushed as
+  docs/conversations/2026-11-16-site-and-simulator.txt (4b07614, 6,202 lines).
+  It covers the conversation from the 18 November summary to now.
+
+  main is clean, and no agents are running. You can restart and compact.
+
+  One question is still open for after your look at the new simulator: whether
+  the clock text should say "both paused" while the clocks are paused.
+✻ Cooked for 16s · done Friday 12:16 PM
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Read ../../../../private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c
+     0d47f-ada8-4603-995b-2482fe6fef3a/scratchpad/render.py (141 lines)
+  ⎿  Skills restored (impeccable:impeccable)
+
+❯ Looks great! No need to change clock text.                                    
+                                                                                
+  Should we introduce some SQL in the simulator, now that we support some? So   
+  it's not just the core storage engine.                                        
+
+⏺ Explore(SQL layer vs simulator facts)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Good, the clock text stays as it is.
+
+  On SQL in the simulator: I think yes in principle, but I don't yet know how
+  the SQL layer sits on the core or whether it builds for the browser. I have a
+  sub-agent checking that, along with what the simulator's checker assumes about
+  the data. I'll come back with a recommendation when it reports.
+
+✻ Worked for 19s · done Friday 12:19 PM
+
+› Message from Explore
+  **1. SQL supported today** (README.md:17-31; docs/roadmap.md: slices 1-7 are
+  "built" at :40, :66, :92, :123, :160, :203, :243, and slice 8 is "agreed, not
+  built" at :294)
+  - Statements: `create table` / `drop table` (strict, without rowid, exactly
+  one primary-key column), single-row `insert` (with or without a column list),
+  and `select` of named columns or `*` with a `where` of comparisons and `is
+  [not] null` joined by `and`. Also `?` arguments, prepared statements, and
+  transactions, including read-only ones.
+  - Types: `int`, `integer`, `real`, `text`, `blob`, all exact-typed, with
+  nullable columns.
+  - Not built: `update`, `delete`, `or`, `order by`, `limit`, multi-row
+  `insert`, indexes, defaults, and a statement while rows of the same
+  transaction are open.
+
+  **2. Where it lives and how it opens**
+  - Parser and statement pass: `internal/sql/{token,parser,ast,stmt,sqlerr}`.
+  Executor: `internal/engine`.
+  - Engine entry: `engine.New(d *core.DB, h host.Host, options Options) *Engine`
+  (internal/engine/engine.go:90), then `Engine.Conn()` (:147). A `*Conn` has
+  `Exec(ctx, src, args ...*s4qlpb.Value)`, `Query`, `Begin`, `BeginReadOnly`,
+  `Commit`, `Rollback` and `Close` (internal/engine/README.md:7-21).
+  - The engine sits on an already-open `*core.DB` plus a host (the clock). It
+  takes no store or config of its own.
+  - There is a `database/sql` driver in the root package `maragu.dev/s4ql`:
+  `Open(ctx, Options) (*sql.DB, error)` (s4ql.go:304) and `Register` (:335). It
+  is hardwired to S3 and `host.New()` (s4ql.go:~345-359). Internally it calls
+  `newConnector(ctx, h, s store.Store, o, co core.Options, ...)` (conn.go:72),
+  which calls `core.Open(ctx, h, s, path, prefix, co)` and then `engine.New`
+  (conn.go:93-104). That seam is unexported.
+
+  **3. The simulator's workload today**
+  - One table `t` with one INT primary-key column `k`
+  (internal/simulator/run.go:65-74).
+  - A write (run.go:593-624) runs `d.Begin`, then `tx.Table` / `tx.CreateTable`,
+  then `tx.Upsert` of the row `[k]`. An optional trim (`tx.Scan` + `tx.Delete`,
+  run.go:631-652) keeps `Workload.Keep` rows. Then `tx.Commit`, where
+  `core.ErrOutcomeUnknown` maps to the outcome "unknown".
+  - A read (run.go:657-679) runs `d.Reader`, `rd.Read`, `rtx.Scan(t)`, and
+  returns the keys plus `rtx.Position()`.
+  - The keys are unique values from a counter that starts at 1
+  (internal/simulator/README.md:131).
+  - All invariants identify a transaction by its key (README.md:614-625,
+  check.go:19-40). The checker gets the keys and deletes of each commit from the
+  `UpsertRows`/`DeleteRows` changes of the commit object (run.go:1378-1390).
+    - `acknowledged`, `not_committed` and `once` need one key per write in the
+  log.
+    - `state` needs a read's keys to equal the rows of the log at its position.
+    - `fresh` needs a read's keys to include every write acknowledged earlier,
+  minus keys that were deleted.
+  - An SQL `insert` keeps this shape. But the trim (`keep`, which a live session
+  sets to 100 by default) needs `delete`, which is slice 8 and not built.
+
+  **4. Building for the browser**
+  - `GOOS=js GOARCH=wasm go build -tags s4ql_browser` succeeded for
+  `./internal/engine`, `./internal/sql/{stmt,parser,ast,token,sqlerr}` and even
+  the root package `.`.
+  - The engine imports only core, format, host, s4qlpb, sqlerr and stmt: no cgo
+  and no `internal/sqlite` directly. Its waits go through `host`
+  (internal/engine/README.md:289 says no `iter.Pull`).
+  - `go vet` of the tests fails under wasm. The cause is `internal/sql/oracle`
+  (`DenyProcessPragmas` is undefined, oracle.go:268), which the engine's
+  `differential_test.go` imports, plus `token_test` (`sqlite.Tokenize`).
+  - No SQL package is in `BROWSERPKGS` (Makefile:224-225), in `SIMULATORPKGS`
+  (:228), or in CI's browser simlint list (ci.yml:338).
+
+  **5. Storage:** the engine calls `core.Tx.Insert`, `Upsert`, `CreateTable` and
+  `Annotate` (internal/engine/storage.go:246-268). So rows land in real SQLite
+  tables in the core's cache (internal/core/README.md:44, :62). At commit, the
+  core writes the changed rows into the commit object as `UpsertRows`, together
+  with an annotation of the SQL text and its arguments.
+
+  **6. Existing SQL-level simulation:** `internal/engine/simulation_test.go` has
+  `TestSimulation` (:1966) and `TestSimulation_plantedBugs` (:2123). They run
+  on `internal/sim` and `simstore` with crashes, store faults and transactions,
+  and compare results with SQLite (internal/engine/README.md:515-517). It is
+  test-only code, and its SQLite comparison likely uses the cgo oracle. I found
+  nothing in docs/todo.md or docs/spec.md about running SQL through the browser
+  simulator. The only simulator mention is at todo.md:206 (the simulator opens
+  with an empty identity).
+
+⏺ Yes, and it is cheap: the SQL engine already builds for the browser unchanged.
+  It sits on an open core.DB and a clock, which the simulator already has, and
+  it needs no SQLite of its own.
+
+  What I would do:
+
+  - Requests become SQL. A write is insert into t (k) values (?) and a read is
+    select k from t, both through internal/engine, the same code the
+    database/sql driver runs on.
+  - The page shows it. The log and the Requests strip show the statement. The
+    commit objects already carry the SQL text and its arguments as an
+    annotation, so the barcode detail can show them too.
+  - The checker stays. It identifies each write by its key and reads the keys
+    from the commit objects, which an SQL insert writes in the same shape.
+
+  One catch: the simulator trims the table to 100 rows so that memory stays
+  flat, and that needs delete, which is slice 8 and not built. Until it is, the
+  trim would stay a direct call on the core, and the page would show only the
+  inserts and selects as SQL. When slice 8 is merged, the trim becomes a delete
+  statement.
+
+  The simulator would use internal/engine and not the public s4ql.Open, because
+  that one is hardwired to real S3 and the real clock. That keeps the rule of no
+  changes to the Go code outside the simulator.
+
+  Shall I start a builder on this now, with the trim on the core until slice 8?
+
+✻ Brewed for 17s · done Friday 12:21 PM
+
+⏺ Agent "SQL layer vs simulator facts" finished · 1m 39s
+
+❯ Could you just write to local storage in the browser instead? To act as s3.   
+  No need for trimming then. And we'll add delete once that's done.             
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ That would not remove the trim, because the trim is not about S3. A read scans
+  the whole table, so without a bound each read gets slower and its list of
+  keys in the log longer as the session ages. Where the commit objects are
+  stored does not change that. Local storage is also capped at about 5 MB per
+  site and survives a reload, against "refreshing the page means starting over".
+
+  What does remove it is a bounded read, which the SQL we have can do:
+
+  - Write: insert into t (k) values (?), with no trim.
+  - Read: select k from t where k > ?, with the bound 100 below the newest key.
+
+  The table then grows for the whole session, at a few bytes per row, and the
+  page's stop at 24 fake hours covers that. The checker changes to compare a
+  read with the rows above its bound, which is simulator code only.
+
+  One thing I do not know yet: whether the engine turns where k > ? on the
+  primary key into a range scan, or scans the whole table and filters. If it
+  filters, a read still slows down with age. The builder measures that first; if
+  it is too slow, the fallback is the trim on the core until delete exists.
+
+  When slice 8 is merged, delete comes in as a visible request and not as a
+  hidden trim.
+
+  Shall I start the builder on that?
+
+✻ Worked for 5m 40s · done Friday 12:24 PM
+
+❯ Yes                                                                           
+
+⏺ fabrik:builder(Builder: SQL in the simulator)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The builder is started, in its own worktree. It first measures two things
+  before building: whether a bounded read stays cheap as the table grows, and
+  whether the checker can still get a read's position and a write's outcome
+  through the SQL engine without changing it. If either fails, it stops and
+  reports instead of building a fallback.
+
+  After that it moves the workload to SQL, drops the trim, adapts the checker,
+  and shows the statements on the page. I'll report when it is done.
+
+✻ Churned for 1m 7s · done Friday 12:28 PM
+
+❯ Oh, and add some subtle sound to the simulator on important events. Make it   
+  sound very digital. Default off, but can be turned on. Square waves. Watch    
+  the volume.                                                                   
+
+⏺ fabrik:builder(Builder: simulator sound)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A second builder is on the sound, in parallel with the SQL one. What I told
+  it:
+
+  - Toggle: a "Sound" button beside Turbo, off by default and off again after a
+    reload. No audio is set up until the first click.
+  - Sound: raw square waves, notes of 25 to 90 ms. Rising figures for things
+    that come back (restart, recovery, takeover), falling for things that go
+    away (crash, stop, requests failing), one blip for a fault you switch, and a
+    short alarm if the checker finds a violation.
+  - Not on every request or commit, only on those events, so it does not tick
+    constantly.
+  - Volume: peak at about -24 dBFS, the alarm at about -20, at most three voices
+    at once, and a rate limit so that Turbo does not become a buzz. The builder
+    cannot hear, so it measures the levels in headless Chromium and reports
+    them.
+
+  Its code goes in a new file, with a small hook in the page, so it merges ahead
+  of the SQL change without much conflict. You will be the first to actually
+  hear it, so the levels and the choice of notes may need a round after it is
+  live.
+
+✻ Baked for 39s · done Friday 12:35 PM
+
+› Message from fabrik:builder
+  The simulator page has sound now. It is off on every load, and nothing creates
+  an `AudioContext` until the first click on Sound. `make site-check` passes.
+  Not pushed.
+
+  **Branch** `worktree-agent-abd9e55713eb9d759`, worktree
+  `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-abd9e55713eb9d759`, 4
+  commits. The diary step is step 18.
+
+  **Events and sounds** (square waves, A minor pentatonic, A4 to A6):
+  - up (rising): an instance opens (standby starts, restart, Start, reopen after
+  its core stopped)
+  - down (falling): a crash
+  - stop (falling): Stop, or the core stops
+  - takeover (rising): another instance takes the lease
+  - failing (falling, low) / recovered (rising, low): the status of the requests
+  changes
+  - blip: each fault or clock action, the switch of the requests, and turning
+  sound on
+  - alarm (G6-D6-G6, 90 ms notes): a violation that is not excused
+
+  **Levels** (offline, Chromium): each sound peaks at −34.9 dBFS, the alarm at
+  −26.1. Three at once peak at −26.0, the alarm over two others at −21.7. A
+  turbo-like burst peaks at −25.9 without the alarm and −21.6 with it. The site
+  check now fails if a burst goes over 0.06 or 0.1.
+
+  **Lines touched:**
+  - `page.js` 20: `let S`.
+  - `page.js` 205: `if (S) S.hear(e, (playing || !!job.act) && !(job.reset &&
+  !job.reset.first));`
+  - `page.js` 578, 581, 582: start the import with `?v=`, await it, then
+  `S.wire`.
+  - `index.html` 679: the button, no new styles.
+
+  **Real page:** each event gave its own sound, once. Sound off is silent. While
+  paused, only the visitor's own action sounds. Under turbo, the same kind
+  never repeated within 832 ms, and no more than 4 sounds a second. If Web Audio
+  fails, the toggle disables itself and the session goes on.
+
+  Self-review found one important bug, now fixed: an audio exception could have
+  halted the page. Eight smaller ones are fixed too.
+
+  **Deviations:**
+  - At 360 to 429 px the clock wraps, so the sticky bar is 124 px instead of 89.
+  Fixing it means shrinking Play and Turbo, which is outside the brief.
+  - The switch of the requests and turning sound on also blip.
+
+  **Screenshots** (`/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c0
+  d47f-ada8-4603-995b-2482fe6fef3a/scratchpad/`):
+  - bar-1440-off.png, bar-1440-on.png
+  - bar-1024-off.png, bar-1024-on.png
+  - bar-390-off.png, bar-390-on.png
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Agent "Builder: simulator sound" finished · 26m 38s
+
+⏺ Agent(Shepherd sound branch to live) Sonnet 5.5  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The sound is built and on its way to live; a sub-agent is taking it through
+  the pull request and the deploy. The SQL builder is still running.
+
+  What the sound builder made:
+
+  - Toggle: "Sound" beside Turbo, off on every load. No audio is set up before
+    the first click.
+  - Notes: square waves in A minor pentatonic, A4 to A6.
+    - Rising: an instance opens or restarts, the other instance takes the lease,
+      requests recover.
+    - Falling: a crash, a stop, requests start failing.
+    - Blip: each fault or clock action, switching requests between a and b, and
+      turning sound on.
+    - Alarm: three 90 ms notes if the checker finds a violation.
+  - Measured levels: each sound peaks at about -35 dBFS and the alarm at -26.
+    The worst case, the alarm over two other sounds, peaks at -21.6. The site
+    check now fails if a burst goes over the limits.
+  - Turbo: at most 4 sounds a second, and the same kind did not repeat within
+    832 ms in its test run.
+
+  One side effect: on a phone (360 to 429 px wide) the fake time now wraps to
+  its own line under the three buttons, so the sticky bar is 124 px tall and not
+  89. I left that as it is.
+
+✻ Worked for 25s · done Friday 1:02 PM
+
+› Message from fabrik:builder
+  The simulator's workload is now SQL through `internal/engine`, and the page
+  shows the SQL. Every check passed and nothing outside the allowed paths
+  changed.
+
+  **Branch:** `worktree-agent-a473ead9023e685db`, worktree
+  `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a473ead9023e685db`.
+  Six commits, not pushed.
+
+  **Step 0, measured (Apple M4, seed 7, five fake minutes at each age, against
+  `main`):**
+  - **Bounded read:** the engine runs `id > ?` on the key as a range scan, not a
+  full scan with a filter. At 24 h a read still gives 100 rows while the table
+  holds about 14,000.
+  - **Cost by age:** it does not grow, so I went on building. Per fake minute
+  with the page's settings:
+
+  | | 0 h | 1 h | 6 h | 24 h |
+  |---|---|---|---|---|
+  | Native, ms | 16 | 29 | 27 | 35 |
+  | Chromium, ms | 85 | 103 | 141 | 73 |
+  | Chromium, `main`, ms | 52 | 20 | 35 | 25 |
+
+    At Turbo a fake minute takes 12 real seconds, so this doesn't show.
+  - **Cost against `main`:** about three times higher (1,440 steps a minute
+  against 417), and the Go heap is 307 MB at 24 h against 151 MB. The engine
+  yields between every two rows of a query, and each yield is a step of the
+  scheduler. The page's comment sizing its 24 h stop at about 300 MB still
+  holds. A smaller window would cut this; that's for you to decide.
+  - **Position and outcome:** no engine change needed. The position comes from
+  the engine's `statement.position` event, read by a logger handler keyed on the
+  call's context. A write is `Conn.Begin`, insert, `Conn.Commit`, so a refusal
+  at begin, a failed statement (`abandoned`), `unknown`
+  (`core.ErrOutcomeUnknown`) and `not_committed` stay apart.
+
+  **Decisions:**
+  - **Table:** `create table orders (id integer primary key) strict, without
+  rowid`. I didn't use `requests` because the page already uses "Requests" for
+  app requests and the trace uses `request` for S3 requests.
+  - **Statements:** `insert into orders (id) values (?)` and `select id from
+  orders where id > ?`.
+  - **Creating the table:** there is no `if not exists`. The first insert that
+  fails with "no such table" runs the create and the insert again in the same
+  transaction.
+  - **The bound:** last key taken by the run's counter, minus the window, at
+  least 0. It is taken when the call starts, so it is the same natively and in
+  Chromium.
+  - **`workload.keep`:** replaced by `workload.window` (1 to 10000, default
+  100). No deletes remain anywhere.
+  - **Read before the table exists:** reported as served, with no rows and the
+  error `no such table: orders`, so the checker still checks it.
+
+  **Self-review found one real hole, now fixed:** a stale read could slip past
+  `fresh` whenever the newest window of keys all belonged to failed writes.
+  Writes at or below the bound are now checked against the state at the read's
+  position. The fast and slow checks now agree exactly, and a test runs every
+  read of four keys both ways to show it.
+
+  **Page:**
+  - **Log lines** read like "a serves select id from orders where id > 812: 100
+  rows." and "a commits insert into orders (id) values (913) as 3f6fbfd1."
+  - **Commit objects** show each statement with its arguments.
+  - **Counts:** the requests strip and the instance cards say inserts and
+  selects.
+  - **Intro:** says "each one SQL statement", and the "Built from" line links
+  `internal/engine` next to `internal/core`.
+
+  Screenshots:
+  - `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c0d47f-ada8-4603-
+  995b-2482fe6fef3a/scratchpad/desktop-logs.png` (1440 px)
+  - `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c0d47f-ada8-4603-
+  995b-2482fe6fef3a/scratchpad/narrow-full.png` (1000 px)
+  - `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c0d47f-ada8-4603-
+  995b-2482fe6fef3a/scratchpad/phone-logs.png` (390 px)
+
+  **Checks, all passing:** native tests including `-race`, and `-race -count=20`
+  on the new tests; `make check-browser`, `make test-browser`, `make lint` with
+  simlint (no exemption needed), and `make site-check`, where the `?v=`
+  versioning still works. CI's path filters needed no change: every path under
+  `internal/` already counts as code, so a change there runs the `browser` and
+  `site` jobs.
+
+  **Not done:** the README's dated section "What the code does under each
+  action" still has the 2026-11-19 times. The courses that `run_test.go` checks
+  still hold; the times weren't measured again.
+
+  The diary is at `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a473e
+  ad9023e685db/docs/diary/2026-11-20-simulator-sql.md`. I wrote it in my own
+  worktree as the brief asked, despite the parallel-worktree rule to skip the
+  diary.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Agent "Builder: SQL in the simulator" finished · 43m 25s
+
+⏺ The SQL builder is done too, with every check passing and nothing changed
+  outside the simulator. It goes live after the sound, because both touch the
+  page and the sound merges first.
+
+  - Statements: insert into orders (id) values (?) and select id from orders 
+    where id > ?. The table is orders, because "Requests" is already taken on
+    the page.
+  - Bounded read works: the engine runs id > ? as a range scan. At 24 fake hours
+    a read still returns 100 rows from a table of about 14,000, and the cost of
+    a fake minute does not grow with age.
+  - Cost: about three times main's, 73 to 141 ms per fake minute in Chromium,
+    because the engine yields between rows. At Turbo a fake minute takes 12 real
+    seconds, so it does not show.
+  - No trim and no deletes anywhere. workload.keep became workload.window,
+    default 100.
+  - Table creation: the engine has no if not exists, so the first insert that
+    fails with "no such table" creates the table and inserts again in the same
+    transaction. A select before that reports no such table: orders.
+  - Checker: self-review found one hole in the new fresh check, a stale read
+    that slipped past when the newest keys all belonged to failed writes. It is
+    fixed and has a test.
+  - Page: log lines read "a commits insert into orders (id) values (31) as
+    5f635beb." and "a serves select id from orders where id > 0: 31 rows." Each
+    commit object shows its statement and arguments.
+
+✻ Cogitated for 20s · done Friday 1:12 PM
+
+❯ Can we do something more on-brand than an orders table?                       
+
+⏺ Yes. The brand on the site is the barcode, and each commit object is already
+  drawn as one, so I'd name the table for that:
+
+  - barcodes (my pick): insert into barcodes (id) values (31), and the commit
+    object beside it is drawn as a barcode. A row is literally one of the things
+    on screen.
+  - scans: insert into scans (id) values (31), like a scanner at a till, which
+    also fits the new beeps. The catch is that "scan" already means something in
+    a database.
+  - stripes: closer to the hero pattern on the front page, further from anything
+    an app would store.
+
+  The rename waits for the sound to merge anyway, so nothing is held up.
+  barcodes, or one of the others?
+
+✻ Crunched for 12s · done Friday 1:17 PM
+
+❯ barcodes. And make every read and write make small beeps. I want it to sound  
+  alive.                                                                        
+  ⎿  Resuming agent a473ead
+
+⏺ The SQL builder is back on it with three jobs: rename the table to barcodes,
+  merge in the sound once that lands on main, and add the beeps.
+
+  For the beeps I told it:
+
+  - Insert that commits: a short tick whose pitch comes from the key, on the
+    same scale as the other sounds, so it wanders and does not sound like a
+    metronome.
+  - Select that is served: a shorter, higher, quieter tick.
+  - Request that fails or gets no answer: a low dull tick.
+  - Volume: about -40 dBFS per tick, below the event sounds, with the same
+    limits on the whole mix.
+  - Priority: ticks have their own budget, so they never push out a crash, a
+    takeover, or the alarm.
+
+  The sound toggle itself goes live first, without the ticks. I'll report when
+  each is live.
+
+✻ Sautéed for 30s · done Friday 1:18 PM
+
+❯ I liked the idea of a barcode scanner beeping when scanning                   
+  ⎿  Message queued for delivery to a473ead9023e685db at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ Passed on to the builder. An insert that commits now beeps like a checkout
+  scanner: one square-wave beep at one fixed pitch, around 2 to 3 kHz for 60 to
+  100 ms, the same every time. That replaces the pitch that wandered by key.
+
+  Selects stay a much smaller and quieter tick in the background, so the page
+  sounds alive between scans. A failed request gets a lower error tone,
+  rate-limited so a long outage does not buzz constantly.
+
+  A square wave near 2.5 kHz is piercing, so I capped the scanner beep at the
+  level of the other event sounds. That is the one I'd expect you to want
+  adjusted once you hear it.
+
+✻ Cogitated for 14s · done Friday 1:18 PM
+
+❯ No no, the pitch changing depending on the barcode is wonderful.              
+  ⎿  Message queued for delivery to a473ead9023e685db at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ Corrected with the builder: the insert keeps the scanner's character, and its
+  pitch depends on the barcode again.
+
+  One change from my first version: the pitch comes from the commit's hash,
+  which is what draws the barcode on the page, and not from the row's id. A
+  sequential id would play the same rising run over and over. The hash gives a
+  melody that wanders, and the same barcode always gets the same note. The notes
+  are five to eight from the scale the other sounds use, moved up into a
+  scanner's register of roughly 1.2 to 3 kHz.
+
+✻ Worked for 12s · done Friday 1:19 PM
+
+› Message from general-purpose
+  PR #87 is merged and live.
+
+  - **Merge commit:** f414b0f. Squash is disabled on the repo, so I used `gh pr
+  merge --merge`. The main history shows "Add optional sound to the simulator
+  page (#87)".
+  - **Branch prep:** `origin/main` merged into the branch cleanly, with no
+  conflicts. `make site-check` passed.
+  - **Checks at merge:** all 16 were `pass`, with none skipped or pending. That
+  includes `changes`, `browser`, `site`, `lint`, `test / test`, `asan`, the four
+  `asan-fuzz` jobs, `fuzz`, `crosscheck`, `sql`, `proto`, `simulation` and
+  `govulncheck`. `test` did not fail, so no re-run was needed.
+  - **Cleanup:** the worktree was locked, so I unlocked it, then removed it. The
+  local and remote branches are deleted. Main is pulled.
+  - **Deploy:** the Pages run for f414b0f succeeded. A run for the next commit,
+  35061eb (#86), also succeeded.
+  - **Live check:** `/simulator/` contains the "Sound" button. It references
+  `page.js?v=35061eb…`, because #86 was deployed after #87.
+  `sound.js?v=f414b0f…` and `sound.js?v=35061eb…` both return 200 as
+  `application/javascript`.
+
+⏺ The sound toggle is live at www.s4ql.com/simulator/ (#87, f414b0f), with all
+  16 checks passing. Turn on "Sound" beside Turbo to hear the event sounds:
+  crash, restart, takeover, requests failing and recovering, the fault blips.
+
+  The scanner beeps, the barcodes table, and SQL in the log are not live yet.
+  The builder is merging the sound into its branch and adding them now.
+
+✻ Worked for 3s · done Friday 1:20 PM
+
+⏺ Agent "Shepherd sound branch to live" finished · 17m 54s
+
+❯ I think it makes sense that it depends on the written key, so two reads of    
+  the same key get the same tone.                                                 ⎿  Message queued for delivery to a473ead9023e685db at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ Changed with the builder: the note now comes from the key, and inserts and
+  selects share the mapping.
+
+  - Insert: the scanner beep at the note of the key it writes.
+  - Select: a select here returns up to 100 rows, not one key, so I made its
+    quiet tick take the note of the newest key it returned. The reads after the
+    write of key 31 echo that write's note until key 32 is written. A side
+    effect I like: a read that is behind sounds like an older key.
+  - No repeating run: the key goes through a small fixed scramble before it
+    picks a note, so consecutive keys do not walk up the scale, and the same key
+    gives the same note in every session.
+
+  If you meant something else by a read's key, say so and I'll change it.
+
+✻ Brewed for 15s · done Friday 1:20 PM
+
+❯ Maybe always just select one key? And insert a hash instead of an int if it   
+  becomes too sequential.                                                       
+  ⎿  Message queued for delivery to a473ead9023e685db at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ Yes to both, and I sent the builder one consolidated spec so the earlier
+  corrections cannot get mixed up.
+
+  - Keys are barcode numbers. I took your hash idea one step further: each key
+    is a 13-digit number in the shape of an EAN-13 barcode, with a check digit,
+    scrambled from the run's counter so every call still gets a unique one. They
+    start with 57, the barcode prefix for Denmark. A write reads insert into 
+    barcodes (code) values (5740391825563).
+  - A read asks for one key: select code from barcodes where code = ?. Its tick
+    has the note of that key, so two reads of the same barcode sound the same,
+    and the scanner beep of the insert has it too.
+  - Which key a read asks for: a good share ask for the newest acknowledged key,
+    because that is what lets the checker catch a stale read. The rest ask for
+    one of the recent keys, including keys whose write failed, where "0 rows" is
+    the right answer.
+  - Cost: a read now returns one row and not 100, so the cost per fake minute
+    should fall back towards what it was before SQL. The builder measures it
+    again.
+
+  I asked the builder to say plainly if the checker can catch less with
+  single-key reads than with the window.
+
+✻ Churned for 52s · done Friday 1:22 PM
+
+❯ Love it!                                                                      
+
+⏺ Good. The builder is on it, and I'll report when it is live.
+
+✻ Cogitated for 2s · done Friday 1:25 PM
+
+› Message from fabrik:builder
+  All follow-ups are done on `worktree-agent-a473ead9023e685db`, committed and
+  not pushed, and every check passes.
+
+  **Keys:** each key is `57`, then ten digits from four rounds of a Feistel
+  scramble of the run's counter, then the EAN-13 check digit. The suggested
+  `(n·A+B) mod 10^10` fell four times and rose once, over and over, so I used
+  the Feistel rounds instead. Column `code`. `workload.window` is gone.
+
+  **Reads:** each selects one key, drawn from the seed. Half the time it is the
+  newest acknowledged key, otherwise one of the last 50 taken. `state` checks
+  that row against the log at the read's position. `fresh` checks the read's own
+  key by its row and every other write by the state at the position, so it lost
+  nothing. What the checker lost: a state whose other rows are wrong, behind
+  the right row and the right position, now goes unseen; the range read showed
+  up to 100 rows.
+
+  **Cost** is back to `main`'s level. Page settings at 0 h and 24 h: 15 and 14
+  ms natively, 61 and 24 ms in Chromium. That is about 450 steps a minute, and
+  the Go heap is 155 MB at 24 h.
+
+  **Sounds:** both scan and select take their note from the key, one of E6, G6,
+  A6, C7, D7, E7.
+  - **Insert:** an 80 ms square-wave beep, peak -36.3 dBFS.
+  - **Select:** a 20 ms tick, -42.0 dBFS. If it finds no row, it is 12 ms and an
+  octave lower.
+  - **Failure:** two 45 ms notes at 330 Hz, -41.0 dBFS, at most one every 1.5 s.
+  - **Mix:** a Turbo burst with ticks under the event sounds peaks at -26.0
+  dBFS, and -21.7 with the alarm, the same as without ticks.
+  - **Rate:** 0.47 request sounds a second at 1× and 1.63 at Turbo. It is sparse
+  because the client waits up to 5 s between calls; a shorter wait in the
+  page's settings would make it livelier. I left it.
+
+  **Merge:** clean. The existing sounds still fire, because `sound.js` reads no
+  field this branch changed.
+
+  **Checks:** native tests with `-race` and `-count=20` on the new tests, `make
+  check-browser`, `make test-browser`, `make lint`, `make site`, `make
+  site-check`.
+
+  **Deviation:** `TestRun_faults` "writes held back after a crash" now runs with
+  seed 4, because seed 5 no longer shows the fault.
+
+  My context is under 70 percent.
+
+  Files are in `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68c0d47f
+  -ada8-4603-995b-2482fe6fef3a/scratchpad/`:
+  - barcodes-1440.png
+  - barcodes-390.png
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Agent "Builder: SQL in the simulator" is waiting on its own background work · 
+  41m 0s
+
+⏺ Agent "Builder: SQL in the simulator" finished · 41m 4s
+
+⏺ Agent(Shepherd SQL branch to live) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The builder finished everything, with every check passing, and a sub-agent is
+  now taking it through the pull request and the deploy.
+
+  - Keys: 57, ten scrambled digits, and the EAN-13 check digit, such as
+    5737330940083. The simple scramble I suggested fell four times and rose
+    once, over and over, so the builder used a stronger one.
+  - Reads: half ask for the newest acknowledged key, the rest for one of the
+    last 50 taken.
+  - Checker: it still catches a stale read. It lost one thing: a read used to
+    show up to 100 rows, so a wrong row elsewhere in the table could be seen.
+    Now only the row that was asked for is checked.
+  - Cost: back at the level before SQL, 24 to 61 ms per fake minute in Chromium.
+  - Sounds: six notes from E6 to E7.
+    - Insert: an 80 ms scanner beep at -36 dBFS.
+    - Select: a 20 ms tick at -42 dBFS, shorter and an octave lower if it finds
+      no row.
+    - Failure: two low notes, at most once every 1.5 s.
+    - The loudest burst is unchanged at -21.7 dBFS.
+
+  One thing you may want changed after hearing it: the page makes a request
+  sound only about every 2 seconds at 1× and 1.6 a second at Turbo, because the
+  app waits up to 5 s between requests. A shorter wait would sound livelier, and
+  the log would scroll faster with it. I left the wait as it is so you can
+  judge by ear.
+
+✻ Brewed for 31s · done Friday 2:00 PM
+
+› Message from general-purpose
+  PR #90 merged; merge commit 5bd2471a7a2ac3e1b691c8e0d066d3593053ad33.
+
+  - **Merge of main:** the branch was 15 commits behind `origin/main`, so I
+  merged it with no conflicts. `make site-check` passed. Plain `go test
+  ./internal/simulator/...` matched no packages, because the simulator tests
+  need the tag, so I ran it with `-tags s4ql_browser`; that passed.
+  - **Checks at merge:** 15 of 16 passed: `changes`, `test / test`, `lint`,
+  `site`, `browser`, `simulation`, `sql`, `proto`, `crosscheck`, `fuzz`,
+  `govulncheck`, and `asan-fuzz` 1-4. `asan` was still pending, which the brief
+  allows, so I merged then. I did not check whether it finished afterwards.
+  - **Cleanup:** the PR state is MERGED. I removed the worktree, deleted the
+  local and remote branch, and ran `pull --ff-only` on main.
+  - **Deploy:** the Pages run for the merge commit succeeded.
+  - **Live check:**
+    - `/simulator/` references `page.js` and `run.js` with `?v=5bd2471…`, the
+  merge commit. Both return 200, and `sound.js?v=5bd2471…` returns 200 too.
+    - `barcodes` is not in `page.js` or `run.js`. It is in `engine/engine.wasm`,
+  which is where the SQL runs.
+
+  Nothing went wrong.
+
+⏺ SQL in the simulator is live at www.s4ql.com/simulator/ (#90, 5bd2471). 15 of
+  the 16 checks had passed at the merge; asan was still running, and it does not
+  build the simulator.
+
+  Turn on "Sound" and press Play to hear the scanner beeps on inserts and the
+  ticks on selects. The log and the commit objects now show the SQL with the
+  barcode keys.
+
+  Still yours to judge by ear: the volume of the scanner beep, and whether
+  requests should come faster than one every 2 seconds or so at 1×.
+
+✻ Cooked for 4s · done Friday 2:12 PM
+
+⏺ Agent "Shepherd SQL branch to live" finished · 12m 39s
+
+※ recap: The simulator now runs real SQL on a barcodes table with optional scanner-beep sound, and it is all live at www.s4ql.com/simulator/. Next: listen with Sound on and tell me if the beep volume or request pace needs changing. (turn off recaps in /config)
+
+❯ It's great, thank you!                                                        
+
+⏺ Glad you like it. Nothing is in flight now, and main is clean.
+
+✻ Worked for 1h 51m 47s · done Friday 2:18 PM
+
+❯ I'd like the data to persist between refreshes (just like S3 would), with a   
+  reset button available.                                                       
+
+⏺ fabrik:builder(Builder: persistent bucket in simulator)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A builder is started on it. What I told it to build:
+
+  - What persists: the bucket only, in the browser's IndexedDB: the manifest and
+    the commit objects. The instances' caches, processes, faults, and clock
+    shifts are lost at a reload, as a machine would lose them.
+  - After a reload: a starts on the existing bucket with an empty cache and gets
+    its data from S3, and b stands by. If the real code waits for the old lease
+    or takes time to restore, the page shows that and does not shortcut it.
+  - Fake time continues across a reload, so the log and the commit objects read
+    as one history.
+  - Reset: a button in the playback bar that empties the stored bucket and
+    starts from nothing, with no confirmation.
+  - Two tabs: the first owns the stored bucket, and a second runs in memory
+    only.
+  - Old data: if the storage formats change, or the stored bucket is damaged,
+    the page discards it and starts fresh with one log line.
+
+  Open point the builder measures first: the log in the bucket now grows across
+  visits, so it needs a cap. I suggested that the page stops at the cap and says
+  that Reset starts over; the builder picks the number from how long an
+  instance takes to open on a large bucket.
+
+  I'll report when it is done.
+
+✻ Worked for 1m 25s · done Friday 2:21 PM
+
+❯ What do you mean two tabs?                                                    
+⏺ If someone opens the simulator in two browser tabs at once, both would run
+  their own session and both would save to the same stored bucket. Each tab has
+  its own instances and its own in-memory S3, so they do not know of each other.
+  Their commits would overwrite each other in storage, and the next reload
+  would find a bucket that neither session produced, which the instances could
+  not open.
+
+  So the first tab gets the stored bucket, and a second tab runs as the page did
+  before today: in memory, with nothing saved. It says so in one line.
+
+  It is an edge case, and most visitors never hit it. The alternative is to let
+  both tabs share one bucket for real, with leases deciding between them, which
+  would be fun but is a much larger job.
+
+✻ Sautéed for 3s · done Friday 2:22 PM
+
+❯ Just use one bucket but different database prefixes per tab?                  
+  ⎿  Message queued for delivery to a6701f8212f3ee0a6 at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ Yes, that is better, and the builder has it now: one stored bucket, and each
+  tab opens its own database under its own prefix.
+
+  How a tab finds its prefix:
+
+  1. Refresh: the tab remembers its prefix, so it gets its data back.
+  2. Closed and came back later: a new tab takes over the most recent database
+     that no open tab is using.
+  3. A second tab at the same time: it starts its own empty database under a new
+     prefix.
+
+  Reset empties only the tab's own database. Databases left by closed tabs are
+  deleted once a newer one has been taken over, so storage does not fill up with
+  leftovers.
+
+✻ Sautéed for 22s · done Friday 2:23 PM
+
+❯ Maybe different tabs should just leave data from other tabs alone?            
+                                                                                
+  And give each tab a unique name of database, which we can then surface.       
+  ⎿  Message queued for delivery to a6701f8212f3ee0a6 at its next tool 
+     round. Moved 1 running tool call to the background without stopping 
+     it, so that round no longer waits for it. If it finishes first, it is 
+     resumed with the message and notifies again, so wait for that 
+     notification before resending.
+
+⏺ Changed with the builder. A tab is now a database:
+
+  - Unique name per tab, short and readable like db-k3f9x2, shown with the
+    bucket on the S3 node.
+  - Refresh keeps the tab's database and its name.
+  - A new tab always gets a new name and an empty database. It never adopts,
+    reads, or deletes another tab's data, including a closed tab's.
+  - Reset empties the tab's own database and keeps the name.
+
+  Two consequences you should know:
+
+  - Closing the tab ends the database for the visitor. Coming back tomorrow in a
+    new tab starts an empty one. The data persists between refreshes, as you
+    asked, but not between visits.
+  - Leftovers: since nothing adopts or deletes a closed tab's database, each
+    visit leaves one behind in the browser's storage. I added one exception as
+    hygiene: a database that has not been written to for 30 days and that no
+    open tab uses is removed. Say so if you want that gone too.
+
+✻ Brewed for 28s · done Friday 2:33 PM
+
+❯ Can we instruct the browser to just keep it as session storage, so we don't   
+  have to do cleanup ourselves?                                                 
+  ⎿  Message queued for delivery to a6701f8212f3ee0a6 at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ Yes. The browser's session storage does exactly that: it survives a refresh,
+  every new tab gets its own empty one, and the browser deletes it when the tab
+  closes. The builder now uses it, and the locks and the 30-day cleanup are
+  gone.
+
+  Two things follow:
+
+  - The limit is about 5 MB per tab. That sets the cap on the database. The
+    builder measures how many fake hours fit, and the page stops cleanly before
+    a write can fail, with a line that says Reset starts over.
+  - A duplicated tab starts as a copy with the same database name, because the
+    browser copies session storage when it duplicates a tab. The two then run
+    independently. I told the builder not to build anything against that.
+
+  The unique name per tab stays, shown with the bucket on the S3 node.
+
+✻ Cooked for 27s · done Friday 2:35 PM
+
+❯ Could we also name the instances uniquely? Then we could actually show if an  
+  instance in a different tab but the same database has the lease etc.          
+
+⏺ Naming the instances uniquely is easy. But the second half does not work with
+  what we just chose: session storage is private to a tab, so two tabs never
+  have the same database. Each has its own copy, and an instance in another tab
+  can never hold the lease on yours.
+
+  For that, the tabs would have to share one live bucket. I like it as a demo,
+  since two tabs are two truly independent runtimes, and it is the most
+  convincing way to show a lease. It is also the biggest change to the simulator
+  since the live engine:
+
+  - Shared storage: the bucket moves out of the tab into storage that all tabs
+    see, so session storage is out and the question of leftovers is back. One
+    shared database for the site with Reset would be the simple form.
+  - Live requests: every S3 request of an instance has to reach the shared
+    bucket as it happens, with conditional writes that are atomic across tabs.
+    Today the bucket is in the tab's memory inside the fake-time bubble. I think
+    the trick that lets a session wait for the visitor can carry this, but it
+    has to be proven.
+  - Clocks: each tab has its own fake clock, with its own pause and Turbo. A
+    paused tab losing its lease to a running one is a good demo. A Turbo tab
+    beside a 1× tab is a clock drift of five times, which leases do not promise
+    to survive, so stale reads could show up that are no bug. Either the tabs
+    share one clock, or the page has to say so.
+  - Checker: it sees only its own tab's requests, so across tabs it can check
+    the chain of commits and little else.
+
+  My recommendation: let the builder finish persistence in session storage now,
+  as you asked for it. Then, if you want it, shared tabs become their own piece
+  of work, starting with a short experiment on the live requests, and the unique
+  instance names come with it.
+
+  Do you want shared tabs as that next piece?
+
+✻ Cogitated for 50s · done Friday 2:38 PM
+
+❯ Why can it sometimes fetch 0 rows? "6:05.4                                    
+  a serves select code from barcodes where code = 5760050801136: 0 rows."       
+
+⏺ That is by design, and 0 rows was the right answer there. Half of the selects
+  ask for the newest barcode that was inserted. The other half pick one of the
+  last 50 barcodes handed out, and a barcode is handed out when an insert
+  starts, also when that insert then fails. Such a barcode never reached the
+  table.
+
+  An insert fails when the instance is down or crashed, when S3 hangs or is
+  disconnected, or when requests go to the instance without the lease. So I
+  expect an earlier line in your log where the insert of 5760050801136 failed.
+  If there is none, tell me, because then it is a bug.
+
+  The checker verifies every select against the log, also these, and the alarm
+  would have sounded if the row should have been there.
+
+  It is confusing as it reads now, though. Two ways to fix it:
+
+  - Say why (my pick): the line reads something like "0 rows, its insert
+    failed". It then shows that a failed insert really left nothing behind.
+  - Never ask for them: selects only pick barcodes whose insert committed, so 0
+    rows only appears if something is wrong.
+
+  Which do you prefer? And the question on shared tabs from before is still
+  open.
+
+✻ Worked for 22s · done Friday 2:39 PM
+
+❯ It would make sense to never ask for them, I think? How would an application  
+  know the barcodes it has never read from the store? A bit unrealistic.        
+  ⎿  Message queued for delivery to a6701f8212f3ee0a6 at its next tool 
+     round. Moved 1 running tool call to the background without stopping 
+     it, so that round no longer waits for it. If it finishes first, it is 
+     resumed with the message and notifies again, so wait for that 
+     notification before resending.
+
+⏺ Agreed, and the builder has it: a select now only asks for a barcode whose
+  insert was acknowledged. After a refresh on a stored bucket, it picks from the
+  barcodes in the stored log, as a restarted app would know them from its
+  database.
+
+  Two consequences:
+
+  - "0 rows" then means something is wrong, and the checker flags it.
+  - A new database starts with inserts only, until the first one is
+    acknowledged, since there is nothing to ask for before that.
+
+  I gave it to the builder that is doing the persistence, because it is changing
+  the same files. So it goes live together with that.
+
+✻ Baked for 21s · done Friday 2:42 PM
+
+❯ Hm, I'll think about the shared state, leave it for now.                      
+
+⏺ Understood. Shared tabs and the unique instance names are parked until you
+  bring them up. The builder goes on with persistence in session storage and the
+  change to the selects, and I'll report when both are live.
+
+✻ Cooked for 1s · done Friday 2:43 PM
+
+❯ Also, default to turbo being on                                               
+⏺ Agent(Turbo on by default) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A small sub-agent is making Turbo on by default, as a direct commit to main,
+  so it goes live ahead of the persistence work. I'll confirm when it is live.
+
+✻ Sautéed for 12s · done Friday 2:44 PM
+
+› Message from general-purpose
+  Commit e80790d, pushed to main. Changes: `index.html` turbo button
+  `aria-pressed="true"`; `page.js` `let turbo = true;`. I also edited
+  `internal/simulator/sitecheck/check.html`. Turbo now starts on, so it expects
+  "on" at load, then clicks it off before the 1× step check. The rest is
+  unchanged. `make site-check` passed ("sitecheck: ok"). Pages run succeeded.
+  Live `/simulator/` shows `id="turbo" aria-pressed="true"` and
+  `page.js?v=e80790de…`.
+
+⏺ Turbo is on by default and live (e80790d). The persistence builder is still
+  working.
+
+✻ Sautéed for 1s · done Friday 2:45 PM
+
+⏺ Agent "Turbo on by default" finished · 1m 40s
+
+⏺ Agent "Builder: persistent bucket in simulator" is waiting on its own
+  background work · 52m 34s
+
+⏺ The persistence builder has not reported yet. It is waiting on a run of its
+  own, so nothing new is live beyond Turbo.
+
+✻ Churned for 54m 0s · done Friday 3:14 PM
+
+⏺ Agent "Builder: persistent bucket in simulator" is waiting on its own
+  background work · 54m 21s
+
+› Message from fabrik:builder
+  The bucket now survives a reload, and every check passes. Branch
+  `worktree-agent-a6701f8212f3ee0a6`, 7 commits, worktree
+  `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a6701f8212f3ee0a6`.
+  Not pushed. The diary is
+  `docs/diary/2026-11-20-simulator-persistent-bucket.md`.
+
+  **Step 0, numbers**
+  - **Seeding:** `simstore` has no way to put an object in place. The engine
+  writes each object through a client of its own (`seed`, which never crashes),
+  retrying until `Store.Object` shows it, up to 100 tries. The store computes
+  the versions itself. Writes are seen when the store traces them as applied.
+  - **Commit objects:** 135 bytes each, manifest 312 bytes. The page's workload
+  writes about 548 objects (74 KB) per fake hour.
+  - **sessionStorage limits (measured):** Chromium allows 5,242,880 characters
+  of any kind. WebKit allows 5,242,880 characters below 256, but only 2,621,440
+  of others. I could not install Firefox through Playwright; MDN says 5 MiB. So
+  I store one character per byte, not base64, which costs 4/3.
+  - **Loading from sessionStorage:** 4 ms for 1,000 objects, 36 ms for 15,000.
+  - **No compaction:** the core never snapshots, compacts or deletes commit
+  objects.
+
+  On an existing bucket, `a` waits about 33 s for the old holder's lease to run
+  out. It then downloads every commit object one after another, each twice,
+  about 0.13 s of fake time each:
+
+  | Commit objects | `a` serves, fake time | Real time, native / Chromium |
+  | --- | --- | --- |
+  | 108 | 48 s | 0.05 / 0.15 s |
+  | 1,011 | 165 s | 0.8 / 1.0 s |
+  | 5,002 | 675 s | 3.7 / 5.1 s |
+  | 15,025 | 1,946 s | 12.7 / 20.9 s |
+
+  **After a reload**, the clock and the commit times go on from where they were.
+  The log says "S3 still holds db-xxxxxx: N commit objects", then "a takes the
+  lease over", then "a catches up". For the 519 commit objects of one fake hour,
+  `a` served about 1:40 fake minutes after the reload.
+
+  **Cap:** 2,000 commit objects, about 3.6 fake hours of the page's workload. It
+  is set by the wait after a reload (about 4.5 fake minutes), not by storage
+  (7% of the quota). At the cap the session stops with "S3 is full. … Reset to
+  start over."
+
+  **What a reload can lose:** only the changes of the one command whose answer
+  had not arrived, at most one step of play. What is stored is always the state
+  after some earlier answer, because each answer's writes happen in one task
+  with the metadata written last. If a write fails, the stored database is
+  dropped and the page goes on in memory, with one log line.
+
+  **Old or broken data:** a wrong version or a damaged bucket is refused by the
+  engine. The page then drops it, starts empty and says so in one line. A
+  failure of the start for another reason keeps the stored data.
+
+  **Reads:** a select now asks only for an acknowledged barcode or one from the
+  stored log. The checker gains: a read of a stored key at the empty log is now
+  flagged as `fresh`; before, it passed every check. It loses nothing; "0 rows"
+  is now always a violation.
+
+  **Checks:** all pass: native tests (and `-race -count=20` on the new tests),
+  `make check-browser`, `make test-browser`, `make lint`, `make site`, `make
+  site-check`. The same seeded session gives the same hash natively and in
+  Chromium. I compared that by hand; no test compares the two builds.
+
+  **For you or Markus to decide:**
+  - **Second-tab test:** `make site-check` cannot open a second tab, because its
+  frames share one sessionStorage. It clears the storage to stand in for a new
+  tab instead. I checked a real second tab by hand in Playwright: new name, no
+  commit objects.
+  - **Cap:** 2,000 means a wait of minutes after a reload. Raise or lower it?
+  - **Phone layout:** at 390 px, Reset wraps the playback bar onto a second row.
+  - **Seed failure:** if the store cannot take the bucket (only with faults set
+  to 1), `start` is refused, and the session that ran before is already ended.
+
+  Screenshots are in `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68
+  c0d47f-ada8-4603-995b-2482fe6fef3a/scratchpad/shots/`:
+  - bar-1440.png
+  - bar-390.png
+  - reload-1440.png
+  - reload-390.png
+  - s3-1440.png
+  - s3-390.png
+
+  Read 2 files (ctrl+o to expand)
+
+⏺ Agent "Builder: persistent bucket in simulator" is waiting on its own
+  background work · 1h 10m 47s
+  ⎿  Resuming agent a6701f8
+
+⏺ Persistence is built, with every check passing. The builder is merging in the
+  Turbo change, and then it goes to its pull request and live.
+
+  - Refresh: the bucket, the fake time, and the commit objects' times carry on.
+    The log starts with "S3 still holds db-bjdpwb: 402 commit objects."
+  - Name: shown on the S3 node as s4ql-sim/db-bjdpwb/.
+  - Reset: a button beside Sound. On a phone it wraps the playback bar onto a
+    second row.
+  - Selects: they only ask for acknowledged barcodes, so "0 rows" is now always
+    a violation.
+
+  The refresh shows two things about the real code, which is what the simulator
+  is for:
+
+  - a waits about 33 s for the old holder's lease to run out before it takes
+    over.
+  - a then downloads every commit object one after another, each one twice, at
+    about 0.13 s of fake time each. The core has no snapshot or compaction, so
+    opening on an existing bucket takes time in proportion to its whole history:
+    48 s for 108 commits, 165 s for 1,011, and 32 minutes for 15,025.
+
+  Because of that, the builder set the cap at 2,000 commit objects, about 3.6
+  fake hours. A refresh at the cap means about 4.5 fake minutes before a serves,
+  or just under a minute of real time at Turbo. Storage is not the limit: 2,000
+  objects use 7% of the quota. At the cap the session stops with "S3 is full. …
+  Reset to start over."
+
+  The double download looks like something to fix in the core. I have not looked
+  into why it happens. Do you want me to have that checked?
+
+✻ Sautéed for 21s · done Friday 3:32 PM
+
+› Message from fabrik:builder
+  I merged origin/main into worktree-agent-a6701f8212f3ee0a6 as 7e9c4d0, and it
+  needed no edits: it had no conflicts, and Turbo stays on by default alongside
+  my changes. My site-check steps skip fake time with s4qlPage.skip and do not
+  depend on Turbo. Reset keeps whatever Turbo setting the visitor has.
+  make site-check passes, unstamped and stamped. make lint passes, and so do the
+  native simulator tests. The worktree is clean and nothing is pushed.
+
+⏺ Agent(Shepherd persistence branch to live) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Agent "Builder: persistent bucket in simulator" is waiting on its own
+  background work · 1h 13m 34s
+
+⏺ Stop Task
+  ⎿  Builder: persistent bucket in simulator · stopped
+
+⏺ The builder merged the Turbo change without conflicts, and a sub-agent is now
+  taking persistence through its pull request and the deploy. I'll confirm when
+  it is live.
+
+  My question from before still stands: do you want the double download of each
+  commit object on a restore checked in the core?
+
+✻ Brewed for 16s · done Friday 3:35 PM
+
+› Message from general-purpose
+  NOT MERGED. PR #96 is open (branch worktree-agent-a6701f8212f3ee0a6, not
+  behind main, so I did not re-run site-check or the simulator tests).
+
+  Check state: `changes`, `lint`, `site`, `proto`, `simulation`, `crosscheck`,
+  `fuzz`, `govulncheck`, `test`, `sql` all pass. `asan` and `asan-fuzz (1-4)`
+  were still running when I stopped. `browser` FAILED.
+
+  Failure: `make test-browser` (headless Chrome, run 44754967761) hung until the
+  30m timeout. The log shows "browser: the program did not exit within a minute
+  after its -test.timeout" for `internal/sqlite`, `faultvfs`, `core` and `sim`.
+  `simstore`, `internal/simulator` (78s) and `simulator/engine` passed. The
+  failing packages are not simulator code, and this is not the known s3store
+  flake. Earlier browser runs took about 14 minutes. I did not re-run it. Say if
+  I should run `gh run rerun --failed`, which takes about 30 minutes.
+  ⎿  Resuming agent a10a0e4
+
+⏺ Agent "Shepherd persistence branch to live" is waiting on its own background
+  work · 36m 30s
+
+⏺ Agent "Shepherd persistence branch to live" is waiting on its own background
+  work · 36m 33s
+
+⏺ Agent "Shepherd persistence branch to live" is waiting on its own background
+  work · 36m 38s
+
+⏺ Persistence is not live yet. Its pull request (#96) is open, and the browser
+  job failed: the run in headless Chrome hung until its 30-minute timeout in
+  internal/sqlite, faultvfs, core, and sim. The branch does not change those
+  packages, and the simulator's own packages passed in the same run. Every other
+  check passed, apart from the sanitizer jobs that were still running.
+
+  The sub-agent is re-running the job and comparing with the same job on main,
+  to tell a hung runner from a real problem. It merges if the re-run passes, and
+  otherwise reports back without merging. The re-run takes up to 30 minutes.
+✻ Sautéed for 12s · done Friday 4:12 PM
+
+❯ Make the browser CI job faster, 30 mins is too much                           
+
+⏺ fabrik:builder(Builder: faster browser CI job)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A builder is on it. To be exact about the numbers: a normal run of the job
+  takes about 14 minutes, and the 30 was the job's timeout after a hang. The
+  builder works on both:
+
+  - Normal run: the target is about 5 minutes, without dropping or weakening any
+    test. It measures where the 14 minutes go first, then splits the packages
+    over parallel jobs, caches the wasm build and Chromium, and removes waste in
+    the runner.
+  - Hang: a hung package should fail within a few minutes and name the package
+    and the test, without blocking the others. It also looks for the cause of
+    today's hang.
+
+  It tests the change in a draft pull request with at least three CI runs and
+  reports the times. I merge it locally, since it changes a workflow file.
+
+  Persistence (#96) is still waiting on the re-run of the old job.
+
+✻ Cooked for 32s · done Friday 4:22 PM
+
+❯ I think delete is live, please check                                          
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ fabrik:builder(Builder: delete in the simulator)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Yes, delete is on main: slice 8 was merged as #91, and it runs update and
+  delete in the engine and the driver. Its generated checks, the simulation with
+  a planted bug, and the mutation testing are still to come.
+
+  I started a builder to bring delete into the simulator, on top of the
+  persistence branch:
+
+  - Request: delete from barcodes where code = ?, for about one write in four,
+    on a barcode the app knows is in the store.
+  - Selects: as now, plus about one in eight that asks for a recently deleted
+    barcode and expects no row. That is what lets the checker catch a deleted
+    row that comes back after a crash and a replay. The line reads "0 rows, as
+    deleted", so it is not taken for a fault.
+  - Sound: a delete is a scanner voiding an item: the note of its barcode, then
+    a quick drop.
+  - Page: deletes in the log, in the commit objects, and in the counts.
+
+  I left update out, because the table has one column and there is nothing to
+  update.
+
+  Three things are running now: the re-run of the browser job for persistence
+  (#96), the builder that makes that job faster, and this one.
+
+✻ Cogitated for 1m 5s · done Friday 4:24 PM
+
+› Message from general-purpose
+  PR #96 NOT MERGED. The `browser` check failed again on the rerun, with the
+  same hang. `internal/sqlite`, `faultvfs`, `core` and `sim` each ran 1860s and
+  hit "browser: the program did not exit within a minute after its
+  -test.timeout", with no test output before it. `simstore`,
+  `internal/simulator` (83s) and `simulator/engine` passed. The other checks
+  passed earlier; I did not re-check `asan` and `asan-fuzz` after that.
+
+  `browser` on `main` (CI runs):
+  - a9b36a1: success, 15 min
+  - 321794c: success, 11.5 min
+  - e80790d: success, 14 min
+  - 20ac604 and c997eb9: skipped
+  - run 44742111257 (head 5bd2471, a failed run, not one of the `main` runs
+  above): the same hang in the same four packages, 36 min total
+
+  So the hang has happened once before this branch. It may be intermittent or
+  load-related, but this branch has now failed twice in a row. Choose between
+  another rerun and investigating whether the branch's change in
+  `internal/simulator` or its dependencies causes it.
+  ⎿  Message queued for delivery to aa42ae4ee249b2732 at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ Agent "Shepherd persistence branch to live" finished · 1h 13m 39s
+
+⏺ Persistence (#96) is still not merged: the browser job hung again on the
+  re-run, in the same four packages (internal/sqlite, faultvfs, core, sim), with
+  no test output before the timeout. The simulator's own packages passed both
+  times.
+
+  The same hang also happened once before this branch, on the merge of the SQL
+  work, and the job passed three times on main after that. So it is intermittent
+  on main and has hit #96 twice in a row. My guess is a start-up problem under
+  load: all packages start their Chromium at once, and the simulator's heavier
+  tests starve the others. That is a guess, not a finding.
+
+  I am not merging #96 over it, because if the branch does make the hang more
+  likely, main's browser job would fail for every session. I gave the facts to
+  the builder that is working on the job and told it that finding and fixing the
+  hang now comes before the speed-up. #96 goes in once that fix is merged, and
+  the delete work builds on it meanwhile.
+
+✻ Baked for 28s · done Friday 4:49 PM
+
+› Message from fabrik:builder
+  Hang: found where it is, and a fix that is in CI now. Not CPU starvation and
+  not the tests: the first Chromium started on a fresh runner VM sometimes never
+  requests the page at all. Evidence from draft PR #98 (branch
+  faster-browser-ci), where the runner now reports each step: in 26
+  single-Chromium jobs (one Chromium per VM, nothing else running), 5 first
+  starts hung ("chromium started after 71ms; no output from the program", no
+  "the page loaded" step), and Chromium's log shows D-Bus calls failing for 20+
+  s and "Network service crashed or was terminated, restarting service". Extra
+  flags (--disable-gpu --disable-dev-shm-usage --password-store=basic
+  --use-mock-keychain) did not help (1 hang in 8 with, 1 in 8 without). A
+  Chromium started again on the same VM worked every time (once it took 3
+  attempts). In the old job, the four first-batch packages are the four
+  Chromiums started at the VM's first minute, which is why the same four hang
+  together and the three later ones pass.
+
+  Fix, in one commit of its own on top of main: 786c981 "Make the browser runner
+  start a Chromium again that does not start the program..."
+  (internal/sqlite/browser/main.go, main_test.go, worker.js; no Makefile or
+  workflow change). The runner restarts a Chromium that has not started the
+  program within 1 minute (or that exits before it), up to 3 attempts, writing
+  what it saw each time; it also stops Chromium 30 s after -test.timeout (before
+  go test kills it) and on SIGINT/SIGTERM/SIGQUIT, and names the tests running
+  under -test.v. So a start hang costs about a minute instead of 30. It can be
+  cherry-picked onto main now; `go test -race ./internal/sqlite/browser/` covers
+  it with a fake Chromium. I have not yet run the full code-review on it. Next:
+  shorten the start-up detection (time to the page load), then the speed-up.
+
+⏺ Agent(Shepherd runner fix, then #96) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+  ⎿  Message queued for delivery to aa42ae4ee249b2732 at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ The builder found the hang, and my guess was wrong. It is not load and not our
+  tests: the first Chromium started on a fresh CI machine sometimes never loads
+  the page at all.
+
+  - Evidence: in 26 jobs that each started one Chromium on a fresh machine with
+    nothing else running, 5 hung at the first start. Chromium's own log shows
+    its D-Bus calls failing for over 20 s and its network service crashing. A
+    Chromium started again on the same machine worked every time.
+  - Why the same four packages: they are the four Chromiums started in the
+    machine's first minute. The three later ones pass.
+  - So #96 was unlucky twice, and its changes are not the cause.
+
+  The fix is in the test runner: if Chromium has not started the program within
+  a minute, the runner starts it again, up to three times, and says what it saw.
+  A bad start then costs about a minute, not 30.
+
+  A sub-agent is merging that fix to main as its own pull request now, and then
+  brings #96 up to date and merges it. The builder goes on with the speed-up of
+  the normal run.
+
+✻ Cogitated for 32s · done Friday 4:54 PM
+
+› Message from fabrik:builder
+  Review of the runner fix (786c981) found one real race, now fixed in d0637ed
+  on faster-browser-ci (internal/sqlite/browser only): the attempt loop's select
+  could pick Chromium's stop or the start-up timer over an exit or start that
+  arrived at the same moment, and then report a failure for a program that
+  exited fine, or, rarely, start the program a second time. Also fixed there:
+  cmd.WaitDelay so a Chromium child holding the output pipe cannot block the
+  stop; the start-up limit now ends when the Worker fetches the program (compile
+  excluded); per-fd line buffers and go test -json lines for naming running
+  tests; deadline counted from runner start. It is safe to merge 786c981 as is
+  (the race needs an exit and a stop in the same instant; a test of mine could
+  be flaky from it), and I will carry d0637ed after merging origin/main. Also
+  measured: on 16 fresh VMs with no hang, the first Chromium needed 6.7 to 32 s
+  to load the page, so the one-minute limit stays.
+  ⎿  Message queued for delivery to a766d261142dffca4 at its next tool 
+     round. Moved 1 running tool call to the background without stopping 
+     it, so that round no longer waits for it. If it finishes first, it is 
+     resumed with the message and notifies again, so wait for that 
+     notification before resending.
+
+⏺ The builder's review of its own runner fix found a race: at the same instant
+  the runner could report a failure for a program that had exited fine. It is
+  fixed in a second commit, and I told the sub-agent to merge both together, so
+  no flaky test of the runner reaches main.
+
+  It also measured the first Chromium start on 16 fresh CI machines without a
+  hang: 6.7 to 32 s to load the page. So the one-minute limit before a restart
+  stays.
+
+  Still running: the merge of the runner fix and then #96, the speed-up of the
+  job, and delete in the simulator.
+
+✻ Churned for 10s · done Friday 4:59 PM
+
+⏺ Agent "Shepherd runner fix, then #96" is waiting on its own background work · 
+  19m 36s
+
+⏺ Nothing new yet: the sub-agent is waiting on the checks of the runner fix's
+  pull request.
+
+✻ Cogitated for 2s · done Friday 5:14 PM
+› Message from fabrik:builder
+  Update on the runner fix in PR #99: three attempts are not always enough. In a
+  batch of 24 fresh runners started at the same moment (run 44770131148), one
+  job failed after what looks like three hung starts in a row, and two others
+  needed two restarts. On the first sharded run, one shard also needed two. The
+  bad stretch can last two to three minutes of a runner's early life. A Chromium
+  started again on a warm runner loads the page within 5 s. Pointing D-Bus's
+  system bus at a missing socket did not help: 2 of 12 such starts still hung,
+  so that idea is ruled out.
+
+  Commit 6e9c274 on faster-browser-ci raises it to six attempts in all: a minute
+  for the first, 30 s for each later one, so 3.5 minutes at most. It sits on
+  top of d0637ed, the review fixes. Both touch internal/sqlite/browser/main.go
+  and main_test.go (and the README; 6e9c274 also the workflow, which is only on
+  my branch). If #99 is not merged yet, it may be worth taking d0637ed and the
+  main.go/main_test.go part of 6e9c274 into it. Otherwise they come with my
+  branch.
+
+  Speed-up: the first sharded run passed with the browser check done in 3 min 43
+  s wall, against about 14 before. Each test of internal/core ran exactly once
+  across the four core shards: 749 test results, as in a full run. More CI runs
+  are coming.
+
+⏺ The speed-up is working: the first run with the packages split over parallel
+  jobs finished the browser check in 3 min 43 s, against about 14 before, with
+  every test of internal/core run exactly once.
+
+  On the hang, the builder found that three attempts are not always enough: in
+  24 fresh machines started at once, one failed after three hung starts in a
+  row. The bad stretch can last two to three minutes of a machine's early life.
+  It raised the limit to six attempts, 3.5 minutes at most.
+
+  I am leaving the pull request that is in flight (#99) at three attempts, so
+  persistence is not held up again; the six attempts come with the speed-up
+  branch.
+
+✻ Baked for 4s · done Friday 5:14 PM
+
+› Message from fabrik:builder
+  Branch `worktree-agent-ab962a50c1acfc5e6`, worktree
+  /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-ab962a50c1acfc5e6,
+  based on a merge of `origin/worktree-agent-a6701f8212f3ee0a6` (#96). Five
+  commits, nothing pushed.
+
+  **Shares:** the new setting `workload.deletes` (0 to 100) defaults to 25, so a
+  quarter of writes are deletes. With the default 40 % writes, calls are 30 %
+  insert, 10 % delete and 60 % select. One select in eight asks for one of the
+  last 10 acknowledged deletes, and the event's `expect` says `row` or `none`.
+
+  **Checker:** a write is `txn{key, delete}`. A key is inserted once and deleted
+  by at most one transaction: a key a delete has picked is never picked again,
+  and an unknown outcome leaves it in limbo. That is how the checker tells a
+  delete from the insert of the same key. For every write, `fresh` now goes by
+  the read's position, and the fast and slow paths agree (the exhaustive test
+  also covers deletes). New constructed-trace tests catch each case you listed,
+  among others. Stored shape raised to 2.
+
+  **Cost:** steps per fake minute are 431 at 0.5 h and 433 at the cap (2,324
+  commit objects), against 425 and 431 before. Wall time was the same within
+  noise from a loaded machine (median about 27 ms). Hash `a35f8195…` is the same
+  natively and in Chromium.
+
+  **Sound:** the delete is a void tick, the key's note then an octave drop, at
+  −38.0 dBFS. A scan is −36.3 and a select −42.0. The burst peaks at −26.0 dBFS,
+  and −21.7 with the alarm, both within limits.
+
+  **Screenshots:** in /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/68
+  c0d47f-ada8-4603-995b-2482fe6fef3a/scratchpad/delete-builder/:
+  system-1440.png, requests-1440.png, requests-390.png, requests-320.png,
+  log-1440.png, log-390.png, commits-390.png.
+
+  **Checks:** all pass: native, `-race`, `-count=20`, check-browser,
+  test-browser (no hang), lint, site, site-check.
+
+  **Decisions for you:**
+  - site-check failed 3 of 9 runs. The cause was a float rounding in #96's
+  reload check; my branch fixed it with a 1e-6 ms tolerance.
+  - The strip takes two rows below 380 px.
+  - I added no `delete` schedule action.
+  - At 320 px, "Requests" touches "To"; that row is unchanged.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Builder: delete in the simulator" finished · 57m 48s
+  ⎿  Resuming agent a766d26
+  ⎿  Message queued for delivery to aa42ae4ee249b2732 at its next tool 
+     round. Moved 1 running tool call to the background without stopping 
+     it, so that round no longer waits for it. If it finishes first, it is 
+     resumed with the message and notifies again, so wait for that 
+     notification before resending.
+
+⏺ Delete in the simulator is built, with every check passing. It goes live
+  together with persistence, in one pull request, after the runner fix.
+
+  - Mix of requests: 30% inserts, 10% deletes, 60% selects.
+  - Selects: one in eight asks for a recently deleted barcode, and the log reads
+    "0 rows, as deleted."
+  - Checker: it now catches an acknowledged delete missing from the log, a
+    delete applied twice, a deleted row that a later select still returns, and a
+    row missing that was never deleted.
+  - Sound: the note of the barcode, then a drop of an octave, at -38 dBFS, a
+    little below the insert's beep.
+  - Cost: unchanged, about 430 steps per fake minute.
+
+  Two things I changed in the plan because of what the delete builder found:
+
+  - Persistence (#96) had a flaky site check, failing about one run in three on
+    a float rounding. The delete branch contains all of #96 and the fix, so I am
+    merging that branch and not #96 on its own.
+  - Another session has opened #101, "Make CI faster and more reliable". I told
+    our CI builder to read it and report any overlap with its own work on the
+    browser job, so the two do not collide.
+
+✻ Crunched for 33s · done Friday 5:22 PM
+
+› Message from fabrik:builder
+  PR #101 does not change the `browser` job or the browser targets of the
+  Makefile (it says so: timeouts and caches "on every job but browser"), so I go
+  on. `git merge-tree` of faster-browser-ci with origin/ci-faster merges
+  without conflict. One thing for #101 now: its docs/todo.md calls the `site`
+  hang's cause unknown. It is very likely the same first-start hang of Chromium
+  on a fresh runner that I measured (Chromium starts, never requests the page;
+  restarts on the same runner work). sitecheck starts Chromium the same way the
+  old runner did, so a restart in sitecheck (fetch of the page not seen within
+  about a minute, start again) would likely fix it, where a 3-minute timeout
+  only fails faster. Details in my final report.
+  ⎿  Message queued for delivery to aa42ae4ee249b2732 at its next tool 
+     round. Sending this moved nothing it is running to the background just
+     now, so the message waits for that round unless something moves 
+     sooner. If it finishes first, it is resumed with the message and 
+     notifies again, so wait for that notification before resending.
+
+⏺ No overlap with #101: it leaves the browser job alone, and the two branches
+  merge without conflict.
+
+  One useful thing came out of the comparison. #101's notes call a hang of the
+  site job's cause unknown. Our builder says it is very likely the same Chromium
+  start-up hang, because the site check starts Chromium the same way. So I
+  asked it to give the site check the same restart, and to post its measurements
+  as a comment on #101, so the other session has them.
+
+✻ Crunched for 11s · done Friday 5:23 PM
+
+› Message from fabrik:builder
+  sitecheck restart is in d1fb421 on faster-browser-ci.
+  internal/simulator/sitecheck/main.go and main_test.go copy the runner's
+  restart loop: 6 attempts, a minute and then 30 s, the same messages, and
+  Chromium's output each time. Tests use a fake Chromium. `make site-check`
+  passes locally. Sharing a package with the runner would have meant refactoring
+  the runner that #99 just merged, so I copied it. -timeout now counts from the
+  load of the check's page. Heads-up: `git merge-tree` with origin/ci-faster
+  (#101) now conflicts in internal/simulator/sitecheck/main.go only, because
+  #101 changes the same function (3m timeout, goroutine stacks, request list).
+  ci.yml and the Makefile auto-merge. Whichever merges second resolves it: keep
+  #101's report and my start loop; the two touch the same select at the end of
+  run(). The comment on #101 is posted. I also merged origin/main (#99) into my
+  branch, keeping my runner files: #99 equals 786c981, which mine build on.
+
+⏺ The runner fix (#99) is merged to main, and the site check now has the same
+  restart on the CI builder's branch. The builder's comment with its
+  measurements is posted on #101.
+
+  One thing to expect: that branch and #101 now touch the same function in the
+  site check, so whichever is merged second has a small conflict to resolve
+  there. The builder noted how: keep #101's reporting and its own start loop.
+
+  Persistence with delete is next in the sub-agent's queue, now that #99 is in.
+
+✻ Sautéed for 3s · done Friday 5:27 PM
+
+⏺ Agent "Shepherd runner fix, then #96" is waiting on its own background work · 
+  36m 51s
+
+⏺ Nothing new: the sub-agent is waiting on the checks of the pull request with
+  persistence and delete.
+
+✻ Sautéed for 1s · done Friday 5:31 PM
+
+› Message from general-purpose
+  Both jobs are merged and live.
+
+  **Job 1: PR #99**, merge commit 2f06539.
+  - I cherry-picked 786c981 cleanly; `go test -race` and `make check-browser`
+  passed.
+  - The `browser` job took 11m12s. Its log search for restart messages found
+  nothing, so no Chromium restart was seen.
+  - At merge only `asan` was pending; every other check, including `changes` and
+  `browser`, passed.
+  - d0637ed would not apply: it depends on the TEMPORARY commits of
+  `faster-browser-ci` and conflicts. I aborted and left it out, so a follow-up
+  PR is needed if you want it.
+
+  **Job 2: PR #103** ("Add delete to the simulator's requests"), merge commit
+  d7d946e.
+  - `make site-check` passed three times and the simulator `go test` passed
+  before the push.
+  - The `site` check first timed out after 10 minutes in `go run
+  ./internal/simulator/sitecheck`. That is probably the same Chromium hang, but
+  it does not use the fixed runner. I re-ran it once with `gh run rerun
+  --failed` and it passed.
+  - The `browser` job took 16m17s with no restart messages found in its log.
+  - At merge, every check had passed except `asan`, which was still pending.
+  - #96 stayed OPEN after the merge, so I closed it with the comment "Merged as
+  part of #103."
+  - Both worktrees and both branches (local and remote) are removed, and the
+  main checkout is pulled to d7d946e.
+
+  **Live check**
+  - The Pages workflow succeeded for d7d946e.
+  - The simulator page has the Reset button, and `page.js?v=d7d946e…` returns
+  200.
+  - The live `run.js` has the deletes handling (`c.deletes`, and its log text
+  joins `deletes`). I did not find the literal string "as deleted".
+
+  I also left PR #96's last push (a26f9e2, a merge of `main`) unused.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Shepherd runner fix, then #96" finished · 56m 58s
+
+⏺ Persistence and delete are live at www.s4ql.com/simulator/ (#103, d7d946e),
+  and the runner fix is on main (#99).
+
+  What you can try:
+
+  - Refresh: the bucket, the commit objects, and the fake time carry on, and a
+    first waits for the old lease and then catches up from S3.
+  - Reset: beside Sound, empties the tab's database.
+  - Database name: on the S3 node, one per tab.
+  - Deletes: in the log, the commit objects, and the counts, with the falling
+    two-note sound.
+
+  Two notes from the merge:
+
+  - The site check timed out once after 10 minutes and passed on a re-run. That
+    is most likely the same Chromium start-up hang; the site check gets its
+    restart with the CI builder's branch.
+  - The race fix for the runner is not on main yet. It did not apply without the
+    builder's other commits, so it comes with that branch too. Until then one
+    test of the runner could fail rarely.
+
+  Still running: the CI builder, on the speed-up of the browser job.
+
+✻ Crunched for 8s · done Friday 5:51 PM
+
+› Message from fabrik:builder
+  The browser check now takes about 4 minutes instead of 14, and the hang was
+  Chromium's start, not the tests. Branch `faster-browser-ci` (local
+  `worktree-agent-aa42ae4ee249b2732`), worktree
+  `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa42ae4ee249b2732`,
+  draft PR #98. Merge it locally because it changes a workflow; squashing drops
+  the TEMPORARY measuring commits.
+
+  **Where the 14 minutes went:** `internal/core` alone took 11.3 min of the
+  11.3-minute Chromium step, which came after 3.5 min of builds and lints.
+  Runners differ in speed by up to 1.7×.
+
+  **What changed:**
+  - `make test-browser BROWSERSHARD=i/6` splits the tests into six shards. Four
+  shards split the core by test name, and the last of them skips what the first
+  three run, so every test runs exactly once: 749 test results in the shards
+  against 749 in a full local run.
+  - A new matrix job `browser-test` runs the shards with a 7-minute test timeout
+  and `timeout-minutes: 12`. The job `browser` keeps the builds, vets and
+  lints, with `timeout-minutes: 10`.
+
+  **Wall time of the browser check, before → after:** 14:49 and 13:57 before;
+  3:29, 4:26 and 4:08 in three runs of the final code.
+
+  **The hang:** on a fresh runner the first Chromium sometimes never requests
+  its page. Chrome's log shows D-Bus errors and once "Network service crashed or
+  was terminated". Pointing D-Bus at a missing socket did not help. A Chromium
+  started again works. Both the runner and `sitecheck` now start it again, up to
+  six times. A hang inside a test is stopped 30 s after its timeout, with a
+  report naming the running tests.
+
+  **Restart frequency:** 14 of 108 fresh runners hung on at least one start,
+  about 19 restarts in all. In the three final runs: 1 restart in 18 shard jobs.
+
+  **Decisions and conflicts:**
+  - Run 3's `asan` timed out at 10 min in `core` `TestSimulation`. Nothing on my
+  branch touches it; #101's asan-core sharding targets this.
+  - #101 merges cleanly except in `internal/simulator/sitecheck/main.go`, where
+  both change `run()`.
+  - `docs/todo.md`'s hang entries need updating.
+  - Shard 2 (planted bugs not "of a commit") runs up to 247 s; #101's
+  `testshard` could balance it.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Builder: faster browser CI job" is waiting on its own background work ·
+  1h 46m 57s
+
+⏺ Agent(Merge #98 locally, verify CI) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The browser check now takes about 4 minutes, against 14 before: 3:29, 4:26,
+  and 4:08 in three runs of the final code. A sub-agent is merging it to main
+  now, locally, because it changes a workflow file.
+
+  - Where the 14 minutes went: internal/core alone took 11.3 minutes in
+    Chromium, after 3.5 minutes of builds and lints.
+  - What changed: the tests are split over six parallel jobs, four of them
+    sharing the core's tests by name. Every test still runs exactly once: 749
+    results in the shards, as in a full run. No test was shortened or dropped.
+  - The hang: on 108 fresh CI machines, 14 had a Chromium that did not load its
+    page at least once. The runner and the site check now start it again, up to
+    six times, so it costs a minute or two and not 30. A hang inside a test is
+    stopped 30 s after its timeout, with the names of the running tests.
+
+  Two things outside this branch that the builder saw:
+
+  - asan timed out once at 10 minutes in the core's TestSimulation. Nothing on
+    this branch touches it, and #101 from the other session targets it.
+  - #101 and this branch conflict in one function of the site check. If #101 is
+    merged first, the sub-agent stops and I have the conflict resolved before
+    merging.
+✻ Churned for 36s · done Friday 6:10 PM
+
+› Message from general-purpose
+  #98 merged locally as fb4c833 (squashed), pushed to main. PR closed; builder
+  worktree, local branch and remote `faster-browser-ci` removed.
+
+  Checks before merge: every job passed (changes, browser, 6x browser-test,
+  site, lint, test, fuzz, asan-fuzz 1-4) except `asan`. `asan` failed on the
+  known `internal/core` 10m timeout (`TestSimulation_plantedBugs`, #101's
+  problem). The diff has no TEMPORARY code, only diary mentions.
+
+  Diff: 8 files, +711/-114. Main ones: `ci.yml`, `Makefile`,
+  `sitecheck/main.go`, `sqlite/browser/main.go`, their tests,
+  `sqlite/browser/README.md`, and the diary.
+
+  Step 4: build, `go test -race` on `internal/sqlite/browser`, `check-browser`,
+  `lint` and `site-check` passed. Plain `go test -race` of sitecheck fails
+  without `-tags s4ql_browser` (build-tag constraint). With the tag it passed.
+
+  CI on main (all success): `site` 77s, `browser` 155s. `browser-test` shards: 1
+  118s, 2 252s, 3 180s, 4 202s, 5 124s, 6 81s. No Chromium restart messages in
+  the logs. Pages succeeded. `https://www.s4ql.com/simulator/` returns 200.
+
+  The commit body has no wall-time numbers, because I did not take them from the
+  diary.
+
+⏺ Stop Task
+  ⎿  Builder: faster browser CI job · stopped
+
+⏺ Agent "Merge #98 locally, verify CI" is waiting on its own background work · 
+  18m 35s
+
+⏺ The faster browser job is on main (fb4c833), and its first run there passed:
+
+  ┌───────────────────────────────┬──────────────────────────┐
+  │              Job              │           Time           │
+  ├───────────────────────────────┼──────────────────────────┤
+  │ browser (builds, vets, lints) │ 2 min 35 s               │
+  ├───────────────────────────────┼──────────────────────────┤
+  │ browser-test shards 1 to 6    │ 1 min 21 s to 4 min 12 s │
+  ├───────────────────────────────┼──────────────────────────┤
+  │ site                          │ 1 min 17 s               │
+  └───────────────────────────────┴──────────────────────────┘
+
+  The longest shard sets the wall time, so the browser check took about 4
+  minutes, against 14 before. No Chromium needed a restart in that run.
+
+  Before the merge every check on the pull request passed except asan, which hit
+  the known 10-minute timeout in the core's TestSimulation_plantedBugs. That is
+  the problem #101 addresses, and nothing in this change touches it.
+
+  When #101 is merged, it will conflict with this in one function of the site
+  check; the note on how to resolve it is in the comment on #101.
+
+  Nothing of mine is running now, and everything you asked for today is live:
+  SQL on barcodes, the sounds, Turbo on by default, the bucket that survives a
+  refresh with Reset, and deletes.
+
+✻ Sautéed for 2h 56m 10s · done Friday 6:28 PM
+
+› Message from general-purpose
+  Already reported: #98 merged as fb4c833. CI, Pages and Security on main for
+  that commit are all completed (the monitor confirmed it just now).
+
+⏺ Confirmed by the sub-agent's last check: CI, Pages, and the security workflow
+  all completed for fb4c833 on main. Nothing is running.
+
+✻ Crunched for 1s · done Friday 6:35 PM
+
+⏺ Agent "Merge #98 locally, verify CI" is waiting on its own background work · 
+  25m 46s
+
+› Message from general-purpose
+  Nothing new. That notification was only my idle-wait timer ending. The work is
+  done and reported: #98 is merged as fb4c833.
+
+⏺ Nothing new: that was only the sub-agent's wait timer ending. All work is done
+  and main is green.
+
+✻ Worked for 1s · done Friday 6:42 PM
+
+⏺ Agent "Merge #98 locally, verify CI" is waiting on its own background work · 
+  32m 1s
+
+❯ Our design is kinda Ryoji Ikeda.                                              
+
+⏺ Stop Task
+  ⎿  Error: No task found with ID: a42bfccade7a28a87
+
+⏺ It is, and more so since today. His "test pattern" turns data into
+  black-and-white barcode strips with sound made from the same data, and
+  "datamatics" does it with tones and clicks. The simulator now does the small
+  version of that: each commit is drawn as a barcode and beeps at a pitch taken
+  from its key, in white on black, with square waves.
+
+  The difference is that his data is the material, and ours is a real system
+  doing work. That is a nice angle if you ever describe the page: the pattern
+  and the sound are not decoration, they are the storage engine's actual
+  commits.
+
+  If you want to lean into it, the two cheapest steps would be the bar field in
+  the playback bar pulsing with each commit in time with its beep, and a
+  full-screen mode that shows only the barcodes and plays the sound. Neither is
+  started; say so if you want one.
+
+✻ Cooked for 3h 21m 55s · done Friday 9:57 PM
+
+※ recap: The simulator now runs real SQL on a barcodes table with sound, a bucket that survives refresh, deletes, and a 4-minute browser CI job, all live with nothing running. Next: say whether you want the Ikeda-style pulsing bar field or full-screen mode. (turn off recaps in /config)
+
+❯ No thanks, just a thought.                                                    
+
+⏺ Understood, nothing started. Everything is live and main is green.
+
+✻ Worked for 2s · done Friday 10:39 PM
+
+❯ I'd also like someone looking at the simulator to try out the storage engine. 
+  Maybe a small SQL box and a results table below it? Independent of the rest   
+  of the simulator perhaps. Thoughts?                                           
+  ⎿  1 skill available
+
+⏺ I'd build it, but inside the simulator, not independent of it.
+
+  An independent box would be an SQL prompt with less SQL than SQLite has, and
+  nothing to see behind it. What is worth trying is the storage: you type an
+  insert, its commit object appears in S3 as a barcode with your statement on
+  it, you crash a, refresh the page, and select the row back. That only works if
+  your statement is a request in the same session, to the instance that
+  requests go to, under the faults you have set.
+
+  How I would do it:
+
+  - The box: one statement, a Run button, and the result as a table below it, or
+    the engine's error as it words it.
+  - Same path as the app's requests: your statement shows in the log, commits as
+    its own object, beeps, and fails or waits when the instance is down or S3
+    hangs.
+  - Your own tables: you can create, insert, update, delete, and drop tables of
+    your own. The app's barcodes table is read-only for the box, so a stray
+    delete from barcodes cannot make the checker and the app's requests go
+    wrong. You can still select from it.
+  - While paused: Run steps fake time just far enough for the answer. If S3
+    hangs, the statement waits until you play.
+  - Limits to design for: there is no limit or order by yet, so select * from 
+    barcodes can return over a thousand rows; the table would show the first 50
+    or so and say how many more there are. A line under the box links to the
+    roadmap for what SQL works.
+  - Persistence: your tables survive a refresh with the rest of the bucket, and
+    count toward the cap of 2,000 commit objects.
+
+  The cost of this over an independent box is the read-only rule and the checker
+  having to accept your commits in the log. The gain is that it shows the thing
+  the page is about.
+
+  Do you want it integrated like this, or do you still prefer it independent?
+
+✻ Crunched for 36s · done 11:16 AM
+
+❯ Like you suggest sounds good. I think there's limit and order by now BTW, not 
+  sure how far it's implemented.                                                
+
+  No result recorded for 1 call (ctrl+o to expand)
+  ⎿  $ git pull --ff-only -q; git log --oneline -8; echo ---; sed -n '/^## Status/,/^The slices/p' README.md; echo ---; grep -n '^### Slice\|^Status:' docs/roadmap.md | head -40; git worktree list | head; gh pr list --state open --json number,title -q '.[] | (.number|tostring)+" "+.title'
+  ⎿  Interrupted · What should Claude do instead?
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ But before we begin, let's compact and restart the session.                   
+
+⏺ Ready for that: nothing of mine is running, and the SQL box is not started.
+
+  What carries over to the new session:
+
+  - Agreed: an SQL box in the simulator, integrated as I described. One
+    statement with Run and a results table, on the same path as the app's
+    requests, with the visitor's own tables and barcodes read-only for the box.
+  - First step: check how far limit and order by are built, since that decides
+    whether the results table needs its own cut-off.
+  - Parked by you: shared tabs and unique instance names.
+  - Open from me: whether to have the double download of each commit object on a
+    restore looked at in the core.
+
+  If you export the conversation first, I'll move it to docs/conversations/ and
+  commit it. It continues the one from 2026-11-16, so it overwrites
+  2026-11-16-site-and-simulator.txt, unless you want it as a new file.
+✻ Worked for 6s · done 11:19 AM
