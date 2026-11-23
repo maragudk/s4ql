@@ -328,6 +328,20 @@ func TestConn_returning(t *testing.T) {
 		got := i.queryValues("select * from t", nil)
 		is.Equal(t, "", got.err)
 		is.Equal(t, 0, len(got.rows))
+
+		// A context that ends after the commit ends the rows with its error, and the change stays.
+		ctx, cancel = context.WithCancel(t.Context())
+		rows, err := i.c.Query(ctx, "insert into t (k, v) values (1, 'a') returning k")
+		is.NotError(t, err)
+		cancel()
+		n := 0
+		for _, err := range rows.All() {
+			is.True(t, errors.Is(err, context.Canceled))
+			n++
+		}
+		is.Equal(t, 1, n)
+		is.NotError(t, rows.Close())
+		is.Equal(t, `1,"a"`, strings.Join(i.queryValues("select * from t", nil).rows, " "))
 	})
 
 	t.Run("should refuse a statement in a transaction while the rows of a RETURNING of it are open, and run one outside a transaction", func(t *testing.T) {
