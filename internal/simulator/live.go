@@ -56,8 +56,9 @@ type session struct {
 type command struct {
 	kind string
 	// by is how far an advance moves fake time, or to the time that it moves it to if by is
-	// negative.
+	// negative. box ends the advance early, once no statement of the box is on its way.
 	by, to time.Duration
+	box    bool
 	// action of an act.
 	action Action
 	// commits that the state of a now lists at most, if above 0.
@@ -148,6 +149,10 @@ func (r *run) serve(ctx context.Context) {
 				refusal = fmt.Sprintf("to is %v, more than %v after the time of the session", millis(to), maxEnd)
 				break
 			}
+			if c.box {
+				r.untilBox(ctx, to)
+				break
+			}
 			r.sleepUntil(ctx, to)
 		case "act":
 			r.act(ctx, r.actions, c.action)
@@ -159,6 +164,21 @@ func (r *run) serve(ctx context.Context) {
 			r.end(ctx)
 			return
 		}
+	}
+}
+
+// untilBox sleeps until the time to, as an advance does, or until the statement of the box that is on
+// its way has ended, whichever comes first. Without one, it returns at once. The task of the statement
+// ends after the event that ends its call.
+func (r *run) untilBox(ctx context.Context, to time.Duration) {
+	box := r.boxPending()
+	if box == nil {
+		return
+	}
+	if d := to - r.world.Monotonic(); d > 0 {
+		wait, cancel := r.world.WithTimeout(ctx, d)
+		defer cancel()
+		_ = box.Wait(wait)
 	}
 }
 
@@ -178,11 +198,19 @@ func (s *session) parseCommand(kind string, body []byte) (command, error) {
 	switch kind {
 	case "advance":
 		var q struct {
-			By *float64 `json:"by"`
-			To *float64 `json:"to"`
+			By    *float64 `json:"by"`
+			To    *float64 `json:"to"`
+			Until string   `json:"until"`
 		}
 		if err := json.Unmarshal(body, &q, json.RejectUnknownMembers(true)); err != nil {
 			return command{}, fmt.Errorf("the message is not JSON of an advance: %w", err)
+		}
+		switch q.Until {
+		case "":
+		case "sql":
+			c.box = true
+		default:
+			return command{}, fmt.Errorf("until is %q, and must be sql or missing", q.Until)
 		}
 		switch {
 		case (q.By == nil) == (q.To == nil):

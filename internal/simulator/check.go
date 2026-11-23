@@ -28,7 +28,8 @@ const (
 	// acknowledged and at the end.
 	invariantAcknowledged = "acknowledged"
 	// invariantNotCommitted: a commit that failed with an error other than an unknown outcome is not
-	// in the log at the end.
+	// in the log at the end, and neither is a write of the table of the workload that the application
+	// did not make.
 	invariantNotCommitted = "not_committed"
 	// invariantOnce: no transaction is in the log twice at the end, and the log deletes a row only
 	// where it holds it.
@@ -46,28 +47,40 @@ const (
 	invariantFresh = "fresh"
 )
 
-// txn is a write transaction of the workload: the insert or the delete of the row of one key. A key
-// is inserted by one transaction, the write that took its value from the counter. It is deleted by
-// one at most, because a delete picks only a key that the application knows is in the store and
-// that no delete has picked before: see [checker.pickDelete].
+// txn is a write transaction: of the workload, the insert or the delete of the row of one key, or a
+// commit object, by its name. A key is inserted by one transaction, the write that took its value
+// from the counter. It is deleted by one at most, because a delete picks only a key that the
+// application knows is in the store and that no delete has picked before: see [checker.pickDelete].
+// A write of the box is known by the name of its commit object, which names its parent, so no two
+// writes have one. Every commit object of the log is the write of its name, beside the writes of the
+// workload that it holds.
 type txn struct {
 	key    int64
 	delete bool
+	commit string
 }
 
 func (w txn) String() string {
-	if w.delete {
+	switch {
+	case w.commit != "":
+		return "the commit " + short(w.commit)
+	case w.delete:
 		return fmt.Sprint("the delete of ", w.key)
+	default:
+		return fmt.Sprint("the insert of ", w.key)
 	}
-	return fmt.Sprint("the insert of ", w.key)
 }
 
 // in reports whether the commit object o holds the write.
 func (w txn) in(o *CommitObject) bool {
-	if w.delete {
+	switch {
+	case w.commit != "":
+		return o.Name == w.commit
+	case w.delete:
 		return slices.Contains(o.Deletes, w.key)
+	default:
+		return slices.Contains(o.Keys, w.key)
 	}
-	return slices.Contains(o.Keys, w.key)
 }
 
 // checker of the invariants, over the store as it is and over what the calls saw. It also keeps what
@@ -91,6 +104,9 @@ type checker struct {
 	acked, unknown, failed []txn
 	// reads that were served, for the checks at the end.
 	reads []readSeen
+	// writes holds every write of the workload that a call of the application made, and the writes of
+	// the log of a stored bucket.
+	writes map[txn]bool
 	// logAtEnd is the number of commit objects in the log at the end of the run.
 	logAtEnd int
 
@@ -119,12 +135,14 @@ type checker struct {
 
 // readSeen is a read that was served: how many acknowledged and unknown writes had ended before it
 // started, its process, the key that it selected, and its position. A read that the checker checked
-// fast keeps the number of commit objects of the log up to its position in place of the position.
+// fast keeps the number of commit objects of the log up to its position in place of the position. A
+// select of the box selects no key: box is set for it.
 type readSeen struct {
 	acked, unknown int
 	p              *process
 	at             time.Duration
 	key            int64
+	box            bool
 	fast           bool
 	prefix         int
 	position       format.Name
@@ -139,6 +157,7 @@ func newChecker(r *run) *checker {
 		position: map[string]int{},
 		inserted: map[int64]int{},
 		deleted:  map[int64]int{},
+		writes:   map[txn]bool{},
 	}
 }
 
@@ -192,6 +211,7 @@ func (c *checker) seed(log []*CommitObject, head string) {
 		for _, w := range writesOf(o) {
 			c.acked = append(c.acked, w)
 			c.ackedAt = append(c.ackedAt, i)
+			c.writes[w] = true
 		}
 	}
 	c.head = head
@@ -205,9 +225,9 @@ func (c *checker) seed(log []*CommitObject, head string) {
 	}
 }
 
-// writesOf the commit object o: its inserts, and then its deletes.
+// writesOf the commit object o: the write of its name, its inserts, and then its deletes.
 func writesOf(o *CommitObject) []txn {
-	var writes []txn
+	writes := []txn{{commit: o.Name}}
 	for _, k := range o.Keys {
 		writes = append(writes, txn{key: k})
 	}
@@ -295,6 +315,10 @@ func (c *checker) live(k int64, at int) bool {
 // indexOf the write in the log, if the log holds it. It requires the mutex, and that the checker is
 // fast.
 func (c *checker) indexOf(w txn) (int, bool) {
+	if w.commit != "" {
+		i, ok := c.position[w.commit]
+		return i - 1, ok
+	}
 	index := c.inserted
 	if w.delete {
 		index = c.deleted
@@ -373,6 +397,9 @@ func count(chain []*CommitObject, w txn) int {
 // found its instance down was never made.
 func (c *checker) writeEnded(_ context.Context, w txn, how string) {
 	c.mu.Lock()
+	if w.commit == "" {
+		c.writes[w] = true
+	}
 	switch how {
 	case "committed":
 		c.acked = append(c.acked, w)
@@ -398,6 +425,13 @@ func (c *checker) writeEnded(_ context.Context, w txn, how string) {
 			c.violate(invariantAcknowledged, false, nil, "%v is acknowledged, and the log holds it %v times", w, n)
 		}
 	}
+}
+
+// made: a call of the application starts the write of the workload w.
+func (c *checker) made(w txn) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writes[w] = true
 }
 
 // last element of s, or nil.
@@ -433,6 +467,7 @@ func (c *checker) learn(k int64) {
 // one delete.
 func (c *checker) learnEnd(w txn, how string) {
 	switch {
+	case w.commit != "":
 	case !w.delete:
 		if how == "committed" {
 			c.learn(w.key)
@@ -497,8 +532,17 @@ func (c *checker) readStarted() readSeen {
 	return readSeen{acked: len(c.acked), unknown: len(c.unknown), at: c.r.world.Monotonic()}
 }
 
+// boxRead: a select of the box on p, which started as before says, was served at the position. Only
+// [invariantFresh] applies to it, and the part of [invariantState] that its position is in the log:
+// the checker cannot tell which rows an arbitrary select must give.
+func (c *checker) boxRead(ctx context.Context, p *process, before readSeen, position format.Name) {
+	before.box = true
+	c.readEnded(ctx, p, before, 0, nil, position)
+}
+
 // readEnded on p, which started as before says, selected the row of the key, and saw the keys at the
-// position.
+// position. A select of the box, for which before.box is set, has no key, and its rows are not
+// checked.
 func (c *checker) readEnded(_ context.Context, p *process, before readSeen, key int64, keys []int64, position format.Name) {
 	before.key = key
 	if c.readFast(p, before, keys, position) {
@@ -521,6 +565,7 @@ func (c *checker) readEnded(_ context.Context, p *process, before readSeen, key 
 	switch {
 	case at < 0:
 		c.violate(invariantState, false, p, "a read saw the position %v, which is not in the log", short(position.String()))
+	case before.box:
 	case len(seen) < len(keys):
 		c.violate(invariantState, false, p, "a read at %v saw a row twice", short(position.String()))
 	default:
@@ -565,11 +610,13 @@ func (c *checker) readFast(p *process, before readSeen, keys []int64, position f
 		return false
 	}
 	// The read gives the row of its key if and only if the log has it at its position.
-	if c.live(before.key, at) {
+	switch {
+	case before.box:
+	case c.live(before.key, at):
 		if len(keys) != 1 || keys[0] != before.key {
 			return false
 		}
-	} else if len(keys) != 0 {
+	case len(keys) != 0:
 		return false
 	}
 	// The read saw every acknowledged write, an insert or a delete, of its key or of another, if
@@ -600,7 +647,7 @@ func (c *checker) final(_ context.Context) {
 	c.mu.Lock()
 	c.logAtEnd = len(chain)
 	acked, unknown, failed, reads := slices.Clone(c.acked), slices.Clone(c.unknown), slices.Clone(c.failed), slices.Clone(c.reads)
-	inserted, deleted := c.inserted, c.deleted
+	inserted, deleted, positions, made := c.inserted, c.deleted, c.position, maps.Clone(c.writes)
 	c.mu.Unlock()
 
 	inLog := map[txn]int{}
@@ -620,14 +667,16 @@ func (c *checker) final(_ context.Context) {
 		}
 	}
 	byKey := func(a, b txn) int {
-		if a.key != b.key {
-			return cmp.Compare(a.key, b.key)
-		}
-		return cmp.Compare(fmt.Sprint(a.delete), fmt.Sprint(b.delete))
+		return cmp.Or(cmp.Compare(a.commit, b.commit), cmp.Compare(a.key, b.key), cmp.Compare(fmt.Sprint(a.delete), fmt.Sprint(b.delete)))
 	}
 	for _, w := range slices.SortedFunc(maps.Keys(inLog), byKey) {
-		if inLog[w] > 1 {
+		switch {
+		case inLog[w] > 1:
 			c.violate(invariantOnce, false, nil, "the log holds %v %v times at the end", w, inLog[w])
+		case w.commit == "" && !made[w]:
+			// Each write of the table of the workload comes from a call of the application, or from
+			// the log of a stored bucket: the box may not change the table.
+			c.violate(invariantNotCommitted, false, nil, "the log holds %v, which the app did not make", w)
 		}
 	}
 	rows := map[int64]bool{}
@@ -659,6 +708,10 @@ func (c *checker) final(_ context.Context) {
 					index = deleted
 				}
 				i, ok := index[w.key]
+				if w.commit != "" {
+					i, ok = positions[w.commit]
+					i--
+				}
 				missed = !ok || i >= read.prefix
 			} else {
 				missed = !writes()[w]

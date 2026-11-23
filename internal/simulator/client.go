@@ -63,11 +63,16 @@ func (r *run) client(ctx context.Context, gate host.Task) {
 // in the process serves a request, and the client waits for that task. If the process crashes first,
 // the call ends with "lost": the client gets no answer, so the outcome of a write is unknown.
 func (r *run) clientCall(ctx context.Context, op string) {
+	r.callTarget(ctx, r.newCall("client", op, ""))
+}
+
+// callTarget makes the call c on the target of the client, as [run.clientCall] describes: a call of
+// the client, or of the box.
+func (r *run) callTarget(ctx context.Context, c *call) {
 	r.mu.Lock()
 	in := r.target
 	r.mu.Unlock()
 	p := in.p
-	c := r.newCall("client", op)
 	r.rec.add(c.event(in, p, "started"))
 	if why := down(p); why != "" {
 		r.callDown(ctx, c, in, p, why)

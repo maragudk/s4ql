@@ -9,6 +9,7 @@ import (
 	"math"
 	"slices"
 	"time"
+	"unicode/utf8"
 
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -117,6 +118,9 @@ type Action struct {
 	// On is whether the action "workload" switches the callers on or off, and whether a fault that
 	// the visitor switches, such as "hangNetwork", is on or off.
 	On bool `json:"on,omitzero"`
+	// SQL is the statement that the action "sql" sends, the visitor's own, with at most [maxSQL]
+	// characters.
+	SQL string `json:"sql,omitzero"`
 }
 
 // actions that a schedule can hold, with whether each needs an instance.
@@ -146,6 +150,8 @@ var actions = map[string]bool{
 	"workload":          false,
 	// The client calls the instance from then on.
 	"client": true,
+	// The visitor's statement of SQL goes to the instance that the client calls.
+	"sql": false,
 }
 
 // purposes of a request to the store, as the trace names them, which a lost answer or a failed
@@ -158,6 +164,8 @@ const (
 	maxInstances = 5
 	maxCallers   = 8
 	maxSchedule  = 1000
+	// maxSQL is the most characters of the statement of an action "sql".
+	maxSQL = 1000
 )
 
 // defaultRequest has the default of every field.
@@ -273,6 +281,8 @@ func (a Action) check(instances int) error {
 		return fmt.Errorf("%v is for no instance, and has %q", a.Do, a.Instance)
 	case a.Instance != "" && !validInstance(a.Instance, instances):
 		return fmt.Errorf("%v is for an instance from a to %v, and has %q", a.Do, instanceName(instances-1), a.Instance)
+	case a.Do != "sql" && a.SQL != "":
+		return fmt.Errorf("%v takes no sql", a.Do)
 	}
 	switch a.Do {
 	case "cutOff", "outage":
@@ -286,6 +296,13 @@ func (a Action) check(instances int) error {
 	case "loseAnswer", "failRequest":
 		if !slices.Contains(purposes, a.Request) {
 			return fmt.Errorf("%v needs request, one of %v, and has %q", a.Do, purposes, a.Request)
+		}
+	case "sql":
+		switch n := utf8.RuneCountInString(a.SQL); {
+		case !utf8.ValidString(a.SQL):
+			return errors.New("sql is not valid UTF-8")
+		case n > maxSQL:
+			return fmt.Errorf("sql has %v characters, and may have at most %v", n, maxSQL)
 		}
 	}
 	return nil

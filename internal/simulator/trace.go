@@ -45,6 +45,15 @@ type Event struct {
 	Keys   []int64 `json:"keys,omitzero"`
 	// Position is the name of the last commit object in the state that a call saw.
 	Position string `json:"position,omitzero"`
+	// Columns, Rows, and Count are what a select of the box gave: the names of its columns, its
+	// first rows, each with a cell for each column, nil for NULL, and the number of all its rows.
+	// Affected is the number of rows that a write of the box changed, if the statement counts them,
+	// and Commit the name of its commit object, if it wrote one.
+	Columns  []string  `json:"columns,omitzero"`
+	Rows     [][]*Cell `json:"rows,omitzero"`
+	Count    int       `json:"count,omitzero"`
+	Affected *int64    `json:"affected,omitzero"`
+	Commit   string    `json:"commit,omitzero"`
 
 	// Request is the number of a request to the store, Method its method, Key its key, Purpose
 	// what it is for, and Bytes the size of what it sends.
