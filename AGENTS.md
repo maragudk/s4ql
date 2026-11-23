@@ -127,7 +127,7 @@ Split the work so that no builder comes near the limit of its context.
 
 ### Large scratch files go on the larger disk of the Mac Mini
 
-This rule applies only on the Mac Mini, which has a second, larger disk. Other machines, such as the Raspberry Pi 5 (`pi3`), have one large disk, so there large scratch files go in the session's scratchpad or wherever is ordinary. The rest of the rule holds everywhere: each agent uses a subdirectory of its own and deletes only that.
+This rule applies only on the Mac Mini, which has a second, larger disk. Other machines, such as the Raspberry Pi 5 (`pi3`), have one large disk, so there large scratch files go in `~/scratch/s4ql/` on that disk. Not in the session's scratchpad or `/tmp`: on the Raspberry Pi `/tmp` is a `tmpfs` of 4 GB that lives in memory. The rest of the rule holds everywhere: each agent uses a subdirectory of its own and deletes only that.
 
 On the Mac Mini, scratch files that can grow large go in `/Volumes/990/s4ql/`, each agent in a subdirectory of its own named after its branch. This covers the working copies of mutation testing runs, fuzz corpora under construction, and benchmark data. They do not go in the session's scratchpad or under `/tmp`. Go's build cache and module cache are on that disk already (`go env GOCACHE GOMODCACHE`), so a run uses the default ones and sets no cache of its own. An agent deletes its own subdirectory when its work is merged, and never anything outside it.
 
