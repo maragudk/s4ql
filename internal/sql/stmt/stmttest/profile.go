@@ -88,6 +88,9 @@ type Profile struct {
 	// no NULL, one of two values of its type, as [tieValue] gives them, so that rows tie on a column
 	// of an index and differ in the next, where the order of a key and of an ORDER BY can part.
 	Ties int
+	// Returning, if not 0, makes one insert, update, or delete in Returning end with the RETURNING of
+	// slice 14, as [Sequence.returning] draws it; the area of the RETURNING is off with 0.
+	Returning int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
@@ -100,7 +103,7 @@ const Slots = 32
 var (
 	// Mixed has every area on, with the odds of each as a statement of several features meets them.
 	Mixed = &Profile{Name: "mixed", Faults: allFaults, Weights: weights(4, 10, 5, 1, 3, 2, 3, 1), Others: 12, Where: 2, Indexes: 1, Exists: 3, Defaults: 1,
-		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4}
+		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4, Returning: 5}
 	// Tables weighs the tables themselves, of slices 1, 4, 5, and 6: their columns, types, and keys,
 	// the columns that take NULL, the lists and the faults of an insert, whole reals for a column of
 	// integers, and a select of all rows.
@@ -132,15 +135,22 @@ var (
 	// with an argument that s4ql refuses.
 	Order = &Profile{Name: "order", Faults: []string{areaOrder}, Aim: 3, Weights: weights(2, 14, 14, 1, 1, 1, 6, 1), Where: 2, Indexes: 2, Columns: 3,
 		Parameters: 3, Transactions: 4, Order: 3, Limit: 2, Keys: 1, Shared: 2, Aimed: 3, Ties: 2}
+	// Returning weighs the RETURNING of slice 14 on an insert, an update, and a delete: of named
+	// columns and of *, of a column twice and of one that the table does not have, of every type, with
+	// NULL and defaults, on statements that change no row, one row, and many rows, that change the key
+	// and the columns of an index, and that fail on a constraint, also part-way through their rows,
+	// and in transactions, which its test begins more often.
+	Returning = &Profile{Name: "returning", Faults: []string{areaReturning}, Aim: 3, Weights: weights(2, 12, 5, 1, 7, 5, 2, 1), Where: 2, Indexes: 1,
+		Columns: 2, Defaults: 1, Parameters: 3, Transactions: 2, Keys: 2, Returning: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].
-var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder}
+var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder, areaReturning}
 
 // Profiles, each at the slot of its place in the list. A profile is added at the end, and none is
 // taken out or moved, since the seeds of each profile are those of its slot: see [Profile.Seed].
 var Profiles = func() []*Profile {
-	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order}
+	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order, Returning}
 	if len(ps) > Slots {
 		panic("stmttest: more profiles than slots")
 	}
@@ -205,6 +215,8 @@ const (
 	// areaOrder draws the ORDER BY and the LIMIT of a select, and an argument of the LIMIT that s4ql
 	// refuses.
 	areaOrder = "order"
+	// areaReturning draws whether an insert, an update, or a delete has a RETURNING, and its columns.
+	areaReturning = "returning"
 	// areaOthers draws the texts of [Others].
 	areaOthers = "others"
 	// areaText draws how a statement is written: its gaps, the case of its keywords, the spelling of
@@ -235,6 +247,8 @@ func (p *Profile) on(area string) bool {
 		return p.Others > 0
 	case areaOrder:
 		return p.Order > 0 || p.Limit > 0
+	case areaReturning:
+		return p.Returning > 0
 	}
 	return true
 }
