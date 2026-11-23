@@ -40,7 +40,7 @@ Five areas are on in every profile: `names`, `plan`, `tables`, `inserts`, and `t
 | 8 | `transactions` | The statements that write, and those that read what was written. Its test begins transactions more often. | `selects`, `changes`, `indexes`, `arguments` |
 | 9 | `arguments` | The parameters, the arguments around those that s4ql supports, and the texts of `Others`: the errors and the refusals. | `selects`, `changes`, `arguments`, `others` |
 | 10 | `order` | The ORDER BY and the LIMIT of a select: on columns of every type, ascending and descending, with NULL and with rows that tie, with WHERE and without. Also the ORDER BY that an index delivers, beside an index that only narrows a range, around a pinned column of its key, with mixed directions, and with a gap in the key, and the LIMIT as a literal and as a `?`, with the arguments that s4ql refuses. | `selects`, `changes`, `indexes`, `arguments`, `order` |
-| 11 | `returning` | The RETURNING of an insert, an update, and a delete: `*` and named columns, a column twice, and a column that the table does not have, of every type, with NULL and with defaults. Its statements change no row, one row, and several rows, change the key and the columns of an index, and fail on a constraint. Also goqite's send and its receive by id. Its test begins transactions more often. | `selects`, `changes`, `indexes`, `defaults`, `arguments`, `returning` |
+| 11 | `returning` | The RETURNING of an insert, an update, and a delete: `*` and named columns, a column twice, and a column that the table does not have, of every type, with NULL and with defaults. Its statements change no row, one row, and several rows, change the key and the columns of an index, move a row to a key that it did not have, change every row, and fail on a constraint. Its tables have a column with a default before one without, where `*` shows the order of the columns. Also goqite's send and its receive by id. Its test begins transactions more often. | `selects`, `changes`, `indexes`, `defaults`, `arguments`, `returning` |
 
 ### The fields of a profile
 
@@ -54,6 +54,7 @@ Five areas are on in every profile: `names`, `plan`, `tables`, `inserts`, and `t
 | `Indexes` | With 0, the sequence has no indexes. With 1, it has one or two names of indexes. One WHERE in two of a table with an index is then drawn for the index. With 2, it has two or three names, and three such WHERE in four. More of its indexes hold every column but the key. More of its WHERE pin every column of an index, and the key after them. |
 | `Exists` | One create in `Exists` says IF NOT EXISTS, and one drop in `Exists` says IF EXISTS. |
 | `Defaults` | With 0, no table has a DEFAULT. With 1, a third of the tables have none, and a third have one on every column. The last third have one on each column one time in two. With 2, every table has one of the last two forms. |
+| `DefaultFirst` | With `Defaults`, one table in `DefaultFirst` of two columns or more has a default on its first column and none on its last, and one on each other column one time in two. So a column with a default comes before one without, where `*` of a RETURNING shows the order of the columns of the table. The other tables draw their defaults as `Defaults` says. |
 | `ValueFirst` | One comparison in `ValueFirst` has its value on the left. |
 | `Parameters` | One value in `Parameters` is a plain `?`. |
 | `Around` | One call in `Around[0]` of a statement with a parameter has arguments around those that s4ql supports. So has one call in `Around[1]` of a statement without a parameter. |
@@ -69,6 +70,8 @@ Five areas are on in every profile: `names`, `plan`, `tables`, `inserts`, and `t
 | `Returning` | One insert, update, or delete in `Returning` ends with a RETURNING, as `Sequence.returning` draws it: `*` one time in three, and otherwise one to four columns of the shape of its table. One column in four after the first is an earlier one, which the clause then names twice. One in twelve is any name of a column of the sequence, which the table may not have, a fault of the area. The area `returning` is off with 0. |
 | `ByKey` | One update in `ByKey` changes the row of a key, as goqite's receive by id does: its WHERE is the key alone, equal to a value that an insert gave it, and its SET has columns outside the key only. The table must have such a column, and the sequence a value of the key. |
 | `KeyLeftOut` | One insert in `KeyLeftOut` with a list leaves out a key that has a default, so that the row gets the default as its key, as goqite's send does. Every other such insert leaves the key out one time in four, as in a profile with 0. |
+| `NewKey` | One update in `NewKey` of those that `ByKey` leaves moves the row of a key to a new key: its WHERE is the key alone, equal to a value that an insert gave it, and its SET has the key first, with a value that no insert gives (`keyOfStep` of the statement's own number), and then as many columns as another update has. The sequence must have a value of the key. |
+| `EveryRow` | One update in `EveryRow` of those that `ByKey` and `NewKey` leave changes every row of its table: it has no WHERE, and its SET has columns outside the key only, so that an update of a table of several rows gives them all. The table must have a column outside the key. |
 
 `Aim` and `Faults` are what make a focused profile work. Without them, many statements of a sequence meet a table that is not there, or fail for a fault. Focus alone then does not make a rare kind of outcome more frequent. To aim, the sequence keeps a model of its own statements: the tables that are live (`live`), the indexes that it keeps (`indexed`), and the values that it gave each column (`stored`). The model follows the statements as the sequence wrote them, whether SQLite takes them or not.
 
@@ -165,16 +168,12 @@ Remove a kind from a `.kinds` file only if it is pinned somewhere else, and say 
 
 The files of `TestDifferential`, `TestConn_differential`, and `TestSimulation` are in `internal/engine/testdata/reached/`. Those of the driver check are `TestGenerated.kinds` and `TestGenerated.tsv` in `internal/sqlite/crosscheck/drivercheck/testdata/reached/`.
 
-The driver check, `TestGenerated`, runs as many sequences of each profile as `generatedOf` says. It has no slow run: it runs in full and checks its counts in every run, also under the race detector. Six kinds are not in its `.kinds` file, because no profile reaches them three times in its run:
+The driver check, `TestGenerated`, runs as many sequences of each profile as `generatedOf` says. It has no slow run: it runs in full and checks its counts in every run, also under the race detector. Two kinds are not in its `.kinds` file, because no profile reaches them three times in its run:
 
 - "reached: value on the left of != finds rows"
 - "reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column"
-- "reached: goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING"
-- "reached: goqite's send: an insert that leaves out a key with a default and gives the key by RETURNING"
-- "reached: update with RETURNING that gives several rows"
-- "reached: delete with RETURNING that gives several rows"
 
-`TestGenerated` requires each of the six once over all profiles. `TestDifferential` of the engine requires all six by profile.
+`TestGenerated` requires each of the two once over all profiles. `TestDifferential` of the engine requires both by profile.
 
 Only `mixed` has every area on, so only `mixed` reaches what lies where two areas meet that no focused profile has on together. Two kinds count such a meeting, so that fewer sequences of `mixed` show in the totals: "insert that leaves out a column with a default that an index holds ok", where the index must hold the default, and "value on the left on a table that a create table if not exists found". `TestDifferential`, `TestConn_differential`, and `TestGenerated` require both. In `TestDifferential` and `TestSimulation`, `mixed` runs two thirds of the sequences or seeds that the one sequence of all areas ran before the profiles: 200 of 300, and 100 of 150. In `TestConn_differential` it runs 40 of 60. In `TestGenerated` it runs 128 of 250, the most that the time of its package allows.
 
@@ -218,9 +217,9 @@ Never draw from the stream of another area. Such a draw moves the numbers of tha
 | `selectList`, `where` | `rSelects`, and `rOrder` for the draw of `Profile.Aimed` |
 | `order`, `orderColumns`, `aimedWhere` | `rOrder` |
 | `returning` | `rReturning` |
-| `update`, `delete`, `changeConditions` | `rChanges`, also for the draw of `Profile.ByKey` in `update` |
+| `update`, `delete`, `changeConditions` | `rChanges`, also for the draws of `Profile.ByKey`, `Profile.NewKey`, and `Profile.EveryRow` in `update` |
 | `createIndex`, `indexWhere`, `indexConditions` | `rIndexes`, also for the columns of `Profile.Shared` |
-| `shapeOf` | `entity(areaTables, name)`, and `entity(areaDefaults, name)` for the defaults |
+| `shapeOf` | `entity(areaTables, name)`, and `entity(areaDefaults, name)` for the defaults, also for the draw of `Profile.DefaultFirst` |
 | `conditions`, `conditionValue` | The stream that the caller gives |
 | `Next`, `around`, `Like` | `rArguments` |
 | `next` | `rPlan`, `rOthers` for a text of `Others`, and `rOrder` for an argument of LIMIT that s4ql refuses |
@@ -263,7 +262,7 @@ A `Generator` writes the clause where `Generator.OrderBy` is set, or where the h
    - The counts of `mixed` change. A `LIMIT ?` adds an argument, which moves the exact counts of the excused calls.
 5. **Add the rule.** Write the rule for a select with the clause, and the names of its cases, in `rule.go`. Add a table test to `rule_test.go`. Slice 13 widened `ChosenAccess` to the choice with an ORDER BY and a LIMIT, and `MissingColumn` to the columns of the ORDER BY.
 6. **Count the kinds.** Count them in the `reach*` functions, and in `tallyOf` for the simulation. Add them to the `.kinds` files. Slice 13 added `reachOrder`.
-7. **Add the profile to the simulation.** Add a cell with the profile to an environment of `simEnvironments`. A cell that is added adds to what the environment reaches, and takes nothing from it. The default and the hammer environment each have a cell of 6 seeds of `order`, and one of 6 seeds of `returning`.
+7. **Add the profile to the simulation.** Add a cell with the profile to an environment of `simEnvironments`. A cell that is added adds to what the environment reaches, and takes nothing from it. The default and the hammer environment each have a cell of 6 seeds of `order`. Of `returning`, the default environment has a cell of 6 seeds, and the hammer environment one of 16.
 8. **Add a planted bug that names the new profile.** `TestSimulation_plantedBugs` gives each bug the profile that weighs what the bug breaks. `TestDifferential_plantedBugs` does the same for a bug of the choice of an access, for a bug of an ordered select, and for a bug of RETURNING. The bugs themselves are in the engine, and `Options.Plant` in `internal/engine/export_test.go` plants one by its name. Slice 13 planted three with the profile `order`: `turnMixed`, `limitFirst`, and `ascendLast`.
 9. **Recount each test.** Use the commands of [The recount](#the-recount).
 10. **Read the diff of each `.tsv` file.** In the files of the differential tests, only the rows of `mixed` and of the new profile can change. In `TestSimulation.tsv`, a row is a cell or an environment, and an environment sums its cells. So only the rows of the cells of `mixed` and of the new profile can change, and those of the environments that hold them. If another row changes, find the cause before you commit.
@@ -271,7 +270,7 @@ A `Generator` writes the clause where `Generator.OrderBy` is set, or where the h
 
 If the rare kinds of the new profile need more sequences, give it twice as many in `sequencesOf` of `TestDifferential`, as `order` and `returning` have.
 
-A profile can need more than its own area to reach its kinds. In the first sequences of `order`, most selects gave no row or one row, because the keys repeat, and two indexes of a table seldom began with the same column. `Profile.Keys` and `Profile.Shared` changed both. Each is a field of another area, the inserts and the indexes, and draws from the stream of that area. Each is 0 in every other profile, so no other profile changed. A review then found that a pin in the middle of a key, an ORDER BY with a gap in a key, and an ORDER BY of mixed directions over rows that tie were each too rare for a fault of them to show. `Profile.Aimed`, `Profile.Ties`, three columns in each table of `order`, more selects, and the forms of an ORDER BY of a key in `Sequence.orderColumns`, a gap one time in five and mixed directions three times in five, changed that. `Aimed` and `Ties` are 0 in every other profile too.
+A profile can need more than its own area to reach its kinds. In the first sequences of `order`, most selects gave no row or one row, because the keys repeat, and two indexes of a table seldom began with the same column. `Profile.Keys` and `Profile.Shared` changed both. Each is a field of another area, the inserts and the indexes, and draws from the stream of that area. Each is 0 in every other profile, so no other profile changed. A review then found that a pin in the middle of a key, an ORDER BY with a gap in a key, and an ORDER BY of mixed directions over rows that tie were each too rare for a fault of them to show. `Profile.Aimed`, `Profile.Ties`, three columns in each table of `order`, more selects, and the forms of an ORDER BY of a key in `Sequence.orderColumns`, a gap one time in five and mixed directions three times in five, changed that. `Aimed` and `Ties` are 0 in every other profile too. The review of the generated checks of slice 14 found the same: an update that moves a row to another key, `*` on a table whose column with a default is not the last, and an update of several rows were each too rare for a fault of them to show. `Profile.NewKey`, `Profile.DefaultFirst`, `Profile.EveryRow`, and more updates in `returning` changed that, and each of the three fields is 0 in every other profile.
 
 The steps cover the generator and its counts. The checks that slice 13 added to the tests of the engine beside them are in [`docs/todo/slice-13.md`](../../../../docs/todo/slice-13.md), under "Generated checks".
 

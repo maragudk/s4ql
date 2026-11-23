@@ -368,8 +368,11 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 		if q.profile.Defaults == 1 {
 			defaults = d.IntN(3)
 		}
+		// With [Profile.DefaultFirst], a default on the first column and none on the last.
+		first := q.profile.DefaultFirst > 0 && len(shape) > 1 && d.IntN(q.profile.DefaultFirst) == 0
 		for i := range shape {
-			if defaults == 1 || defaults == 2 && d.IntN(2) == 0 {
+			switch {
+			case first && i == 0, first && i < len(shape)-1 && d.IntN(2) == 0, !first && (defaults == 1 || defaults == 2 && d.IntN(2) == 0):
 				shape[i].Default.Value = q.defaultOf(d, shape[i].Type)
 			}
 		}
@@ -1386,13 +1389,17 @@ func (q *Sequence) missing(r Rand, shape []stmt.Column) string {
 // insert gave the column, a neighbour of one, or an edge of its type, now and then one of another
 // type, and as an insert gets one otherwise, so that a change of the key meets a key that exists and
 // also one that does not. Three updates in four have a WHERE, as [Sequence.changeConditions] draws one. The
-// values of the assignments are kept, as [Sequence.store] keeps those of an insert.
+// values of the assignments are kept, as [Sequence.store] keeps those of an insert. An update of
+// [Profile.ByKey], of [Profile.NewKey], or of [Profile.EveryRow] has the SET and the WHERE that the
+// field says.
 func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition) {
 	r := q.rChanges
 	shape := q.shapeOf(table)
 	key := slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })
 	stored := q.stored[[2]string{table.Fold(), shape[key].Name.Value}]
 	byKey := q.profile.ByKey > 0 && len(shape) > 1 && len(stored) > 0 && r.IntN(q.profile.ByKey) == 0
+	newKey := !byKey && q.profile.NewKey > 0 && len(stored) > 0 && r.IntN(q.profile.NewKey) == 0
+	everyRow := !byKey && !newKey && q.profile.EveryRow > 0 && len(shape) > 1 && r.IntN(q.profile.EveryRow) == 0
 	order := make([]int, len(shape))
 	for i := range order {
 		order[i] = i
@@ -1401,12 +1408,16 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		j := r.IntN(i + 1)
 		order[i], order[j] = order[j], order[i]
 	}
-	if byKey {
+	switch {
+	case byKey, everyRow:
 		// The columns outside the key, as many as for another update.
 		order = slices.DeleteFunc(order, func(position int) bool { return position == key })
+	case newKey:
+		// The key first, and then as many columns as for another update.
+		order = append([]int{key}, slices.DeleteFunc(order, func(position int) bool { return position == key })...)
 	}
 	order = order[:1+r.IntN(len(order))]
-	if len(order) > 1 && !byKey && r.IntN(2) == 0 {
+	if len(order) > 1 && !byKey && !newKey && !everyRow && r.IntN(2) == 0 {
 		order = slices.DeleteFunc(order, func(position int) bool { return shape[position].PrimaryKey })
 	}
 	missing := -1
@@ -1424,6 +1435,9 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		}
 		var v stmt.Value
 		switch {
+		case newKey && i == 0 && i != missing:
+			// A key that no insert gives, so that the row moves to a key that it did not have.
+			v = keyOfStep(c.Type, q.step)
 		case r.IntN(10) == 0:
 			v = stmt.Null{}
 		case t == stmt.TypeReal && r.IntN(4) == 0:
@@ -1440,10 +1454,10 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 		list, values = append(list, raw), append(values, v)
 	}
 	q.store(table, shape, list, values)
-	if byKey {
+	if byKey || newKey {
 		return set, []stmt.Condition{{Column: stmt.Name{Raw: q.spell(r, shape[key].Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[r.IntN(len(stored))]}}}
 	}
-	if r.IntN(4) == 0 {
+	if everyRow || r.IntN(4) == 0 {
 		return set, nil
 	}
 	return set, q.changeConditions(table)

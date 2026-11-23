@@ -98,6 +98,20 @@ type Profile struct {
 	// KeyLeftOut, if not 0, makes one insert in KeyLeftOut with a list leave out a key that has a
 	// default, so that the row gets the default as its key, as goqite's send does.
 	KeyLeftOut int
+	// NewKey, if not 0, makes one update in NewKey move the row of a key to a new key: a WHERE of the
+	// key alone, equal to a value that an insert gave it, and a SET of the key first, to a value that
+	// no insert gives, as [keyOfStep] gives it, so that the update gives the row under a key that it
+	// did not have.
+	NewKey int
+	// EveryRow, if not 0, makes one update in EveryRow change every row of its table: no WHERE, and a
+	// SET of columns outside the key only, so that an update of a table of several rows gives them all
+	// by a RETURNING, in the order that the engine draws.
+	EveryRow int
+	// DefaultFirst, if not 0 and with Defaults, gives one table in DefaultFirst of two columns or more
+	// a default on its first column and none on its last, and one on each other column one time in
+	// two, so that a column with a default comes before one without, where * of a RETURNING shows
+	// the order of the columns of the table.
+	DefaultFirst int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
@@ -147,8 +161,8 @@ var (
 	// NULL and defaults, on statements that change no row, one row, and many rows, that change the key
 	// and the columns of an index, and that fail on a constraint, also part-way through their rows,
 	// and in transactions, which its test begins more often.
-	Returning = &Profile{Name: "returning", Faults: []string{areaReturning}, Aim: 3, Weights: weights(2, 12, 5, 1, 7, 5, 2, 1), Where: 2, Indexes: 1,
-		Columns: 2, Defaults: 1, Parameters: 3, Transactions: 2, Keys: 2, Returning: 2, ByKey: 2, KeyLeftOut: 3}
+	Returning = &Profile{Name: "returning", Faults: []string{areaReturning}, Aim: 3, Weights: weights(2, 12, 5, 1, 12, 5, 2, 1), Where: 2, Indexes: 1,
+		Columns: 2, Defaults: 1, Parameters: 3, Transactions: 2, Keys: 2, Returning: 2, ByKey: 2, KeyLeftOut: 3, NewKey: 2, EveryRow: 2, DefaultFirst: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].
