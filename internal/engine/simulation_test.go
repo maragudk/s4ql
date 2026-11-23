@@ -2865,16 +2865,16 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// without the error, so its caller takes it for committed, and it is not in the log. The bug
 		// needs a commit that fails, which every fault of the store gives, of a statement with RETURNING
 		// through Query, which the profile of RETURNING weighs; the hammer environment, which has no
-		// crashes, plays the same seeds under the address sanitizer: 71 of 200 seeds find the bug, each
-		// by its own violation.
+		// crashes, plays the same seeds under the address sanitizer: 62 of 200 seeds find the bug, each
+		// by its own violation, after the review of the checks of slice 14 aimed the profile.
 		{"rowsOfFailed", hammerWorkload, "hammer", stmttest.Returning, []string{"is not in the log"}},
 		// An update with RETURNING that gives the rows as they were: of its own, its rows differ from
 		// those that SQLite gives for its commit in the log, and in a transaction from SQLite's on the
-		// state that the transaction saw. In the hammer environment, as for rowsOfFailed: 132 of 200
-		// seeds find the bug, 46 of them by its own violation.
+		// state that the transaction saw. In the hammer environment, as for rowsOfFailed: 149 of 200
+		// seeds find the bug, 54 of them by its own violation.
 		{"oldValues", hammerWorkload, "hammer", stmttest.Returning, []string{"gives the rows of RETURNING", ", and in SQLite"}},
 		// A statement with RETURNING that changes several rows and leaves out the last, found as
-		// oldValues is, in a transaction more often than of its own: 135 of 200 seeds find the bug, 112
+		// oldValues is, in a transaction more often than of its own: 143 of 200 seeds find the bug, 125
 		// of them by its own violation.
 		{"dropLast", hammerWorkload, "hammer", stmttest.Returning, []string{", and in SQLite", "gives the rows of RETURNING"}},
 	}
