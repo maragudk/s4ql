@@ -146,7 +146,8 @@ func (c *connector) Driver() driver.Driver {
 // Close the instance, and release the lease, within the close timeout. It fails if the instance did
 // not close in that time or if the lease is not released, which then runs out by itself.
 //
-// It first closes the rows that are open. The loop over the rows of a query is a call on the
+// It first closes the rows that are open, but for the rows of a RETURNING outside a transaction,
+// which hold nothing and are not closed. The loop over the rows of a query is a call on the
 // instance, which the close of the instance waits for. The next row of such rows is then the error
 // of an instance that was closed. A panic of a loop that it ends is logged and not raised, so that
 // the close goes on. So is a panic of the close of rows itself, which then fails as an internal

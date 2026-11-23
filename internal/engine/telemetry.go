@@ -55,11 +55,12 @@ const (
 	// attrDirection is the direction that the engine drew for a query, forward or backward, as
 	// [Engine.reading] draws it, so that a run whose rows depend on it can be told from its event: the
 	// direction of the scan of a query without ORDER BY, of the rows that tie of a query whose rows are
-	// sorted, and of the rows of an update or a delete with RETURNING, as [Engine.order] draws it. A
-	// statement that draws none, an update or a delete without RETURNING, or a statement whose path
-	// the tests force, has none, and so has a statement without the attribute [attrAccess], such as an
-	// insert with RETURNING, and a query whose access delivers the order of its ORDER BY, for which the
-	// draw decides nothing.
+	// sorted, and of the rows of an update or a delete with RETURNING through [Conn.Query], as
+	// [Engine.order] draws it. Through [Conn.Exec], which gives no rows, the draw is made and the
+	// statement has none. A statement that draws none, an update or a delete without RETURNING, or a
+	// statement whose path the tests force, has none, and so has a statement without the attribute
+	// [attrAccess], such as an insert with RETURNING, and a query whose access delivers the order of
+	// its ORDER BY, for which the draw decides nothing.
 	attrDirection = "statement.direction"
 	// attrOrder is how the rows of a query with ORDER BY came in its order, as [ordering] says:
 	// delivered, by the key of its access, with no sort, or sorted, by the storage, which then read

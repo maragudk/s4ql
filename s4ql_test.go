@@ -1173,7 +1173,6 @@ func (f *faulty) Swap(ctx context.Context, key string, from store.Version, conte
 		f.mu.Unlock()
 		then()
 		f.mu.Lock()
-		return v, err
 	}
 	if err == nil && f.lose != nil {
 		f.lose()

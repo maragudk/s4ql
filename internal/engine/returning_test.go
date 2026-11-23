@@ -392,6 +392,9 @@ func TestConn_returning(t *testing.T) {
 		// The access by the key reads each row that it finds once, and the delete reads none again to
 		// give its values, as Query does.
 		is.Equal(t, "2", e[engine.AttrRowsRead])
+		// No row shows the direction that the engine drew.
+		_, has := e[engine.AttrDirection]
+		is.True(t, !has)
 		is.Equal(t, `0,"a"`, strings.Join(i.queryValues("select * from t", nil).rows, " "))
 	})
 

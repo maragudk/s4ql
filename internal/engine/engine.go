@@ -490,11 +490,13 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	if err != nil {
 		return Result{}, nil, err
 	}
-	if !returns {
+	r.reads(tx, s)
+	if returns {
+		r.drew(order)
+	} else {
+		// The draw is made all the same, so that the draws do not depend on Exec, but no row shows it.
 		dropReturns(s)
 	}
-	r.reads(tx, s)
-	r.drew(order)
 	if r.doesNothing(s) {
 		// The statement does nothing, which [Conn.nothingToWrite] could not tell, or which a commit
 		// since its read transaction made so. The transaction is rolled back above, and nothing of it

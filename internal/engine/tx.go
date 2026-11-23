@@ -354,11 +354,12 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	if err != nil {
 		return Result{}, nil, err
 	}
-	if !returns {
+	r.reads(w, s)
+	if returns {
+		r.drew(order)
+	} else {
 		dropReturns(s)
 	}
-	r.reads(w, s)
-	r.drew(order)
 	if r.doesNothing(s) {
 		// The statement does nothing, and is not annotated, so that the commit object of the
 		// transaction, if it has one, does not hold it. Its savepoint holds nothing to keep.
