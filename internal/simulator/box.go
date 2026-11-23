@@ -52,7 +52,8 @@ type boxKey struct{}
 // event e it gives the instance that the call goes to. It returns why the action is ignored, if it
 // is: the run has no client, a statement of the box is on its way, or the statement would change
 // the table of the workload. The call runs in a task of the run, as the client's calls do, and goes to
-// the client's target.
+// the client's target at the time of the action, which a switch of the client after it does not
+// change.
 func (r *run) sql(ctx context.Context, i int, text string, e *Event) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -64,9 +65,10 @@ func (r *run) sql(ctx context.Context, i int, text string, e *Event) string {
 	case namesApp(text):
 		return appTable
 	}
-	e.Instance = r.target.name
+	in := r.target
+	e.Instance = in.name
 	r.box = r.world.Go(ctx, fmt.Sprint("box-", i), func(ctx context.Context) {
-		r.callTarget(ctx, r.newCall("box", opSQL, text))
+		r.callTarget(ctx, in, r.newCall("box", opSQL, text))
 		r.mu.Lock()
 		r.box = nil
 		r.mu.Unlock()

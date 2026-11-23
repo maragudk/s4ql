@@ -400,14 +400,22 @@ function wire() {
     return { name, el, f, b, s3, disk, clocks };
   });
   for (const b of document.querySelectorAll("#requests [data-target]")) b.addEventListener("click", () => send(b.dataset.target));
-  $("play").addEventListener("click", () => setPlaying(!playing));
+  $("play").addEventListener("click", () => {
+    setPlaying(!playing);
+    // A statement of the box that is on its way when the page pauses is answered as on a paused page.
+    if (!playing && box.pending && !jobs.some((j) => j.until)) {
+      jobs.push({ until: true });
+      pump();
+    }
+  });
   $("reset").addEventListener("click", () => reset());
   $("turbo").addEventListener("click", () => setTurbo(!turbo));
   const text = $("sql-text");
   const kept = keeper.boxText();
   if (kept !== null) text.value = kept;
   text.addEventListener("input", () => {
-    keeper.keepBoxText(text.value);
+    // A text over the limit is not kept, so that it cannot fill the browser's storage.
+    if (chars(text.value) <= MAX_SQL) keeper.keepBoxText(text.value);
     drawBox();
   });
   text.addEventListener("keydown", (e) => {

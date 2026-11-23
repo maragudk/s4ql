@@ -96,3 +96,26 @@ What the reading gave:
 ### How to review
 
 `go test -tags s4ql_browser ./internal/simulator/...`, then `make site SITEVERSION= && go run -tags s4ql_browser ./internal/simulator/sitecheck -root site`. By hand: `make site-serve`, press Play for a few seconds, and run statements in the box; hang `a` while paused and run an insert to see it wait.
+
+## Step 4: Self-review
+
+**Author:** builder (simulator SQL box)
+
+### What I did
+
+Ran the code-review skill over `main...simulator-sql-box`. It found five things:
+
+1. **A statement still on its way when the page pauses stayed pending for good** (fixed). The step until the answer was queued only by a Run on a paused page. Pause now queues it too, and the site check sends a statement while playing and pauses at once.
+2. **The event of the action could name another instance than the call went to** (fixed). The task read the client's target again when it ran, so a switch of the client at the same fake time moved the call. `callTarget` now takes the instance, which `run.sql` reads with the action. A test switches the requests right after the action.
+3. **The box's text was stored at any length** (fixed). A pasted text of megabytes could fill `sessionStorage`, and as Reset keeps `s4ql:box`, the page would stop as S3 full again after it. Only a text within the limit of 1,000 characters is kept now.
+4. **A write of the box whose process crashes before the core logs its commit** ends `lost` without a name, so the checker learns nothing of it, also if the commit object lands later (left). The README lists it among what is not checked; a crashed process logs nothing more, so the name cannot be had without changing the core.
+5. **An empty statement** (checked, left): the engine answers `s4ql: the text holds no statement`, its own words, which a test now holds.
+
+Checks: `go test -tags s4ql_browser ./internal/simulator/...`, also with `-race`; `TestEngine_box` and `TestChecker` with `-count=50` and with `-race -count=20`; `make test-browser BROWSERPKGS=./internal/simulator`; `golangci-lint run --build-tags s4ql_browser ./internal/simulator/...`, also with `GOOS=js GOARCH=wasm`; simlint over the simulator with the tag; `make site-check`. All passed.
+
+A writer sub-agent updated `internal/simulator/README.md` from a brief: the action `sql`, the section "The box", the fields of the call's event and its cells, `until`, and the invariants for the box. It noted that an empty select has `rows` as `[]` and no `count`, and a `lost` write without a name, both now in the README.
+
+### Future work
+
+- A select of more than about 2,400 rows would reach the timeout of 30 s; the cap keeps tables below that today.
+- The site has one theme, the dark one, so there was no other theme to check.

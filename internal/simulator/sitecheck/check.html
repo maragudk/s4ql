@@ -806,6 +806,18 @@ async function sqlBox(p) {
   expect(/^(a commits [0-9a-f]{8}: 1 row changed\.|Not committed on a: .+|Outcome unknown on a: .+)$/.test(line), `with time moving, the write ends: ${line}`);
   line = await p.sql("select k from mine order by k desc limit 1");
   expect(line === "a serves 1 row.", `the box goes on after the wait: ${line}`);
+
+  // A statement sent while the page plays goes in, and one that is still on its way when the page
+  // pauses is answered as on a paused page.
+  p.$("#play").click();
+  await until(() => p.win.s4qlPage.playing);
+  area.value = "select v from mine where k = 1";
+  area.dispatchEvent(new p.win.Event("input", { bubbles: true }));
+  p.$("#sql-run").click();
+  p.$("#play").click();
+  await until(() => box.dataset.pending === "false" && p.idle());
+  line = p.$("#sql-status").textContent;
+  expect(!p.win.s4qlPage.playing && line === "a serves 1 row.", `a statement sent while playing and paused at once is answered: ${line}`);
 }
 
 // persistence checks that S3 outlives a reload of the tab and that Reset empties it: the tab's
@@ -843,7 +855,7 @@ async function persistence(address) {
   // The visitor's table is in S3 after the reload, and the box has the text that it had.
   const text = p.$("#sql-text").value;
   const line = await p.sql("select v from mine where k = 1");
-  expect(text === "select k from mine order by k desc limit 1" && line === "a serves 1 row." && p.$("#sql-rows tbody td").textContent === "'one'",
+  expect(text === "select v from mine where k = 1" && line === "a serves 1 row." && p.$("#sql-rows tbody td").textContent === "'one'",
     `after the reload, the box has its text again (${text}), and the visitor's table is there: ${line}`);
 
   // A stored object that is missing, and a stored version of other formats: the page starts empty.

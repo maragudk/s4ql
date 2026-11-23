@@ -185,6 +185,27 @@ func TestEngine_box(t *testing.T) {
 		is.Equal(t, "committed", end.What, end.Error)
 		is.True(t, a.T >= end.T && a.T < end.T+1000, fmt.Sprint("the advance stops at ", a.T, " just after the end at ", end.T))
 		is.True(t, a.T < before+60_000, "far before the end of the advance")
+
+		// A switch of the requests right after the action leaves the statement on the instance that
+		// its event names.
+		a = k.act(`{"do": "sql", "sql": "select * from u"}`)
+		is.Equal(t, "a", a.Events[0].Instance)
+		k.act(`{"do": "client", "instance": "b"}`)
+		from = len(k.events)
+		k.do("advance", `{"by": 60000, "until": "sql"}`)
+		for _, e := range k.events[from:] {
+			if e.Caller == "box" && e.What != "started" {
+				end = e
+			}
+		}
+		is.Equal(t, "a", end.Instance)
+		is.Equal(t, "served", end.What, end.Error)
+
+		// An empty statement gets the engine's own error.
+		k.act(`{"do": "client", "instance": "a"}`)
+		e, _ := k.sql("  ")
+		is.Equal(t, "failed", e.What)
+		is.Equal(t, "s4ql: the text holds no statement", e.Error)
 	})
 
 	t.Run("should keep the outcomes of a write apart under the faults of the instance", func(t *testing.T) {
