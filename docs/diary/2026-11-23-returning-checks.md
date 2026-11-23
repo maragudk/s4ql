@@ -63,3 +63,49 @@ The engine step had built the comparison of RETURNING rows and their order in `p
 
 - The lead's decision on the RETURNING record under the length limit.
 - The thin kinds listed in `/docs/todo/generated-workload.md`.
+
+## Step 2: self-review, the READMEs, and the time of the packages
+
+**Author:** builder (returning-checks)
+
+### Prompt Context
+
+**Verbatim prompt:** (the same brief as step 1: "Review your own work when it is done, and fix what you find", and "7. CI stays reliable and fast. Measure the run time of the affected test packages before and after [...]")
+**Interpretation:** review the branch with the code-review skill, fix what matters, have a writer bring the READMEs up to date, run the checks of the repository, and measure main against the branch back to back.
+**Inferred intent:** hand in a branch that a reviewer who plants faults of their own cannot easily slip past, at a cost that CI can carry.
+
+### What I did
+
+- The review (medium, over `main...HEAD`) found no blocking bug and seven nits; I fixed six. `Conn.queryText` in `/internal/engine/engine.go` now gives no rows whenever `write` gives an error, so the rule of the slice holds by construction, and the simulation's check of rows beside an error, which could not fire, is gone. In the driver check, `pair.openWrite` keeps all of SQLite's rows, `pair.closeRows` compares s4ql's rows with all of them, `pair.end` compares the rest of the rows of a write and its table before the commit or the roll back, the doc of `execByQuery` is right, and the doc of `reachInsert` has its space back. The finding that `reach` counts a write left open as "one row" did not hold: those tallies leave `callQueryOpen` out.
+- `dropLast` in `TestSimulation_plantedBugs` is found first by its rows in a transaction now: 112 of 200 seeds, and 58 of the first 100 with the sanitizer's setting, where its rows against the log gave 52 of 200; under `-race -short` it took 4.6 s and takes 1.05 s.
+- A writer updated `/internal/sql/stmt/stmttest/README.md` and `/internal/engine/README.md`; I read the diff and corrected the sentence on the own violations of the three bugs.
+- `make lint`, `make test`, and `make test-sql` pass; the driver check passed `TestSequences` 50 times and 10 times under `-race`, and `TestGenerated` twice under `-race`; the engine's new checks passed 10 times under `-short` and 5 times under `-race -short`, at a load of 12 to 14.
+
+### Why
+
+A check that cannot fire looks like protection; the hardening in `queryText` gives the protection it claimed. The rows left open at the end of a transaction were the one path where a bug of the rows after the first would pass the driver check.
+
+### What worked
+
+- Timed back to back twice at a load of 12 to 14, main and then the branch: the engine package in full 101 and 101 s against 115 and 114 s; under `-short` 54 and 52 s against 57 and 57 s; under `-race -short` 154 and 154 s against 181 and 166 s, before the change of `dropLast`; the driver check 13 and 13 s against 14 and 15 s, and under `-race` 44 and 43 s against 50 and 48 s.
+
+### What didn't work
+
+- After `pair.end` compared the rows of a write, the driver check failed: `returning reaches "write transaction commit ok while rows are open" 0 times, and at least 1 were expected, a third of 4`. A write's rows are no longer open at the end; the recount dropped that row of `returning` and of `mixed`, and the floor in `TestGenerated.kinds` holds by the other profiles.
+- Commands that changed directory before `git`, or held heredocs, were refused again; I ran them from the root of the worktree or through files.
+
+### What I learned
+
+- A tally whose count depends on rows needs to know which calls read their rows to the end; the review and `reachReturning` disagreed until I checked its list of calls.
+
+### What was tricky
+
+- The sanitizer's mode of the simulation is a constant, so counting the planted bugs in it means editing `/internal/engine/noasan_test.go` for one run and putting it back.
+
+### What warrants review
+
+- The full engine package grew by about 13%, 14 s, mostly from the 80 sequences of `returning` in `TestDifferential` and the three bugs of the simulation; CI's job `sql` runs it. The shards of `asan-engine` were not changed: `TestSimulation_plantedBugs`, where most of the new time is, is shared among the shards by its subtests, and `TestDifferential` in the last shard grew by a tenth of the new sequences.
+
+### Future work
+
+- If the time of the package is too much, the cheapest cut is the factor 2 of `returning` in `sequencesOf`, at the cost of goqite's receive by id, which is thin already.
