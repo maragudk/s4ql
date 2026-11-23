@@ -96,6 +96,23 @@ type bugs struct {
 	// reverse of the order in which they were created, so that of two indexes that the rules rank
 	// alike, the one created last wins, where the rules choose the one created first.
 	lastIndexWins bool
+	// rowsOfFailed makes an insert, an update, or a delete with RETURNING of its own through
+	// [Conn.Query] whose commit fails give its rows without the error, as if the commit had
+	// succeeded, of slice 14.
+	rowsOfFailed bool
+	// oldValues makes an update with RETURNING give each row as it was before the update, and not
+	// with the values that the update gave it.
+	oldValues bool
+	// deleteNone makes a delete with RETURNING give no row, as if it deleted none, with the count of
+	// the rows that it deleted.
+	deleteNone bool
+	// dropLast makes a statement with RETURNING that changes two rows or more leave out the last row
+	// that it changed, in the order of the key.
+	dropLast bool
+	// starKeyFirst makes RETURNING * give the column of the primary key first and then the others in
+	// the order of the table, as the record of a row without rowid holds them, and not all of them in
+	// the order of the table.
+	starKeyFirst bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.

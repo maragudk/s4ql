@@ -578,11 +578,16 @@ func (u *update) run(ctx context.Context) (int64, error) {
 		if err != nil {
 			return err
 		}
+		given := row
+		if u.bugs.oldValues {
+			// The planted bug: the row as it was.
+			given = old
+		}
 		if same == 0 {
 			if err := u.w.upsert(ctx, name, row); err != nil {
 				return err
 			}
-			u.ret.add(row)
+			u.ret.add(given)
 			return nil
 		}
 		// A row under a new key is the old row deleted and the new one inserted, which the statement's
@@ -601,7 +606,7 @@ func (u *update) run(ctx context.Context) (int64, error) {
 		if !inserted {
 			return uniqueFailed(name, u.table.GetColumns()[u.key].GetName())
 		}
-		u.ret.add(row)
+		u.ret.add(given)
 		return nil
 	})
 }
@@ -643,7 +648,10 @@ func (r *remove) run(ctx context.Context) (int64, error) {
 		if !found {
 			return internalError("the row of a key that a delete found is gone")
 		}
-		r.ret.add(old)
+		if !r.bugs.deleteNone {
+			// Else the planted bug: the row is not given.
+			r.ret.add(old)
+		}
 		return nil
 	})
 }
@@ -1272,7 +1280,7 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		case n != len(p.Columns):
 			return nil, valuesForColumns(n, len(p.Columns))
 		}
-		ret, err := buildReturning(t, p.Returning)
+		ret, err := buildReturning(t, p.Returning, b)
 		if err != nil {
 			return nil, err
 		}
@@ -1364,7 +1372,7 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 			return nil, err
 		}
 	}
-	ret, err := buildReturning(t, returning)
+	ret, err := buildReturning(t, returning, b.bugs)
 	if err != nil {
 		return nil, err
 	}

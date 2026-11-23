@@ -528,6 +528,11 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	// The transaction ends with its commit, whatever the commit gives.
 	ended = true
 	if err := commitError(tx.commit(ctx)); err != nil {
+		if e.bugs.rowsOfFailed && returns && returnsOf(s) != nil {
+			// The planted bug: the rows of a commit that failed, without its error.
+			r.rows = n
+			return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
+		}
 		if e.bugs.ackUnknown && errors.Is(err, core.ErrOutcomeUnknown) {
 			// The planted bug: a commit whose outcome is unknown counts as committed.
 			r.rows = n

@@ -4,7 +4,7 @@
 # those of testdata/reached/TestConn_differential.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
 # Do not edit a number by hand.
 mixed	9	3	delete attempt to write a readonly database
-mixed	108	=	excused: a value of another type than its column, checked against s4ql's rule
+mixed	107	=	excused: a value of another type than its column, checked against s4ql's rule
 mixed	2	=	excused: already exists after the start of a table, accepted
 mixed	56	=	excused: an argument that no column holds, checked against s4ql's rule
 mixed	124	=	excused: the wrong number of arguments, checked against s4ql's rule
@@ -14,7 +14,8 @@ mixed	48	16	reached: WHERE run by every path on a table with an index
 mixed	311	103	reached: changed both ways
 mixed	73	24	reached: changed both ways in a read-only transaction
 mixed	3	1	reached: chosen every row, sorted
-mixed	10	3	reached: commit of a transaction whose update or delete changed rows
+mixed	8	2	reached: commit of a transaction whose statement with RETURNING gave rows
+mixed	9	3	reached: commit of a transaction whose update or delete changed rows
 mixed	24	8	reached: commit of a transaction with a create index or a drop index
 mixed	13	4	reached: create index attempt to write a readonly database
 mixed	7	2	reached: create index if not exists attempt to write a readonly database in a read-only transaction
@@ -24,6 +25,7 @@ mixed	10	3	reached: create table if not exists did nothing: a table of the name 
 mixed	21	7	reached: create table if not exists did nothing: a table of the name exists in a write transaction
 mixed	20	6	reached: create table with a default on the key attempt to write a readonly database in a read-only transaction
 mixed	31	10	reached: create table with a default on the key ok in a write transaction
+mixed	3	1	reached: delete with RETURNING through Query ok in a write transaction
 mixed	5	1	reached: delete with a value on the left attempt to write a readonly database in a read-only transaction
 mixed	3	1	reached: drop index if exists did nothing: no index of the name exists in a read-only transaction
 mixed	6	2	reached: drop index if exists did nothing: no index of the name exists in a write transaction
@@ -33,15 +35,19 @@ mixed	5	1	reached: drop table if exists did nothing: no table of the name exists
 mixed	6	2	reached: insert that leaves out a column with a default of integer ok in a write transaction
 mixed	7	2	reached: insert that leaves out a column with a default that an index holds ok
 mixed	3	1	reached: insert that leaves out the key with a default ok in a write transaction
+mixed	16	5	reached: insert with RETURNING through Query attempt to write a readonly database in a read-only transaction
+mixed	10	3	reached: insert with RETURNING through Query ok in a write transaction
 mixed	17	5	reached: path that delivers the order
 mixed	52	17	reached: path that sorts
 mixed	182	60	reached: read both ways
 mixed	39	13	reached: read both ways in a read-only transaction
+mixed	3	1	reached: roll back of a transaction whose statement with RETURNING gave rows
 mixed	4	1	reached: roll back of a transaction whose update or delete changed rows
 mixed	111	37	reached: select read by the access that the model chooses
 mixed	14	4	reached: select with a value on the left ok, no row found in a write transaction
-mixed	11	3	reached: select without ORDER BY whose rows came in the order of the key of its access
-mixed	10	3	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+mixed	10	3	reached: select without ORDER BY whose rows came in the order of the key of its access
+mixed	11	3	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+mixed	4	1	reached: update with RETURNING through Query ok in a write transaction
 mixed	5	1	reached: update with a value on the left a value of another type in a write transaction
 mixed	3	1	reached: update with a value on the left attempt to write a readonly database in a read-only transaction
 mixed	49	16	reached: value on the left on a table that a create table if not exists found
@@ -223,3 +229,41 @@ order	235	78	reached: select read by the access that the model chooses
 order	4	1	reached: select without ORDER BY whose rows came in the order of the key of its access
 order	5	1	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 order	7	2	update with a parameter attempt to write a readonly database
+returning	37	12	delete attempt to write a readonly database
+returning	47	=	excused: a value of another type than its column, checked against s4ql's rule
+returning	6	2	reached: NULL given for a column with a default, which takes NULL ok in a write transaction
+returning	5	1	reached: RETURNING whose rows came in the order of the key
+returning	5	1	reached: RETURNING whose rows came in the reverse of the order of the key
+returning	187	62	reached: WHERE run by every path on a table with an index
+returning	674	224	reached: changed both ways
+returning	252	84	reached: changed both ways in a read-only transaction
+returning	55	18	reached: commit of a transaction whose statement with RETURNING gave rows
+returning	42	14	reached: commit of a transaction whose update or delete changed rows
+returning	27	9	reached: commit of a transaction with a create index or a drop index
+returning	14	4	reached: create index attempt to write a readonly database
+returning	23	7	reached: create table with a default on the key attempt to write a readonly database in a read-only transaction
+returning	20	6	reached: create table with a default on the key ok in a write transaction
+returning	22	7	reached: delete with RETURNING through Query attempt to write a readonly database in a read-only transaction
+returning	45	15	reached: delete with RETURNING through Query ok in a write transaction
+returning	5	1	reached: drop index attempt to write a readonly database
+returning	6	2	reached: goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING
+returning	17	5	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok in a write transaction
+returning	9	3	reached: insert that leaves out a column with a default of integer attempt to write a readonly database in a read-only transaction
+returning	21	7	reached: insert that leaves out a column with a default of integer ok in a write transaction
+returning	28	9	reached: insert that leaves out a column with a default that an index holds ok
+returning	5	1	reached: insert that leaves out the key with a default UNIQUE constraint failed in a write transaction
+returning	9	3	reached: insert that leaves out the key with a default ok in a write transaction
+returning	52	17	reached: insert with RETURNING through Query attempt to write a readonly database in a read-only transaction
+returning	103	34	reached: insert with RETURNING through Query ok in a write transaction
+returning	158	52	reached: read both ways
+returning	43	14	reached: read both ways in a read-only transaction
+returning	15	5	reached: roll back of a transaction whose statement with RETURNING gave rows
+returning	11	3	reached: roll back of a transaction whose update or delete changed rows
+returning	7	2	reached: roll back of a transaction with a create index or a drop index
+returning	182	60	reached: select read by the access that the model chooses
+returning	25	8	reached: select without ORDER BY whose rows came in the order of the key of its access
+returning	31	10	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+returning	40	13	reached: update with RETURNING through Query attempt to write a readonly database in a read-only transaction
+returning	53	17	reached: update with RETURNING through Query ok in a write transaction
+returning	48	16	update attempt to write a readonly database
+returning	50	16	update with a parameter attempt to write a readonly database
