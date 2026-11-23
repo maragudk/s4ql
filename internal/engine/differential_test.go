@@ -1077,20 +1077,25 @@ func (p *pair) step(c stmttest.Call) string {
 	// refuses before its arguments, a syntax error or no statement, which SQLite refuses before it
 	// binds them, so that it runs in SQLite without them.
 	args := oracleArgs(c.Args)
-	if s, err := stmt.Check(src); err != nil || s == nil {
+	s, err := stmt.Check(src)
+	if err != nil || s == nil {
 		args = nil
 	}
-	if kind, failure := p.checkLength(c, got); kind != "" {
-		if failure == "" {
-			p.y.excused(kind)
+	// A statement with RETURNING, of slice 14, is refused before its values and its arguments until
+	// the engine runs it, as [returned] says, so no rule of its values holds for it.
+	if s == nil || !returned(s) {
+		if kind, failure := p.checkLength(c, got); kind != "" {
+			if failure == "" {
+				p.y.excused(kind)
+			}
+			return failure
 		}
-		return failure
-	}
-	if kind, failure := p.checkType(c, args, got); kind != "" {
-		if failure == "" {
-			p.y.excused(kind)
+		if kind, failure := p.checkType(c, args, got); kind != "" {
+			if failure == "" {
+				p.y.excused(kind)
+			}
+			return failure
 		}
-		return failure
 	}
 	if got.err == "not supported" && p.tooLongForCache(src, got.message) {
 		p.y.excused(excusedCacheLimit)

@@ -241,8 +241,12 @@ func (*Parameter) expr()   {}
 // one without have the same plan. A column with DEFAULT has the literal of its DEFAULT as its
 // Default. A select, an update, and a delete with WHERE read their rows through a [*Filter] of the
 // conditions, in the order of the text. A select with ORDER BY has an [*Order] of its columns over
-// that, and one with LIMIT a [*Limit] over that, as [Query] says.
+// that, and one with LIMIT a [*Limit] over that, as [Query] says. It panics for an insert, an update,
+// or a delete with RETURNING, which the engine does not run yet, as [returningRefusal] says.
 func NewPlan(s stmt.Statement) Plan {
+	if returningRefusal(s) != nil {
+		panic("engine: no plan of a statement with RETURNING")
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, IfNotExists: s.IfNotExists, PrimaryKey: []int{s.Key()}, SQL: s.SQL}

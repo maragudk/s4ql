@@ -2,12 +2,14 @@ package engine_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
 
 // returned reports whether s is an insert, an update, or a delete with RETURNING, of slice 14, which
@@ -51,10 +53,38 @@ func TestCheck_returning(t *testing.T) {
 		}
 	})
 
+	t.Run("should make no plan of a statement with RETURNING", func(t *testing.T) {
+		for _, src := range []string{"insert into t (v) values (1) returning v", "update t set v = 1 returning *", "delete from t returning v"} {
+			s, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			panicked := func() (p any) {
+				defer func() { p = recover() }()
+				engine.NewPlan(s)
+				return nil
+			}()
+			is.Equal(t, "engine: no plan of a statement with RETURNING", fmt.Sprint(panicked), src)
+		}
+	})
+
 	t.Run("should check an insert, an update, or a delete without RETURNING as before", func(t *testing.T) {
 		is.NotError(t, engine.Check("insert into t (v) values (?)", 1))
 		is.NotError(t, engine.Check(`update "returning" set "returning" = 1 where "returning" = ?`, 1))
 		is.NotError(t, engine.Check("delete from t where v = 1", 0))
+	})
+}
+
+func TestPair_returning(t *testing.T) {
+	t.Run("should take the refusal of a statement with RETURNING, also where a rule of its values would refuse it", func(t *testing.T) {
+		for _, src := range []string{"insert into t1 (v1) values ('x') returning v1", "update t1 set v1 = 'x' returning v1", "insert into t1 (v1) values (1) returning v1",
+			"delete from t1 where v1 = 'x' returning *"} {
+			for _, exec := range []bool{true, false} {
+				p := newPair(t, newMemoryInstance(t), nil)
+				for _, s := range fuzzSetUp {
+					is.Equal(t, "", p.step(stmttest.Call{Src: s, Supported: true}), s)
+				}
+				is.Equal(t, "", p.step(stmttest.Call{Src: src, Query: !exec}), src)
+			}
+		}
 	})
 }
 
