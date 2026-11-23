@@ -285,6 +285,20 @@ func TestConn_returning(t *testing.T) {
 			is.NotError(t, rows.Close())
 			is.Equal(t, n+1, len(h.records), c.src)
 		}
+
+		// In a transaction too, an update and a delete with RETURNING have the direction that they drew.
+		is.Equal(t, "", i.exec("insert into t (k, v) values (1, 'a')").err)
+		is.NotError(t, i.c.Begin(t.Context()))
+		for _, src := range []string{"update t set v = 'd' returning k", "delete from t returning v"} {
+			rows, err := i.c.Query(t.Context(), src)
+			is.NotError(t, err, src)
+			e, _ := h.last(t)
+			is.Equal(t, "1", e[engine.AttrRows], src)
+			_, has := e[engine.AttrDirection]
+			is.True(t, has, src)
+			is.NotError(t, rows.Close())
+		}
+		is.NotError(t, i.c.Commit(t.Context()))
 	})
 
 	t.Run("should vary the order of the rows of RETURNING of an update and of a delete from one statement to the next, by the seed of the engine", func(t *testing.T) {
@@ -399,18 +413,30 @@ func TestConn_returning(t *testing.T) {
 			_, execErr := i.c.Exec(t.Context(), src)
 			is.Equal(t, queryErr.Error(), fmt.Sprint(execErr), src)
 		}
-		res, err := i.c.Exec(t.Context(), "delete from t where k > 0 returning v")
-		is.NotError(t, err)
-		is.Equal(t, engine.Result{Changes: 2, SetsChanges: true}, res)
-		e, _ := h.last(t)
-		is.Equal(t, "2", e[engine.AttrRows])
-		// The access by the key reads each row that it finds once, and the delete reads none again to
-		// give its values, as Query does.
-		is.Equal(t, "2", e[engine.AttrRowsRead])
-		// No row shows the direction that the engine drew.
-		_, has := e[engine.AttrDirection]
-		is.True(t, !has)
-		is.Equal(t, `0,"a"`, strings.Join(i.queryValues("select * from t", nil).rows, " "))
+		// Of its own and in a transaction.
+		for _, inTx := range []bool{false, true} {
+			if inTx {
+				for k := 1; k < 3; k++ {
+					is.Equal(t, "", i.exec("insert into t (k, v) values (?, 'a')", int64(k)).err)
+				}
+				is.NotError(t, i.c.Begin(t.Context()))
+			}
+			res, err := i.c.Exec(t.Context(), "delete from t where k > 0 returning v")
+			is.NotError(t, err)
+			is.Equal(t, engine.Result{Changes: 2, SetsChanges: true}, res)
+			e, _ := h.last(t)
+			is.Equal(t, "2", e[engine.AttrRows])
+			// The access by the key reads each row that it finds once, and the delete reads none again to
+			// give its values, as Query does.
+			is.Equal(t, "2", e[engine.AttrRowsRead], fmt.Sprint("in a transaction: ", inTx))
+			// No row shows the direction that the engine drew.
+			_, has := e[engine.AttrDirection]
+			is.True(t, !has, fmt.Sprint("in a transaction: ", inTx))
+			if inTx {
+				is.NotError(t, i.c.Commit(t.Context()))
+			}
+			is.Equal(t, `0,"a"`, strings.Join(i.queryValues("select * from t", nil).rows, " "))
+		}
 	})
 
 	t.Run("should refuse a statement in a transaction while the rows of a RETURNING of it are open, and run one outside a transaction", func(t *testing.T) {

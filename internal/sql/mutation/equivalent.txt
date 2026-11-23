@@ -466,7 +466,7 @@ internal/engine/telemetry.go outcomeOf remove statement: return "core_error", sl
 	The case without its return ends the switch, whose last return gives the same.
 internal/engine/telemetry.go report.end condition: !r.e.log.Enabled(ctx, level) => false
 	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
-internal/engine/telemetry.go report.end remove statement: return =>
+internal/engine/telemetry.go report.end remove statement: return => #2
 	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
 internal/engine/tx.go transaction.log condition: !t.e.log.Enabled(ctx, level) => false
 	It saves the building of the attributes only: slog.Logger.LogAttrs asks the handler whether it takes the level again.
@@ -698,8 +698,6 @@ stmt/recognize.go recognizer.indexColumn remove statement: r.accept(x) =>
 # The indexes of slice 9 in the engine, internal/engine.
 internal/engine/access.go forcedAccess swap arguments: max(p.pins, 0) => max(0, p.pins)
 	max is commutative.
-internal/engine/telemetry.go report.end condition: r.access != "" => true #2
-	drew sets the direction only for a query that buildQuery built, and every such query reads its rows by a scan, whose access reads records before, so the direction is never set without the access.
 internal/engine/operator.go buildCreateIndex swap arguments: indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) => indexTooBig(t.GetTable(), p.Index.Value, p.SQL, limit)
 	indexTooBig adds the quoted lengths of the name, the table, and the text alike, so their order does not change the sum.
 internal/engine/operator.go buildCreateIndex swap arguments: indexTooBig(p.Index.Value, t.GetTable(), p.SQL, limit) => indexTooBig(p.Index.Value, p.SQL, t.GetTable(), limit)
@@ -1211,3 +1209,5 @@ internal/engine/returning.go newReturned constant: len(data) > 1 => len(data) > 
 	As len(data) >= 1: the planted bug dropLast then also leaves out the one row of a statement that changes one, which TestDifferential_plantedBugs finds by the rows.
 internal/engine/returning.go newReturned constant: len(data)-1 => len(data)-2
 	The planted bug dropLast then leaves out the last two rows of several, which TestDifferential_plantedBugs finds by the rows, as it finds dropLast.
+internal/engine/tx.go Conn.writeIn remove statement: planted.oldValues, planted.deleteNone, planted.starKeyFirst = c.e.bugs.oldValues, c.e.bugs.deleteNone, c.e.bugs.starKeyFirst =>
+	The planted bugs oldValues, deleteNone, and starKeyFirst left out of a write in a transaction, which statements of their own find, as for skipUnique and convertReal.
