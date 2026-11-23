@@ -480,3 +480,12 @@
 8	write transaction: rows of RETURNING left open
 5	write transaction rollback ok after a statement with RETURNING
 13	write transaction commit ok after a statement with RETURNING
+# The review of the generated checks of slice 14, of 2026-11-23: a third of the total. An update
+# with RETURNING through exec, which the engine requires too, and the four kinds that TestGenerated
+# required once over all profiles until then, which the 50 sequences of the profile returning now
+# reach three times or more.
+3	reached: update with RETURNING through exec ok
+1	reached: goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING
+2	reached: goqite's send: an insert that leaves out a key with a default and gives the key by RETURNING
+1	reached: update with RETURNING that gives several rows
+2	reached: delete with RETURNING that gives several rows

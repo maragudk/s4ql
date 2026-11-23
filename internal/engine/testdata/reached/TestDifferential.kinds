@@ -487,8 +487,13 @@
 48	reached: delete with RETURNING that gives no row
 16	reached: delete with RETURNING that gives one row
 12	reached: delete with RETURNING that gives several rows
-6	reached: RETURNING whose rows came in the order of the key
-9	reached: RETURNING whose rows came in the reverse of the order of the key
+# The order of the rows by the kind of statement, since the review of the generated checks of slice
+# 14 on 2026-11-23 split "RETURNING whose rows came in the order of the key" and its reverse, so
+# that the rows of an update and those of a delete must each vary: a third of the total then.
+4	reached: update with RETURNING whose rows came in the order of the key
+3	reached: update with RETURNING whose rows came in the reverse of the order of the key
+5	reached: delete with RETURNING whose rows came in the order of the key
+7	reached: delete with RETURNING whose rows came in the reverse of the order of the key
 39	reached: insert with RETURNING that gives a column of INT
 32	reached: insert with RETURNING that gives a column of INTEGER
 28	reached: insert with RETURNING that gives a column of REAL
@@ -521,3 +526,8 @@
 67	reached: delete with RETURNING read by the access that the model chooses
 4	reached: goqite's send: an insert that leaves out a key with a default and gives the key by RETURNING
 2	reached: goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING
+# The aims of the review of the generated checks of slice 14, of 2026-11-23: a third of the total.
+9	reached: update with RETURNING of the key that moves a row to another key
+20	reached: insert with RETURNING * that gives a row of a table with a column without a default after one with a default
+7	reached: update with RETURNING * that gives a row of a table with a column without a default after one with a default
+3	reached: delete with RETURNING * that gives a row of a table with a column without a default after one with a default

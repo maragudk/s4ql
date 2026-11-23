@@ -4048,17 +4048,10 @@ func TestGenerated(t *testing.T) {
 	// that the test runs, which the run must reach once at least: a value on the left of != in a
 	// select that finds rows, which the values on the left reach about 4 times in 100 sequences, and
 	// a column that the table does not have under IS NULL or IS NOT NULL alone in a WHERE, which the
-	// profile of the WHERE reaches about 3 times in 100; and, of slice 14, goqite's receive by id and
-	// its send, and an update and a delete with RETURNING of several rows, which the profile of
-	// RETURNING reaches once or twice in 30 sequences, and the engine's differential tests require by
-	// profile.
+	// profile of the WHERE reaches about 3 times in 100.
 	for _, kind := range []string{
 		"reached: value on the left of != finds rows",
 		"reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column",
-		"reached: goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING",
-		"reached: goqite's send: an insert that leaves out a key with a default and gives the key by RETURNING",
-		"reached: update with RETURNING that gives several rows",
-		"reached: delete with RETURNING that gives several rows",
 	} {
 		if total[kind] == 0 {
 			t.Errorf("no profile reaches %q", kind)
@@ -4089,7 +4082,8 @@ func TestGenerated(t *testing.T) {
 // NULL, each about once in ten sequences.
 // The defaults and the transactions also reach the statements of a transaction while its rows are
 // open the most, of which a read-only transaction's insert is the rarest. The profile of RETURNING
-// runs 30 for goqite's receive by id and for the rows of RETURNING left open in a transaction.
+// runs 50 for goqite's receive by id, an update with RETURNING of several rows, and a delete with
+// RETURNING through a prepared statement run several times, each reached three to five times.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:
@@ -4109,7 +4103,7 @@ func generatedOf(p *stmttest.Profile) uint64 {
 	case stmttest.Order:
 		return 50
 	case stmttest.Returning:
-		return 30
+		return 50
 	case stmttest.Tables:
 		return 14
 	}

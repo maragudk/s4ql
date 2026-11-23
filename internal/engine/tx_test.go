@@ -480,8 +480,9 @@ func TestConn_netEffect(t *testing.T) {
 // 10, 11, and 12, which [pair.reach] counts again by the kind of the transaction.
 func TestConn_differential(t *testing.T) {
 	// So many sequences of each profile, and twice as many of the mixed profile and of the profiles
-	// of the clauses of slice 10, the defaults, the values on the left, and RETURNING, whose
-	// statements this test counts by the kind of their transaction.
+	// of the clauses of slice 10, the defaults, and the values on the left, whose statements this test
+	// counts by the kind of their transaction. The profile of RETURNING runs four times as many, for
+	// the order of the rows of an update and of a delete with RETURNING, each in both directions.
 	n := uint64(20)
 	if slow() {
 		n = 1
@@ -492,8 +493,14 @@ func TestConn_differential(t *testing.T) {
 	for _, p := range stmttest.Profiles {
 		y := tally{}
 		runs[p.Name], names = y, append(names, p.Name)
-		twice := p == stmttest.Mixed || p == stmttest.Exists || p == stmttest.Defaults || p == stmttest.ValueFirst || p == stmttest.Returning
-		for k := range n * map[bool]uint64{true: 2, false: 1}[twice] {
+		times := uint64(1)
+		switch p {
+		case stmttest.Mixed, stmttest.Exists, stmttest.Defaults, stmttest.ValueFirst:
+			times = 2
+		case stmttest.Returning:
+			times = 4
+		}
+		for k := range n * times {
 			// Other seeds of each profile than those of [TestDifferential].
 			txDifferential(t, p.Seed(2_000_000+k), 60, y)
 		}

@@ -1206,7 +1206,7 @@ func (p *pair) step(c stmttest.Call) string {
 		}
 	}
 	if c.Query && got.err == "" && want.err == "" {
-		if failure := p.checkReturned(got, inOrder); failure != "" {
+		if failure := p.checkReturned(u, got, inOrder); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
 	}
@@ -1451,14 +1451,19 @@ func termArg(term stmt.Term, args []any) any {
 	return args[term.Parameter-1]
 }
 
-// checkReturned of the rows got of the engine of an update or a delete with RETURNING, which SQLite
-// gives as well, by inOrder, the rows of [pair.returnedInOrder]: they must be inOrder, or its reverse
-// where the engine drew backward, as [engine.Rows.Backward] says. Where the reverse differs, it
-// counts what the spec's rule "Unspecified row order varies" says varies: whether the rows came in
-// the order of the key or in its reverse. It gives what differs, or "".
-func (p *pair) checkReturned(got answer, inOrder []string) string {
+// checkReturned of the rows got of the engine of s, an update or a delete with RETURNING, which
+// SQLite gives as well, by inOrder, the rows of [pair.returnedInOrder]: they must be inOrder, or its
+// reverse where the engine drew backward, as [engine.Rows.Backward] says. Where the reverse differs,
+// it counts what the spec's rule "Unspecified row order varies" says varies, by the kind of s, so
+// that an engine whose rows of one kind never vary cannot hide behind those of the other: whether
+// the rows came in the order of the key or in its reverse. It gives what differs, or "".
+func (p *pair) checkReturned(s stmt.Statement, got answer, inOrder []string) string {
 	if got.backward == nil || inOrder == nil || len(got.rows) < 2 {
 		return ""
+	}
+	kind := "update"
+	if _, ok := s.(*stmt.Delete); ok {
+		kind = "delete"
 	}
 	want, turned := inOrder, slices.Clone(inOrder)
 	slices.Reverse(turned)
@@ -1469,7 +1474,7 @@ func (p *pair) checkReturned(got answer, inOrder []string) string {
 		return fmt.Sprintf("the engine gives the rows of RETURNING\n%v\nbackward: %v, and SQLite, in the order of the key,\n%v", got.rows, *got.backward, inOrder)
 	}
 	if !slices.Equal(turned, inOrder) {
-		p.count("RETURNING whose rows came in the " + map[bool]string{false: "order", true: "reverse of the order"}[*got.backward] + " of the key")
+		p.count(kind + " with RETURNING whose rows came in the " + map[bool]string{false: "order", true: "reverse of the order"}[*got.backward] + " of the key")
 	}
 	return ""
 }
@@ -3074,6 +3079,18 @@ func reachReturning(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, 
 	if got.null {
 		count(kind + " that gives NULL")
 	}
+	// * of a table with a column without a default after one with a default, where the order of the
+	// table shows against an order that puts the columns with a default last.
+	if r.Columns == nil {
+		withDefault := false
+		for _, c := range columns {
+			if withDefault && c.Default == "" {
+				count(kind + " * that gives a row of a table with a column without a default after one with a default")
+				break
+			}
+			withDefault = withDefault || c.Default != ""
+		}
+	}
 	// goqite's send and its receive by id, as far as s4ql takes them: an insert that leaves out a key
 	// with a default and gives the key, and an update of the row of a key by an argument, of columns
 	// outside the key, that gives the key and more.
@@ -3089,6 +3106,14 @@ func reachReturning(t testing.TB, o *oracle, s stmt.Statement, c stmttest.Call, 
 			s.Where[0].Value.Parameter > 0 && stmttest.ColumnOf(columns, s.Where[0].Column) == key &&
 			!slices.ContainsFunc(s.Set, func(a stmt.Assignment) bool { return stmttest.ColumnOf(columns, a.Column) == key }) {
 			count("goqite's receive by id: an update of the row of a key by an argument that gives the row by RETURNING")
+		}
+		// An update that gives the key of a row that it moved to another key: the key of its SET, which
+		// no row had before the update, which SQLite has not run yet.
+		if at := slices.IndexFunc(s.Set, func(a stmt.Assignment) bool { return stmttest.ColumnOf(columns, a.Column) == key }); at >= 0 && slices.Contains(positions, key) {
+			src := "select count(*) from " + stmttest.Quote(name) + " where " + stmttest.Quote(columns[key].Name) + " = ?"
+			if before := o.run(t, src, termArg(s.Set[at].Value, args)); before.err == "" && before.rows[0] == "0" {
+				count(kind + " of the key that moves a row to another key")
+			}
 		}
 	}
 	if insert, ok := s.(*stmt.Insert); ok && insert.Columns != nil {
@@ -3830,8 +3855,9 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		// least is the number of the n sequences that must find the bug by its own failure, a third of
 		// what they found on 2026-11-21 and at least 1: 21 and 15 of 30, each by the rows of a select
 		// or by the count of an update or a delete that differ from SQLite's, for the bugs of slice 13 2
-		// of 30, 6 of 12, 4 of 9, 4 of 30, and 7 of 12, and for those of slice 14 11, 16, 11, and 16 of
-		// 30 on 2026-11-23, each by the rows of RETURNING that differ from SQLite's.
+		// of 30, 6 of 12, 4 of 9, 4 of 30, and 7 of 12, and for those of slice 14 21, 16, 13, and 16 of
+		// 30 after the review of their checks on 2026-11-23, each by the rows of RETURNING that differ
+		// from SQLite's.
 		least int
 		// finds holds a part of each failure that the bug causes, its own first, by which least of the
 		// sequences must find it, or is nil for any failure. For the bugs of slice 13 its own is the
@@ -3852,9 +3878,9 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"ascendLast", stmttest.Order, 1, []string{"where SQLite has the rows"}, 9},
 		{"skipGap", stmttest.Order, 1, []string{"where SQLite has the rows", "and the model chooses", "the select gives the rows"}, 0},
 		{"lastIndexWins", stmttest.Order, 2, []string{"and the model chooses"}, 12},
-		{"oldValues", stmttest.Returning, 3, []string{"\nand SQLite\n"}, 0},
+		{"oldValues", stmttest.Returning, 7, []string{"\nand SQLite\n"}, 0},
 		{"deleteNone", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
-		{"dropLast", stmttest.Returning, 3, []string{"\nand SQLite\n"}, 0},
+		{"dropLast", stmttest.Returning, 4, []string{"\nand SQLite\n"}, 0},
 		{"starKeyFirst", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
 	} {
 		t.Run(b.name, func(t *testing.T) {
