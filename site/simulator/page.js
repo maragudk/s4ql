@@ -15,6 +15,12 @@
 // session. The instances start on it with empty caches, as on new machines, and fake time goes on
 // from where it was. Reset empties the tab's database and starts over.
 //
+// The box for SQL sends one statement of the visitor at a time to the instance that the requests go
+// to, as the engine's action sql. While the page plays, the statement goes in and its answer comes
+// with the steps of playback. While it is paused, the page advances the session just until the
+// answer arrives, unless the statement is waiting on a fault that holds it there: then it waits, as
+// the page does, until Play lets time move.
+//
 // The page loads every file at the version of its deploy: the HTML of a deploy loads this module
 // with the query ?v=<version>, see internal/simulator/serve, and the module loads run.js and the
 // engine with the same query, which the engine passes on to its Worker and everything that the
@@ -109,6 +115,12 @@ const bars = new Map(); // events by slice of fake time
 const marks = []; // the times of the visitor's actions
 const names = new Map(); // the process of each holder ID
 const stopped = {}; // by instance: whether the visitor's Stop closed the database of its process
+const MAX_SQL = 1000; // the most characters of a statement of the box, as the engine takes it
+const BOX_ROWS = 50; // the rows of a select that the engine gives the box
+// box is the statement of the box: pending while it is on its way, waiting with why it waits while
+// the page is paused, the instance that it went to, and the event that ended it, or the refusal of
+// the simulator.
+const box = { pending: false, waiting: "", instance: "", result: null };
 
 // The page tells a check what it does through data attributes on <html>: data-engine is loading,
 // ready, or failed, data-busy is "true" while a command is on its way, data-t is the fake time of the session in
@@ -119,7 +131,8 @@ const stopped = {}; // by instance: whether the visitor's Stop closed the databa
 // instance, [data-wire], has data-on, "true" for the instance that they go to, and so has the
 // instance, [data-instance], in data-requests. The edge of each instance to S3, [data-edge="s3"],
 // has data-hung and data-disconnected, and its disk, [data-edge="disk"], data-failing, each "true"
-// while that fault is on. window.s4qlPage gives
+// while that fault is on. The box for SQL, #sql, has data-pending, "true" while its statement is on
+// its way, and data-waiting, "true" while the paused page lets it wait. window.s4qlPage gives
 // the check the state and a hook, skip, that advances fake time at once; a visitor reaches it only
 // through the console.
 const root = document.documentElement;
@@ -131,6 +144,7 @@ window.s4qlPage = {
   get turbo() { return turbo; },
   get state() { return state; },
   get lastStep() { return lastStep; },
+  get box() { return box; },
   skip(ms) {
     for (let left = ms; left > 0; left -= MAX_ADVANCE) jobs.push({ by: Math.min(left, MAX_ADVANCE) });
     pump();
@@ -151,6 +165,7 @@ function halt(title, text) {
     setPlaying(false);
     set($("status"), "");
     drawControls();
+    drawBox();
   } catch {
     // The failure is shown, and the page does nothing more.
   }
@@ -169,10 +184,12 @@ async function pump() {
   }
   if (!job) return;
   // A step of a composed action is decided when its turn comes, from the state after the step before,
-  // and is left out if there is nothing to do.
+  // and is left out if there is nothing to do. So is the step of a paused page until the answer of
+  // the box.
   const action = typeof job.act === "function" ? job.act() : job.act;
-  if (job.act && !action) {
+  if ((job.act && !action) || (job.until && !boxStep())) {
     drawControls();
+    drawBox();
     return pump();
   }
   busy = true;
@@ -181,7 +198,7 @@ async function pump() {
   const g = gen;
   let answer, now;
   try {
-    answer = action ? await engine.act(action) : await engine.advance(job.by);
+    answer = action ? await engine.act(action) : job.until ? await engine.advance(MAX_ADVANCE, "sql") : await engine.advance(job.by);
     if (!answer.ended && g === gen) now = await engine.now(COMMITS);
   } catch (e) {
     if (g === gen) halt("The engine stopped.", `${e.message}. ${AGAIN}`);
@@ -196,6 +213,8 @@ async function pump() {
   try {
     if (job.real) lastStep = { real: job.real, fake: job.by };
     take(answer, job);
+    // A statement that has not ended in the longest advance waits for Play.
+    if (job.until && box.pending && !playing) box.waiting = "Still waiting for the answer. Play to let time move.";
     if (answer.ended) {
       halt("The simulation stopped.", `${answer.schedulerError || "The session ended."} ${AGAIN}`);
       return;
@@ -211,8 +230,8 @@ async function pump() {
     return;
   }
   const total = state.bucket.commitCount || state.bucket.commits.length;
-  if (total >= B.CAP) {
-    halt("S3 is full.", `The database has ${count(total)} commit objects. Reset to start over.`);
+  if (total >= B.CAP || full) {
+    fullStop(total);
     return;
   }
   if (jobs.length) pump();
@@ -225,7 +244,7 @@ function take(answer, job = {}) {
   for (const e of answer.events) if (e.kind === "store" && e.what === "seeded") base = e.by || 0;
   keepBucket(answer);
   for (const e of answer.events) {
-    if (S) S.hear(e, (playing || !!job.act) && !(job.reset && !job.reset.first));
+    if (S) S.hear(e, (playing || !!job.act || !!job.until) && !(job.reset && !job.reset.first));
     let w = tell(e);
     if (job.reset && e.kind === "action") w = R.resetLine(e, job.reset.first);
     const slice = Math.floor(e.t / SLICE);
@@ -235,12 +254,20 @@ function take(answer, job = {}) {
       case "action":
         if (!job.reset || job.reset.first) marks.push(e.t);
         if (e.what === "done" && (e.do === "close" || e.do === "open")) stopped[e.instance] = e.do === "close";
+        if (e.do === "sql") {
+          box.instance = e.instance || box.instance;
+          if (e.what !== "done") Object.assign(box, { pending: false, waiting: "", result: { refused: e.text } });
+        }
         break;
       case "process":
         if (e.what === "started") stopped[e.instance] = false;
         if (e.what === "opened") names.set(e.holder, e.process);
         break;
       case "call": {
+        if (e.caller === "box") {
+          if (e.what !== "started") Object.assign(box, { pending: false, waiting: "", result: e });
+          break;
+        }
         if (e.caller === "client" && e.what !== "started") {
           const st = R.requestStatus(e);
           if (e.what === "committed") requests[e.op === "delete" ? "d" : "w"]++;
@@ -275,11 +302,20 @@ function note(at, w) {
 // AGAIN is what a visitor can do after the page stopped.
 const AGAIN = "Reload to go on with what S3 holds, or Reset to start over.";
 
-// keepBucket keeps the changes of the answer in the tab's database. If storage fails, the page says so
-// once and goes on in memory.
+// keepBucket keeps the changes of the answer in the tab's database. If the browser's storage refuses
+// them, as when large values of the box fill it, S3 is full: the page stops at once, and a reload
+// starts over.
 function keepBucket(answer) {
-  const why = keeper.keep(answer, storageVersion, base + answer.t);
-  if (why) note(answer.t, { tier: "story", text: why === "full" ? "The browser's storage for S3 is full: the page goes on in memory." : "The browser does not store S3: the page goes on in memory." });
+  if (keeper.keep(answer, storageVersion, base + answer.t)) full = true;
+}
+let full = false; // whether the browser's storage refused the changes of an answer
+
+// fullStop halts the page because S3 is full: at the cap of commit objects, or in the browser's
+// storage.
+function fullStop(total) {
+  halt("S3 is full.", full
+    ? `The browser's storage for this tab takes no more, at ${count(total)} commit objects. Reset to start over.`
+    : `The database has ${count(total)} commit objects. Reset to start over.`);
 }
 
 // Playback.
@@ -316,6 +352,7 @@ function draw() {
   for (const c of nodes) drawNode(c);
   drawS3();
   drawControls();
+  drawBox();
 }
 
 // The field: one bar for each slice of fake time, as high as the events in it, up to the present at
@@ -366,6 +403,25 @@ function wire() {
   $("play").addEventListener("click", () => setPlaying(!playing));
   $("reset").addEventListener("click", () => reset());
   $("turbo").addEventListener("click", () => setTurbo(!turbo));
+  const text = $("sql-text");
+  const kept = keeper.boxText();
+  if (kept !== null) text.value = kept;
+  text.addEventListener("input", () => {
+    keeper.keepBoxText(text.value);
+    drawBox();
+  });
+  text.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      runSQL();
+    }
+  });
+  $("sql-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    runSQL();
+  });
+  const mac = /Mac|iPhone|iPad/.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
+  set($("sql-keys"), mac ? "⌘ Enter" : "Ctrl+Enter");
 }
 
 const instanceState = (name) => (state && state.instances.find((x) => x.instance === name)) || null;
@@ -579,6 +635,94 @@ function resetClocks(name, st) {
   pump();
 }
 
+// The box for SQL.
+
+const chars = (s) => [...s].length;
+
+// runSQL sends the statement of the box, unless one is on its way. While the page is paused, a step
+// that advances until its answer follows it.
+function runSQL() {
+  const text = $("sql-text").value;
+  if (!state || halted || resetting || box.pending || chars(text) > MAX_SQL) return;
+  Object.assign(box, { pending: true, waiting: "", instance: target(), result: null });
+  jobs.push({ act: { do: "sql", sql: text } });
+  if (!playing) jobs.push({ until: true });
+  drawControls();
+  drawBox();
+  pump();
+}
+
+// boxStep says whether the paused page advances the session until the answer of the box: while the
+// statement is on its way, unless the instance that it went to is held by a fault that time must
+// pass for, its connection to S3 hanging or its clocks standing still. Then the statement waits.
+function boxStep() {
+  if (!box.pending || playing || halted) return false;
+  const st = instanceState(box.instance);
+  const why = st && st.networkHung ? `the connection of ${box.instance} to S3 hangs` : st && paused(st) ? `the clocks of ${box.instance} stand still` : "";
+  if (why) box.waiting = `Waiting: ${why}. Play to let time move.`;
+  return !why;
+}
+
+// boxStatus is the line of the box: what came back, or that the statement waits, with whether it
+// failed.
+function boxStatus() {
+  const n = chars($("sql-text").value);
+  if (n > MAX_SQL) return { text: `The box takes at most ${count(MAX_SQL)} characters, and this has ${count(n)}.`, failing: true };
+  if (box.pending) return { text: box.waiting || `Sent to ${box.instance}. Waiting for the answer.`, failing: false };
+  const e = box.result;
+  if (!e) return { text: "Nothing run yet.", failing: false };
+  if (e.refused !== undefined) return { text: `Refused by the simulator: ${e.refused}.`, failing: true };
+  const i = e.instance;
+  const rows = (k) => `${count(k)} ${k === 1 ? "row" : "rows"}`;
+  switch (e.what) {
+    case "served": {
+      const total = e.count || 0, shown = (e.rows || []).length;
+      return { text: `${i} serves ${total > shown ? `${count(shown)} of ${rows(total)}` : rows(total)}.`, failing: false };
+    }
+    case "committed": {
+      const changed = e.affected === undefined || e.affected === null ? "" : `${rows(e.affected)} changed`;
+      if (e.commit) return { text: `${i} commits ${R.short(e.commit)}${changed ? ": " + changed : ""}.`, failing: false };
+      return { text: `${i}: ${changed ? changed + ", " : ""}nothing to commit.`, failing: false };
+    }
+    case "down":
+    case "lost": return { text: `No answer from ${i}.`, failing: true };
+    case "abandoned": return { text: `Rolled back on ${i}: ${e.error}`, failing: true };
+    case "unknown": return { text: `Outcome unknown on ${i}: ${e.error}`, failing: true };
+    case "not_committed": return { text: `Not committed on ${i}: ${e.error}`, failing: true };
+    case "refused": return { text: `Refused by ${i}: ${e.error}`, failing: true };
+  }
+  return { text: `Error from ${i}: ${e.error || e.what}`, failing: true };
+}
+
+// cell of a value of a row as SQL writes it: text in quotes, a blob as x'…', a number as itself, and
+// NULL in small capitals, dimmed. A value that the engine cut ends in an ellipsis.
+function cell(c) {
+  if (!c) return `<td class="null"><span class="caps">null</span></td>`;
+  const end = c.cut ? "…" : "'";
+  const v = c.type === "text" ? `'${c.value.replaceAll("'", "''")}${end}` : c.type === "blob" ? `x'${c.value}${end}` : c.value;
+  return `<td title="${esc(v)}">${esc(v)}</td>`;
+}
+
+function drawBox() {
+  const el = $("sql");
+  if (!el) return;
+  el.dataset.pending = String(box.pending);
+  el.dataset.waiting = String(box.pending && !!box.waiting);
+  const to = box.pending ? box.instance : target();
+  set($("sql-to"), to ? `to ${to}` : "");
+  const run = $("sql-run");
+  run.disabled = !state || halted || resetting || box.pending || chars($("sql-text").value) > MAX_SQL;
+  set(run, box.pending ? "Running" : "Run");
+  const st = boxStatus();
+  set($("sql-status"), st.text);
+  $("sql-status").dataset.failing = String(st.failing);
+  const e = box.result, rowsEl = $("sql-rows");
+  const shows = !box.pending && !!e && e.what === "served";
+  rowsEl.hidden = !shows;
+  html(rowsEl, !shows ? "" : `<table><thead><tr>${(e.columns || []).map((c) => `<th class="caps" scope="col" title="${esc(c)}">${esc(c)}</th>`).join("")}</tr></thead>` +
+    `<tbody>${(e.rows || []).slice(0, BOX_ROWS).map((r) => `<tr>${r.map(cell).join("")}</tr>`).join("")}</tbody></table>`);
+}
+
 // S3: the manifest and the commit objects.
 
 function drawS3() {
@@ -668,6 +812,8 @@ async function reset() {
   marks.length = 0;
   names.clear();
   for (const k of Object.keys(stopped)) delete stopped[k];
+  Object.assign(box, { pending: false, waiting: "", instance: "", result: null });
+  full = false;
   $("failure").hidden = true;
   drawControls();
   try {

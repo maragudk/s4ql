@@ -24,7 +24,9 @@
 // is served is a much smaller, quieter tick in the background, at the note of the key that it selects,
 // so that a barcode sounds the same when it is read; one that finds no row ticks an octave lower and
 // shorter. A request that fails, is refused, or gets no answer is the scanner's error tone, a low
-// double buzz.
+// double buzz. A statement of the box for SQL that is served or committed is a short rising pair of
+// notes, the key of a terminal, at the level of a select; one that fails, or that the simulator
+// refuses, is the error tone too.
 //
 // Every figure goes through one master gain. One figure is one voice, and at most VOICES sound at
 // once. The site check renders a burst through player offline and holds its peak to at most 0.06,
@@ -103,6 +105,7 @@ export const TICKS = {
   select: { level: 0.44, notes: [[A6, 20]] },
   miss: { level: 0.44, notes: [[A5, 12]] },
   error: { level: 0.5, notes: [[330, 45], [330, 45]], gap: 0.035 },
+  box: { level: 0.44, notes: [[E6, 18], [A6, 22]], gap: 0.008 },
 };
 
 // figure schedules the figure of the kind on one oscillator into dest, from the time at, and gives
@@ -284,8 +287,11 @@ export function listener() {
 }
 
 // tickOf an event: its tick, {kind, hz}, or null, with hz 0 for the pitch of the kind. Each request
-// that ends has one: the calls of the engine's client, as the page shows them.
+// that ends has one: the calls of the engine's client, as the page shows them. So has each statement
+// of the box that ends, or that the simulator refuses.
 export function tickOf(e) {
+  if (e.kind === "action" && e.do === "sql") return e.what === "done" ? null : { kind: "error", hz: 0 };
+  if (e.kind === "call" && e.caller === "box" && e.what !== "started") return { kind: e.what === "served" || e.what === "committed" ? "box" : "error", hz: 0 };
   if (e.kind !== "call" || e.caller !== "client" || e.what === "started") return null;
   switch (e.what) {
     case "committed": return e.op === "delete" ? { kind: "void", hz: keyNote((e.args || [])[0]) } : { kind: "scan", hz: keyNote(e.value) };

@@ -584,11 +584,15 @@ h2 {
   .s3 > div:first-child { padding: 12px 16px; }
 }
 
-/* The log and the commit objects, below the system */
+/* The log, the box for SQL, and the commit objects, below the system. The log runs down the left,
+   as tall as the box and the commit objects beside it. */
 
-.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); border: var(--rule); margin: 48px 0 40px; }
+.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-rows: auto 1fr; border: var(--rule); margin: 48px 0 40px; }
 .logs > section { min-width: 0; }
-.logs > section + section { border-left: var(--rule); }
+.logs > .log { grid-area: 1 / 1 / 3 / 2; display: flex; flex-direction: column; }
+.logs > .log .scroll { flex: 1 1 0; height: auto; min-height: 480px; }
+.logs > .sql { grid-area: 1 / 2; border-left: var(--rule); border-bottom: var(--rule); scroll-margin-top: 150px; }
+.logs > .objects { grid-area: 2 / 2; border-left: var(--rule); }
 .log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 12px 20px; border-bottom: var(--rule); }
 .log-head span { font-size: 13px; }
 .scroll { height: 480px; overflow-y: auto; scrollbar-width: thin; }
@@ -616,14 +620,54 @@ h2 {
 .commit .sql { list-style: none; margin: 0; padding: 0; font-size: 13px; overflow-wrap: anywhere; }
 .commit.head { background: var(--lumin); color: var(--void); }
 .commit.orphan { outline: 1px dashed var(--lumin); outline-offset: -5px; }
+
+/* The box for SQL: a statement, Run, and what came back. A value shows its type as SQL writes it:
+   text in quotes, a blob as x'…', and NULL in small capitals, dimmed. */
+.sql-form { display: grid; gap: 10px; padding: 12px 20px; }
+.sql-form p { margin: 0; }
+.sql-form textarea {
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  margin: 0;
+  padding: 8px 12px;
+  border: var(--rule);
+  border-radius: 0;
+  background: var(--void);
+  color: var(--lumin);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.sql-form textarea:focus-visible { outline-offset: 2px; }
+.sql-run { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.sql-out { border-top: var(--rule); }
+.sql-status { margin: 0; padding: 8px 20px; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.sql-status[data-failing="true"] { background: var(--lumin); color: var(--void); }
+.sql-status[data-failing="true"] ::selection { background: var(--void); color: var(--lumin); }
+.sql-rows { max-height: 360px; overflow: auto; scrollbar-width: thin; border-top: var(--rule); }
+.sql-rows[hidden] { display: none; }
+.sql-rows table { border-collapse: collapse; font-size: 13px; line-height: 1.5; min-width: 100%; }
+.sql-rows th, .sql-rows td { text-align: left; padding: 4px 20px 4px 0; white-space: nowrap; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; border-bottom: var(--rule); }
+.sql-rows th:first-child, .sql-rows td:first-child { padding-left: 20px; }
+.sql-rows th { position: sticky; top: 0; background: var(--void); font-weight: 400; }
+.sql-rows tr:last-child td { border-bottom: 0; }
+.sql-rows .null { opacity: 0.55; }
+
 @media (max-width: 960px) {
-  .logs { grid-template-columns: minmax(0, 1fr); }
-  .logs > section + section { border-left: 0; border-top: var(--rule); }
+  .logs { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .logs > .log, .logs > .sql, .logs > .objects { grid-area: auto; border-left: 0; }
+  .logs > .sql { border-bottom: 0; }
+  .logs > .log, .logs > .objects { border-top: var(--rule); }
+  .logs > .log .scroll { flex: none; height: 360px; min-height: 0; }
   .scroll { height: 360px; }
 }
 @media (max-width: 520px) {
   .entries li { gap: 10px; padding: 4px 16px; }
   .log-head, .commit, .entries li.empty, .commits li.empty { padding-left: 16px; padding-right: 16px; }
+  .sql-form, .sql-status { padding-left: 16px; padding-right: 16px; }
+  .sql-rows th:first-child, .sql-rows td:first-child { padding-left: 16px; }
 }
 
 footer { padding: 40px 0 56px; }
@@ -673,7 +717,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
     <h1 id="intro-h">The storage code, under faults</h1>
     <div>
       <p>The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
-      <p>s4ql is built for one long-running instance per database, an app with s4ql embedded. Here requests to the app, each one SQL statement, go to one instance, and a second stands by to take over.</p>
+      <p>s4ql is built for one long-running instance per database, an app with s4ql embedded. Here requests to the app, each one SQL statement, go to one instance, and a second stands by to take over. <a href="#sql">Send one of your own</a>.</p>
       <p class="built"><span class="caps">Built from</span> <span id="build">an unknown commit</span> of <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a> and <a href="https://github.com/maragudk/s4ql/tree/main/internal/engine"><code>internal/engine</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
     </div>
   </div>
@@ -814,13 +858,29 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
       </dl>
     </section>
     <div class="logs">
-      <section aria-labelledby="log-h">
+      <section class="sql" id="sql" aria-labelledby="sql-h" data-pending="false">
+        <div class="log-head"><h2 id="sql-h">SQL</h2><span id="sql-to"></span></div>
+        <form class="sql-form" id="sql-form">
+          <p class="small" id="sql-note">One statement of what s4ql supports so far, see the <a href="../#roadmap">roadmap</a>. The app's table <code>barcodes</code> is there to read; make tables of your own to write.</p>
+          <label class="vh" for="sql-text">Statement</label>
+          <textarea id="sql-text" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="sql-note">select code from barcodes order by code desc limit 5</textarea>
+          <div class="sql-run">
+            <button class="btn" type="submit" id="sql-run" aria-keyshortcuts="Control+Enter Meta+Enter" disabled>Run</button>
+            <span class="caps" id="sql-keys">Ctrl+Enter</span>
+          </div>
+        </form>
+        <div class="sql-out" role="status">
+          <p class="sql-status" id="sql-status" data-failing="false">Nothing run yet.</p>
+          <div class="sql-rows" id="sql-rows" tabindex="0" aria-label="Rows" hidden></div>
+        </div>
+      </section>
+      <section class="log" aria-labelledby="log-h">
         <div class="log-head"><h2 id="log-h">Log</h2><span id="lines"></span></div>
         <div class="scroll" tabindex="0" aria-label="Log, newest first">
           <ol class="entries" id="log"><li class="empty">Nothing yet.</li></ol>
         </div>
       </section>
-      <section aria-labelledby="commits-h">
+      <section class="objects" aria-labelledby="commits-h">
         <div class="log-head"><h2 id="commits-h">Commit objects</h2><span id="commit-count"></span></div>
         <div class="scroll" tabindex="0" aria-label="Commit objects, newest first">
           <ol class="commits" id="commits"><li class="empty">None yet.</li></ol>
