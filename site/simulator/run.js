@@ -43,10 +43,12 @@ export function keysText(keys) {
 }
 
 // commitKeysText of a commit object, for its line in the list: the keys of the rows that it inserts,
-// or of those that it deletes.
+// or of those that it deletes, or, for one of the box, the number of its changes.
 export function commitKeysText(c) {
   const keys = (c && c.keys) || [], deletes = (c && c.deletes) || [];
   if (keys.length === 0 && deletes.length > 0) return "delete " + (deletes.length <= 3 ? deletes.join(", ") : deletes.length + " rows");
+  // A commit object of the box changes other tables than the app's.
+  if (keys.length === 0 && c && c.changes) return c.changes === 1 ? "1 change" : `${c.changes} changes`;
   return keysText(keys);
 }
 
@@ -74,6 +76,33 @@ export const callText = (e) => sqlText(e.sql, e.args);
 
 // statementsText of a commit object: the statements of its annotations, with their arguments.
 export const statementsText = (c) => ((c && c.statements) || []).map((s) => sqlText(s.sql, s.args)).join("; ");
+
+// BOX_TEXT is the most characters of the statements that a line of the log shows.
+const BOX_TEXT = 200;
+
+// boxText of a statement, for a line of the log: on one line, and cut with an ellipsis
+// after BOX_TEXT characters.
+export function boxText(sql) {
+  const one = [...String(sql || "").replace(/\s+/g, " ").trim()];
+  return one.length > BOX_TEXT ? one.slice(0, BOX_TEXT).join("") + "…" : one.join("");
+}
+
+// boxLine of the event that ends a call of the box, or null for one that the log tells otherwise: a
+// commit, which the core's event of the commit tells with its statement.
+export function boxLine(e) {
+  const i = e.instance, sql = boxText(e.sql);
+  const n = e.count || 0;
+  switch (e.what) {
+    case "served": return { text: `${i} serves ${sql}: ${n === 1 ? "1 row" : `${n.toLocaleString("en")} rows`}.`, tier: "stream" };
+    case "committed": return e.commit ? null : { text: `${i} runs ${sql}: nothing to commit.`, tier: "stream" };
+    case "down":
+    case "lost": return { text: `Your statement gets no answer from ${i}${e.what === "lost" ? ", outcome unknown" : ""}.`, tier: "story" };
+    case "unknown": return { text: `On ${i}, ${sql} ends without an answer.`, tier: "story" };
+    case "not_committed": return { text: `On ${i}, ${sql} is not committed: ${e.error}.`, tier: "story" };
+    case "abandoned": return { text: `On ${i}, ${sql} is rolled back: ${e.error}.`, tier: "story" };
+  }
+  return { text: `On ${i}, ${sql} fails: ${e.error || e.what}.`, tier: "story" };
+}
 
 // REASONS of the core for refusing a call, in words.
 export const REASONS = {
@@ -194,6 +223,7 @@ function actionWords(e) {
     case "pauseClocks": return `You pause the clocks of ${i}.`;
     case "resumeClocks": return `You start the clocks of ${i} again.`;
     case "client": return `You send the requests to ${i}.`;
+    case "sql": return i ? `You send ${boxText(e.sql)} to ${i}.` : `You send ${boxText(e.sql)}.`;
   }
   return `You: ${e.do}.`;
 }
@@ -292,7 +322,7 @@ export function teller() {
             break;
           case "commit": {
             const name = a["commit.name"];
-            const sql = statementsText(commits.get(name));
+            const sql = boxText(statementsText(commits.get(name)));
             commits.delete(name);
             switch (a.outcome) {
               case "committed": say(sql ? `${who} commits ${sql} as ${short(name)}.` : `${who} commits ${short(name)}.`, "stream"); break;
@@ -322,6 +352,15 @@ export function teller() {
         break;
       }
       case "call":
+        if (e.caller === "box") {
+          const line = e.what === "started" ? null : boxLine(e);
+          if (line) say(line.text, line.tier);
+          if (e.what === "served" || e.what === "committed") {
+            calm("call");
+            calm("core");
+          }
+          break;
+        }
         if (e.caller === "client" && e.what !== "started") {
           const f = requestFailure(e);
           if (!f) failures = null;

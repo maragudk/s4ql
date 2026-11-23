@@ -66,8 +66,13 @@ func (r *run) clientCall(ctx context.Context, op string) {
 	r.mu.Lock()
 	in := r.target
 	r.mu.Unlock()
+	r.callTarget(ctx, in, r.newCall("client", op, ""))
+}
+
+// callTarget makes the call c on the instance in, the target of the client when the call was sent, as
+// [run.clientCall] describes: a call of the client, or of the box.
+func (r *run) callTarget(ctx context.Context, in *instance, c *call) {
 	p := in.p
-	c := r.newCall("client", op)
 	r.rec.add(c.event(in, p, "started"))
 	if why := down(p); why != "" {
 		r.callDown(ctx, c, in, p, why)

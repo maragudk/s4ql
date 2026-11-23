@@ -10,6 +10,7 @@
 //	              history, and the number of objects
 //	s4ql:m        the manifest
 //	s4ql:c:<32>   a commit object, under the 32 bytes of its name
+//	s4ql:box      the text of the box for SQL, which outlives a reset of the database
 //
 // An object is its time, in ms of the history, a comma, and its bytes, one character for each byte,
 // as atob gives them. A character below 256 costs one unit of the quota in Chromium and one byte in
@@ -17,13 +18,14 @@
 //
 // The writes of one answer happen in one task, with the meta last, so a reload finds the state after
 // some answer, never part of one. If a write fails, the page drops the stored database, so that the
-// next load starts fresh, and goes on in memory.
+// next load starts fresh, and stops: S3 is full.
 
 const P = "s4ql:";
 const NAME = P + "name";
 const META = P + "meta";
 const MANIFEST = P + "m";
 const COMMIT = P + "c:";
+const BOX = P + "box";
 
 // CAP is the number of commit objects at which the page stops: a reload on that many makes the new
 // instance catch up for about 4.5 minutes of fake time, two downloads of each, before it serves.
@@ -136,13 +138,27 @@ export class Keeper {
     return "";
   }
 
+  // boxText is the text of the box for SQL that the tab stored, or null.
+  boxText() {
+    try {
+      return this.storage ? this.storage.getItem(BOX) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // keepBoxText stores the text of the box for SQL, if the tab can.
+  keepBoxText(text) {
+    this.#try(() => this.storage && this.storage.setItem(BOX, text));
+  }
+
   // reset the database: clear what is stored, keep its name, and store again if the tab can.
   reset() {
     this.clear();
     this.stored = !!this.storage;
   }
 
-  // clear the stored database, and keep its name.
+  // clear the stored database, and keep its name and the text of the box.
   clear() {
     this.sizes.clear();
     this.chars = 0;
@@ -151,7 +167,7 @@ export class Keeper {
       const drop = [];
       for (let i = 0; i < this.storage.length; i++) {
         const k = this.storage.key(i);
-        if (k.startsWith(P) && k !== NAME) drop.push(k);
+        if (k.startsWith(P) && k !== NAME && k !== BOX) drop.push(k);
       }
       for (const k of drop) this.storage.removeItem(k);
     });

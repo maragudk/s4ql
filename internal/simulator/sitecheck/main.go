@@ -13,10 +13,14 @@
 // has its effect in the state, and an action switched off again takes it away; the client keeps
 // calling a while a is crashed and after its restart, and its switch moves its calls to b and back; a
 // crash of the instance that serves lets the other take over; fake time goes
-// past 10 minutes; and the page writes nothing into its address. Then S3: a reload keeps the tab's
-// database, its name, and the time, and a catches up from it before it serves; a stored database that
+// past 10 minutes; and the page writes nothing into its address. The box for SQL, while paused,
+// selects from barcodes, creates a table, inserts, selects with order by and limit, shows an error of
+// the engine and the refusal of a write to barcodes, moves fake time only until each answer, and lets
+// a write wait while the connection to S3 hangs. Then S3: a reload keeps the tab's
+// database, its name, and the time, and a catches up from it before it serves, with the visitor's
+// table and the text of the box; a stored database that
 // is damaged or of another version is dropped; a write to sessionStorage that fails leaves nothing
-// half-written; Reset empties the database and keeps its name; the page stops at the cap of commit
+// half-written, and stops the page as S3 full; Reset empties the database and keeps its name; the page stops at the cap of commit
 // objects, and Reset starts over from there; a tab without storage runs in memory; and a tab with an
 // empty sessionStorage, as a new tab has, gets a database of its own. It also checks the words of run.js,
 // and that a fault at start-up ends in the page's failure box: the page without run.js, and the page

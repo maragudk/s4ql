@@ -153,8 +153,10 @@ export class Engine {
   }
 
   // advance the session's fake time by ms milliseconds, and resolve with the events of the stretch.
-  advance(ms) {
-    return this.#serial(() => this.#send('advance', { by: ms }));
+  // With until 'sql', the advance ends early, once the statement of the action sql that is on its way
+  // has ended.
+  advance(ms, until) {
+    return this.#serial(() => this.#send('advance', until ? { by: ms, until } : { by: ms }));
   }
 
   // advanceTo the fake time t of the session, in milliseconds.

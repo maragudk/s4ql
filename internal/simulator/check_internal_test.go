@@ -38,11 +38,21 @@ func TestChecker(t *testing.T) {
 		return n.String()
 	}
 	empty := format.EmptyLog.String()
-	// log of commits 1, 2, and 3, where commit i inserts the key i.
+	// made tells the checker that calls of the application made the writes of the workload in o.
+	made := func(c *checker, o *CommitObject) {
+		for _, w := range writesOf(o) {
+			if w.commit == "" {
+				c.made(w)
+			}
+		}
+	}
+	// log of commits 1, 2, and 3, where commit i inserts the key i, each made by the application.
 	log := func(c *checker) {
 		parent := empty
 		for i := 1; i <= 3; i++ {
-			c.commit(&CommitObject{Name: name(i), Parent: parent, Keys: []int64{int64(i)}})
+			o := &CommitObject{Name: name(i), Parent: parent, Keys: []int64{int64(i)}}
+			made(c, o)
+			c.commit(o)
 			c.manifest(t.Context(), &ManifestObject{Head: name(i)})
 			parent = name(i)
 		}
@@ -63,10 +73,12 @@ func TestChecker(t *testing.T) {
 		n, _ := format.ParseName(name(i))
 		return n
 	}
-	// next commit object i on the head, which inserts the keys and deletes the deletes, and the
-	// manifest that moves the head to it.
+	// next commit object i on the head, which inserts the keys and deletes the deletes that calls of
+	// the application made, and the manifest that moves the head to it.
 	next := func(c *checker, i int, keys, deletes []int64) {
-		c.commit(&CommitObject{Name: name(i), Parent: c.headNow(), Keys: keys, Deletes: deletes})
+		o := &CommitObject{Name: name(i), Parent: c.headNow(), Keys: keys, Deletes: deletes}
+		made(c, o)
+		c.commit(o)
 		c.manifest(t.Context(), &ManifestObject{Head: name(i)})
 	}
 	// logWithDelete is the log of commits 1, 2, and 3, and commit 4, which deletes the key 1.
@@ -128,6 +140,42 @@ func TestChecker(t *testing.T) {
 			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{1}, position(2))
 			c.readEnded(t.Context(), p, c.readStarted(), 3, []int64{}, position(2))
 			c.readEnded(t.Context(), p, c.readStarted(), 9, []int64{}, position(3))
+			c.final(t.Context())
+		})
+		is.Equal(t, 0, len(events))
+	})
+
+	t.Run("should find nothing wrong with writes and selects of the box among those of the app", func(t *testing.T) {
+		events := withChecker(t, func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), txn{key: 1}, "committed")
+			// A write of the box that commits, one of unknown outcome that the log holds, and one that
+			// failed, which it does not.
+			next(c, 4, nil, nil)
+			c.writeEnded(t.Context(), txn{commit: name(4)}, "committed")
+			next(c, 5, nil, nil)
+			c.writeEnded(t.Context(), txn{commit: name(5)}, "unknown")
+			c.writeEnded(t.Context(), txn{commit: name(9)}, "not_committed")
+			c.boxRead(t.Context(), p, c.readStarted(), position(5))
+			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{2}, position(5))
+			next(c, 6, []int64{6}, nil)
+			c.writeEnded(t.Context(), txn{key: 6}, "committed")
+			c.boxRead(t.Context(), p, c.readStarted(), position(6))
+			c.final(t.Context())
+		})
+		is.Equal(t, 0, len(events))
+	})
+
+	t.Run("should find nothing wrong with a stored log that holds commit objects of the box", func(t *testing.T) {
+		events := withChecker(t, func(c *checker, p *process) {
+			o1 := &CommitObject{Name: name(1), Parent: empty, Keys: []int64{1}}
+			o2 := &CommitObject{Name: name(2), Parent: name(1)}
+			o3 := &CommitObject{Name: name(3), Parent: name(2), Deletes: []int64{1}}
+			for _, o := range []*CommitObject{o1, o2, o3} {
+				c.commit(o)
+			}
+			c.seed([]*CommitObject{o1, o2, o3}, name(3))
+			c.boxRead(t.Context(), p, c.readStarted(), position(3))
 			c.final(t.Context())
 		})
 		is.Equal(t, 0, len(events))
@@ -314,6 +362,69 @@ func TestChecker(t *testing.T) {
 			c.seed([]*CommitObject{o1, o2, o3}, name(3))
 			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{}, position(3))
 		}},
+		{name: "an insert into the table of the workload that the app did not make", invariant: invariantNotCommitted, f: func(c *checker, p *process) {
+			log(c)
+			c.commit(&CommitObject{Name: name(4), Parent: name(3), Keys: []int64{7}})
+			c.manifest(t.Context(), &ManifestObject{Head: name(4)})
+			c.final(t.Context())
+		}},
+		{name: "a delete from the table of the workload that the app did not make", invariant: invariantNotCommitted, f: func(c *checker, p *process) {
+			log(c)
+			c.commit(&CommitObject{Name: name(4), Parent: name(3), Deletes: []int64{2}})
+			c.manifest(t.Context(), &ManifestObject{Head: name(4)})
+			c.final(t.Context())
+		}},
+		{name: "an acknowledged write of the box that the log does not hold", invariant: invariantAcknowledged, f: func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), txn{commit: name(9)}, "committed")
+		}},
+		{name: "an acknowledged write of the box that the log does not hold, by the slow check", invariant: invariantAcknowledged, f: func(c *checker, p *process) {
+			log(c)
+			c.slow()
+			c.writeEnded(t.Context(), txn{commit: name(9)}, "committed")
+		}},
+		{name: "a write of the box that failed and that the log holds", invariant: invariantNotCommitted, f: func(c *checker, p *process) {
+			log(c)
+			next(c, 4, nil, nil)
+			c.writeEnded(t.Context(), txn{commit: name(4)}, "not_committed")
+			c.final(t.Context())
+		}},
+		{name: "a read of the app at a state without an acknowledged write of the box", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			next(c, 4, nil, nil)
+			c.writeEnded(t.Context(), txn{commit: name(4)}, "committed")
+			c.readEnded(t.Context(), p, c.readStarted(), 3, []int64{3}, position(3))
+		}},
+		{name: "a read of the app at a state without an acknowledged write of the box, by the slow check", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			next(c, 4, nil, nil)
+			c.slow()
+			c.writeEnded(t.Context(), txn{commit: name(4)}, "committed")
+			c.readEnded(t.Context(), p, c.readStarted(), 3, []int64{3}, position(3))
+		}},
+		{name: "a select of the box at a state without an acknowledged write of the app", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			c.writeEnded(t.Context(), txn{key: 3}, "committed")
+			c.boxRead(t.Context(), p, c.readStarted(), position(2))
+		}},
+		{name: "a select of the box at a state without an acknowledged write of the box, on a process whose clocks both went wrong", invariant: invariantFresh, excused: true, f: func(c *checker, p *process) {
+			log(c)
+			next(c, 4, nil, nil)
+			p.monotonicStoppedEver, p.wallStoppedEver = true, true
+			c.writeEnded(t.Context(), txn{commit: name(4)}, "committed")
+			c.boxRead(t.Context(), p, c.readStarted(), position(3))
+		}},
+		{name: "a select of the box at a position that is not in the log", invariant: invariantState, f: func(c *checker, p *process) {
+			log(c)
+			c.boxRead(t.Context(), p, c.readStarted(), position(8))
+		}},
+		{name: "a select of the box at a state without a write of the box of unknown outcome that the log holds at the end", invariant: invariantFresh, f: func(c *checker, p *process) {
+			log(c)
+			next(c, 4, nil, nil)
+			c.writeEnded(t.Context(), txn{commit: name(4)}, "unknown")
+			c.boxRead(t.Context(), p, c.readStarted(), position(3))
+			c.final(t.Context())
+		}},
 		{name: "a read before the stored delete of its key", invariant: invariantFresh, f: func(c *checker, p *process) {
 			o1 := &CommitObject{Name: name(1), Parent: empty, Keys: []int64{1}}
 			o2 := &CommitObject{Name: name(2), Parent: name(1), Deletes: []int64{1}}
@@ -347,25 +458,41 @@ func TestChecker(t *testing.T) {
 
 	// Every read of every key from 0 to 4, giving every set of the keys 1 to 4, at every position of
 	// the log, with the inserts 1 and 3 acknowledged and the insert 2 of unknown outcome, is checked
-	// once by a checker that is fast and once by one that is slow from the start. Both must find the
-	// same violations. The same holds for the log with a fourth commit object, which deletes 1, with
-	// that delete acknowledged, and again with it of unknown outcome, and a fifth, which inserts 4,
-	// acknowledged.
+	// once by a checker that is fast and once by one that is slow from the start, and so is a select of
+	// the box at every position. Both must find the same violations. The same holds for the log with a
+	// fourth commit object, which deletes 1, with that delete acknowledged, and again with it of unknown
+	// outcome, and a fifth, which inserts 4, acknowledged. And each of these again with a commit object
+	// of the box between the second and the third, acknowledged, of unknown outcome, and not ended, as
+	// a write whose call is on its way.
 	t.Run("should find the same violations fast and slow", func(t *testing.T) {
-		check := func(t *testing.T, slow bool, deletes string, key int64, keys []int64, at int) ([]Event, bool) {
+		const box = -1 // the key of a select of the box
+		check := func(t *testing.T, slow bool, deletes, boxed string, key int64, keys []int64, at int) ([]Event, bool) {
 			t.Helper()
 			var fast bool
 			events := withChecker(t, func(c *checker, p *process) {
-				log(c)
+				var names []string
+				commit := func(i int, keys, deletes []int64) {
+					next(c, i, keys, deletes)
+					names = append(names, name(i))
+				}
+				commit(1, []int64{1}, nil)
+				commit(2, []int64{2}, nil)
+				if boxed != "" {
+					commit(10, nil, nil)
+				}
+				commit(3, []int64{3}, nil)
 				if deletes != "" {
-					next(c, 4, nil, []int64{1})
-					next(c, 5, []int64{4}, nil)
+					commit(4, nil, []int64{1})
+					commit(5, []int64{4}, nil)
 				}
 				if slow {
 					c.slow()
 				}
 				c.writeEnded(t.Context(), txn{key: 1}, "committed")
 				c.writeEnded(t.Context(), txn{key: 2}, "unknown")
+				if boxed != "" && boxed != "on its way" {
+					c.writeEnded(t.Context(), txn{commit: name(10)}, boxed)
+				}
 				c.writeEnded(t.Context(), txn{key: 3}, "committed")
 				if deletes != "" {
 					c.writeEnded(t.Context(), txn{key: 1, delete: true}, deletes)
@@ -373,49 +500,61 @@ func TestChecker(t *testing.T) {
 				}
 				pos := format.EmptyLog
 				if at > 0 {
-					pos = position(at)
+					pos, _ = format.ParseName(names[at-1])
 				}
-				c.readEnded(t.Context(), p, c.readStarted(), key, keys, pos)
+				if key == box {
+					c.boxRead(t.Context(), p, c.readStarted(), pos)
+				} else {
+					c.readEnded(t.Context(), p, c.readStarted(), key, keys, pos)
+				}
 				is.True(t, !slow || !c.fast, "the slow checker stays slow")
 				fast = c.reads[0].fast
 				c.final(t.Context())
 			})
 			return events, fast
 		}
-		for _, deletes := range []string{"", "committed", "unknown"} {
-			positions := 4
-			if deletes != "" {
-				positions = 6
-			}
-			reads, violations, checkedFast := 0, 0, 0
-			for at := range positions {
-				for key := range int64(5) {
-					for set := range 1 << 4 {
-						var keys []int64
-						for k := range int64(4) {
-							if set&(1<<k) != 0 {
-								keys = append(keys, k+1)
+		for _, boxed := range []string{"", "committed", "unknown", "on its way"} {
+			for _, deletes := range []string{"", "committed", "unknown"} {
+				positions := 4
+				if deletes != "" {
+					positions = 6
+				}
+				if boxed != "" {
+					positions++
+				}
+				reads, violations, checkedFast := 0, 0, 0
+				for at := range positions {
+					for key := int64(box); key < 5; key++ {
+						for set := range 1 << 4 {
+							if key == box && set > 0 {
+								break
 							}
-						}
-						fast, wasFast := check(t, false, deletes, key, keys, at)
-						slow, _ := check(t, true, deletes, key, keys, at)
-						is.Equal(t, len(slow), len(fast), fmt.Sprint("the violations of the keys ", keys, " of ", key, " at ", at, " with the delete ", deletes))
-						for i := range min(len(fast), len(slow)) {
-							is.Equal(t, slow[i].Invariant, fast[i].Invariant)
-							is.Equal(t, slow[i].Text, fast[i].Text)
-						}
-						reads++
-						violations += min(1, len(slow))
-						if wasFast {
-							checkedFast++
-							is.Equal(t, 0, len(fast), "a read that the fast check passes has no violation")
+							var keys []int64
+							for k := range int64(4) {
+								if set&(1<<k) != 0 {
+									keys = append(keys, k+1)
+								}
+							}
+							fast, wasFast := check(t, false, deletes, boxed, key, keys, at)
+							slow, _ := check(t, true, deletes, boxed, key, keys, at)
+							is.Equal(t, len(slow), len(fast), fmt.Sprint("the violations of the keys ", keys, " of ", key, " at ", at, " with the delete ", deletes, " and the box ", boxed))
+							for i := range min(len(fast), len(slow)) {
+								is.Equal(t, slow[i].Invariant, fast[i].Invariant)
+								is.Equal(t, slow[i].Text, fast[i].Text)
+							}
+							reads++
+							violations += min(1, len(slow))
+							if wasFast {
+								checkedFast++
+								is.Equal(t, 0, len(fast), "a read that the fast check passes has no violation")
+							}
 						}
 					}
 				}
+				// Most of the reads are violations, and the fast check passes every one that is not.
+				is.True(t, violations > 0 && violations < reads, fmt.Sprint(violations, " of ", reads))
+				is.Equal(t, reads-violations, checkedFast, "the reads checked fast with the delete "+deletes+" and the box "+boxed)
 			}
-			// Most of the reads are violations, and the fast check passes every one that is not.
-			is.True(t, violations > 0 && violations < reads, fmt.Sprint(violations, " of ", reads))
-			is.Equal(t, reads-violations, checkedFast, "the reads checked fast with the delete "+deletes)
 		}
 	})
 
