@@ -349,6 +349,8 @@ type insert struct {
 	// the table, with nil for a column that the statement leaves out, for the messages of the errors
 	// of the check.
 	exprs [][]Expr
+	// ret holds the rows of its RETURNING, or is nil for an insert without one.
+	ret *returning
 	// skipUnique is the planted bug that writes a row without the check of its key, so that it
 	// replaces the row with its key.
 	skipUnique bool
@@ -406,6 +408,7 @@ func (i *insert) run(ctx context.Context) (int64, error) {
 			if err := i.w.upsert(ctx, name, row); err != nil {
 				return n, err
 			}
+			i.ret.add(row)
 			n++
 			continue
 		}
@@ -420,6 +423,7 @@ func (i *insert) run(ctx context.Context) (int64, error) {
 		if !inserted {
 			return n, uniqueFailed(name, i.table.GetColumns()[key].GetName())
 		}
+		i.ret.add(row)
 		n++
 	}
 	return n, nil
@@ -515,6 +519,8 @@ type update struct {
 	positions []int
 	values    []*s4qlpb.Value
 	exprs     []Expr
+	// ret holds the rows of its RETURNING, or is nil for an update without one.
+	ret *returning
 	// bugs planted in the update, for the tests of this package.
 	bugs bugs
 }
@@ -573,7 +579,11 @@ func (u *update) run(ctx context.Context) (int64, error) {
 			return err
 		}
 		if same == 0 {
-			return u.w.upsert(ctx, name, row)
+			if err := u.w.upsert(ctx, name, row); err != nil {
+				return err
+			}
+			u.ret.add(row)
+			return nil
 		}
 		// A row under a new key is the old row deleted and the new one inserted, which the statement's
 		// savepoint takes back if it fails. The storage measures the record of the new row before it
@@ -591,6 +601,7 @@ func (u *update) run(ctx context.Context) (int64, error) {
 		if !inserted {
 			return uniqueFailed(name, u.table.GetColumns()[u.key].GetName())
 		}
+		u.ret.add(row)
 		return nil
 	})
 }
@@ -603,6 +614,8 @@ type remove struct {
 	// key is the position of the column of the primary key of the table.
 	key int
 	src source
+	// ret holds the rows of its RETURNING, or is nil for a delete without one.
+	ret *returning
 	// bugs planted in the delete, for the tests of this package.
 	bugs bugs
 }
@@ -612,11 +625,26 @@ func (r *remove) check(context.Context) error { return nil }
 func (r *remove) run(ctx context.Context) (int64, error) {
 	name := r.table.GetTable()
 	return changeRows(ctx, r.w, name, r.key, r.src, r.bugs, func(key []*s4qlpb.Value) error {
+		var old []*s4qlpb.Value
+		if r.ret != nil {
+			// The statement gives the values that the row had, so it reads them before it deletes it.
+			var err error
+			if old, err = r.w.get(ctx, name, key); err != nil {
+				return err
+			}
+			if old == nil {
+				return internalError("the row of a key that a delete found is gone")
+			}
+		}
 		found, err := r.w.delete(ctx, name, key)
-		if err == nil && !found {
+		if err != nil {
+			return err
+		}
+		if !found {
 			return internalError("the row of a key that a delete found is gone")
 		}
-		return err
+		r.ret.add(old)
+		return nil
 	})
 }
 
@@ -1097,8 +1125,9 @@ func null() *s4qlpb.Value {
 // EXISTS and none, the sink is [nothing], as SQLite does nothing there, so a CREATE TABLE then
 // gives none of its later errors; but an index of the name still gives its error. For INSERT, no
 // table of the name, then a column of its list that the table does not have, in the order of the
-// list, and then another number of values than the columns of its list, or than the columns of the
-// table if it has no list. For INSERT it then
+// list, then another number of values than the columns of its list, or than the columns of the
+// table if it has no list, and then a column of its RETURNING that the table does not have, as
+// [buildReturning] says. For INSERT it then
 // makes the check that SQLite makes when it binds the arguments: a text or a blob that is longer
 // than limit bytes gets SQLite's `string or blob too big`. It checks a literal so too, which SQLite
 // meets in its text only with a limit below the length of the text: see the README. For UPDATE and
@@ -1107,9 +1136,9 @@ func null() *s4qlpb.Value {
 func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int, how reading) (sink, error) {
 	switch p := p.(type) {
 	case *Update:
-		return build{r: w, args: args, limit: limit, how: how, bugs: b}.change(ctx, w, p.Source, p.Set, true)
+		return build{r: w, args: args, limit: limit, how: how, bugs: b}.change(ctx, w, p.Source, p.Set, p.Returning, true)
 	case *Delete:
-		return build{r: w, args: args, limit: limit, how: how, bugs: b}.change(ctx, w, p.Source, nil, false)
+		return build{r: w, args: args, limit: limit, how: how, bugs: b}.change(ctx, w, p.Source, nil, p.Returning, false)
 	case *CreateIndex:
 		return buildCreateIndex(ctx, w, p, limit)
 	case *DropIndex:
@@ -1243,6 +1272,10 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		case n != len(p.Columns):
 			return nil, valuesForColumns(n, len(p.Columns))
 		}
+		ret, err := buildReturning(t, p.Returning)
+		if err != nil {
+			return nil, err
+		}
 		src, exprs, err := buildValues(v, args, positions, t.GetColumns())
 		if err != nil {
 			return nil, err
@@ -1273,7 +1306,7 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 				}
 			}
 		}
-		return &insert{w: w, table: t, key: int(t.GetPrimaryKey()[0]), src: src, exprs: exprs, skipUnique: b.skipUnique, convertReal: b.convertReal}, nil
+		return &insert{w: w, table: t, key: int(t.GetPrimaryKey()[0]), src: src, exprs: exprs, ret: ret, skipUnique: b.skipUnique, convertReal: b.convertReal}, nil
 	}
 	return nil, internalError("a plan of type %T", p)
 }
@@ -1283,12 +1316,13 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 // SQLite's errors in SQLite's order: for a table that does not exist; for a column of the SET that
 // the table does not have, the first in the order of the text, with the value of its name and
 // nothing about quotes, as SQLite's update itself gives it; for a column of the WHERE, as
-// [build.conditions] says; and for a value of the SET and then of the WHERE that is longer than
+// [build.conditions] says; for a column of the RETURNING returning, as [buildReturning] says; and for
+// a value of the SET and then of the WHERE that is longer than
 // the limit, as SQLite gives it when it binds an argument, the first in the order of the text, which
 // is the order of the parameters too. Then it fails with "not supported" for a value of the WHERE of
 // another type than its column, as a select does, and gives the scan its access, as
 // [build.bind] says. A table without a WHERE is read as the reading says too.
-func (b build) change(ctx context.Context, w writer, source Node, set []Assignment, isUpdate bool) (sink, error) {
+func (b build) change(ctx context.Context, w writer, source Node, set []Assignment, returning *Returning, isUpdate bool) (sink, error) {
 	f, filtered := source.(*Filter)
 	inner := source
 	if filtered {
@@ -1330,6 +1364,10 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 			return nil, err
 		}
 	}
+	ret, err := buildReturning(t, returning)
+	if err != nil {
+		return nil, err
+	}
 	values := make([]*s4qlpb.Value, len(set))
 	exprs := make([]Expr, len(set))
 	for i, a := range set {
@@ -1348,12 +1386,12 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		}
 	}
 	if !isUpdate {
-		return &remove{w: w, table: t, key: int(key[0]), src: src, bugs: b.bugs}, nil
+		return &remove{w: w, table: t, key: int(key[0]), src: src, ret: ret, bugs: b.bugs}, nil
 	}
 	if len(set) == 0 {
 		return nil, internalError("an update that sets no column")
 	}
-	return &update{w: w, table: t, key: int(key[0]), src: src, positions: positions, values: values, exprs: exprs, bugs: b.bugs}, nil
+	return &update{w: w, table: t, key: int(key[0]), src: src, positions: positions, values: values, exprs: exprs, ret: ret, bugs: b.bugs}, nil
 }
 
 // buildCreateIndex is the sink of the plan p of a CREATE INDEX, in the transaction of w. It fails with

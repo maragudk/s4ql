@@ -302,32 +302,34 @@ func commitError(err error) error {
 // statements before it did is kept, as in SQLite. In a read-only transaction, it fails with the
 // error that SQLite gives under `pragma query_only = 1`, after SQLite's errors of its names. A
 // statement of IF NOT EXISTS or IF EXISTS that does nothing succeeds in either, and is not
-// annotated.
-func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (Result, error) {
+// annotated. An insert, an update, or a delete with RETURNING that succeeds in a write transaction
+// also gives the rows of its RETURNING at once, as [Conn.write] orders them; the change belongs to
+// the transaction, and a roll back takes it back also when its rows were read.
+func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (Result, *returned, error) {
 	t := c.tx
 	r.at(t.position(), t.write != nil)
 	if err := c.ready(ctx); err != nil {
-		return Result{}, err
+		return Result{}, nil, err
 	}
 	if t.write == nil {
 		// SQLite looks the names up when it prepares the statement, and refuses the write when it
 		// steps it.
 		s, err := buildSink(ctx, readOnly{t.read}, p, args, bugs{}, c.e.db.lengthLimit(), c.e.reading(false))
 		if err != nil {
-			return Result{}, err
+			return Result{}, nil, err
 		}
 		r.reads(t.read, s)
 		if r.doesNothing(s) {
 			// SQLite only reads the schema for a statement that does nothing, which a read-only
 			// transaction allows.
-			return Result{}, nil
+			return Result{}, nil, nil
 		}
-		return Result{SetsChanges: setsChanges(p)}, readOnlyDatabase()
+		return Result{SetsChanges: setsChanges(p)}, nil, readOnlyDatabase()
 	}
 
 	w := t.write
 	if err := w.savepoint(ctx); err != nil {
-		return Result{}, err
+		return Result{}, nil, err
 	}
 	kept := false
 	defer func() {
@@ -346,37 +348,39 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	planted := bugs{skipUnique: c.e.bugs.skipUnique, convertReal: c.e.bugs.convertReal, changeNothing: c.e.bugs.changeNothing, keepOldKey: c.e.bugs.keepOldKey}
 	planted.replaceExisting = c.e.bugs.replaceExisting
 	planted.nullDefault = c.e.bugs.nullDefault
+	order := c.e.order(p)
 	s, err := buildSink(ctx, w, p, args, planted, c.e.db.lengthLimit(), c.e.reading(false))
 	if err != nil {
-		return Result{}, err
+		return Result{}, nil, err
 	}
 	r.reads(w, s)
+	r.drew(order)
 	if r.doesNothing(s) {
 		// The statement does nothing, and is not annotated, so that the commit object of the
 		// transaction, if it has one, does not hold it. Its savepoint holds nothing to keep.
 		kept = true
-		return Result{}, w.release(ctx)
+		return Result{}, nil, w.release(ctx)
 	}
 	failed := Result{SetsChanges: setsChanges(p)}
 	if err := s.check(ctx); err != nil {
-		return checked(failed, err), err
+		return checked(failed, err), nil, err
 	}
 	n, err := s.run(ctx)
 	if err != nil {
-		return failed, err
+		return failed, nil, err
 	}
 	if err := w.annotate(ctx, sql, args); err != nil {
-		return failed, err
+		return failed, nil, err
 	}
 	// The release ends the savepoint whatever it gives, and a release that fails leaves a
 	// transaction that the core lets only roll back.
 	kept = true
 	if err := w.release(ctx); err != nil {
-		return failed, err
+		return failed, nil, err
 	}
 	t.writes++
 	r.rows = n
-	return Result{Changes: n, SetsChanges: setsChanges(p)}, nil
+	return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
 }
 
 // queryIn runs the plan q, with args for its parameters, in the transaction of the connection, and

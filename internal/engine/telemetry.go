@@ -291,8 +291,12 @@ func (r *report) at(position format.Name, write bool) {
 	r.position, r.write = &position, write
 }
 
-// end the statement with err, and log its event.
+// end the statement with err, and log its event, unless it has ended: a statement logs one event.
+// The rows of a RETURNING end after their statement, whose event is logged when it ends.
 func (r *report) end(ctx context.Context, err error) {
+	if r.ended {
+		return
+	}
 	r.ended = true
 	outcome, level := outcomeOf(err)
 	if !r.e.log.Enabled(ctx, level) {

@@ -454,18 +454,13 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	return &prepared{conn: c, query: query}, nil
 }
 
-// check the text query with [stmt.Check], and then as the engine checks it: SQLite's syntax error,
-// "not supported", also for a statement that the pass supports and the engine does not run, or nil
-// for a statement that s4ql supports. The text alone decides, so the check reads no table, and does
-// not need the instance to serve.
+// check the text query with [stmt.Check]: SQLite's syntax error, "not supported", or nil for a
+// statement that s4ql supports. The text alone decides, so the check reads no table, and does not
+// need the instance to serve.
 func check(query string) error {
 	s, err := stmt.Check(query)
 	if err == nil && s == nil {
 		err = engine.ErrNoStatement
-	}
-	if err == nil {
-		// With as many arguments as the statement has parameters, only the text can fail the check.
-		err = engine.Check(query, s.Parameters())
 	}
 	return publicError(err)
 }
