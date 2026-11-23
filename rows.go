@@ -14,7 +14,8 @@ import (
 )
 
 // rows of a query, which hold its read transaction until they are closed, by [rows.Close] or by the
-// close of their connector.
+// close of their connector. The rows of a RETURNING outside a transaction hold nothing, as
+// [engine.Rows.Holds] says, so the connector does not hold them, and its close does not close them.
 //
 // The engine gives its rows by pushing them into a loop, and [rows.Next] is asked for one row at a
 // time, so the loop runs in a task of its own, which waits between two rows; see [loop]. The read

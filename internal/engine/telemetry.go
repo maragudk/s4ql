@@ -69,7 +69,8 @@ const (
 	// attrRowsRead is the number of rows that the statement read from the cache, whether or not its
 	// conditions held for them: by its scan or its get, and, for an update, also the row that it reads
 	// to check a NULL for a column that does not take it, and each row again that it changes, and, for
-	// a delete with RETURNING, each row again that it deletes, whose values it gives.
+	// a delete with RETURNING through [Conn.Query], each row again that it deletes, whose values it
+	// gives; through [Conn.Exec], which drops them, it reads none again.
 	attrRowsRead = "statement.rows_read"
 	// attrNothing is whether a statement of IF NOT EXISTS or IF EXISTS did nothing because its object
 	// was there, or not there, as SQLite does nothing then: true, or false for one that went on to do

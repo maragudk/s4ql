@@ -1081,6 +1081,9 @@ type faulty struct {
 	// lose, if it is not nil, is called when the next swap has been applied, whose answer is then
 	// lost, and the store is down from then on.
 	lose func()
+	// swapped, if it is not nil, is called when the next swap has been applied, whose answer is then
+	// given as the store gave it.
+	swapped func()
 	// create, if it is not nil, is called before the next create is sent.
 	create func()
 }
@@ -1110,6 +1113,13 @@ func (f *faulty) loseNext(then func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lose = then
+}
+
+// afterSwap makes the store call then once the next swap has been applied, and then give its answer.
+func (f *faulty) afterSwap(then func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.swapped = then
 }
 
 // beforeCreate makes the store call then before it sends the next create.
@@ -1156,6 +1166,15 @@ func (f *faulty) Swap(ctx context.Context, key string, from store.Version, conte
 	v, err := f.Store.Swap(ctx, key, from, content, checksum)
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err == nil && f.swapped != nil {
+		then := f.swapped
+		f.swapped = nil
+		// then can make requests of its own, which take the lock.
+		f.mu.Unlock()
+		then()
+		f.mu.Lock()
+		return v, err
+	}
 	if err == nil && f.lose != nil {
 		f.lose()
 		f.lose, f.isDown = nil, true

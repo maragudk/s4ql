@@ -323,7 +323,7 @@ func TestConn_returning(t *testing.T) {
 		is.Equal(t, 2, len(logAnnotations(t, i.store)))
 	})
 
-	t.Run("should give the error of a context that ends before the statement and no rows, and change nothing", func(t *testing.T) {
+	t.Run("should give the error of a context that ends before the statement and no rows, and change nothing, and give every row where it ends after the change", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		is.Equal(t, "", i.exec("create table t (k int primary key, v text) strict, without rowid").err)
 		ctx, cancel := context.WithCancel(t.Context())
@@ -334,19 +334,65 @@ func TestConn_returning(t *testing.T) {
 		is.Equal(t, "", got.err)
 		is.Equal(t, 0, len(got.rows))
 
-		// A context that ends after the commit ends the rows with its error, and the change stays.
+		// A context that ends after the commit does not end the rows, which hold nothing, and the
+		// change stays.
 		ctx, cancel = context.WithCancel(t.Context())
 		rows, err := i.c.Query(ctx, "insert into t (k, v) values (1, 'a') returning k")
 		is.NotError(t, err)
 		cancel()
+		var keys []int64
+		for row, err := range rows.All() {
+			is.NotError(t, err)
+			keys = append(keys, row[0].GetInteger())
+		}
+		is.EqualSlice(t, []int64{1}, keys)
+		is.NotError(t, rows.Close())
+		is.Equal(t, `1,"a"`, strings.Join(i.queryValues("select * from t", nil).rows, " "))
+
+		// Nor in a transaction, where the change is made too.
+		is.NotError(t, i.c.Begin(t.Context()))
+		ctx, cancel = context.WithCancel(t.Context())
+		rows, err = i.c.Query(ctx, "update t set v = 'b' returning v")
+		is.NotError(t, err)
+		cancel()
 		n := 0
 		for _, err := range rows.All() {
-			is.True(t, errors.Is(err, context.Canceled))
+			is.NotError(t, err)
 			n++
 		}
 		is.Equal(t, 1, n)
 		is.NotError(t, rows.Close())
-		is.Equal(t, `1,"a"`, strings.Join(i.queryValues("select * from t", nil).rows, " "))
+		is.NotError(t, i.c.Commit(t.Context()))
+		is.Equal(t, `1,"b"`, strings.Join(i.queryValues("select * from t", nil).rows, " "))
+	})
+
+	t.Run("should drop the rows of RETURNING in Exec, with the errors and the count of Query, and read no deleted row again", func(t *testing.T) {
+		h := &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
+		is.Equal(t, "", i.exec("create table t (k int primary key, v text) strict, without rowid").err)
+		for k := range 3 {
+			is.Equal(t, "", i.exec("insert into t (k, v) values (?, 'a')", int64(k)).err)
+		}
+		for _, src := range []string{
+			"delete from t where k = 9 returning nope",
+			"update t set v = 1 returning nope",
+			"insert into t (k, v) values (1, 'b') returning nope",
+			"insert into t (k, v) values (1, 'b') returning k",
+		} {
+			_, queryErr := i.c.Query(t.Context(), src)
+			is.True(t, queryErr != nil, src)
+			_, execErr := i.c.Exec(t.Context(), src)
+			is.Equal(t, queryErr.Error(), fmt.Sprint(execErr), src)
+		}
+		res, err := i.c.Exec(t.Context(), "delete from t where k > 0 returning v")
+		is.NotError(t, err)
+		is.Equal(t, engine.Result{Changes: 2, SetsChanges: true}, res)
+		e, _ := h.last(t)
+		is.Equal(t, "2", e[engine.AttrRows])
+		// The access by the key reads each row that it finds once, and the delete reads none again to
+		// give its values, as Query does.
+		is.Equal(t, "2", e[engine.AttrRowsRead])
+		is.Equal(t, `0,"a"`, strings.Join(i.queryValues("select * from t", nil).rows, " "))
 	})
 
 	t.Run("should refuse a statement in a transaction while the rows of a RETURNING of it are open, and run one outside a transaction", func(t *testing.T) {

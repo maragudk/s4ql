@@ -402,7 +402,8 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 
 // QueryContext runs the statement of the text query, with args for its parameters, and gives its
 // rows. The text and the arguments are judged as [conn.ExecContext] judges them. A statement that is
-// no query gives no columns and no rows.
+// no query gives no columns and no rows. Outside a transaction, a statement with RETURNING gives its
+// rows once it is committed, and without an error from then on.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	values, err := arguments(query, args)
 	if err != nil {
@@ -422,7 +423,9 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return noRows{}, nil
 	}
 	held := &rows{ctx: ctx, c: c.c, conn: c, rows: r}
-	if !c.c.hold(held) {
+	// The rows of a RETURNING outside a transaction hold nothing, and their statement is committed,
+	// so they are given also when the connector has closed meanwhile, which does not close them.
+	if r.Holds() && !c.c.hold(held) {
 		_ = r.Close()
 		return nil, c.c.public(ctx, errClosed)
 	}

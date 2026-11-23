@@ -304,8 +304,9 @@ func commitError(err error) error {
 // statement of IF NOT EXISTS or IF EXISTS that does nothing succeeds in either, and is not
 // annotated. An insert, an update, or a delete with RETURNING that succeeds in a write transaction
 // also gives the rows of its RETURNING at once, as [Conn.write] orders them; the change belongs to
-// the transaction, and a roll back takes it back also when its rows were read.
-func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value) (Result, *returned, error) {
+// the transaction, and a roll back takes it back also when its rows were read. If returns is false,
+// it gives and holds none, as in [Conn.write].
+func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args []*s4qlpb.Value, returns bool) (Result, *returned, error) {
 	t := c.tx
 	r.at(t.position(), t.write != nil)
 	if err := c.ready(ctx); err != nil {
@@ -352,6 +353,9 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	s, err := buildSink(ctx, w, p, args, planted, c.e.db.lengthLimit(), c.e.reading(false))
 	if err != nil {
 		return Result{}, nil, err
+	}
+	if !returns {
+		dropReturns(s)
 	}
 	r.reads(w, s)
 	r.drew(order)

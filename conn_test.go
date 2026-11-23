@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -2581,6 +2582,79 @@ func TestReturning(t *testing.T) {
 		is.NotError(t, db.PingContext(t.Context()))
 		is.EqualSlice(t, []int64{1}, values(t, db, select1))
 		is.Equal(t, 2, len(commits(t, w)))
+	})
+
+	t.Run("should give the rows of a committed statement with RETURNING when the database closes between the commit and the end of Query", func(t *testing.T) {
+		w := newWorld(t)
+		s := &faulty{Store: w.client()}
+		db, c, err := s4ql.OpenStoreConnector(t.Context(), w.host, s, w.options("a"), coreOptions())
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1)
+		closed := make(chan error, 1)
+		// The close begins once the commit is applied, and before the instance knows it: the
+		// connector is closed when Query has its rows from the engine.
+		s.afterSwap(func() {
+			go func() { closed <- db.Close() }()
+			for !c.Closing() {
+				runtime.Gosched()
+			}
+		})
+		rows, err := db.QueryContext(t.Context(), "insert into t1 (v1) values (1) returning v1")
+		is.NotError(t, err)
+		var got []int64
+		for rows.Next() {
+			var v int64
+			is.NotError(t, rows.Scan(&v))
+			got = append(got, v)
+		}
+		is.NotError(t, rows.Err())
+		is.NotError(t, rows.Close())
+		is.EqualSlice(t, []int64{1}, got)
+		is.NotError(t, <-closed)
+		other := w.serve(t, "b")
+		is.EqualSlice(t, []int64{1}, values(t, other, select1))
+	})
+
+	t.Run("should commit a statement with RETURNING whose Query returns no error, also when its context ends once the commit is applied, whatever its rows then give", func(t *testing.T) {
+		w := newWorld(t)
+		s := &faulty{Store: w.client()}
+		db := w.openOn(t, "a", s, coreOptions())
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		s.afterSwap(cancel)
+		rows, err := db.QueryContext(ctx, "insert into t1 (v1) values (1) returning v1")
+		is.NotError(t, err)
+		// database/sql closes the rows of a context that has ended, at a time of its own, so they give
+		// the row or the error of the context, also between Next and Scan, which says nothing about
+		// the commit.
+		for rows.Next() {
+			var v int64
+			if err := rows.Scan(&v); err != nil {
+				is.Error(t, context.Canceled, err)
+				continue
+			}
+			is.Equal(t, int64(1), v)
+		}
+		if err := rows.Err(); err != nil {
+			is.Error(t, context.Canceled, err)
+		}
+		_ = rows.Close()
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+
+		ctx, cancel = context.WithCancel(t.Context())
+		s.afterSwap(cancel)
+		var v int64
+		if err := db.QueryRowContext(ctx, "insert into t1 (v1) values (2) returning v1").Scan(&v); err != nil {
+			is.Error(t, context.Canceled, err)
+		} else {
+			is.Equal(t, int64(2), v)
+		}
+		is.EqualSlice(t, []int64{1, 2}, values(t, db, select1))
+		is.Equal(t, 3, len(commits(t, w)))
 	})
 }
 

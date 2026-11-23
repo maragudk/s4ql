@@ -102,11 +102,24 @@ func returnsOf(s sink) *returning {
 	return nil
 }
 
+// dropReturns of the sink s, whose rows of RETURNING no one takes, as for [Conn.Exec]: it holds none
+// of them, and a delete reads no row again to give its values. The columns of its RETURNING are
+// resolved all the same, when the sink is built, so the statement fails as through [Conn.Query].
+func dropReturns(s sink) {
+	switch s := s.(type) {
+	case *insert:
+		s.ret = nil
+	case *update:
+		s.ret = nil
+	case *remove:
+		s.ret = nil
+	}
+}
+
 // returned is the [source] of the rows of a statement with RETURNING that has run, which the engine
 // holds: the rows in the order in which the statement changed them, which is the order of the
 // primary key of the rows that it found, or in its reverse if backward, as the engine draws it for
-// the statement. It reads nothing, and looks at the context before each row, as the rows of a query
-// do.
+// the statement. It reads nothing, and does not look at the context.
 type returned struct {
 	data     [][]*s4qlpb.Value
 	cols     []Column
@@ -132,6 +145,14 @@ func (r *returned) scanned() *scan {
 	return nil
 }
 
-func (r *returned) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
-	return (&values{data: r.data}).rows(ctx)
+// rows of the statement, which never fail: the change is made, and the rows hold nothing, so the
+// end of the context does not end them, unlike the rows of a query.
+func (r *returned) rows(context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		for _, row := range r.data {
+			if !yield(row, nil) {
+				return
+			}
+		}
+	}
 }
