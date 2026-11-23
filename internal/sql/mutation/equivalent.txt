@@ -1191,3 +1191,15 @@ internal/engine/engine.go Conn.write element: , SetsChanges: setsChanges(p) =>
 	In the planted bug rowsOfFailed, the result of the statement whose commit failed then sets no count of changes, so the simulation compares no count for it (run.statement reads one only where SetsChanges is set); the bug, the rows and the success of a commit that failed, stays, and TestSimulation_plantedBugs finds it by its own violation, a write that is not in the log.
 internal/engine/operator.go insert.run remove statement: i.ret.add(row) => #2
 	In the planted bug skipUnique, an insert with RETURNING then gives no row as well; the bug, a row written without the check of its key, stays, and the tests of the planted bugs find it as before.
+internal/engine/returning.go buildReturning remove statement: ret.positions = append(ret.positions, key) =>
+	The planted bug starKeyFirst then gives * without the column of the key, another wrong set of columns, which TestDifferential_plantedBugs finds by the rows, as it finds starKeyFirst.
+internal/engine/returning.go buildReturning condition: i != key => true
+	The planted bug starKeyFirst then gives * with the key first and again in its place, another wrong set of columns, which TestDifferential_plantedBugs finds by the rows.
+internal/engine/returning.go buildReturning condition: i != key => false
+	The planted bug starKeyFirst then gives * as the key alone, another wrong set of columns, which TestDifferential_plantedBugs finds by the rows.
+internal/engine/returning.go buildReturning operator: i != key => i == key
+	The planted bug starKeyFirst then gives * as the key twice, another wrong set of columns, which TestDifferential_plantedBugs finds by the rows.
+internal/engine/returning.go buildReturning remove statement: ret.positions = append(ret.positions, i) =>
+	The planted bug starKeyFirst then gives * as the key alone, another wrong set of columns, which TestDifferential_plantedBugs finds by the rows.
+internal/engine/returning.go returning.add condition: v.HasReal() => true
+	GetReal of a value that holds no real, or of nil for NULL, is +0.0, whose sign bit is clear, so math.Signbit(f) is false and the value is given as it is.
