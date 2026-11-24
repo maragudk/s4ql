@@ -118,3 +118,54 @@ The rank of a move that is resting in its last pose: if a resting move blocked l
 ### Future work
 
 None.
+
+## Step 3: Self-review
+
+**Author:** builder (simulator dancer)
+
+### Prompt Context
+
+**Verbatim prompt:** (as in step 1: self-review with the code-review skill, then the automated checks)
+
+**Interpretation:** review `main...HEAD`, fix what matters, and run the checks again.
+
+**Inferred intent:** hand the lead a branch that does what the brief says.
+
+### What I did
+
+Ran the code-review skill at medium effort over `main...HEAD`. It reported four nits, and I fixed all four in `/site/simulator/page.js`, `/site/simulator/index.html`, and `/internal/simulator/sitecheck/check.html`:
+
+- A move of the same rank could cut into a move of several poses after its first pose: a crash (`down`, rank 4) lost its fall to the shrug of `failing` (rank 4) that comes right after it, and a takeover lost its thumbs to `recovered`. Now a move cuts in only from a strictly higher rank; once the current move has held each of its poses, any move may follow. In playwright, a crash now goes `slump flat stand facepalm`.
+- `dancerPose` did not reset the time of the last pose when a new move began with the pose already shown, so the least hold could be shorter. It now resets it on every call.
+- The autoplay flag means the check no longer sees whether a visitor's click starts the audio context. Chromium runs once for the whole check, so the flag cannot be limited to this part; the comment of `dancer` in the check says so.
+- The CSS comment said "over the commit objects", which is not so below 960 px, where the frame is one column; it now says near the right end of the top line.
+
+Then `make site-check` (exit 0, no FAIL line), eight runs of the site check at once (all exit 0), and `go test -tags s4ql_browser ./internal/simulator/...` (ok).
+
+### Why
+
+The first finding broke what step 2 promised, that a crash gets its fall under a burst of sounds. The others were cheap and true.
+
+### What worked
+
+The timeline from a `MutationObserver` on `data-pose` in playwright showed the fix at once, and that the least gap between two poses stayed above 200 ms (233 ms).
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+Two sounds of the same rank come together more often than I thought: a crash is followed almost at once by the first failing request.
+
+### What was tricky
+
+Nothing beyond the rule of ranks itself.
+
+### What warrants review
+
+The rule in `dance` (`done || rank > move.rank`): a move of several poses, such as the box's wave (600 ms), now holds off scans for its length, and they go stale and are left out. That is intended.
+
+### Future work
+
+None.
