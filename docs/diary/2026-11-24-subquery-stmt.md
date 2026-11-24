@@ -115,4 +115,60 @@ SQLite's errors for a subquery of the wrong width depend on the statement, the o
 
 - The README of the pass for slice 15, by a writer: step 3.
 - The engine and the driver of slice 15: remove `subqueryRefusal`, `subqueried`, and the exceptions; decide the open items in `/docs/todo/sql-front-end.md` (a correlated subquery, the row of a subquery without order, the argument of `limit ?` in a subquery); give SQLite's errors for `*` of more than one column.
-- The simulator's box (`/internal/simulator/box.go`) sends an update or a delete with a subquery down its write path, which begins a write transaction before the engine refuses it, as slice 14's statement pass noted for RETURNING.
+- The simulator's box (`/internal/simulator/box.go`) sends an update or a delete with a subquery down its write path, which begins a write transaction before the engine refuses it, as slice 14's statement pass noted for RETURNING. (Fixed in step 3.)
+
+## Step 3: The review, its fixes, the README, and the checks of the project
+
+**Author:** subquery-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Run `make test` (and the linter the Makefile has) before you hand in. [...] Self-review your diff against this brief when you are done, and fix what you find."
+**Interpretation:** Review the branch with competing reviewers, fix what matters, have a writer bring the README of the pass up to slice 15, and run the project's checks.
+**Inferred intent:** A branch whose code, notes, and README agree, ready for the lead and for the builder of the engine.
+
+### What I did
+
+The review (`code-review high main...HEAD`) gave six points. Fixed, each with a test that fails without the fix:
+
+- A comparison with a deep subquery on the right of an AND made the AND deeper than SQLite parses, and `recognizer.conditions` checked an AND only before it took it, by the left side. `select * from t where v = 1 and k = (select k from u where <997 conditions>)` was refused at the subquery by the check of resolution, and with ` or v = 2` after it as `OR`. The AND is now checked after its right side too, at the token after it; the depth subtest has both texts.
+- The simulator's box routed an update or a delete with a subquery to its write path, where it ended `abandoned` after a write transaction. It now asks `engine.Check` after `stmt.Check`, so a text that the engine refuses from the text alone goes as a refused text; `TestEngine_box` pins `failed` with `s4ql: not supported: subquery (at offset 31)`, and failed with `Expected "failed", but got "abandoned"` when the call was turned off.
+- The helpers of `reach` in the engine's differential tests panicked on a statement with a subquery when the pair keeps a tally, which the generated tests and FuzzSQL do: `panic: stmttest: a literal of type <nil>` in `stmttest.ValueKind`, through `WhereCases` and `reachWhere`. `reach` now skips such a statement, as `everyPath` does, and `TestPair_subquery` runs with a tally and three more texts.
+- `Generator.subquery` took the ORDER BY and LIMIT of the hook `Generator.Order`, which gives those of a statement; it now draws its own.
+- A text with a refused token after a subquery gets the error for that token where it got `subquery`; recorded in `/docs/todo/slice-15.md`.
+- The README: done by the writer.
+
+A writer sub-agent, in a worktree of its own from `9f9960f`, rewrote `/internal/sql/stmt/README.md` for slice 15; I cherry-picked its commit and added the offset of the AND fixed above. It found that the corpus did move (6 selects with a subquery are supported now, 20,356 where there were 20,350), that the excused near misses of `default ((select 1))` hold a subquery in a DEFAULT, that the 253 of that form are 258 with `Subquery` 4, that `x'00'` and the integer 0 as arguments of `limit ?` were measured with the shell only, and that `checkSubqueries` compares sorted rows and checks no order; the notes now say the first four, and the README the fifth. It also corrected two stale sentences of slice 14 in the README.
+
+`/internal/sql/mutation/equivalent.txt`: the equivalent mutant `max(height, depth(ands[i].Y))` of `recognizer.conditions` is `max(height, h)` now.
+
+### Why
+
+The depth and the box were real differences in what a user sees; the panic in the helpers was one that FuzzSQL could reach. The rest is accuracy of the notes.
+
+### What worked
+
+`make test` passed, the module `internal/sqlite/crosscheck` and `internal/simlint` included, and `make lint` gave no issue after the fix below. `make test-sql`, the full run of `./internal/sql/...` and `./internal/engine/...`, passed with no `.tsv` changed. `FuzzCheck` ran 30 s (1,831,325 executions) and `FuzzGenerate` 20 s, and found nothing. The new tests passed twice under `-race`.
+
+### What didn't work
+
+The first `make test` failed in `TestEquivalent` (quoted in step 2), and the first `make lint` on `QF1001` (quoted in step 2).
+
+### What I learned
+
+Every helper of the tests that builds a select from the conditions of a statement (`stmttest.SelectOf`, `WhereCases`, `orderedOf`, the driver check's `reachChange`) drops the subqueries, so a statement with a subquery must not reach them until the engine step makes them read subqueries.
+
+### What was tricky
+
+Nothing beyond step 2.
+
+### What warrants review
+
+- The check of the AND after its right side in `recognizer.conditions`.
+- The call of `engine.Check` in `boxStatement` in `/internal/simulator/box.go`, which is outside the pass, and which the engine step makes moot when it runs subqueries.
+- The section `### Subqueries` of `/internal/sql/stmt/README.md`.
+
+### Future work
+
+- The engine step of slice 15, as step 2 lists, and with it the skips in `reach`, `everyPath`, and `pair.step`, and the helpers that drop subqueries.
+- No test checks `parameter beyond SQLite's limit` in a WHERE with subqueries, nor the order of the rows of a select with ORDER BY and a subquery against SQLite (`checkSubqueries` sorts them).
