@@ -9,6 +9,13 @@ name: Pages
 # that the page loads every file of the simulator with the query ?v=<commit>. The CDN in front of
 # GitHub Pages lets a browser keep scripts for hours and HTML for minutes, so without the version
 # the HTML of one deploy could run the scripts of another.
+#
+# The job build builds the site and uploads it as the Pages artifact, and the job deploy deploys
+# that artifact. They are two jobs because deploy-pages looks the artifact up by name in a listing
+# of the run's artifacts, and right after the upload that listing can still be empty, as in
+# actions/deploy-pages#451. If deploy fails, re-run the failed jobs only: that re-runs deploy on the
+# artifact that build uploaded. A re-run of build as well uploads a second artifact of the same
+# name, which deploy-pages refuses.
 
 on:
   push:
@@ -31,17 +38,11 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
-      pages: write
-      id-token: write
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - uses: actions/checkout@v7
@@ -58,11 +59,23 @@ jobs:
           SITECOMMIT: ${{ github.sha }}
         run: make site SITECOMMIT="$SITECOMMIT" SITEVERSION="$SITECOMMIT"
 
-      - uses: actions/configure-pages@v6
-
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
+  deploy:
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
