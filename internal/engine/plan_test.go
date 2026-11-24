@@ -68,6 +68,13 @@ func TestNewPlan(t *testing.T) {
 		{src: "drop table IF EXISTS t1", want: "drop table if exists t1\n"},
 		{src: "create index if not exists i on t (a desc)", want: "create index if not exists i on t (a desc)\n"},
 		{src: "drop index if exists i", want: "drop index if exists i\n"},
+		// A subquery is the value of its condition, by its number, and its query comes after the nodes
+		// of the statement, with its parameters numbered with those of the statement.
+		{src: "update goqite set timeout = ? where queue = ? and id = (select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1) returning id, body, received",
+			want: "update goqite set timeout = ?1 returning id, body, received\n  filter queue = ?2 and id = (subquery 1)\n    scan goqite\n  subquery 1\n    project id\n      limit 1\n        order by priority desc, created\n          filter queue = ?3 and timeout <= ?4 and received < ?5\n            scan goqite\n"},
+		{src: "select k from t where (select * from u) < k and v = ? and w >= (select x from t where x is null limit ?) limit ?",
+			want: "query\n  project k\n    limit ?3\n      filter k > (subquery 1) and v = ?1 and w >= (subquery 2)\n        scan t\n  subquery 1\n    project *\n      scan u\n  subquery 2\n    project x\n      limit ?2\n        filter x IS NULL\n          scan t\n"},
+		{src: "delete from t where k = (select k from u)", want: "delete from t\n  filter k = (subquery 1)\n    scan t\n  subquery 1\n    project k\n      scan u\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {
@@ -86,6 +93,24 @@ func TestNewPlan(t *testing.T) {
 		is.Equal(t, stmt.Name{Raw: "C", Value: "C", Offset: 20}, p.Columns[0].Name)
 		is.Equal(t, s4qlpb.Type_TYPE_INT, p.Columns[0].Type)
 		is.EqualSlice(t, []int{0}, p.PrimaryKey)
+	})
+
+	t.Run("should hold a subquery as the value of its condition, by its number and the offset of its parenthesis, and its query in the statement", func(t *testing.T) {
+		s, err := stmt.Check("delete from t where (select k from u where v = ?) < k and w = (select * from t)")
+		is.NotError(t, err)
+		p := engine.NewPlan(s).(*engine.Delete)
+		f := p.Source.(*engine.Filter)
+		is.Equal(t, engine.Subquery{Number: 1, Offset: 20}, *f.Conditions[0].Value.(*engine.Subquery))
+		is.True(t, f.Conditions[0].ValueFirst)
+		is.Equal(t, engine.Subquery{Number: 2, Offset: 62}, *f.Conditions[1].Value.(*engine.Subquery))
+		is.Equal(t, 2, len(p.Subqueries))
+		is.Equal(t, "u", p.Subqueries[0].Root.(*engine.Project).Source.(*engine.Filter).Source.(*engine.Scan).Table.Value)
+		is.True(t, p.Subqueries[1].Root.(*engine.Project).Star)
+		is.True(t, p.Subqueries[0].Subqueries == nil && p.Subqueries[1].Subqueries == nil)
+
+		s, err = stmt.Check("select * from t where k = 1")
+		is.NotError(t, err)
+		is.True(t, engine.NewPlan(s).(*engine.Query).Subqueries == nil)
 	})
 
 	t.Run("should hold the conditions of a WHERE in a filter below the projection, in the order of the text, with no value for a test for NULL", func(t *testing.T) {

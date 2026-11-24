@@ -243,6 +243,88 @@ func TestEngine_report(t *testing.T) {
 		is.Equal(t, "1", h.events[len(h.events)-1][attrRows])
 	})
 
+	t.Run("should give the number of subqueries, those that found a row, their rows read, their access, index, and order in the event, and the rows that they read among those of the statement", func(t *testing.T) {
+		// reading of the event e: its attributes of the reading of its subqueries and of its own.
+		reading := func(e map[string]string) string {
+			var parts []string
+			for _, key := range []string{attrSubqueries, attrSubqueriesFound, attrSubqueriesRowsRead, attrSubqueriesAccess, attrSubqueriesIndex, attrSubqueriesOrder, attrAccess, attrRowsRead, attrRows, attrOutcome} {
+				if v, ok := e[key]; ok {
+					parts = append(parts, strings.TrimPrefix(key, "statement.")+":"+v)
+				}
+			}
+			return strings.Join(parts, " ")
+		}
+		// The table t has the primary key k and the index i on w, which two rows have 20 in.
+		newTable := func() *fake {
+			return newFake().with("t", []string{"k", "w"}, []int64{1, 10}, []int64{2, 20}, []int64{3, 30}, []int64{4, 20}).index("i", "t", 1)
+		}
+		for _, c := range []struct{ src, want string }{
+			// A subquery reads up to its first row by the access that the rules choose for it as for a
+			// query with a LIMIT, and its rows count among those of the statement.
+			{src: "select * from t where k = (select k from t where w = 20 order by k)",
+				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:index subqueries.index:i subqueries.order:delivered access:primary_key rows_read:2 rows:1 outcome:ok"},
+			{src: "select * from t where k = (select k from t where w = 20 order by k desc limit 2)",
+				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:index subqueries.index:i subqueries.order:delivered access:primary_key rows_read:2 rows:1 outcome:ok"},
+			{src: "select * from t where k = (select k from t)",
+				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:full_scan access:primary_key rows_read:2 rows:1 outcome:ok"},
+			{src: "select * from t where k <= (select k from t order by w desc limit 1)",
+				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:index subqueries.index:i subqueries.order:delivered access:primary_key rows_read:4 rows:3 outcome:ok"},
+			// Without a LIMIT, as with one, the index that delivers the order wins over the range of the key.
+			{src: "select * from t where k = (select k from t where k > 1 order by w)",
+				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:2 subqueries.access:index subqueries.index:i subqueries.order:delivered access:primary_key rows_read:3 rows:1 outcome:ok"},
+			// A sorted subquery reads as many rows as the select of its text with LIMIT 1 does.
+			{src: "select * from t where k = (select w from t where k > 1 order by w, k desc)",
+				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:primary_key subqueries.order:sorted access:primary_key rows_read:1 rows:0 outcome:ok"},
+			{src: "select w from t where k > 1 order by w, k desc limit 1", want: "access:primary_key rows_read:1 rows:1 outcome:ok"},
+			// No row, NULL, and LIMIT 0, which reads nothing; the statement then reads no row.
+			{src: "select * from t where k = (select k from t where w = 99)",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:0 subqueries.access:index subqueries.index:i access:none rows_read:0 rows:0 outcome:ok"},
+			{src: "select * from t where k = (select k from t where k = 9)",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:0 subqueries.access:primary_key access:none rows_read:0 rows:0 outcome:ok"},
+			{src: "select * from t where k = (select k from t limit 0)",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:0 subqueries.access:none access:none rows_read:0 rows:0 outcome:ok"},
+			// Rows that the subquery reads and its filter rejects, as a receive of goqite on a queue with
+			// messages of which none is due: it reads them, and finds none.
+			{src: "select * from t where k = (select k from t where w = 20 and k != 2 and k != 4)",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:2 subqueries.access:index subqueries.index:i access:none rows_read:2 rows:0 outcome:ok"},
+			{src: "update t set w = 50 where k = (select k from t where w = 20 and k != 2 and k != 4 order by w limit 1)",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:2 subqueries.access:index subqueries.index:i subqueries.order:delivered access:none rows_read:2 rows:0 outcome:ok"},
+			{src: "delete from t where (select k from t where w != 10 and w != 20 and w != 30) = k",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:4 subqueries.access:full_scan access:none rows_read:4 rows:0 outcome:ok"},
+			// Two subqueries, in the order of the text.
+			{src: "select * from t where k >= (select k from t where k = 2) and w = (select w from t where w > 15 order by w limit 1)",
+				want: "subqueries:2 subqueries.found:2 subqueries.rows_read:2 subqueries.access:primary_key,index subqueries.index:,i subqueries.order:,delivered access:index rows_read:4 rows:2 outcome:ok"},
+			// An update and a delete.
+			{src: "update t set w = 50 where k = (select k from t where w = 20 order by k)",
+				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:index subqueries.index:i subqueries.order:delivered access:primary_key rows_read:3 rows:1 outcome:ok"},
+			{src: "delete from t where k = (select k from t where w = 30)",
+				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:index subqueries.index:i access:primary_key rows_read:2 rows:1 outcome:ok"},
+			// A statement that can give no row whatever its subqueries give computes none, as SQLite.
+			{src: "select * from t where w = (select w from t order by w) limit 0", want: "subqueries:1 access:none rows_read:0 rows:0 outcome:ok"},
+			{src: "select * from t where k = null and w = (select w from t)", want: "subqueries:1 access:none rows_read:0 rows:0 outcome:ok"},
+			{src: "delete from t where k is null and w = (select w from t)", want: "subqueries:1 access:none rows_read:0 rows:0 outcome:ok"},
+			// A statement that failed before its access was chosen has the number of its subqueries only.
+			{src: "select * from t where k = (select x from t)", want: "subqueries:1 rows:0 outcome:sqlite_error"},
+			{src: "select * from t where k = (select k from t limit ?)", want: "subqueries:1 rows:0 outcome:wrong_arguments"},
+			{src: "select * from t where k = 1", want: "access:primary_key rows_read:1 rows:1 outcome:ok"},
+		} {
+			h := &recorder{}
+			_, _ = newLoggedConn(newTable(), bugs{}, h).Exec(t.Context(), c.src)
+			is.Equal(t, 1, len(h.events), c.src)
+			is.Equal(t, c.want, reading(h.events[0]), c.src)
+		}
+
+		// A write in a read-only transaction is refused after its names, as in SQLite, and its
+		// subqueries read nothing.
+		h := &recorder{}
+		conn := newLoggedConn(newTable(), bugs{}, h)
+		is.NotError(t, conn.BeginReadOnly(t.Context()))
+		_, err := conn.Exec(t.Context(), "update t set w = 1 where k = (select k from t order by w desc)")
+		is.Equal(t, "attempt to write a readonly database", err.Error())
+		is.Equal(t, "subqueries:1 access:none rows_read:0 rows:0 outcome:sqlite_error", reading(h.events[0]))
+		is.NotError(t, conn.Rollback(t.Context()))
+	})
+
 	t.Run("should give the access, the index of an access by one, and the rows read of a select, an update, and a delete in the event, and neither an access nor rows read for a statement that reads no rows of a table and for one that failed before its access was chosen", func(t *testing.T) {
 		// reading of the event e: its attributes of the reading that it has, its rows, and its outcome.
 		reading := func(e map[string]string) string {

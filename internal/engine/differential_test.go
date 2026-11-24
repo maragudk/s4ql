@@ -1031,6 +1031,12 @@ type pair struct {
 	// that no drop table dropped since, for [pair.reach].
 	found map[string]bool
 	y     tally
+	// computed holds the values of the subqueries that the instance computed for the call of
+	// [pair.step], or nil, and force the values that the other instance uses in place of its own, for a
+	// call whose subqueries SQLite leaves undecided, or nil; see [subqueryCall].
+	computed, force []*s4qlpb.Value
+	// sub is what the pair knows of the subqueries of the call of [pair.step], or nil.
+	sub *subqueryCall
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -1069,6 +1075,13 @@ func (p *pair) step(c stmttest.Call) string {
 	t, i, o := p.t, p.i, p.o
 	t.Helper()
 	src := c.Src
+	// What SQLite gives for the subqueries of the call, before it runs, and the values that the
+	// instance computes for them; see [subqueryCall].
+	p.sub, p.computed, p.force = p.subqueriesOf(c), nil, nil
+	i.e.ObserveSubqueries(func(vs []*s4qlpb.Value) []*s4qlpb.Value {
+		p.computed = slices.Clone(vs)
+		return vs
+	})
 	var got answer
 	if c.Query {
 		got = i.queryValues(src, values(c.Args))
@@ -1078,6 +1091,12 @@ func (p *pair) step(c stmttest.Call) string {
 	p.last = got
 	p.y.add(src, got)
 	p.reach(c, got)
+	if failure := p.sub.check(t, "the engine", p.computed, p.count); failure != "" {
+		return failure
+	}
+	if p.sub.undecided() {
+		p.force = p.computed
+	}
 	if failure := p.bothWays(c, got); failure != "" {
 		return failure
 	}
@@ -1095,8 +1114,8 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	// A statement with a subquery, of slice 15, is refused before its values and its arguments until
-	// the engine runs it, as [subqueried] says, so no rule of its values holds for it.
+	// The rule of a literal that is too long does not read the literals of a subquery, which the
+	// statements of the tests do not lower the limit for.
 	if s == nil || !subqueried(s) {
 		if kind, failure := p.checkLength(c, got); kind != "" {
 			if failure == "" {
@@ -1104,12 +1123,12 @@ func (p *pair) step(c stmttest.Call) string {
 			}
 			return failure
 		}
-		if kind, failure := p.checkType(c, args, got); kind != "" {
-			if failure == "" {
-				p.y.excused(kind)
-			}
-			return failure
+	}
+	if kind, failure := p.checkType(c, args, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
 		}
+		return failure
 	}
 	if got.err == "not supported" && p.tooLongForCache(src, got.message) {
 		p.y.excused(excusedCacheLimit)
@@ -1119,9 +1138,8 @@ func (p *pair) step(c stmttest.Call) string {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
-		// empty database without a syntax error. A statement with a subquery, of slice 15, is not
-		// supported until the engine runs it, as [subqueried] says.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil && !subqueried(s) {
+		// empty database without a syntax error.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -1133,6 +1151,11 @@ func (p *pair) step(c stmttest.Call) string {
 		return fmt.Sprintf("%q with %v arguments: the engine gives %q", src, len(c.Args), got.message)
 	}
 	before := p.prev
+	if p.computed != nil {
+		// SQLite runs the statement with the values of the subqueries that the instance computed, which
+		// [pair.subqueriesOf] has checked, and every comparison below reads that statement.
+		src, args = p.sub.flatten(p.computed)
+	}
 	// An update that the engine refuses for a record that is too long runs in SQLite in a savepoint,
 	// which is rolled back, since SQLite does not measure every record of a statement that changes
 	// many rows: see [pair.recordSlips].
@@ -1170,10 +1193,29 @@ func (p *pair) step(c stmttest.Call) string {
 		// decides alone.
 		return fmt.Sprintf("%q with the arguments %v: a literal of a condition is longer than the length limit, and the engine gives %v, and the rule %q", src, args, got, tooBig)
 	}
+	// A select that still has its subqueries here is one whose subqueries the engine did not compute,
+	// as it computes none for a select that can give no row whatever they give: it must give no row,
+	// and SQLite runs its text, so that the rows of SQLite say whether the engine was right to compute
+	// none. The comparisons of its order and its access below read a statement without a subquery, and
+	// a select without a row has nothing for them. It is counted only through Query, where its rows
+	// are compared. An update or a delete that still has its subqueries and did not fail is one that
+	// can change no row, and the count of changes below and the state compare it with SQLite's run of
+	// its text.
+	sel, isSelect := u.(*stmt.Select)
+	uncomputed := isSelect && subqueried(sel) && got.err == ""
+	if u != nil && !isSelect && subqueried(u) && got.err == "" {
+		p.count("subquery that the engine did not compute, of an update or a delete")
+	}
+	if uncomputed && c.Query {
+		p.count("subquery that the engine did not compute, of a select that gave no row")
+		if len(got.rows) > 0 {
+			return fmt.Sprintf("%q with the arguments %v: the engine gives the rows %v without computing its subqueries", src, args, got.rows)
+		}
+	}
 	// The rows of a query with ORDER BY or LIMIT are compared as [ordered.differs] says, those of the
 	// instance and those of the other instance, which [pair.bothWays] compared by their number alone.
 	differs := got.String() != want.String()
-	if sel, ok := u.(*stmt.Select); ok && c.Query && (sel.OrderBy != nil || sel.Limited()) && got.err == "" && want.err == "" {
+	if isSelect && !uncomputed && c.Query && (sel.OrderBy != nil || sel.Limited()) && got.err == "" && want.err == "" {
 		q := orderedOf(sel, args)
 		if how := q.compare(t, o, got, want); how != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, how)
@@ -1202,7 +1244,7 @@ func (p *pair) step(c stmttest.Call) string {
 			return fmt.Sprintf("%q with the arguments %v: the engine gives\n%v\nand SQLite\n%v", src, args, got, want)
 		}
 	}
-	if sel, ok := u.(*stmt.Select); ok && c.Query && got.err == "" && want.err == "" {
+	if isSelect && !uncomputed && c.Query && got.err == "" && want.err == "" {
 		if failure := p.checkOrder(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
@@ -1392,7 +1434,10 @@ func (p *pair) returnedInOrder(s stmt.Statement, args []any) []string {
 	default:
 		return nil
 	}
-	if !r.Present() || len(args) != s.Parameters() {
+	// A statement with a subquery is flattened by [pair.step] once the engine has computed it, so one
+	// that is not has failed before it changed a row, or can change none, and has no order of RETURNING
+	// to check.
+	if !r.Present() || len(args) != s.Parameters() || subqueried(s) {
 		return nil
 	}
 	_, columns := o.columns(t, table.Value)
@@ -1792,7 +1837,8 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	t, o, other := p.t, p.o, p.other
 	t.Helper()
 	if s != nil && subqueried(s) {
-		// The engine refuses a statement with a subquery, of slice 15, until it runs it.
+		// The select of an update or a delete would leave its subqueries out; the pair runs every path
+		// of the statement with the values of its subqueries in their place.
 		return ""
 	}
 	var sel *stmt.Select
@@ -2070,9 +2116,23 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 	i, other := p.i, p.other
 	byKey := !i.e.ScansAll()
 	s, _ := stmt.Check(c.Src)
-	if failure := p.everyPath(s, c); failure != "" {
+	every, everyCall := s, c
+	if p.computed != nil {
+		// Every path of the statement with the values of its subqueries in their place.
+		everyCall.Src, everyCall.Args = p.sub.flatten(p.computed)
+		every, _ = stmt.Check(everyCall.Src)
+	}
+	if failure := p.everyPath(every, everyCall); failure != "" {
 		return failure
 	}
+	var otherComputed []*s4qlpb.Value
+	other.e.ObserveSubqueries(func(vs []*s4qlpb.Value) []*s4qlpb.Value {
+		otherComputed = slices.Clone(vs)
+		if p.force != nil {
+			return p.force
+		}
+		return vs
+	})
 	path := engine.Path{}
 	if byKey {
 		paths := otherPaths(p.indexNames(s)...)
@@ -2087,6 +2147,9 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		all = other.execValues(c.Src, values(c.Args))
 	}
 	changes, allChanges := i.changes, other.changes
+	if failure := p.sub.check(p.t, "the other instance", otherComputed, func(string) {}); failure != "" {
+		return failure
+	}
 	// Which rows a LIMIT keeps, of those that SQLite leaves unordered, depends on the path, and so does
 	// the order of rows that tie, so the rows of a select with ORDER BY or LIMIT are compared by their
 	// number here, and each answer with SQLite in [pair.step].
@@ -2240,8 +2303,8 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, 
 	}
 	s, _ := stmt.Check(c.Src)
 	if s != nil && subqueried(s) {
-		// The engine refuses a statement with a subquery, of slice 15, until it runs it, and the kinds
-		// of what a statement reaches read no subquery.
+		// The kinds of what a statement reaches read no subquery: [subqueryCall.check] counts what a
+		// subquery reaches.
 		return
 	}
 	if reachExists(t, o, s, c, got, count) {
@@ -3505,6 +3568,9 @@ func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 	if s == nil || len(args) != s.Parameters() {
 		return ""
 	}
+	if subqueried(s) {
+		return subqueryRule(t, o, src, s, args, false)
+	}
 	switch s := s.(type) {
 	case *stmt.Insert:
 		if o.prepare(t, src) != nil {
@@ -3589,6 +3655,9 @@ func limitRefused(s stmt.Statement, args []any) bool {
 func readOnlyRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
 	s, _ := stmt.Check(src)
+	if s != nil && subqueried(s) {
+		return subqueryRule(t, o, src, s, args, true)
+	}
 	switch s := s.(type) {
 	case *stmt.Insert:
 		return ""

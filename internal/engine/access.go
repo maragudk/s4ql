@@ -499,6 +499,9 @@ func (p path) place(o orderBy, t *s4qlpb.CreateTable, key []core.KeyColumn, cond
 // delivers it, and its rows that tie come as the key of the access holds them: the draw decides
 // nothing for it. An update and a delete read forward, since the order in which they find their rows
 // shows nowhere.
+//
+// A scalar subquery of the statement reads as a query does, by a reading of its own, which
+// [reading.inner] draws.
 type reading struct {
 	path     path
 	backward bool
@@ -507,4 +510,20 @@ type reading struct {
 	drawn bool
 	// bugs planted in the choice of the access, for the tests of this package.
 	bugs bugs
+	// e is the engine that draws the reading of a subquery, or nil, for a reading of a test, whose
+	// subqueries read forward by the path of the zero value.
+	e *Engine
+	// observe is the hook of the tests of this package that is given the values of the subqueries of
+	// the statement, in the order of the text, once they are computed, and gives the values that the
+	// statement uses; nil uses them as they are.
+	observe func([]*s4qlpb.Value) []*s4qlpb.Value
+}
+
+// inner is the reading of a scalar subquery of the statement: the one that the engine draws for a
+// query, with the path that the tests force.
+func (r reading) inner() reading {
+	if r.e == nil {
+		return reading{}
+	}
+	return r.e.reading(true)
 }

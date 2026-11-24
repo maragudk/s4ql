@@ -81,6 +81,14 @@ func (e *Engine) SetPath(p Path) {
 	e.path = p.path()
 }
 
+// ObserveSubqueries gives f the values of the scalar subqueries of each statement of the engine e
+// from now on, in the order of the text, once the engine has computed them, and the statement uses
+// the values that f gives in their place; nil observes nothing. A test sets it between the
+// statements, as for [Engine.SetPath].
+func (e *Engine) ObserveSubqueries(f func([]*s4qlpb.Value) []*s4qlpb.Value) {
+	e.observe = f
+}
+
 // Forced reports whether the engine e forces its statements to read by a path, as [Engine.SetPath]
 // and [Options.ScanAll] force one, other than the one that the rules choose, or to sort. A path that
 // forces only the direction of the scan reads as the rules choose.
