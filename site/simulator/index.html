@@ -7,8 +7,12 @@
 <meta name="description" content="The storage code of s4ql, compiled to WebAssembly, runs in your browser on the official SQLite WebAssembly build, with a simulated S3 and simulated time. One instance serves, a second stands by to take over. Crash or stop either, hang or cut its connection to S3, fail its disk, or move its clocks, and watch what the code does.">
 <meta name="theme-color" content="#000000">
 <link rel="canonical" href="https://www.s4ql.com/simulator/">
-<link rel="icon" href="../favicon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="icon" type="image/png" href="../favicon-96x96.png" sizes="96x96">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="shortcut icon" href="../favicon.ico">
+<link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="s4ql">
+<link rel="manifest" href="../site.webmanifest">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="s4ql">
 <meta property="og:url" content="https://www.s4ql.com/simulator/">
@@ -78,7 +82,7 @@ body {
 }
 
 ::selection { background: var(--lumin); color: var(--void); }
-.alarm ::selection, .commit.head ::selection, .btn[aria-pressed="true"] ::selection, li.you ::selection, li.alarm ::selection { background: var(--void); color: var(--lumin); }
+.alarm ::selection, .commit.head ::selection, .btn[aria-pressed="true"] ::selection, li.you ::selection { background: var(--void); color: var(--lumin); }
 
 a {
   color: inherit;
@@ -207,14 +211,6 @@ code { font-family: inherit; }
   flex: none;
 }
 .btn[aria-pressed="true"] .led { background: currentColor; }
-/* A toggle that waits, as Sound that the browser remembers on does until the first click: the
-   button does not invert, and its square has a dot that blinks, or holds under reduced motion. */
-.btn[aria-pressed="mixed"] .led {
-  background: currentColor;
-  box-shadow: inset 0 0 0 2px var(--void);
-  animation: led-wait 1.2s steps(1, end) infinite;
-}
-@keyframes led-wait { 50% { background: transparent; } }
 .btn .bars {
   display: block;
   width: 32px;
@@ -596,8 +592,10 @@ h2 {
    px. The commit objects keep at least the width of the line under a bar code. */
 
 .logs { position: relative; display: grid; grid-template-columns: minmax(0, 3fr) minmax(440px, 2fr); border: var(--rule); margin: 48px 0 40px; }
-/* The dancer stands on the top line of the frame, near its right end, in the margin above it, and
-   dances to the sounds: see page.js. It is drawn in pixels of 2 px. */
+/* The dancer stands on the top line of the frame, in the margin above it, dances to the sounds, and
+   strolls along the line: see page.js. This is its old place, near the right end, from which a
+   transform moves it. It is drawn in pixels of 2 px. page.js has its right and its pixels as RIGHT
+   and PX, to keep it on the line: change them together. */
 .dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; pointer-events: none; }
 .logs > section { min-width: 0; }
 .logs > .objects { border-left: var(--rule); }
@@ -616,8 +614,7 @@ h2 {
 }
 .entries .text { overflow-wrap: anywhere; }
 .entries li.story .text { font-weight: 700; }
-.entries li.you, .entries li.alarm { background: var(--lumin); color: var(--void); }
-.entries li.alarm { font-weight: 700; }
+.entries li.you { background: var(--lumin); color: var(--void); }
 .entries li.empty, .commits li.empty { display: block; padding: 12px 20px; font-size: 13px; }
 .commits { list-style: none; margin: 0; padding: 0; }
 .commit { padding: 10px 20px; border-bottom: var(--rule); display: grid; gap: 6px; }
@@ -689,6 +686,52 @@ h2 {
   .sql-rows th:first-child, .sql-rows td:first-child { padding-left: 16px; }
 }
 
+/* The night sky, behind everything: stars of one pixel or a few, in the margins and gutters. The
+   script after #sky places them where there is no content, and the bands and boxes that hold
+   content are opaque over the sky besides. A pixel of a star is a whole number of device pixels, at
+   least one, which the script gives as --p. Most stars are drawn once into one SVG; a few twinkle,
+   each in an element of its own whose opacity steps, without fades, in an animation that the
+   compositor runs by itself, each in its own time. The sky scrolls with the page. Under reduced
+   motion the stars stand still, and in print and in forced colours there are none. */
+body { position: relative; isolation: isolate; }
+.intro, .requests, .node, .box, .s3, .logs, .ask { background: var(--void); }
+/* The stick figure walks in front of the sky. Each of its pixels has a black border two of its
+   pixels wide, under the white ones and cut off at the edges of its box, so that a star next to it
+   or inside its head is hidden and one farther off is seen apart from it, not as a stray pixel or
+   an eye of the figure. */
+.dancer path { stroke: var(--void); stroke-width: 4; paint-order: stroke; }
+.sky { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+.sky svg { position: absolute; top: 0; left: 0; display: block; }
+.sky span, .sky i { position: absolute; display: block; width: var(--p); height: var(--p); }
+.sky span { background: var(--lumin); opacity: 0.4; }
+.sky .glint { background: none; opacity: 1; }
+.sky .glint i { top: 0; left: 0; }
+.sky .glint .c { background: var(--lumin); opacity: 0.45; }
+.sky .glint .a1, .sky .glint .a2 { opacity: 0; --q: var(--p); box-shadow: var(--q) 0 var(--lumin), calc(-1 * var(--q)) 0 var(--lumin), 0 var(--q) var(--lumin), 0 calc(-1 * var(--q)) var(--lumin); }
+.sky .glint .a2 { --q: calc(2 * var(--p)); }
+@media (prefers-reduced-motion: no-preference) {
+  .sky .ba { animation: sky-a var(--d) step-end var(--o) infinite; }
+  .sky .bb { animation: sky-b var(--d) step-end var(--o) infinite; }
+  .sky .bc { animation: sky-c var(--d) step-end var(--o) infinite; }
+  .sky .glint .c { animation: sky-core var(--d) step-end var(--o) infinite; }
+  .sky .glint .a1 { animation: sky-arm1 var(--d) step-end var(--o) infinite; }
+  .sky .glint .a2 { animation: sky-arm2 var(--d) step-end var(--o) infinite; }
+}
+/* Brighter for a while, and dimmer for a while. */
+@keyframes sky-a { 0% { opacity: 0.4; } 40% { opacity: 0.6; } 46% { opacity: 0.4; } 75% { opacity: 0.2; } 81% { opacity: 0.4; } }
+/* Two quick flicks, close together. */
+@keyframes sky-b { 0% { opacity: 0.3; } 88% { opacity: 0.65; } 89.5% { opacity: 0.3; } 92% { opacity: 0.65; } 93% { opacity: 0.3; } }
+/* Dims, goes out, and comes back. */
+@keyframes sky-c { 0% { opacity: 0.45; } 62% { opacity: 0.2; } 66% { opacity: 0; } 74% { opacity: 0.2; } 78% { opacity: 0.45; } }
+/* A plus that grows from the dot by a pixel, then by two, and shrinks again. */
+@keyframes sky-core { 0% { opacity: 0.45; } 90% { opacity: 0.7; } 96% { opacity: 0.45; } }
+@keyframes sky-arm1 { 0% { opacity: 0; } 90% { opacity: 0.45; } 96% { opacity: 0; } }
+@keyframes sky-arm2 { 0% { opacity: 0; } 92% { opacity: 0.3; } 94% { opacity: 0; } }
+@media print, (forced-colors: active) {
+  .sky { display: none; }
+  .dancer path { stroke: none; }
+}
+
 footer { padding: 40px 0 56px; }
 footer .wrap {
   display: grid;
@@ -710,6 +753,138 @@ footer ul {
 }
 noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule); }
 </style>
+<script>
+// The night sky: see the CSS of .sky. The page is cut into cells of CELL px from its top left corner,
+// and a cell has a star by chance, at a place in it by chance, with draws that stay the same for the
+// whole load, so that a change of layout only hides or shows the stars that content moves over. A
+// star is shown only where it is CLEAR px or more from all content. The script runs only when the
+// layout or the device pixel ratio changes, never in a frame of the page. It is in the head, and not
+// next to #sky, so that its words are not in the text of the body.
+document.addEventListener("DOMContentLoaded", () => {
+  const sky = document.getElementById("sky");
+  const svgNS = "http://www.w3.org/2000/svg";
+  const seed = (Math.random() * 2 ** 32) >>> 0;
+  const CELL = 40, CHANCE = 0.34, CLEAR = 10;
+  // BLINKS and GLINTS are the most stars that blink, and that glint as a plus, on the page.
+  const BLINKS = 12, GLINTS = 3;
+  // CONTENT is what stars keep clear of besides the bands: everything above .panel, and .ask. Content
+  // added to the page outside these needs adding here, and to the elements that the ResizeObserver
+  // below watches if its size can change alone. The stick figure #dancer is left out: it walks along
+  // the top line of .logs in front of the sky, by a transform that changes no layout.
+  const CONTENT = ".requests, .fork, .inst, .s3, .logs, footer p, footer li";
+  // LEVELS are the opacities of the stars that do not twinkle.
+  const LEVELS = [0.26, 0.38, 0.52];
+  // rnd is a number in [0, 1), the same for each call with the cell i, j and the draw n in this load.
+  const rnd = (i, j, n) => {
+    let h = seed ^ Math.imul(i + 1, 0x27d4eb2d) ^ Math.imul(j + 1, 0x165667b1) ^ Math.imul(n + 1, 0x9e3779b9);
+    h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+    return ((h ^ (h >>> 16)) >>> 0) / 2 ** 32;
+  };
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("shape-rendering", "crispEdges");
+  const paths = LEVELS.map((o) => {
+    const path = document.createElementNS(svgNS, "path");
+    path.setAttribute("fill", "#fff");
+    path.setAttribute("fill-opacity", o);
+    return svg.appendChild(path);
+  });
+  sky.appendChild(svg);
+  // twinklers are the elements of the stars that twinkle, by their cell, and ratio the device pixel
+  // ratio that they were made for.
+  let twinklers = new Map(), ratio = 0;
+
+  const draw = () => {
+    const dpr = window.devicePixelRatio || 1, k = Math.max(1, Math.round(dpr)), p = k / dpr;
+    if (dpr !== ratio) {
+      for (const el of twinklers.values()) el.remove();
+      twinklers = new Map();
+      ratio = dpr;
+      sky.style.setProperty("--p", p + "px");
+    }
+    const o = sky.getBoundingClientRect(), W = o.width, H = o.height;
+    // out are the rectangles, from the sky's top left, where no part of a star may be.
+    const out = [];
+    const add = (l, t, r, b) => out.push([l - o.left - CLEAR, t - o.top - CLEAR, r - o.left + CLEAR, b - o.top + CLEAR]);
+    const panel = document.querySelector(".panel").getBoundingClientRect(), ask = document.querySelector(".ask").getBoundingClientRect();
+    add(-Infinity, -Infinity, Infinity, panel.top);
+    add(-Infinity, ask.top, Infinity, ask.bottom);
+    for (const el of document.querySelectorAll(CONTENT)) {
+      const r = el.getBoundingClientRect();
+      if (r.width || r.height) add(r.left, r.top, r.right, r.bottom);
+    }
+    // The edges of the instances to S3 run below their boxes, down to S3, where the instances stand
+    // side by side.
+    for (const link of document.querySelectorAll(".link")) {
+      const below = -parseFloat(getComputedStyle(link, "::before").bottom);
+      const r = link.getBoundingClientRect(), x = (r.left + r.right) / 2;
+      if (below > 0) add(x - 1, r.bottom, x + 1, r.bottom + below);
+    }
+
+    const d = ["", "", ""], keep = new Map(), candidates = { blink: [], glint: [] };
+    const pixel = (X, Y, level) => { d[level] += `M${X} ${Y}h${k}v${k}h${-k}z`; };
+    for (let j = 0; j * CELL < H; j++) {
+      for (let i = 0; i * CELL < W; i++) {
+        if (rnd(i, j, 0) >= CHANCE) continue;
+        const u = rnd(i, j, 3);
+        const kind = u < 0.05 ? "glint" : u < 0.18 ? "blink" : u < 0.26 ? "block" : u < 0.34 ? "plus" : "dot";
+        // X and Y are the star's first pixel in device pixels, and x and y in px.
+        const X = Math.round((i + 0.15 + 0.7 * rnd(i, j, 1)) * CELL * dpr), Y = Math.round((j + 0.15 + 0.7 * rnd(i, j, 2)) * CELL * dpr);
+        const x = X / dpr, y = Y / dpr;
+        const before = (kind === "glint" ? 2 : kind === "plus" ? 1 : 0) * p, after = p + (kind === "dot" || kind === "blink" ? 0 : kind === "glint" ? 2 : 1) * p;
+        const l = x - before, t = y - before, r = x + after, b = y + after;
+        if (l < 0 || t < 0 || r > W || b > H || out.some((q) => r > q[0] && l < q[2] && b > q[1] && t < q[3])) continue;
+        const v = rnd(i, j, 4);
+        if (kind === "dot") pixel(X, Y, v < 0.5 ? 0 : v < 0.85 ? 1 : 2);
+        else if (kind === "block") for (const [a, c] of [[0, 0], [1, 0], [0, 1], [1, 1]]) pixel(X + a * k, Y + c * k, 1);
+        else if (kind === "plus") for (const [a, c] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) pixel(X + a * k, Y + c * k, v < 0.5 ? 0 : 1);
+        else candidates[kind].push({ i, j, X, Y, x, y, v, rank: rnd(i, j, 7) });
+      }
+    }
+    // Only so many twinkle, however wide the page, so that the layers stay few: those of the lowest
+    // rank, a draw of their cell, and the others stand still.
+    for (const [kind, most] of [["blink", BLINKS], ["glint", GLINTS]]) {
+      const all = candidates[kind].sort((a, b) => a.rank - b.rank);
+      for (const { X, Y } of all.slice(most)) pixel(X, Y, 1);
+      for (const { i, j, x, y, v } of all.slice(0, most)) {
+        const key = i + "," + j;
+        let el = twinklers.get(key);
+        if (!el) {
+          el = document.createElement("span");
+          // Each twinkles in its own time: a length of its own, and a start somewhere in it.
+          const pattern = kind === "glint" ? 3 : Math.floor(v * 3);
+          const [from, to] = [[6, 14], [9, 24], [12, 30], [14, 40]][pattern];
+          const len = from + (to - from) * rnd(i, j, 5);
+          el.className = ["ba", "bb", "bc", "glint"][pattern];
+          el.style.setProperty("--d", len.toFixed(2) + "s");
+          el.style.setProperty("--o", (-len * rnd(i, j, 6)).toFixed(2) + "s");
+          if (kind === "glint") for (const c of ["a2", "a1", "c"]) el.appendChild(document.createElement("i")).className = c;
+          sky.appendChild(el);
+        }
+        if (el.style.left !== x + "px") el.style.left = x + "px";
+        if (el.style.top !== y + "px") el.style.top = y + "px";
+        keep.set(key, el);
+      }
+    }
+    for (const [key, el] of twinklers) if (!keep.has(key)) el.remove();
+    twinklers = keep;
+    // Only what changed is set, so that a redraw that moves no star paints nothing.
+    const set = (el, name, value) => { if (el.getAttribute(name) !== String(value)) el.setAttribute(name, value); };
+    set(svg, "width", W);
+    set(svg, "height", H);
+    set(svg, "viewBox", `0 0 ${W * dpr} ${H * dpr}`);
+    paths.forEach((path, n) => set(path, "d", d[n]));
+  };
+
+  // A ResizeObserver calls draw after layout and before paint, at once and whenever the page or one
+  // of its parts changes size, or the sky is hidden or shown again, as for print; the device pixel
+  // ratio changes on a move to another screen.
+  const observer = new ResizeObserver(draw);
+  for (const el of [sky, document.body, ...document.querySelectorAll(".panel, .instances, .s3, .logs, .ask, footer")]) observer.observe(el);
+  const watch = () => matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`).addEventListener("change", () => { draw(); watch(); }, { once: true });
+  watch();
+});
+</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -930,6 +1105,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
   </div>
 </footer>
 
+<div class="sky" id="sky" aria-hidden="true"></div>
 <script type="module" src="page.js"></script>
 </body>
 </html>

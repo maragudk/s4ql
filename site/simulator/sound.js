@@ -4,8 +4,9 @@
 //
 // The browser remembers the toggle in localStorage, under SOUND, as "on" or "off", across reloads,
 // tabs, and visits. Any other value, or storage that the browser refuses, is off. A browser starts no
-// audio without a gesture of the visitor, so sound that is remembered on waits: the toggle shows
-// that it waits, and the visitor's first click or key on the page turns sound on, in that gesture.
+// audio without a gesture of the visitor, so sound that is remembered on waits: the toggle shows on,
+// its title says why nothing sounds yet, and the visitor's first click or key on the page turns sound
+// on, in that gesture.
 //
 // Each kind of event has one figure, so that a visitor learns them. The pitches are those of one
 // scale, A minor pentatonic from A4 to A6. A figure rises for something that comes back, falls for
@@ -19,7 +20,6 @@
 //	recovered  the requests go from failing to working again
 //	blip       the visitor switches a fault, moves the clocks, sends the requests elsewhere, or turns
 //	           sound on
-//	alarm      the checker finds a violation that the design does not excuse
 //
 // Each request makes a tick besides, so that the page sounds alive between the figures. An insert
 // that commits is a barcode being scanned, with the beep of a checkout scanner: one short hard note
@@ -35,11 +35,10 @@
 //
 // Every figure goes through one master gain. One figure is one voice, and at most VOICES sound at
 // once. The site check renders a burst through player offline and holds its peak to at most 0.06,
-// or −24 dBFS, and with the alarm, which is louder, to at most 0.1, or −20 dBFS. A figure of a kind
-// is dropped within SPACING of the start of the one before it, or while that one still sounds, so
-// that a kind never sounds over itself, and every figure but the alarm beyond PER_SECOND a second,
-// so that turbo and a burst of events do not become a buzz. Figures that fall together start
-// STAGGER apart instead of as a chord.
+// or −24 dBFS. A figure of a kind is dropped within SPACING of the start of the one before it, or
+// while that one still sounds, so that a kind never sounds over itself, and every figure beyond
+// PER_SECOND a second, so that turbo and a burst of events do not become a buzz. Figures that fall
+// together start STAGGER apart instead of as a chord.
 //
 // The page calls hear with each event of the engine, and whether the event is live: while playback
 // plays, or in the answer to the visitor's own action, but for the later steps of a reset of the
@@ -63,7 +62,7 @@
 export const MASTER = 0.018; // the gain of the master, the peak of one ordinary figure
 export const VOICES = 3; // the figures that sound at once
 export const SPACING = 0.12; // s, the least time between two figures of one kind
-export const PER_SECOND = 4; // the figures in any second, but the alarm
+export const PER_SECOND = 4; // the figures in any second
 export const STAGGER = 0.05; // s, the least time between the starts of two figures
 const LEAD = 0.01; // s, how far ahead of the context's time a figure starts, so that its attack is heard whole
 const ATTACK = 0.003; // s
@@ -76,7 +75,7 @@ export const ERROR_SPACING = 1.5; // s, the least time between two error tones
 export const TICK_ROOM = 2; // the figures that sounding together drop and fade the ticks
 
 const A4 = 440, C5 = 523.25, E5 = 659.26;
-const A5 = 880, C6 = 1046.5, D6 = 1174.66, E6 = 1318.51, G6 = 1567.98, A6 = 1760;
+const A5 = 880, C6 = 1046.5, D6 = 1174.66, E6 = 1318.51, A6 = 1760;
 
 // FIGURES by kind: the level relative to MASTER, and the notes, each a pitch in Hz and a length in ms.
 export const FIGURES = {
@@ -87,7 +86,6 @@ export const FIGURES = {
   failing: { level: 1, notes: [[C5, 70], [A4, 80]] },
   recovered: { level: 1, notes: [[A4, 60], [E5, 70]] },
   blip: { level: 1, notes: [[D6, 30]] },
-  alarm: { level: 2.75, notes: [[G6, 90], [D6, 90], [G6, 90]] },
 };
 
 // SCANS are the notes of the keys: the scale of the figures, A minor pentatonic, from E6 to E7, in
@@ -176,7 +174,7 @@ function fade(v, at) {
 export function player(ctx, dest, played = null) {
   const voices = [];
   const last = new Map(); // the start of the last figure of each kind
-  const starts = []; // the starts of the figures in the last second, but the alarm
+  const starts = []; // the starts of the figures in the last second
   let latest = -Infinity; // the start of the last figure
   const ticks = []; // the ticks that sound
   let lastTick = -Infinity, lastError = -Infinity; // the starts of the last tick and error tone
@@ -200,17 +198,14 @@ export function player(ctx, dest, played = null) {
       for (let i = voices.length - 1; i >= 0; i--) if (voices[i].end <= at) voices.splice(i, 1);
       while (starts.length && starts[0] <= at - 1) starts.shift();
       if (at - (last.has(kind) ? last.get(kind) : -Infinity) < Math.max(SPACING, length(kind))) return false;
-      const alarm = kind === "alarm";
-      if (!alarm && (voices.length >= VOICES || starts.length >= PER_SECOND)) return false;
-      // The alarm takes the place of the oldest voice.
-      while (voices.length >= VOICES) fade(voices.shift(), at);
+      if (voices.length >= VOICES || starts.length >= PER_SECOND) return false;
       voices.push(figure(ctx, dest, kind, at));
       if (voices.length >= TICK_ROOM) {
         for (const v of ticks) fade(v, at);
         ticks.length = 0;
       }
       last.set(kind, at);
-      if (!alarm) starts.push(at);
+      starts.push(at);
       latest = at;
       if (played) played(kind, at);
       return true;
@@ -290,8 +285,6 @@ export function listener() {
         failing = now;
         return now ? "failing" : "recovered";
       }
-      case "check":
-        return e.excused ? null : "alarm";
     }
     return null;
   };
@@ -463,12 +456,9 @@ function first(e) {
   }
 }
 
-// settle the toggle from waiting to on, once the context runs.
+// settle ends the wait, and with it the title, once the context runs. The toggle shows on already.
 function settle() {
-  if (waiting && on && ctx.state === "running") {
-    unwait();
-    toggle.setAttribute("aria-pressed", "true");
-  }
+  if (waiting && on && ctx.state === "running") unwait();
 }
 
 // unwait ends the wait of sound that is remembered on.
@@ -485,9 +475,10 @@ function unwait() {
 // fails, which also disables the toggle. While sound is on, a context that the browser suspends or
 // interrupts is resumed when its state changes, and at the next sound, click, or key: see wake.
 //
-// Sound that is remembered on waits: aria-pressed is "mixed", data-audio "waiting" until first makes
-// the context, and the title says what the toggle waits for. It is on once the context runs. A click
-// on the toggle while it waits turns sound on, as from off.
+// Sound that is remembered on waits: the toggle looks on, with aria-pressed "true", data-audio is
+// "waiting" until first makes the context, and the title says what the toggle waits for, until the
+// context runs. A click on the toggle while it waits turns sound off, as from on; before first, that
+// click makes no context.
 export function wire(button) {
   if (!button) return;
   toggle = button;
@@ -496,9 +487,16 @@ export function wire(button) {
   button.disabled = false;
   button.addEventListener("click", () => {
     try {
+      if (waiting && !ctx) {
+        unwait();
+        remember(false);
+        button.setAttribute("aria-pressed", "false");
+        button.dataset.audio = "none";
+        return;
+      }
       if (!ctx) open();
       if (!out) return;
-      on = waiting || !on;
+      on = !on;
       unwait();
       remember(on);
       button.setAttribute("aria-pressed", String(on));
@@ -520,7 +518,7 @@ export function wire(button) {
   });
   if (!remembered()) return;
   waiting = true;
-  button.setAttribute("aria-pressed", "mixed");
+  button.setAttribute("aria-pressed", "true");
   button.dataset.audio = "waiting";
   button.title = "Sound starts at your first click or key on the page.";
   for (const type of GESTURES) document.addEventListener(type, first, true);

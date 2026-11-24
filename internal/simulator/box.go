@@ -120,27 +120,25 @@ func namesApp(text string) bool {
 	return false
 }
 
-// boxStatement runs the statement of the call c of the box on conn, on the process p, and puts how it
-// ended into its event e. A select runs as the reads of the application do, and the event has its
-// columns, its first [maxBoxRows] rows, and the number of all of them. Any other statement runs as
-// the writes of the application do: in a write transaction of its own, from [engine.Conn.Begin] to
-// [engine.Conn.Commit], so that its outcomes are those of a write, and the event has the number of the
-// rows that it changed, if it counts them. A text that the statement pass refuses, or that the
+// boxStatement runs the statement of the call c of the box on conn, and puts how it ended into its
+// event e. A select runs as the reads of the application do, and the event has its columns, its
+// first [maxBoxRows] rows, and the number of all of them. Any other statement runs as the writes of
+// the application do: in a write transaction of its own, from [engine.Conn.Begin] to
+// [engine.Conn.Commit], so that its outcomes are those of a write, and the event has the number of
+// the rows that it changed, if it counts them. A text that the statement pass refuses, or that the
 // engine refuses from the text alone, such as a statement that the pass reads and the engine does not
 // run yet, goes as a select, and the engine refuses it before it reads the database.
-func (r *run) boxStatement(ctx context.Context, p *process, conn *engine.Conn, c *call, e *Event) {
+func (r *run) boxStatement(ctx context.Context, conn *engine.Conn, c *call, e *Event) {
 	s, err := stmt.Check(c.text)
 	if err == nil && s != nil {
 		// With as many arguments as the statement has parameters, only the text can fail the check.
 		err = engine.Check(c.text, s.Parameters())
 	}
 	if _, isSelect := s.(*stmt.Select); isSelect || s == nil || err != nil {
-		before := r.check.readStarted()
 		var position format.Name
 		e.What, e.Error, position = r.query(ctx, conn, c.text, e)
 		if e.What == "served" {
 			e.Position = position.String()
-			r.check.boxRead(ctx, p, before, position)
 		}
 		return
 	}

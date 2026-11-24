@@ -308,15 +308,6 @@ async function unit() {
   ];
   expect(JSON.stringify(storedLines) === JSON.stringify(wantStored), `the line of a start on the stored database says who waits for a lease from before the reload, and for how long (${storedLines.join(" | ")})`);
 
-  // A stale read after both clocks went wrong takes one plain line a spell; a violation that is not excused is
-  // an alarm on every event.
-  tell = R.teller();
-  const check = (t, excused) => ({ t, kind: "check", what: "violated", invariant: "fresh", excused, instance: "a", process: "a", text: "missed" });
-  const told = [check(1, true), check(2, true), check(3, false), check(4, false)].map((e) => tell(e));
-  const tiers = told.map((w) => w.tier);
-  expect(JSON.stringify(tiers) === JSON.stringify(["story", null, "alarm", "alarm"]), `a stale read that the design excuses takes one line, and a violation is an alarm (${tiers.join(", ")})`);
-  expect(told[0].text === "a serves a stale read after its clocks were paused, which the spec allows.", `the line of a stale read names the pause of the clocks (${told[0].text})`);
-
   // The sound of the page: each important event has one figure, the visitor's Stop, Start, and
   // Restart sound once, at the action, and the requests sound when their status changes, not at
   // each request. Every note is short.
@@ -340,15 +331,14 @@ async function unit() {
     { t: 17, kind: "process", what: "closed", instance: "b", process: "b" },
     opened(19, "b", "b", "h4"),
     { t: 20, kind: "action", what: "ignored", do: "restart", instance: "b" },
-    check(21, true), check(22, false),
   ].map((e) => hear(e)).filter(Boolean);
-  const wantSounds = ["blip", "failing", "recovered", "down", "failing", "takeover", "up", "stop", "stop", "up", "alarm"];
+  const wantSounds = ["blip", "failing", "recovered", "down", "failing", "takeover", "up", "stop", "stop", "up"];
   expect(JSON.stringify(sounds) === JSON.stringify(wantSounds), `the important events have their sounds, each once (${sounds.join(", ")})`);
   const notes = Object.values(S.FIGURES).flatMap((f) => f.notes);
   expect(Object.keys(S.FIGURES).every((k) => wantSounds.includes(k)) && notes.every(([hz, ms]) => hz > 0 && ms >= 25 && ms <= 90), `every figure is heard, and its notes are 25 to 90 ms (${notes.length} notes)`);
 
   // The volume of a burst, as turbo gives, rendered offline through the page's player: every kind
-  // every 10 ms for 3 s. Its peak stays at most 0.06 (−24 dBFS) without the alarm, and 0.1 with it.
+  // every 10 ms for 3 s. Its peak stays at most 0.06 (−24 dBFS).
   const burst = async (kinds) => {
     const ctx = new OfflineAudioContext(1, 48000 * 3.5, 48000);
     const master = ctx.createGain();
@@ -368,12 +358,11 @@ async function unit() {
   };
   const kinds = Object.keys(S.FIGURES);
   let ticks = [];
-  const [quiet, quietAlarmed] = [await burst(kinds.filter((k) => k !== "alarm")), await burst(kinds)];
+  const quiet = await burst(kinds);
   ticks = Object.keys(S.TICKS);
-  const [calm, alarmed] = [await burst(kinds.filter((k) => k !== "alarm")), await burst(kinds)];
+  const calm = await burst(kinds);
   const dB = (x) => (20 * Math.log10(x)).toFixed(1) + " dBFS";
   expect(calm.peak > 0 && calm.peak <= 0.06 && calm.played <= 4 * 3 && calm.ticked > 0 && calm.ticked <= 3 / S.TICK_SPACING, `a burst of sounds with ticks under them peaks at ${dB(calm.peak)} (${dB(quiet.peak)} without the ticks), and plays ${calm.played} sounds and ${calm.ticked} ticks in 3 s`);
-  expect(alarmed.peak > 0 && alarmed.peak <= 0.1, `a burst of sounds with the alarm and ticks peaks at ${dB(alarmed.peak)} (${dB(quietAlarmed.peak)} without the ticks)`);
 
   // Each tick alone: the scan, at every pitch, at most at the level of a figure, the void below the
   // scan, the select in the background, and the error tone. Ticks come at most every TICK_SPACING, and
@@ -559,7 +548,6 @@ async function check() {
   await p.frames(30);
   expect(!p.win.s4qlPage.playing && p.t === held && play.textContent.trim() === "Play", `Pause holds fake time at ${held} ms for 30 frames`);
 
-  await dancer(p);
   await soundWakes(p);
 
   await sqlBox(p);
@@ -747,9 +735,7 @@ async function check() {
   if (p.requests().target !== other) await p.send(other);
   const before = { lines: p.lines, commits: p.commits };
   await p.skip(Math.max(0, 660000 - p.t));
-  const s = p.win.s4qlPage.state;
   expect(p.t >= 659999 && p.lines > before.lines && p.commits > before.commits, `fake time goes on to ${p.$("#clock").textContent}, with ${p.lines} lines and ${p.commits} commit objects`);
-  expect(s.violations === s.excused, `the checker finds no violation that is not excused (${s.violations} found, ${s.excused} excused)`);
   expect(p.$("#log").children.length <= 100, `the page keeps at most 100 lines of the log (${p.$("#log").children.length})`);
   const late = p.t;
   play.click();
@@ -783,12 +769,12 @@ function forget() {
 }
 
 // kept checks that the page remembers Turbo and Sound in localStorage across reloads, and that
-// Reset keeps them. Sound remembered on waits, without an audio context, until the first click or key
-// on the page, which makes the context in that gesture; a click on Sound itself turns it on, as from
-// off. A value that the page did not write, and storage that throws, give the toggles of a first
-// visit. The page at /__check/broken/audio/ counts its audio contexts from before its scripts run, in
-// s4qlContexts. sitecheck's Chromium does not refuse a context outside a gesture, so the check counts
-// them where a browser would refuse.
+// Reset keeps them. Sound remembered on looks on, and waits, without an audio context, until the
+// first click or key on the page, which makes the context in that gesture; a click on Sound itself
+// turns it off, without a context. A value that the page did not write, and storage that throws,
+// give the toggles of a first visit. The page at /__check/broken/audio/ counts its audio contexts
+// from before its scripts run, in s4qlContexts. sitecheck's Chromium does not refuse a context outside
+// a gesture, so the check counts them where a browser would refuse.
 async function kept() {
   const address = "/__check/broken/audio/simulator/";
   const stored = () => TOGGLES.map((k) => String(localStorage.getItem(k))).join(", ");
@@ -796,12 +782,14 @@ async function kept() {
     if (p) p.win.frameElement.remove();
     return open(address);
   };
-  // led is how the button Sound looks: its background, and the frame of its square. Its transition is
-  // off while it is read, so that it gives the look of the state and not a moment of the change.
+  // led is how the button Sound looks: its colours, and the fill, frame, and animation of its square.
+  // Its transition is off while it is read, so that it gives the look of the state and not a moment of
+  // the change.
   const led = (p) => {
     const b = p.$("#sound");
     b.style.transition = "none";
-    const look = [p.win.getComputedStyle(b).backgroundColor, p.win.getComputedStyle(b.querySelector(".led")).boxShadow].join(" | ");
+    const bs = p.win.getComputedStyle(b), ls = p.win.getComputedStyle(b.querySelector(".led"));
+    const look = [bs.backgroundColor, bs.color, ls.backgroundColor, ls.boxShadow, ls.animationName].join(" | ");
     b.style.transition = "";
     return look;
   };
@@ -809,7 +797,7 @@ async function kept() {
   const state = (p) => `turbo ${p.$("#turbo").getAttribute("aria-pressed")} at ${p.win.s4qlPage.turbo ? 5 : 1}×, sound ${sound(p)}, ${p.win.s4qlContexts} contexts, stored ${stored()}`;
   const turboOn = (p, on) => p.$("#turbo").getAttribute("aria-pressed") === String(on) && p.win.s4qlPage.turbo === on;
   const off = (p) => sound(p) === "false none" && p.win.s4qlContexts === 0 && !p.$("#sound").title;
-  const waits = (p) => sound(p) === "mixed waiting" && p.win.s4qlContexts === 0 && p.$("#sound").title !== "";
+  const waits = (p) => sound(p) === "true waiting" && p.win.s4qlContexts === 0 && p.$("#sound").title !== "";
   const runs = (p) => sound(p) === "true running" && !p.$("#sound").title;
 
   forget();
@@ -830,8 +818,9 @@ async function kept() {
   expect(turboStored === "off, null" && before && step.fake === step.real && off(p),
     `Turbo left off is off after a reload, in the button and in the speed (${step.fake.toFixed(1)} ms for ${step.real.toFixed(1)} ms; ${state(p)})`);
 
-  // Sound left on waits after a reload: no context, and a button that does not say on, until the
-  // first click on the page, here on Play, which makes the context in the click.
+  // Sound left on waits after a reload: no context, and a button that looks and says on, with a title
+  // that says why nothing sounds yet, until the first click on the page, here on Play, which makes the
+  // context in the click.
   p.$("#sound").click();
   await until(() => runs(p));
   looks.on = led(p);
@@ -841,15 +830,15 @@ async function kept() {
   const waited = waits(p);
   await p.frames(30);
   expect(soundStored === "off, on" && waited && waits(p) && p.$("#dancer").dataset.moves === "0",
-    `Sound left on waits after a reload, for 30 frames without an audio context, and the button says that it waits (${state(p)}, ${p.$("#sound").title})`);
-  expect(new Set(Object.values(looks)).size === 3, `the button Sound looks different off, waiting, and on (${Object.entries(looks).map(([k, v]) => `${k}: ${v}`).join(" / ")})`);
+    `Sound left on waits after a reload, for 30 frames without an audio context, and the button says on, with a title (${state(p)}, ${p.$("#sound").title})`);
+  expect(looks.waiting === looks.on && looks.on !== looks.off, `the button Sound looks the same waiting as on, and different off (${Object.entries(looks).map(([k, v]) => `${k}: ${v}`).join(" / ")})`);
   const S = await new p.win.Function("u", "return import(u)")(new URL("sound.js" + query, p.win.location.href).href);
   p.$("#play").click();
   const made = p.win.s4qlContexts, blips = S.stats.played.blip || 0;
   await until(() => runs(p));
   await until(() => Number(p.$("#dancer").dataset.moves) >= 2);
   expect(made === 1 && blips === 1 && stored() === "off, on",
-    `the first click, on Play, makes the audio context in the click and sounds the blip of sound on, and sound is on once it runs, with the figure dancing (${state(p)}, ${p.$("#dancer").dataset.moves} changes of pose)`);
+    `the first click, on Play, makes the audio context in the click and sounds the blip of sound on, and sound is on once it runs, with the figure dancing (${state(p)}, ${p.$("#dancer").dataset.moves} dance poses)`);
 
   // Reset keeps both toggles, in the page and in storage.
   p.$("#play").click();
@@ -858,19 +847,21 @@ async function kept() {
   await until(() => p.html.dataset.engine === "ready" && !p.$("#reset").disabled && p.win.s4qlPage.state);
   expect(turboOn(p, false) && runs(p) && stored() === "off, on" && p.win.s4qlContexts === 1, `Reset keeps Turbo off and Sound on, in the page and in storage (${state(p)})`);
 
-  // A key on the Sound button is the button's, and its click turns sound on from waiting, at once.
+  // A key on the Sound button is the button's, and its click turns sound off from waiting, at once and
+  // without a context, so that a later click on the page starts nothing.
   p = await reload(p);
   const sb = p.$("#sound");
   sb.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   const keyed = waits(p);
   sb.click();
-  const pressed = sound(p).startsWith("true ") && p.win.s4qlContexts === 1;
-  await until(() => runs(p));
-  sb.click();
+  const pressed = off(p);
   const soundOff = stored();
+  p.$("#play").click();
+  p.$("#play").click();
+  const later = off(p);
   p = await reload(p);
-  expect(keyed && pressed && soundOff === "off, off" && off(p),
-    `while Sound waits, a key on it leaves it waiting, a click on it turns it on at once, the next click turns it off, and it is off after a reload (${state(p)})`);
+  expect(keyed && pressed && soundOff === "off, off" && later && off(p),
+    `while Sound waits, a key on it leaves it waiting, a click on it turns it off at once without an audio context, a click on Play then starts nothing, and it is off after a reload (${state(p)})`);
 
   // A key anywhere on the page starts sound that waits, but a modifier alone, Escape, or Tab, which
   // are no gesture for a browser.
@@ -915,50 +906,16 @@ async function kept() {
   forget();
 }
 
-// dancer checks the stick figure on the top line of the frame of the log and the commit objects, on
-// the paused page after it played with sound off: it is decoration, standing with its feet on the
-// line, and it has stood still so far. With sound on it stays still while paused, changes pose while
-// the page plays, and stands still again after Pause. It turns sound off again at the end. sitecheck
-// starts Chromium without the need of a gesture for audio, so the check does not see whether a
-// visitor's click starts the audio context, only that the page's context runs.
-async function dancer(p) {
-  const fig = p.$("#dancer"), sound = p.$("#sound"), play = p.$("#play");
-  const pose = () => `${fig.dataset.pose}, ${fig.dataset.moves} changes of pose`;
-  const box = fig.getBoundingClientRect(), frame = p.$(".logs").getBoundingClientRect();
-  const cs = p.win.getComputedStyle(fig);
-  expect(fig.getAttribute("aria-hidden") === "true" && !fig.hasAttribute("tabindex") && cs.pointerEvents === "none" && cs.position === "absolute",
-    `the figure is decoration: hidden from assistive technology, not focusable, without pointer events, and out of the flow (${cs.pointerEvents}, ${cs.position})`);
-  expect(box.height >= 24 && box.height <= 48 && Math.abs(box.bottom - frame.top) < 0.5 && box.left >= frame.left && box.right <= frame.right,
-    `the figure stands on the top line of the frame of the log, ${box.width} by ${box.height} px, with its feet at ${box.bottom - frame.top} px from the line`);
-  expect(fig.dataset.pose === "stand" && fig.dataset.moves === "0", `while the page played with sound off, the figure stood still (${pose()})`);
-
-  sound.click();
-  await until(() => sound.dataset.audio !== "none" && sound.dataset.audio !== "suspended");
-  expect(sound.getAttribute("aria-pressed") === "true" && sound.dataset.audio === "running", `sound is on, and its audio context runs (${sound.dataset.audio})`);
-  await p.frames(30);
-  expect(fig.dataset.pose === "stand" && fig.dataset.moves === "0", `with sound on, the paused page's figure stands still for 30 frames (${pose()})`);
-
-  play.click();
-  await until(() => Number(fig.dataset.moves) >= 2);
-  expect(true, `with sound on, the playing page's figure dances (${pose()})`);
-
-  play.click();
-  await until(() => p.idle() && fig.dataset.pose === "stand");
-  const moves = fig.dataset.moves;
-  await p.frames(30);
-  expect(fig.dataset.pose === "stand" && fig.dataset.moves === moves, `after Pause, the figure stands still for 30 frames (${pose()})`);
-
-  sound.click();
-  expect(sound.getAttribute("aria-pressed") === "false" && fig.dataset.pose === "stand", `sound is off again, and the figure stands (${pose()})`);
-}
-
 // soundWakes checks that sound which is on comes back when the browser suspends the audio context
-// by itself, as Safari can: the figure stands at once, and the page resumes the context when its state
-// changes, at the next sound, and at the next key or click. The check holds the browser's resume
-// itself, since sitecheck's Chromium never refuses one, and lets it go for the click. It starts and
-// ends paused with sound off.
+// by itself, as Safari can: the figure stops dancing at once, and the page resumes the context when
+// its state changes, at the next sound, and at the next key or click. The check holds the browser's
+// resume itself, since sitecheck's Chromium never refuses one, and lets it go for the click. It
+// starts and ends paused with sound off. sitecheck starts Chromium without the need of a gesture for
+// audio, so that the page's context runs.
 async function soundWakes(p) {
   const sound = p.$("#sound"), play = p.$("#play"), fig = p.$("#dancer");
+  // dancing says whether the figure shows a pose of a dance, and not one of its stroll.
+  const dancing = () => !/^(stand|-?walk\d+)$/.test(fig.dataset.pose);
   const proto = p.win.AudioContext.prototype, resume = proto.resume;
   let ctx = null, resumes = 0, hold = false;
   proto.resume = function () {
@@ -970,17 +927,17 @@ async function soundWakes(p) {
     sound.click();
     await until(() => ctx && sound.dataset.audio === "running");
     play.click();
-    await until(() => fig.dataset.pose !== "stand");
+    await until(dancing);
 
     hold = true;
     let n = resumes;
     await ctx.suspend();
     await until(() => sound.dataset.audio === "suspended");
-    expect(sound.getAttribute("aria-pressed") === "true" && fig.dataset.pose === "stand" && resumes > n,
-      `when the browser suspends the context while sound is on and the page plays, the figure stands at once, and the page asks to resume (${resumes - n} times; ${fig.dataset.pose})`);
+    expect(sound.getAttribute("aria-pressed") === "true" && !dancing() && resumes > n,
+      `when the browser suspends the context while sound is on and the page plays, the figure stops dancing at once, and the page asks to resume (${resumes - n} times; ${fig.dataset.pose})`);
     const moves = fig.dataset.moves;
     await p.frames(30);
-    expect(fig.dataset.pose === "stand" && fig.dataset.moves === moves, `while the context is suspended, the figure stands still for 30 frames (${fig.dataset.moves} changes of pose)`);
+    expect(!dancing() && fig.dataset.moves === moves, `while the context is suspended, the figure dances no more for 30 frames (${fig.dataset.moves} dance poses)`);
     // A request that ends while the page plays is a sound, and no click.
     n = resumes;
     const calls = p.requests().calls;
@@ -1121,9 +1078,10 @@ async function persistence(address) {
     `a reload keeps the database, its name, and its ${p.commits} commit objects, and the time goes on from ${p.$("#clock").textContent}` +
     ` (${p.$("#s3-path").textContent}, ${before.commits} commit objects, ${before.history} to ${p.win.s4qlPage.history} ms of history, the log: ${[...p.$("#log").children].slice(-3).map((li) => li.textContent).join(" | ")})`);
   const took = await p.skipUntil(() => logHas(p, /^\S+a catches up: \d+ commit objects? from S3\.$/) && p.inst("a").dataset.role === "serves");
-  const s = p.win.s4qlPage.state;
-  expect(s.violations === s.excused,
-    `a catches up from S3 and serves ${took / 1000} s of fake time after the reload, and the checker finds no violation that is not excused (${s.violations})`);
+  // The catch-up downloads commit objects that S3 held before the reload, and no more than it held.
+  const caughtUp = [...p.$("#log").children].map((li) => /a catches up: (\d+) commit objects? from S3\.$/.exec(li.textContent)).find(Boolean);
+  const caught = caughtUp ? Number(caughtUp[1]) : 0;
+  expect(caught > 0 && caught <= before.commits, `a catches up from S3 with ${caught} of the ${before.commits} commit objects from before the reload, and serves ${took / 1000} s of fake time after it`);
   // The visitor's table is in S3 after the reload, and the box has the text that it had.
   const text = p.$("#sql-text").value;
   const line = await p.sql("select v from mine where k = 1");

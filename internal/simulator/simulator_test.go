@@ -68,7 +68,6 @@ func TestEngine_Handle(t *testing.T) {
 			first, second := run(t, &e, request), run(t, &e, request)
 			is.Equal(t, first.Hash, second.Hash)
 			is.EqualSlice(t, lines(t, first), lines(t, second))
-			is.Equal(t, 0, first.Summary.Violations-first.Summary.Excused, fmt.Sprint("seed ", seed+100))
 		}
 	})
 

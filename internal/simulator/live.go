@@ -161,7 +161,7 @@ func (r *run) serve(ctx context.Context) {
 			state = new(r.rec.state(c.commits))
 		case "end":
 			r.endedAt = r.world.Monotonic()
-			r.end(ctx)
+			r.end()
 			return
 		}
 	}

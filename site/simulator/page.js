@@ -874,10 +874,12 @@ async function reset() {
 }
 
 // The dancer: a stick figure on the top line of the frame of the log and the commit objects, which
-// dances to the sounds. sound.js tells it, through watch, of each figure and tick that plays and
-// when it starts, and the figure takes the move of that kind of sound as it starts to sound. It
-// dances only while sound is on, the page plays, and the visitor allows motion, and stands still
-// otherwise.
+// dances to the sounds, and strolls along the line when it does not. sound.js tells it, through
+// watch, of each figure and tick that plays and when it starts, and the figure takes the move of that
+// kind of sound as it starts to sound. It dances only while sound is on and the page plays. It
+// strolls whenever it does not dance: with sound off, paused, and before the first Play. Under
+// prefers-reduced-motion it stands still at its old place, 40 px from the right end of the line, and
+// once the page has halted it stands still where it is.
 //
 // Turbo brings ticks every few tens of ms, so a pose holds at least HOLD: the figure follows the
 // sounds at most five poses a second. A sound that comes while a pose holds waits, unless one of a
@@ -886,18 +888,32 @@ async function reset() {
 // and not a pose that stays. A move cuts into another only from a higher rank; once its poses have
 // held, any move may follow, and after REST the figure stands again.
 //
+// A stroll: it stands a while, walks a stretch of a few steps, and stands again, more standing than
+// walking, and turns where the next step would take it past an end of the line. Walking, it moves
+// one pixel of its grid each PACE, and its walk cycle moves a foot on the line back by as much
+// against the figure, so that the foot stays where it is on the line. A sound stops the walk where
+// the figure is, it dances there, and it strolls on from there. Chance decides how long it stands,
+// how far it walks, and whether it turns: see strollChance.
+//
 // The figure is drawn on a grid of DW by DH of its pixels from the joints of each pose, with lines a
-// pixel wide and a ring for a head, as crisp as the bars of the page. The SVG #dancer says its pose
-// in data-pose, and in data-moves how many times it has changed pose, for a check.
+// pixel wide and a ring for a head, as crisp as the bars of the page. Its place is a transform by
+// whole pixels of that grid from its old place, set by the CSS, and no pixel of any pose goes past
+// the ends of the line: a pose that would, such as the fall of a crash near an end, moves the figure
+// in until it fits, and it stays there. The SVG #dancer says its pose in data-pose, and in data-moves
+// how many dance poses it has taken, for a check of sound; the poses of the walk are walk0 to
+// walk11, mirrored when it walks to the left.
 const DW = 15, DH = 18; // the grid of the figure, in its pixels; the feet are on its last row
-const HOLD = 200; // ms, the least time that a pose holds
+const PX = 2; // the size in px of a pixel of the grid, as the width of .dancer in index.html sets it
+const RIGHT = 40; // px from the right end of the line to the figure's old place, as .dancer's right sets it
+const HOLD = 200; // ms, the least time that a dance pose holds
 const STALE = 300; // ms, how long after its sound a move may still start
 const REST = 450; // ms, how long the last pose of a move stays before the figure stands
+const PACE = 110; // ms, the time of a frame of the walk, in which it moves a pixel: 18 px a second
+const STRIDE = 6; // the pixels of a step of the walk, half its cycle of 12 frames
 
 // POSES by name: the head's centre h, the neck n, the pelvis p, the elbow and hand of each arm, la
 // and ra, and the knee and foot of each leg, ll and rl, on the grid, with the line under row 17. l is
-// the viewer's left. up lifts the whole pose by that many rows, for a jump. Each pose has a mirror,
-// named "-" and its name.
+// the viewer's left. Each pose has a mirror, named "-" and its name.
 const POSES = {
   // Standing, arms at its sides.
   stand: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 8], [10, 11]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
@@ -931,15 +947,11 @@ const POSES = {
   pump2: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[11, 7], [11, 3]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
   // A tap of the toe, for the blip of a control.
   tap: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 8], [10, 11]], ll: [[6, 14], [5, 17]], rl: [[9, 14], [11, 16]] },
-  // Panic, for the alarm: arms flailing over its head, and jumps.
-  panic: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[3, 5], [4, 1]], ra: [[11, 4], [13, 2]], ll: [[5, 14], [4, 17]], rl: [[9, 14], [10, 17]] },
-  jump: { up: 1, h: [7, 3], n: [7, 6], p: [7, 11], la: [[3, 4], [1, 2]], ra: [[11, 5], [10, 1]], ll: [[6, 14], [6, 17]], rl: [[8, 14], [8, 17]] },
 };
 
 // MOVES by the kind of sound, of FIGURES and TICKS in sound.js: its rank, and its poses, each with
 // the least time in ms that it holds, at least HOLD.
 const MOVES = {
-  alarm: { rank: 5, poses: [["panic", 220], ["jump", 220], ["-panic", 220], ["-jump", 220]] },
   down: { rank: 4, poses: [["slump", 220], ["flat", 900]] },
   failing: { rank: 4, poses: [["shrug", 500]] },
   up: { rank: 3, poses: [["tada", 400]] },
@@ -955,12 +967,33 @@ const MOVES = {
   miss: { rank: 0, poses: [["look", HOLD]] },
 };
 
-// figurePath of a pose, as the d of a path of its pixels: lines between its joints by Bresenham's
-// algorithm, and the head.
+// The walk to the right, in 12 frames, walk0 to walk11, from the pelvis at x 7. LEG gives, by the
+// phase of a leg in the cycle, its knee and its foot as [dx, y] from x 7; the other leg is six
+// phases on. From phase 0 to 6 the foot is on the line, and goes from 3 pixels in front of the
+// pelvis to 3 behind it, a pixel a frame, as the figure moves a pixel forward: it stays put on the
+// line. From phase 7 to 11 it swings forward, lifted, with the knee in front. In frames 0 and 6 both
+// feet are on the line, a step apart, and the body is a pixel lower. Each arm swings against the leg
+// of its side by SWING, and the head is a pixel forward, to the way it goes.
+const LEG = [
+  [[2, 14], [3, 17]], [[1, 14], [2, 17]], [[1, 14], [1, 17]], [[0, 14], [0, 17]], [[0, 14], [-1, 17]], [[-1, 14], [-2, 17]],
+  [[-1, 14], [-3, 17]], [[0, 14], [-3, 16]], [[1, 13], [-2, 15]], [[3, 14], [0, 16]], [[3, 14], [2, 16]], [[3, 14], [3, 16]],
+];
+const SWING = [-3, -2, -2, 0, 2, 2, 3, 2, 2, 0, -2, -2];
+for (let k = 0; k < 12; k++) {
+  const down = k % 6 === 0 ? 1 : 0, j = (k + 6) % 12;
+  const leg = (i) => LEG[i].map(([dx, y]) => [7 + dx, y]);
+  const arm = (i) => [[7 + Math.round(SWING[i] * 0.6), 9 + down], [7 + SWING[i], (SWING[i] > 1 ? 10 : 11) + down]];
+  POSES["walk" + k] = { h: [8, 3 + down], n: [7, 6 + down], p: [7, 11 + down], la: arm(j), ra: arm(k), ll: leg(k), rl: leg(j) };
+}
+
+// strolls says whether the pose is one of the stroll, standing or walking, and not of a dance.
+const strolls = (name) => name === "stand" || /^-?walk/.test(name);
+
+// figurePath of a pose: the d of a path of its pixels, lines between its joints by Bresenham's
+// algorithm and the head, and l and r, its first and last column with a pixel.
 function figurePath(pose) {
   const on = new Set();
   const dot = (x, y) => {
-    y -= pose.up || 0;
     if (x >= 0 && x < DW && y >= 0 && y < DH) on.add(y * DW + x);
   };
   const line = ([x0, y0], [x1, y1]) => {
@@ -995,92 +1028,217 @@ function figurePath(pose) {
     line(pose.p, a);
     line(a, b);
   }
-  let d = "";
-  for (const i of [...on].sort((a, b) => a - b)) d += `M${i % DW} ${Math.floor(i / DW)}h1v1h-1z`;
-  return d;
+  let d = "", l = DW, r = -1;
+  for (const i of [...on].sort((a, b) => a - b)) {
+    d += `M${i % DW} ${Math.floor(i / DW)}h1v1h-1z`;
+    l = Math.min(l, i % DW);
+    r = Math.max(r, i % DW);
+  }
+  return { d, l, r };
 }
 
 // mirror of a pose, across the middle of the grid.
 function mirror(pose) {
   const m = ([x, y]) => [DW - 1 - x, y];
   const limb = ([a, b]) => [m(a), m(b)];
-  return { up: pose.up, h: m(pose.h), n: m(pose.n), p: m(pose.p), la: limb(pose.ra), ra: limb(pose.la), ll: limb(pose.rl), rl: limb(pose.ll) };
+  return { h: m(pose.h), n: m(pose.n), p: m(pose.p), la: limb(pose.ra), ra: limb(pose.la), ll: limb(pose.rl), rl: limb(pose.ll) };
 }
 
 const dancer = {
   el: null, // the SVG #dancer
-  paths: new Map(), // the d of each pose, and of its mirror
+  paths: new Map(), // the path of each pose, and of its mirror: {d, l, r}
   pose: "", // the pose it shows
-  moves: 0, // the changes of pose so far
-  since: -Infinity, // the time of the last change of pose
+  moves: 0, // the dance poses it has taken so far
+  since: -Infinity, // the time of the last dance pose, or of the stand of dancerRest
   move: null, // the move it dances: {rank, poses, i, until, rest}
   next: null, // the move that waits for its turn: {kind, due}
   turns: {}, // by kind: how many moves of the kind it has started, for the mirror
   still: window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false },
 };
 
-// dancerPose shows the pose, by its name, at the time now.
-function dancerPose(name, now) {
-  if (!dancer.el) return;
-  dancer.since = now;
-  if (dancer.pose === name) return;
+// walker is the stroll: where the figure is, which way it faces, and what it does next.
+const walker = {
+  x: 0, // the pixels of the grid from its old place to where it is, to the right
+  shown: 0, // the x that its transform shows
+  dir: -1, // 1 when it faces right, -1 left
+  width: 0, // the width of the line in px, inside the frame's border, from a ResizeObserver
+  walking: false,
+  k: 0, // the frame of the walk that it shows
+  steps: 0, // the steps of the stretch still to go
+  stop: false, // whether the next frame of the walk is the stand that ends the stretch
+  due: 0, // the time of the next frame of the walk, or of the next decision
+  after: "rest", // what the next decision comes after: start, walk, stand, or rest after a stop
+  l: DW, r: -1, // the first and last column of a pixel of any pose of the stroll, which dancerStart finds
+};
+
+// strollChance decides what the figure does next, after a walk, a stand, or a rest: { stand: ms } or
+// { walk: steps, turn }. It stands 3 to 12 s after a walk or a dance, and 1.5 to 6 s after the page
+// loaded; after a stand it walks 1 to 6 steps, turning two times in five, or one time in five stands
+// on.
+function strollChance(after) {
+  const r = Math.random;
+  if (after === "stand" && r() < 0.8) return { walk: 1 + Math.floor(r() * 6), turn: r() < 0.4 };
+  return { stand: after === "start" ? 1500 + r() * 4500 : 3000 + r() * 9000 };
+}
+
+// span of the x at which the pixels of a pose, from column l to column r, lie on the line.
+function span(l, r) {
+  return [Math.ceil((RIGHT + PX * DW - walker.width) / PX - l), Math.floor(RIGHT / PX + DW - 1 - r)];
+}
+
+// room says whether the figure can go n pixels the way dir, at the span of the stroll.
+function room(dir, n) {
+  const [lo, hi] = span(walker.l, walker.r), to = walker.x + dir * n;
+  return to >= lo && to <= hi;
+}
+
+// dancerPath of a pose by its name, made once.
+function dancerPath(name) {
   if (!dancer.paths.has(name)) {
     const pose = name.startsWith("-") ? mirror(POSES[name.slice(1)]) : POSES[name];
     dancer.paths.set(name, figurePath(pose));
   }
-  dancer.el.firstElementChild.setAttribute("d", dancer.paths.get(name));
-  if (dancer.pose) dancer.moves++;
-  dancer.pose = name;
-  dancer.el.dataset.pose = name;
-  dancer.el.dataset.moves = String(dancer.moves);
+  return dancer.paths.get(name);
 }
 
-// dancerStand makes the figure stand at once, and forgets its moves.
-function dancerStand() {
+// dancerPlace moves the figure in until every pixel of its pose, and of any pose of its stroll, lies
+// on the line, and shows it where it is. Under reduced motion it stays at its old place.
+function dancerPlace() {
+  if (!dancer.el || !dancer.pose) return;
+  if (dancer.still.matches) walker.x = 0;
+  else if (walker.width) {
+    const p = dancerPath(dancer.pose), [lo, hi] = span(Math.min(p.l, walker.l), Math.max(p.r, walker.r));
+    walker.x = Math.max(lo, Math.min(hi, walker.x));
+  }
+  if (walker.shown === walker.x) return;
+  walker.shown = walker.x;
+  dancer.el.style.transform = walker.x ? `translateX(${PX * walker.x}px)` : "";
+}
+
+// dancerPose shows the pose, by its name, at the time now.
+function dancerPose(name, now) {
+  if (!dancer.el) return;
+  if (!strolls(name)) dancer.since = now;
+  if (dancer.pose !== name) {
+    dancer.el.firstElementChild.setAttribute("d", dancerPath(name).d);
+    if (!strolls(name)) dancer.moves++;
+    dancer.pose = name;
+    dancer.el.dataset.pose = name;
+    dancer.el.dataset.moves = String(dancer.moves);
+  }
+  dancerPlace();
+}
+
+// dancerRest ends what the figure does, dance or walk, and makes it stand where it is at once. Its
+// stroll goes on from there with a decision after a rest.
+function dancerRest(now) {
   dancer.move = null;
   dancer.next = null;
-  dancerPose("stand", performance.now());
+  walker.walking = false;
+  walker.after = "rest";
+  walker.due = now;
+  dancer.since = now;
+  dancerPose("stand", now);
 }
 
 // dancerHear is the watcher of sound.js: a sound of the kind starts in delay ms, or, with no kind,
-// sound is off.
+// sound is off, and a dance stops.
 function dancerHear(kind, delay) {
-  if (!kind) return dancerStand();
+  if (!kind) {
+    if (!strolls(dancer.pose) || dancer.move || dancer.next) dancerRest(performance.now());
+    return;
+  }
   const m = MOVES[kind];
-  if (!m || !playing || dancer.still.matches) return;
+  if (!m || !playing || halted || dancer.still.matches) return;
   const due = performance.now() + delay;
   if (!dancer.next || m.rank >= MOVES[dancer.next.kind].rank || due > dancer.next.due + STALE) dancer.next = { kind, due };
 }
 
-// dance on at the time now, from the animation frame of the page.
+// dance on at the time now, from the animation frame of the page: it dances while a move holds it,
+// and strolls otherwise. Under reduced motion, and once the page has halted, it stands still.
 function dance(now) {
-  if (!playing || dancer.still.matches) {
-    if (dancer.pose !== "stand" || dancer.move || dancer.next) dancerStand();
+  if (halted || dancer.still.matches) {
+    if (dancer.pose !== "stand" || walker.walking || dancer.move || dancer.next) dancerRest(now);
+    dancerPlace();
     return;
   }
-  if (now - dancer.since < HOLD) return;
+  if (!playing && (dancer.move || dancer.next || !strolls(dancer.pose))) dancerRest(now);
+  if (!danceOn(now)) stroll(now);
+}
+
+// danceOn dances on at the time now, and says whether the figure dances, so that it does not stroll.
+function danceOn(now) {
   const move = dancer.move, next = dancer.next;
+  if (move && now - dancer.since < HOLD) return true;
   // done is whether the move has held each of its poses.
   const done = !move || (move.i === move.poses.length - 1 && now >= move.until);
   if (next && now > next.due + STALE) dancer.next = null;
-  else if (next && now >= next.due && (done || MOVES[next.kind].rank > move.rank)) {
+  else if (next && now >= next.due && now - dancer.since >= HOLD && (done || MOVES[next.kind].rank > move.rank)) {
     const m = MOVES[next.kind];
     const turn = (dancer.turns[next.kind] = (dancer.turns[next.kind] || 0) + 1);
     const flip = m.poses.length === 1 && turn % 2 === 0;
     dancer.move = { rank: m.rank, poses: m.poses.map(([name, ms]) => [flip ? "-" + name : name, ms]), i: 0, until: now + m.poses[0][1] };
     dancer.next = null;
+    walker.walking = false;
     dancerPose(dancer.move.poses[0][0], now);
-    return;
+    return true;
   }
-  if (!move || now < move.until) return;
+  if (!move) return false;
+  if (now < move.until) return true;
   if (move.i + 1 < move.poses.length) {
     move.i++;
     move.until = now + move.poses[move.i][1];
     dancerPose(move.poses[move.i][0], now);
-  } else if (now >= move.until + REST) {
-    dancer.move = null;
-    dancerPose("stand", now);
+  } else if (now >= move.until + REST) dancerRest(now);
+  return true;
+}
+
+// stroll on at the time now: decide what comes next once a stand is over, and walk a frame each PACE.
+// A late frame, as after a hidden tab, moves one pixel and no more.
+function stroll(now) {
+  const w = walker;
+  if (!w.width || now < w.due) return;
+  if (!w.walking) {
+    const d = strollChance(w.after);
+    w.after = "stand";
+    w.due = now + (d.stand > 0 ? d.stand : 1000);
+    if (!(d.walk >= 1)) return;
+    let dir = d.turn ? -w.dir : w.dir;
+    if (!room(dir, STRIDE)) dir = -dir;
+    if (!room(dir, STRIDE)) return;
+    Object.assign(w, { walking: true, dir, k: 1, steps: Math.floor(d.walk), stop: false, due: now + PACE });
+    return dancerPose(dir > 0 ? "walk1" : "-walk1", now);
   }
+  w.due = now - w.due > PACE ? now + PACE : w.due + PACE;
+  w.x += w.dir;
+  if (w.stop) {
+    Object.assign(w, { walking: false, after: "walk", due: now });
+    return dancerPose("stand", now);
+  }
+  w.k = (w.k + 1) % 12;
+  // In frames 0 and 6 a step is done: the stretch ends with the stand in the next frame, when its
+  // steps are done or the next step and that stand would take it past the end.
+  if (w.k % 6 === 0) w.stop = --w.steps <= 0 || !room(w.dir, STRIDE + 1);
+  dancerPose((w.dir > 0 ? "" : "-") + "walk" + w.k, now);
+}
+
+// dancerStart finds the figure and starts it standing at its old place, and has it measure the line,
+// on which it strolls, now and whenever the line changes width.
+function dancerStart() {
+  dancer.el = $("dancer");
+  if (!dancer.el) return;
+  for (const name of ["stand", ...Object.keys(POSES).filter((n) => n.startsWith("walk")).flatMap((n) => [n, "-" + n])]) {
+    const p = dancerPath(name);
+    walker.l = Math.min(walker.l, p.l);
+    walker.r = Math.max(walker.r, p.r);
+  }
+  walker.after = "start";
+  dancerPose("stand", performance.now());
+  if (typeof ResizeObserver !== "function") return;
+  new ResizeObserver((entries) => {
+    walker.width = entries[entries.length - 1].contentRect.width;
+    dancerPlace();
+  }).observe(dancer.el.parentElement);
 }
 
 // start the page: load run.js, connect the page, and start the engine. An error on the way ends in
@@ -1088,8 +1246,7 @@ function dance(now) {
 async function start() {
   drawMark();
   setTurbo(turboRemembered());
-  dancer.el = $("dancer");
-  dancerStand();
+  dancerStart();
   const sound = import("./sound.js" + version).catch(() => null);
   R = await import("./run.js" + version);
   B = await import("./bucket.js" + version);
