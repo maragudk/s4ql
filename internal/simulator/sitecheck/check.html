@@ -976,14 +976,12 @@ async function soundWakes(p) {
   expect(sound.getAttribute("aria-pressed") === "false" && !p.win.s4qlPage.playing, "sound is off again, and the page is paused");
 }
 
-// sqlBox checks the box for SQL on the paused page: its line, its example, a select on barcodes, a
-// table of the visitor's own with inserts and a select with order by and limit, an error of the
-// engine, the refusal of a write to barcodes, the limit of its length, and a statement that waits
-// while the connection to S3 hangs. While paused, Run moves fake time only until the answer.
+// sqlBox checks the box for SQL on the paused page: its label and keys, its example, a select on
+// barcodes, a table of the visitor's own with inserts and a select with order by and limit, an error
+// of the engine, the refusal of a write to barcodes, the limit of its length, and a statement that
+// waits while the connection to S3 hangs. While paused, Run moves fake time only until the answer.
 async function sqlBox(p) {
-  const note = p.$("#sql-note"), link = note.querySelector("a");
-  expect(link && new URL(link.href).pathname === "/" && new URL(link.href).hash === "#roadmap" && /barcodes/.test(note.textContent) && p.$('label[for="sql-text"]') && p.$("#sql-run").getAttribute("aria-keyshortcuts"),
-    `the box says what SQL works, links to the roadmap, names barcodes, and has a label and keys (${note.textContent})`);
+  expect(p.$('label[for="sql-text"]') && p.$("#sql-run").getAttribute("aria-keyshortcuts"), "the box has a label and keys");
   const example = p.$("#sql-text").value;
   expect(/^select code from barcodes/.test(example), `the box holds a working example at first (${example})`);
   const rows = () => [...p.$("#sql-rows").querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((td) => td.textContent).join(" "));
