@@ -59,3 +59,55 @@ The design choices above, in particular that the head script now publishes data 
 ### Future work
 
 None yet.
+
+## Step 2: Building, checking by hand, and the self-review
+
+**Author:** builder (constellations)
+
+### Prompt Context
+
+**Verbatim prompt:** (the same brief as step 1)
+
+**Interpretation:** build the design of step 1, check it in a real browser with playwright, run the simulator's tests and the site check, and review the diff.
+
+**Inferred intent:** a finished, reviewed branch that the lead can push.
+
+### What I did
+
+- `/site/simulator/index.html`: the head script's `draw` collects each shown star as `{x, y, reach}` in CSS px from the sky's top left (the centre of its middle pixel, or of the 2×2 block, and how far its pixels reach from there), and after drawing sets `sky.layout = { stars, out, left, top, dpr, k }` and fires `layout` on `#sky`. New CSS for `.sky .con`: `fill: var(--lumin)`, `opacity: 0.2`, a stepped animation in (`con-in`, 0.2 s, `steps(3, jump-none)`) and out (`con-out`, 0.8 s, `steps(4, jump-none)`), and `display: none` under `(hover: none), (pointer: coarse), (pointer: none), (prefers-reduced-motion: reduce)`. Print and forced colours already hide `.sky` whole.
+- `/site/simulator/constellations.js`, new: the module as designed, with `MOST = 4`, `FEWEST = 3`, `REACH = 120`, `NEAR = 130`, `EDGE = 110`, `SWAY = 8`, `GAP = 4` px, `REST = 900` and `OUT = 800` ms. JS gate: `(hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference)`, and touch pointer events are ignored. A pointer over `header` or `.bar` (opaque, and the bar sticks) counts as away.
+- `/site/simulator/page.js`: `start` imports `./constellations.js` + `version` beside `sound.js`, and calls `start($("sky"))`.
+- Served with `make site-serve SITEADDR=127.0.0.1:8197` and drove it with `playwright-cli` (`run-code`), at 1440×900 dpr 1, and in fresh contexts at dpr 2 (1300 then 860 wide) and with `hasTouch: true`.
+
+### Why
+
+The data flows one way, from the only code that reads layout to a module that never does, so pointer handling is a scan of about 250 stars from `e.pageX`/`e.pageY` in one animation frame per burst of moves, and DOM work only when the constellation changes.
+
+### What worked
+
+- Lines appear near the pointer and join three or four stars, pixel-stepped and crisp, dimmer than the stars; old ones step out as new ones come.
+- Counted `.sky .con` elements: 1 shown while moving, 0 shown 1.1 s after the last move, none at all after 1.9 s; 0 shown over the header and over the stuck bar; 0 shown right after a `pointerout` with no `relatedTarget`, none after 0.9 s.
+- `page.emulateMedia({reducedMotion: 'reduce'})` cleared a shown constellation at once and no new one came while moving; back to `no-preference`, they came again. A context with `hasTouch: true` reports `(pointer: coarse)`, and no constellation came from mouse moves or a tap. `emulateMedia({media: 'print'})` and `forcedColors: 'active'` hide the sky and with it the lines.
+- At dpr 2, before and after a resize from 1300 to 860 px wide, zoomed screenshots show the lines' ends aimed at their stars with even gaps.
+- Sweeping the pointer around the log and commit objects, the SQL box, "What runs here", and the footer: no line crosses a box or text, since edges that cross a rectangle of `out` are never made. The simulator played in Turbo the whole time (fake time and log lines went on), with no console messages.
+- `go test -tags s4ql_browser -shuffle on ./internal/simulator/...` passed, and `make site-check` passed, including "every request for a file of the simulator has the query" with the new module fetched at the version. No change under `internal/`.
+
+### What didn't work
+
+`playwright-cli -s=con eval "..."` was refused by the harness of this sub-agent ("this command runs a string through eval, which can't be verified to stay inside the worktree"); `playwright-cli -s=con run-code "async page => ..."` with `page.evaluate` did the same job. A first `run-code` that referred to `document` outside `page.evaluate` failed with `ReferenceError: document is not defined`.
+
+### What I learned
+
+During eight seconds of play at 1440×900 the sky laid itself out zero times: the log and the commit objects scroll inside boxes of fixed height, so the simulation does not move the stars.
+
+### What was tricky
+
+An edge between two close stars can lie wholly inside their gaps and leave no pixels, which would make an SVG with an infinite size; edges shorter than both reaches plus both gaps plus 4 px are never made.
+
+### What warrants review
+
+The self-review (the `code-review` skill, at medium, over `main...HEAD`) found one important issue and six nits. Fixed: a relayout that changed only the rectangles `out` cleared a shown constellation at once with no step-out (important, though in practice play caused no relayouts); now a relayout with the same stars keeps the constellation if its root's tree is unchanged and steps it out otherwise. Fixed: a root that comes back while its constellation steps out drew a second SVG over the first; it now brings the first back. Fixed: the nearest star with no constellation (all its edges blocked) hid a neighbour's; the root is now the nearest star within `REACH` that has one. Fixed: the empty `.catch` in `page.js` hid errors thrown by `start`; now only a failed import is ignored. Fixed: this step of the diary. Left: line pixels snap to multiples of `k` device pixels from the sky's origin while stars may sit one device pixel off that grid at dpr 2; with the gaps the lines never touch the stars, and the zoomed screenshots show no visible offset. Left: after a wheel scroll without a move the lines scroll with their stars until the next (synthetic) move or the rest timer, which is consistent with the sky scrolling.
+
+### Future work
+
+None needed. Not verified: Firefox and Safari (only Chromium was driven), a real touch device, and dpr 1.5, where a star pixel is 2 device pixels of 1.33 px.
