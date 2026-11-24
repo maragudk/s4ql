@@ -99,3 +99,47 @@ The undecided subquery: the instance, the other instance, and SQLite may each ta
 ### Future work
 
 The review, the README and the notes by a writer, `make test`.
+
+## Step 3: The review, its fixes, the notes and the README, and the checks of the project
+
+**Author:** subquery-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Update `internal/engine/README.md` [...] Self-review your diff against this brief when done, and fix what you find."
+**Interpretation:** Have a writer record the decisions and the README, review the branch with competing reviewers, fix what matters, and run `make test` and `make lint`.
+**Inferred intent:** A branch that the lead can land, with notes from which the lead can tell Markus what differs from SQLite.
+
+### What I did
+
+A writer sub-agent wrote the section "The engine and the driver" of `/docs/todo/slice-15.md`, the section "Scalar subqueries" of `/internal/engine/README.md` with the new attributes, errors, and tests, deleted the four items of slice 15 from `/docs/todo/sql-front-end.md`, and added an item for the generated checks to `/docs/todo/generated-workload.md`, from my notes; I read its diff and committed it.
+
+The review (`code-review high`, on `eae2c33...HEAD`, since `slice-15-stmt` no longer exists here) ran about 60 statements of its own on s4ql and SQLite and found every error the same in message and offset. It gave three nits, all fixed: an update or a delete in a read-only transaction computed its subquery before the read-only error, and a select with LIMIT 0 or another condition that is never true computed it too, where SQLite runs none (`build.compute` now gives NULL and reads nothing then, with a parameter `none` for LIMIT 0 and `never` for the rest, and the `readOnly` reader of a sink that is built only for its names); and the doc of `statement.subqueries.order` did not say that a subquery of LIMIT 0 has an empty entry. Three cases and a read-only check in `TestEngine_report` pin it; each fix, turned off by hand, fails them.
+
+### Why
+
+SQLite exits before its `OP_Once` for those statements, so the reads were work and telemetry that SQLite does not have, and a context or a storage failure during them gave another error than SQLite's.
+
+### What worked
+
+`make test` passed after step 2 and again after the fixes; `make lint` and `golangci-lint run ./...` gave 0 issues. The pair needed no change for the statements that compute nothing: the observe hook is not called, so SQLite runs the text with its subquery.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The writer found that `orderedOf` is in the engine's `orderby_test.go` and `reachChange` in the driver check, not in `stmttest`, and named each where it is.
+
+### What was tricky
+
+Where to put the test hook of the values so that it reaches every build without a new parameter: in `reading`, which every build gets from `Engine.reading`.
+
+### What warrants review
+
+`build.compute` and its three reasons to compute nothing; the stale item of slice 14 that the writer found in `/docs/todo/sql-front-end.md` ("the pass reads RETURNING, and the engine refuses it"), left as it is, outside this step.
+
+### Future work
+
+The generated checks of slice 15 (an area and a profile in `stmttest`, `Sequence` writing subqueries, `reach` and `checkLength` of the pair, the driver check's `reachChange`), the simulation's invariants and planted bugs, and mutation testing, by other builders.
