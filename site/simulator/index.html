@@ -695,6 +695,11 @@ h2 {
    motion the stars stand still, and in print and in forced colours there are none. */
 body { position: relative; isolation: isolate; }
 .intro, .requests, .node, .box, .s3, .logs, .ask { background: var(--void); }
+/* The stick figure walks in front of the sky. Each of its pixels has a black border two of its
+   pixels wide, under the white ones and cut off at the edges of its box, so that a star next to it
+   or inside its head is hidden and one farther off is seen apart from it, not as a stray pixel or
+   an eye of the figure. */
+.dancer path { stroke: var(--void); stroke-width: 4; paint-order: stroke; }
 .sky { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
 .sky svg { position: absolute; top: 0; left: 0; display: block; }
 .sky span, .sky i { position: absolute; display: block; width: var(--p); height: var(--p); }
@@ -724,6 +729,7 @@ body { position: relative; isolation: isolate; }
 @keyframes sky-arm2 { 0% { opacity: 0; } 92% { opacity: 0.3; } 94% { opacity: 0; } }
 @media print, (forced-colors: active) {
   .sky { display: none; }
+  .dancer path { stroke: none; }
 }
 
 footer { padding: 40px 0 56px; }
@@ -763,8 +769,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const BLINKS = 12, GLINTS = 3;
   // CONTENT is what stars keep clear of besides the bands: everything above .panel, and .ask. Content
   // added to the page outside these needs adding here, and to the elements that the ResizeObserver
-  // below watches if its size can change alone.
-  const CONTENT = ".requests, .fork, .inst, .s3, .logs, #dancer, footer p, footer li";
+  // below watches if its size can change alone. The stick figure #dancer is left out: it walks along
+  // the top line of .logs in front of the sky, by a transform that changes no layout.
+  const CONTENT = ".requests, .fork, .inst, .s3, .logs, footer p, footer li";
   // LEVELS are the opacities of the stars that do not twinkle.
   const LEVELS = [0.26, 0.38, 0.52];
   // rnd is a number in [0, 1), the same for each call with the cell i, j and the draw n in this load.
