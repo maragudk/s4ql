@@ -64,6 +64,9 @@ var subqueryReads = func() []subqueryTestCall {
 		{src: "select k from t where v = (select v from t where k = 4)"},
 		{src: "select k from t where k = (select k from t where w = 1)"},
 		{src: "select k from t where w = (select w from t order by w limit 1)"},
+		// Rows that tie under an ORDER BY that the engine sorts, with another value each.
+		{src: "select k from t where k = (select k from t order by w limit 1)"},
+		{src: "select k from t where (select v from t where w = 1 order by w desc) < v"},
 		// By the index of u, which delivers its order, and against it.
 		{src: "select k from t where v = (select x from u where y = ? order by x desc limit 1)", args: []any{int64(7)}},
 		{src: "select k from t where v = (select x from u where y = ? order by x limit 1)", args: []any{int64(7)}},
@@ -198,13 +201,15 @@ var subqueryWrites = []subqueryTestCall{
 
 func TestEngine_subquery(t *testing.T) {
 	t.Run("should give what SQLite gives for a subquery, with its errors, on the core and in memory, and draw among the rows that tie", func(t *testing.T) {
-		ties := []string{
-			"reached: subquery with rows that tie for the first, whose value was that of SQLite's first",
-			"reached: subquery with rows that tie for the first, whose value was that of another",
+		var ties []string
+		for _, shape := range subqueryShapes {
+			ties = append(ties,
+				"reached: subquery "+shape+" with rows that tie for the first, whose value was that of SQLite's first",
+				"reached: subquery "+shape+" with rows that tie for the first, whose value was that of another")
 		}
 		y := tally{}
 		// The calls run on new instances until the engine has given both of a subquery whose rows tie,
-		// each a draw of the engine from the sequence of its seed.
+		// for each shape of a subquery, each a draw of the engine from the sequence of its seed.
 		for round := 0; round < 2 || slices.ContainsFunc(ties, func(k string) bool { return y[k] == 0 }); round++ {
 			if round == 20 {
 				t.Fatalf("a subquery whose rows tie gave one of them only in 20 rounds: %v", y)
@@ -637,8 +642,10 @@ func (sc *subqueryCall) check(t testing.TB, who string, computed []*s4qlpb.Value
 		switch {
 		case len(candidates) > 1 && text == sc.first[j]:
 			count("subquery with rows that tie for the first, whose value was that of SQLite's first")
+			count("subquery " + subqueryShape(sc.subs[j]) + " with rows that tie for the first, whose value was that of SQLite's first")
 		case len(candidates) > 1:
 			count("subquery with rows that tie for the first, whose value was that of another")
+			count("subquery " + subqueryShape(sc.subs[j]) + " with rows that tie for the first, whose value was that of another")
 		case text == "null":
 			count("subquery whose value was NULL")
 		default:
@@ -646,6 +653,22 @@ func (sc *subqueryCall) check(t testing.TB, who string, computed []*s4qlpb.Value
 		}
 	}
 	return ""
+}
+
+// subqueryShapes are the shapes of a subquery that [subqueryShape] names, each of which draws its
+// first row among rows that tie in its own way: by the direction of a scan without a filter, of one
+// with a filter, and of the rows that tie under ORDER BY.
+var subqueryShapes = []string{"without WHERE and ORDER BY", "with WHERE and without ORDER BY", "with ORDER BY"}
+
+// subqueryShape of the subquery q, one of [subqueryShapes].
+func subqueryShape(q stmt.Select) string {
+	switch {
+	case q.OrderBy != nil:
+		return subqueryShapes[2]
+	case q.Where != nil:
+		return subqueryShapes[1]
+	}
+	return subqueryShapes[0]
 }
 
 // flatten the call with the values of its subqueries: the text of its statement with each subquery
