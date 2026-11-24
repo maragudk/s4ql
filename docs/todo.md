@@ -1,13 +1,16 @@
 # To do
 
-A builder records the decisions and notes of its step in the file of its slice, `docs/todo/slice-NN.md`, under a heading for its step; the first step of a slice creates the file. An open item or a design question goes in the file of its area. An item is deleted when it is built. So two branches that work on different slices never write to the same file.
+A builder records the decisions and notes of its step in the file of its piece of work, under a heading for its step; the first step of a piece of work creates the file. For slices 1 to 15 that is the file of the slice, `docs/todo/slice-NN.md`. From then on the file is named after the feature of the piece of work, such as `docs/todo/expressions.md`. An open item or a design question goes in the file of its area. An item is deleted when it is built. So two branches that work on different pieces of work never write to the same file.
 
-A working list of things that are agreed but not built, and of design questions that are still open. The agreed rules are in [spec.md](spec.md), and the SQL slices are in [roadmap.md](roadmap.md).
+A working list of things that are agreed but not built, and of design questions that are still open. The agreed rules are in [spec.md](spec.md), and the SQL that is supported and decided, by area, is in [roadmap.md](roadmap.md).
 
 Each item is marked agreed or open. An agreed item carries the details that a builder needs who was not in the conversation. When an item is built, it is deleted from this list, and its reasoning moves next to the code as tests and doc comments. The code is then the source of truth for how it was done.
 
-The list is in the directory [todo](todo), one file per area and one per slice:
+The list is in the directory [todo](todo), one file per area, one per slice of slices 1 to 15, and one per piece of work after them:
 
+- [expressions.md](todo/expressions.md): expressions and functions, their evaluator, and time and randomness.
+- [operators.md](todo/operators.md): the operators that sort, group, join, or hold rows, and the limit on their memory.
+- [writing.md](todo/writing.md): the statements that write, upserts among them.
 - [sql-front-end.md](todo/sql-front-end.md): the tokenizer, the parser, and the pass after it, what is open in them, and the known differences from SQLite.
 - [driver.md](todo/driver.md): the public package and the `database/sql` driver.
 - [storage-core.md](todo/storage-core.md): what is open or not built in the storage core.
