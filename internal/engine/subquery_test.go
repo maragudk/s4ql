@@ -348,6 +348,46 @@ func TestEngine_subquery(t *testing.T) {
 		is.Equal(t, before, i.state())
 	})
 
+	t.Run("should end a subquery with the error of its context when it ends while the subquery reads, and change nothing", func(t *testing.T) {
+		// s has 80 rows, each with w = 1, and its subquery by v = 'v40' reads 40 rows at least, in
+		// either direction, and looks at its context at each, before it gives 1. The statement reads the
+		// 4 rows of t at most.
+		setUp := slices.Clone(subquerySetUp)
+		setUp = append(setUp, "create table s (k int primary key, v text, w int) strict, without rowid")
+		for k := range 80 {
+			setUp = append(setUp, fmt.Sprintf("insert into s values (%v, 'v%v', 1)", k, k))
+		}
+		for _, src := range []string{
+			"select k from t where w = (select w from s where v = 'v40')",
+			"update t set r = 0.5 where w = (select w from s where v = 'v40')",
+			"delete from t where (select w from s where v = 'v40') = w",
+		} {
+			i, o := newInstance(t, engine.Options{}), newOracle(t)
+			t.Cleanup(o.close)
+			for _, src := range setUp {
+				is.Equal(t, "", i.exec(src).err, src)
+				is.Equal(t, "", o.run(t, src).err, src)
+			}
+			before := i.state()
+			// The context is canceled at each call of its Err in turn, until the statement no longer
+			// calls it as often, and succeeds.
+			canceled := 0
+			for n := int64(0); ; n++ {
+				_, err := i.c.Exec(newFlipContext(t.Context(), n), src)
+				if err == nil {
+					break
+				}
+				is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(src, ": the error of a canceled statement: ", err))
+				is.Equal(t, before, i.state(), fmt.Sprint(src, ": the state after a cancel at the call ", n))
+				canceled++
+				is.True(t, n < 100_000, "the statement succeeds once its context is no longer canceled")
+			}
+			is.True(t, canceled > 40, fmt.Sprint(src, ": the statement is canceled at each of its calls of Err, which are more than the 40 rows that its subquery reads: ", canceled))
+			is.Equal(t, "", o.run(t, src).err, src)
+			is.Equal(t, o.state(t), i.state(), src)
+		}
+	})
+
 	t.Run("should run goqite's receive without its arithmetic on goqite's table, two in a row picking two messages, and none on an empty queue", func(t *testing.T) {
 		p := newPair(t, newInstance(t, engine.Options{}), tally{})
 		for _, src := range []string{goqiteTable, goqiteIndex} {
