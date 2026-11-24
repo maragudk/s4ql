@@ -50,7 +50,7 @@ const (
 // txn is a write transaction: of the workload, the insert or the delete of the row of one key, or a
 // commit object, by its name. A key is inserted by one transaction, the write that took its value
 // from the counter. It is deleted by one at most, because a delete picks only a key that the
-// application knows is in the store and that no delete has picked before: see [checker.pickDelete].
+// application knows is in the store and that no delete has picked before: see [knownKeys.pickDelete].
 // A write of the box is known by the name of its commit object, which names its parent, so no two
 // writes have one. Every commit object of the log is the write of its name, beside the writes of the
 // workload that it holds.
@@ -83,8 +83,7 @@ func (w txn) in(o *CommitObject) bool {
 	}
 }
 
-// checker of the invariants, over the store as it is and over what the calls saw. It also keeps what
-// the application knows of the rows, from which the calls pick their keys.
+// checker of the invariants, over the store as it is and over what the calls saw.
 //
 // It checks a read in a time that does not grow with the log, as long as the log is one chain: it
 // keeps the log as a chain that grows when the head moves on to a child of the head, with where each
@@ -109,16 +108,6 @@ type checker struct {
 	writes map[txn]bool
 	// logAtEnd is the number of commit objects in the log at the end of the run.
 	logAtEnd int
-
-	// known holds the keys whose rows the application knows are in the store, in the order in which
-	// it learned them: from an acknowledged insert, from the log of a stored bucket, or from a
-	// delete that ended without an unknown outcome and without being acknowledged. A key leaves it
-	// when a delete picks it.
-	known []int64
-	// deletable holds the keys of known that a delete can pick: those that no delete has picked.
-	deletable []int64
-	// gone holds the keys of the newest acknowledged deletes, at most [recentDeletes] of them.
-	gone []int64
 
 	// fast is set while the fields below describe the log, from the first commit object to head.
 	fast bool
@@ -201,8 +190,7 @@ func (c *checker) commit(o *CommitObject) {
 // commit object to the head, which [checker.commit] has given it. The bucket was checked as the
 // invariants check a log, so the log is one chain with each insert and each delete once, and each
 // delete after its insert. Its writes count as acknowledged before the run, in the order of the log:
-// S3 held them, so every read of the run must see them. The application knows the rows of the state
-// at the head, in the order of their inserts.
+// S3 held them, so every read of the run must see them.
 func (c *checker) seed(log []*CommitObject, head string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -215,14 +203,6 @@ func (c *checker) seed(log []*CommitObject, head string) {
 		}
 	}
 	c.head = head
-	rows := rowsOf(log)
-	for _, o := range log {
-		for _, k := range o.Keys {
-			if rows[k] {
-				c.learn(k)
-			}
-		}
-	}
 }
 
 // writesOf the commit object o: the write of its name, its inserts, and then its deletes.
@@ -408,7 +388,6 @@ func (c *checker) writeEnded(_ context.Context, w txn, how string) {
 	case "not_committed", "down":
 		c.failed = append(c.failed, w)
 	}
-	c.learnEnd(w, how)
 	fast := c.fast
 	if fast && how == "committed" {
 		if i, ok := c.indexOf(w); ok {
@@ -440,89 +419,6 @@ func last[T any](s []T) *T {
 		return nil
 	}
 	return &s[len(s)-1]
-}
-
-// recentKeys is the number of the newest known keys among which a read picks the one it selects,
-// when it does not select the newest.
-const recentKeys = 50
-
-// recentDeletes is the number of the newest acknowledged deletes whose keys a read can select, to
-// see that the row is gone.
-const recentDeletes = 10
-
-// goneReads: one read in goneReads selects the key of a recent acknowledged delete, if there is one.
-const goneReads = 8
-
-// learn that the row of the key is in the store. It requires the mutex.
-func (c *checker) learn(k int64) {
-	c.known = append(c.known, k)
-	c.deletable = append(c.deletable, k)
-}
-
-// learnEnd: what the application learns of the rows from how the write ended. It requires the mutex.
-// An acknowledged insert makes its row known. An acknowledged delete makes its key one that a read
-// can select to see that the row is gone. A delete of unknown outcome leaves its row in limbo: the
-// application selects it no more and deletes it no more. A delete that ended in another way did not
-// delete the row, which is known again; no delete picks it again, so that its key stays the key of
-// one delete.
-func (c *checker) learnEnd(w txn, how string) {
-	switch {
-	case w.commit != "":
-	case !w.delete:
-		if how == "committed" {
-			c.learn(w.key)
-		}
-	case how == "committed":
-		c.gone = append(c.gone, w.key)
-		if len(c.gone) > recentDeletes {
-			c.gone = slices.Delete(c.gone, 0, 1)
-		}
-	case how == "unknown", how == "lost":
-	default:
-		c.known = append(c.known, w.key)
-	}
-}
-
-// pickRead picks the key that a read selects, by the number u, and whether the application expects
-// its row. One read in [goneReads] selects the key of one of the recent acknowledged deletes, if
-// there is one, and expects no row. The others select a key that the application knows is in the
-// store: half of them the newest, whose row a read that is not stale gives, and the others one of the
-// [recentKeys] newest. ok is false while there is no key to pick.
-func (c *checker) pickRead(u uint64) (key int64, row, ok bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.gone) > 0 && u%goneReads == 0 {
-		return c.gone[u/goneReads%uint64(len(c.gone))], false, true
-	}
-	if len(c.known) == 0 {
-		return 0, false, false
-	}
-	u /= goneReads
-	i := len(c.known) - 1
-	if u%2 != 0 {
-		i -= int(u / 2 % uint64(min(recentKeys, len(c.known))))
-	}
-	return c.known[i], true, true
-}
-
-// pickDelete picks the key that a delete deletes, by the number u, among the keys that the
-// application knows are in the store and that no delete has picked before. The key leaves the known
-// keys at once, so that no read selects it while the delete runs. It leaves the last known key alone,
-// so that the reads always have a key to select. ok is false while there is no key to pick.
-func (c *checker) pickDelete(u uint64) (key int64, ok bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.deletable) == 0 || len(c.known) < 2 {
-		return 0, false
-	}
-	i := int(u % uint64(len(c.deletable)))
-	key = c.deletable[i]
-	c.deletable[i] = c.deletable[len(c.deletable)-1]
-	c.deletable = c.deletable[:len(c.deletable)-1]
-	if j := slices.Index(c.known, key); j >= 0 {
-		c.known = slices.Delete(c.known, j, j+1)
-	}
-	return key, true
 }
 
 // readStarted returns what a read that starts now must see.

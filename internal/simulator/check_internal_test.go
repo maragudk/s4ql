@@ -5,7 +5,6 @@ package simulator
 import (
 	"crypto/sha256"
 	"fmt"
-	"slices"
 	"testing"
 	"testing/synctest"
 
@@ -117,7 +116,6 @@ func TestChecker(t *testing.T) {
 				c.commit(o)
 			}
 			c.seed([]*CommitObject{o1, o2, o3}, name(3))
-			is.EqualSlice(t, []int64{2}, c.known)
 			c.readEnded(t.Context(), p, c.readStarted(), 1, []int64{}, position(3))
 			c.readEnded(t.Context(), p, c.readStarted(), 2, []int64{2}, position(3))
 			c.final(t.Context())
@@ -556,72 +554,6 @@ func TestChecker(t *testing.T) {
 				is.Equal(t, reads-violations, checkedFast, "the reads checked fast with the delete "+deletes+" and the box "+boxed)
 			}
 		}
-	})
-
-	// What the application knows decides which keys the calls pick.
-	t.Run("should pick a delete only among known keys that no delete has picked, and leave one", func(t *testing.T) {
-		withChecker(t, func(c *checker, p *process) {
-			c.mu.Lock()
-			c.learn(1)
-			c.mu.Unlock()
-			_, ok := c.pickDelete(0)
-			is.True(t, !ok, "no delete of the only known key")
-
-			c.mu.Lock()
-			c.learn(2)
-			c.learn(3)
-			c.learn(4)
-			c.mu.Unlock()
-			k, ok := c.pickDelete(1)
-			is.True(t, ok, "a delete")
-			is.Equal(t, int64(2), k)
-			is.EqualSlice(t, []int64{1, 3, 4}, c.known)
-			// While the delete of 2 runs, no read selects it.
-			for u := range uint64(64) {
-				key, row, ok := c.pickRead(u)
-				is.True(t, ok && row && key != 2, "a read of a known key")
-			}
-
-			// A delete of unknown outcome leaves its key in limbo, one that failed makes it known
-			// again, and neither key is picked by a delete again.
-			c.writeEnded(t.Context(), txn{key: 2, delete: true}, "unknown")
-			k, _ = c.pickDelete(0)
-			is.Equal(t, int64(1), k)
-			c.writeEnded(t.Context(), txn{key: 1, delete: true}, "not_committed")
-			is.EqualSlice(t, []int64{3, 4, 1}, c.known)
-			for u := range uint64(64) {
-				if k, ok := c.pickDelete(u); ok {
-					is.True(t, k == 3 || k == 4, "a delete of a key that no delete has picked")
-					break
-				}
-			}
-		})
-	})
-
-	t.Run("should pick one read in eight among the recent acknowledged deletes", func(t *testing.T) {
-		withChecker(t, func(c *checker, p *process) {
-			c.mu.Lock()
-			for k := range int64(20) {
-				c.learn(k + 1)
-			}
-			c.mu.Unlock()
-			for range 12 {
-				k, _ := c.pickDelete(0)
-				c.writeEnded(t.Context(), txn{key: k, delete: true}, "committed")
-			}
-			is.Equal(t, recentDeletes, len(c.gone))
-			gone := 0
-			for u := range uint64(800) {
-				key, row, ok := c.pickRead(u)
-				is.True(t, ok, "a read")
-				is.Equal(t, !row, slices.Contains(c.gone, key), "a read expects no row of a key that is gone")
-				is.Equal(t, !row, !slices.Contains(c.known, key))
-				if !row {
-					gone++
-				}
-			}
-			is.Equal(t, 100, gone)
-		})
 	})
 
 	for _, test := range tests {

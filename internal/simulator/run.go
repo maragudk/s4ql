@@ -184,6 +184,7 @@ type run struct {
 	dir   string
 	store *simstore.Store
 	check *checker
+	keys  knownKeys
 
 	mu        sync.Mutex
 	instances []*instance
@@ -603,7 +604,7 @@ type call struct {
 
 // newCall of the caller with the op, which starts now. A write takes the key of the next value of
 // the counter of the run. A delete and a read take a key that the application knows, which
-// [checker.pickDelete] and [checker.pickRead] pick by a number from the seed. While there is no key to
+// [knownKeys.pickDelete] and [knownKeys.pickRead] pick by a number from the seed. While there is no key to
 // pick, the call is a write. The checker learns each write of the application when it starts. A call
 // of the box runs the statement text, and takes nothing from the counter or the seed.
 func (r *run) newCall(caller, op, text string) *call {
@@ -616,9 +617,9 @@ func (r *run) newCall(caller, op, text string) *call {
 	case opSQL:
 		return c
 	case opRead:
-		c.key, c.row, ok = r.check.pickRead(r.world.Uint64())
+		c.key, c.row, ok = r.keys.pickRead(r.world.Uint64())
 	case opDelete:
-		c.key, ok = r.check.pickDelete(r.world.Uint64())
+		c.key, ok = r.keys.pickDelete(r.world.Uint64())
 	}
 	if !ok {
 		c.op = opWrite
@@ -690,7 +691,9 @@ func (r *run) callEnded(ctx context.Context, c *call, e Event) {
 	case c.op == opSQL && commit != "":
 		r.check.writeEnded(ctx, txn{commit: commit}, e.What)
 	case c.op != opSQL && c.op != opRead:
-		r.check.writeEnded(ctx, c.txn(), e.What)
+		w := c.txn()
+		r.check.writeEnded(ctx, w, e.What)
+		r.keys.ended(w.key, w.delete, e.What)
 	}
 	r.rec.add(e)
 }

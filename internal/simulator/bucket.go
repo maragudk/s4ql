@@ -292,6 +292,7 @@ func (r *run) seedStore(ctx context.Context) bool {
 		r.manifests[version] = s.manifest
 		r.mu.Unlock()
 		r.check.seed(s.log, s.manifest.Head)
+		r.keys.stored(s.log)
 	}
 	// The history goes on from where the bucket left it, from the time at which the instances start,
 	// and never goes back before its start.
