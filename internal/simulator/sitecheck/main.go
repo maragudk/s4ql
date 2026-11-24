@@ -381,33 +381,37 @@ func checkRequests(requests []url.URL, version string) (bool, []string) {
 
 // broken serves the site under /__check/broken/<how>/, with a fault: with how "no-run", run.js is not
 // found, and with "no-play", the page's Play button has lost its ID, which make the page fail at
-// start-up; with "no-storage", the page's sessionStorage throws, as the browser blocks it.
+// start-up; with "no-storage", the page's sessionStorage and localStorage throw, as when the browser
+// blocks the site's data. With "audio", the page is whole, and counts the audio contexts that it
+// makes in window.s4qlContexts, from before its own scripts run.
 func broken(root string) http.Handler {
 	files := http.FileServer(http.Dir(root))
+	// heads are the scripts that a variant puts first in the page's head.
+	heads := map[string]string{
+		"no-storage": `<script>for (const name of ["sessionStorage", "localStorage"]) Object.defineProperty(window, name, { get() { throw new DOMException("The storage is blocked.", "SecurityError"); } });</script>`,
+		"audio":      `<script>window.s4qlContexts = 0; window.AudioContext = class extends window.AudioContext { constructor(...a) { super(...a); window.s4qlContexts++; } };</script>`,
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		how, p := r.PathValue("how"), "/"+r.PathValue("path")
 		w.Header().Set("Cache-Control", "no-store")
+		_, head := heads[how]
 		switch {
-		case how != "no-run" && how != "no-play" && how != "no-storage", how == "no-run" && p == "/simulator/run.js":
+		case how != "no-run" && how != "no-play" && !head, how == "no-run" && p == "/simulator/run.js":
 			http.NotFound(w, r)
 			return
-		case how == "no-play" && p == "/simulator/":
+		case (how == "no-play" || head) && p == "/simulator/":
 			b, err := os.ReadFile(filepath.Join(root, "simulator", "index.html"))
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write(bytes.Replace(b, []byte(`id="play"`), []byte(`id="no-play"`), 1))
-			return
-		case how == "no-storage" && p == "/simulator/":
-			b, err := os.ReadFile(filepath.Join(root, "simulator", "index.html"))
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+			if head {
+				b = bytes.Replace(b, []byte(`<head>`), []byte(`<head>`+heads[how]), 1)
+			} else {
+				b = bytes.Replace(b, []byte(`id="play"`), []byte(`id="no-play"`), 1)
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write(bytes.Replace(b, []byte(`<head>`), []byte(`<head><script>Object.defineProperty(window, "sessionStorage", { get() { throw new DOMException("The storage is blocked.", "SecurityError"); } });</script>`), 1))
+			_, _ = w.Write(b)
 			return
 		}
 		r = r.Clone(r.Context())

@@ -203,7 +203,7 @@ func TestCheckRequests(t *testing.T) {
 func TestBroken(t *testing.T) {
 	root := t.TempDir()
 	is.NotError(t, os.MkdirAll(filepath.Join(root, "simulator"), 0o755))
-	is.NotError(t, os.WriteFile(filepath.Join(root, "simulator", "index.html"), []byte(`<button id="play"><span id="play-word">Play</span></button>`), 0o644))
+	is.NotError(t, os.WriteFile(filepath.Join(root, "simulator", "index.html"), []byte(`<head></head><button id="play"><span id="play-word">Play</span></button>`), 0o644))
 	is.NotError(t, os.WriteFile(filepath.Join(root, "simulator", "run.js"), []byte(`export const x = 1;`), 0o644))
 	mux := http.NewServeMux()
 	mux.Handle("GET /__check/broken/{how}/{path...}", broken(root))
@@ -224,9 +224,27 @@ func TestBroken(t *testing.T) {
 	t.Run("should serve the page without the ID of its Play button for no-play", func(t *testing.T) {
 		w := get("/__check/broken/no-play/simulator/")
 		is.Equal(t, http.StatusOK, w.Code)
-		is.Equal(t, `<button id="no-play"><span id="play-word">Play</span></button>`, w.Body.String())
+		is.Equal(t, `<head></head><button id="no-play"><span id="play-word">Play</span></button>`, w.Body.String())
 		w = get("/__check/broken/no-play/simulator/run.js")
 		is.Equal(t, http.StatusOK, w.Code)
+		is.Equal(t, `export const x = 1;`, w.Body.String())
+	})
+
+	t.Run("should serve the page with both storages blocked first in its head for no-storage", func(t *testing.T) {
+		w := get("/__check/broken/no-storage/simulator/")
+		is.Equal(t, http.StatusOK, w.Code)
+		body := w.Body.String()
+		is.True(t, strings.HasPrefix(body, `<head><script>`) && strings.Contains(body, `"sessionStorage", "localStorage"`), body)
+		is.True(t, strings.HasSuffix(body, `</script></head><button id="play"><span id="play-word">Play</span></button>`), body)
+	})
+
+	t.Run("should serve the page with a count of its audio contexts first in its head for audio", func(t *testing.T) {
+		w := get("/__check/broken/audio/simulator/")
+		is.Equal(t, http.StatusOK, w.Code)
+		body := w.Body.String()
+		is.True(t, strings.HasPrefix(body, `<head><script>window.s4qlContexts = 0;`), body)
+		is.True(t, strings.HasSuffix(body, `</script></head><button id="play"><span id="play-word">Play</span></button>`), body)
+		w = get("/__check/broken/audio/simulator/run.js")
 		is.Equal(t, `export const x = 1;`, w.Body.String())
 	})
 

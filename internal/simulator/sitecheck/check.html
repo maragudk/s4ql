@@ -424,6 +424,7 @@ async function check() {
   await unit();
 
   const address = "/simulator/";
+  forget();
   const p = await open(address);
   const play = p.$("#play"), turbo = p.$("#turbo");
   const requestTexts = new Set();
@@ -742,8 +743,148 @@ async function check() {
   expect(new URL(p.win.location.href).pathname === address && p.win.location.search === "" && p.win.location.hash === "", "the page writes nothing into its address");
 
   p.win.frameElement.remove();
+  forget();
   await persistence(address);
+  await kept();
   await broken();
+}
+
+// TOGGLES are the items of localStorage in which the page remembers its toggles Turbo and Sound.
+const TOGGLES = ["s4ql:turbo", "s4ql:sound"];
+
+// forget the toggles, so that the next page that loads has those of a first visit, and no step of
+// the check gets the toggles that a step before it left.
+function forget() {
+  for (const k of TOGGLES) localStorage.removeItem(k);
+}
+
+// kept checks that the page remembers Turbo and Sound in localStorage across reloads, and that
+// Reset keeps them. Sound remembered on waits, without an audio context, until the first click or key
+// on the page, which makes the context in that gesture; a click on Sound itself turns it on, as from
+// off. A value that the page did not write, and storage that throws, give the toggles of a first
+// visit. The page at /__check/broken/audio/ counts its audio contexts from before its scripts run, in
+// s4qlContexts. sitecheck's Chromium does not refuse a context outside a gesture, so the check counts
+// them where a browser would refuse.
+async function kept() {
+  const address = "/__check/broken/audio/simulator/";
+  const stored = () => TOGGLES.map((k) => String(localStorage.getItem(k))).join(", ");
+  const reload = async (p) => {
+    if (p) p.win.frameElement.remove();
+    return open(address);
+  };
+  // led is how the button Sound looks: its background, and the frame of its square. Its transition is
+  // off while it is read, so that it gives the look of the state and not a moment of the change.
+  const led = (p) => {
+    const b = p.$("#sound");
+    b.style.transition = "none";
+    const look = [p.win.getComputedStyle(b).backgroundColor, p.win.getComputedStyle(b.querySelector(".led")).boxShadow].join(" | ");
+    b.style.transition = "";
+    return look;
+  };
+  const sound = (p) => `${p.$("#sound").getAttribute("aria-pressed")} ${p.$("#sound").dataset.audio}`;
+  const state = (p) => `turbo ${p.$("#turbo").getAttribute("aria-pressed")} at ${p.win.s4qlPage.turbo ? 5 : 1}×, sound ${sound(p)}, ${p.win.s4qlContexts} contexts, stored ${stored()}`;
+  const turboOn = (p, on) => p.$("#turbo").getAttribute("aria-pressed") === String(on) && p.win.s4qlPage.turbo === on;
+  const off = (p) => sound(p) === "false none" && p.win.s4qlContexts === 0 && !p.$("#sound").title;
+  const waits = (p) => sound(p) === "mixed waiting" && p.win.s4qlContexts === 0 && p.$("#sound").title !== "";
+  const runs = (p) => sound(p) === "true running" && !p.$("#sound").title;
+
+  forget();
+  let p = await reload(null);
+  const looks = { off: led(p) };
+  expect(turboOn(p, true) && off(p) && stored() === "null, null", `a first visit has Turbo on and Sound off, and stores nothing (${state(p)})`);
+
+  // Turbo left off is off after a reload, in the button and in the speed of the first step.
+  p.$("#turbo").click();
+  const turboStored = stored();
+  p = await reload(p);
+  const before = turboOn(p, false);
+  p.$("#play").click();
+  await until(() => p.win.s4qlPage.lastStep);
+  const step = p.win.s4qlPage.lastStep;
+  p.$("#play").click();
+  await until(() => p.idle() && !p.win.s4qlPage.playing);
+  expect(turboStored === "off, null" && before && step.fake === step.real && off(p),
+    `Turbo left off is off after a reload, in the button and in the speed (${step.fake.toFixed(1)} ms for ${step.real.toFixed(1)} ms; ${state(p)})`);
+
+  // Sound left on waits after a reload: no context, and a button that does not say on, until the
+  // first click on the page, here on Play, which makes the context in the click.
+  p.$("#sound").click();
+  await until(() => runs(p));
+  looks.on = led(p);
+  const soundStored = stored();
+  p = await reload(p);
+  looks.waiting = led(p);
+  const waited = waits(p);
+  await p.frames(30);
+  expect(soundStored === "off, on" && waited && waits(p) && p.$("#dancer").dataset.moves === "0",
+    `Sound left on waits after a reload, for 30 frames without an audio context, and the button says that it waits (${state(p)}, ${p.$("#sound").title})`);
+  expect(new Set(Object.values(looks)).size === 3, `the button Sound looks different off, waiting, and on (${Object.entries(looks).map(([k, v]) => `${k}: ${v}`).join(" / ")})`);
+  const S = await new p.win.Function("u", "return import(u)")(new URL("sound.js" + query, p.win.location.href).href);
+  p.$("#play").click();
+  const made = p.win.s4qlContexts, blips = S.stats.played.blip || 0;
+  await until(() => runs(p));
+  await until(() => Number(p.$("#dancer").dataset.moves) >= 2);
+  expect(made === 1 && blips === 1 && stored() === "off, on",
+    `the first click, on Play, makes the audio context in the click and sounds the blip of sound on, and sound is on once it runs, with the figure dancing (${state(p)}, ${p.$("#dancer").dataset.moves} changes of pose)`);
+
+  // Reset keeps both toggles, in the page and in storage.
+  p.$("#play").click();
+  await until(() => p.idle() && !p.win.s4qlPage.playing);
+  p.$("#reset").click();
+  await until(() => p.html.dataset.engine === "ready" && !p.$("#reset").disabled && p.win.s4qlPage.state);
+  expect(turboOn(p, false) && runs(p) && stored() === "off, on" && p.win.s4qlContexts === 1, `Reset keeps Turbo off and Sound on, in the page and in storage (${state(p)})`);
+
+  // A key on the Sound button is the button's, and its click turns sound on from waiting, at once.
+  p = await reload(p);
+  const sb = p.$("#sound");
+  sb.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  const keyed = waits(p);
+  sb.click();
+  const pressed = sound(p).startsWith("true ") && p.win.s4qlContexts === 1;
+  await until(() => runs(p));
+  sb.click();
+  const soundOff = stored();
+  p = await reload(p);
+  expect(keyed && pressed && soundOff === "off, off" && off(p),
+    `while Sound waits, a key on it leaves it waiting, a click on it turns it on at once, the next click turns it off, and it is off after a reload (${state(p)})`);
+
+  // A key anywhere on the page starts sound that waits.
+  p.$("#sound").click();
+  await until(() => runs(p));
+  p = await reload(p);
+  p.win.document.body.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "k", bubbles: true }));
+  const keyMade = p.win.s4qlContexts;
+  await until(() => runs(p));
+  expect(keyMade === 1, `a key on the page starts Sound that waits (${state(p)})`);
+
+  // Turbo turned on again is on after a reload.
+  p.$("#turbo").click();
+  const onAgain = stored();
+  p = await reload(p);
+  expect(onAgain === "on, on" && turboOn(p, true), `Turbo turned on again is on after a reload (${state(p)})`);
+
+  // Values that the page did not write give the toggles of a first visit, and a click starts nothing.
+  localStorage.setItem("s4ql:turbo", "fast");
+  localStorage.setItem("s4ql:sound", "true");
+  p = await reload(p);
+  p.$("#play").click();
+  p.$("#play").click();
+  expect(turboOn(p, true) && off(p), `stored values that the page did not write give Turbo on and Sound off (${state(p)})`);
+  p.win.frameElement.remove();
+
+  // Storage that throws gives the toggles of a first visit, toggles that work, and no line about it.
+  localStorage.setItem("s4ql:turbo", "off");
+  localStorage.setItem("s4ql:sound", "on");
+  p = await open("/__check/broken/no-storage/simulator/");
+  const blocked = turboOn(p, true) && sound(p) === "false none";
+  p.$("#turbo").click();
+  p.$("#sound").click();
+  await until(() => runs(p));
+  const lines = [...p.$("#log").children].map((li) => li.textContent).filter((s) => /turbo|sound|local|remember/i.test(s));
+  expect(blocked && turboOn(p, false) && lines.length === 0,
+    `with storage that throws, Turbo is on and Sound off at first, both toggle, and the log says nothing of them (${p.$("#turbo").getAttribute("aria-pressed")}, ${sound(p)}${lines.length ? "; " + lines.join(" | ") : ""})`);
+  p.win.frameElement.remove();
+  forget();
 }
 
 // dancer checks the stick figure on the top line of the frame of the log and the commit objects, on
