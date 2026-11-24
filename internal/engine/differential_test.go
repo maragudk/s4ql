@@ -1095,17 +1095,21 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	if kind, failure := p.checkLength(c, got); kind != "" {
-		if failure == "" {
-			p.y.excused(kind)
+	// A statement with a subquery, of slice 15, is refused before its values and its arguments until
+	// the engine runs it, as [subqueried] says, so no rule of its values holds for it.
+	if s == nil || !subqueried(s) {
+		if kind, failure := p.checkLength(c, got); kind != "" {
+			if failure == "" {
+				p.y.excused(kind)
+			}
+			return failure
 		}
-		return failure
-	}
-	if kind, failure := p.checkType(c, args, got); kind != "" {
-		if failure == "" {
-			p.y.excused(kind)
+		if kind, failure := p.checkType(c, args, got); kind != "" {
+			if failure == "" {
+				p.y.excused(kind)
+			}
+			return failure
 		}
-		return failure
 	}
 	if got.err == "not supported" && p.tooLongForCache(src, got.message) {
 		p.y.excused(excusedCacheLimit)
@@ -1115,8 +1119,9 @@ func (p *pair) step(c stmttest.Call) string {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
-		// empty database without a syntax error.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
+		// empty database without a syntax error. A statement with a subquery, of slice 15, is not
+		// supported until the engine runs it, as [subqueried] says.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil && !subqueried(s) {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -1786,6 +1791,10 @@ const pathSample = 4
 func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	t, o, other := p.t, p.o, p.other
 	t.Helper()
+	if s != nil && subqueried(s) {
+		// The engine refuses a statement with a subquery, of slice 15, until it runs it.
+		return ""
+	}
 	var sel *stmt.Select
 	args := c.Args
 	switch s := s.(type) {

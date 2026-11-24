@@ -255,8 +255,12 @@ func (*Parameter) expr()   {}
 // Default. A select, an update, and a delete with WHERE read their rows through a [*Filter] of the
 // conditions, in the order of the text. A select with ORDER BY has an [*Order] of its columns over
 // that, and one with LIMIT a [*Limit] over that, as [Query] says. An insert, an update, and a delete
-// with RETURNING have its [*Returning].
+// with RETURNING have its [*Returning]. It panics for a statement with a subquery, which the engine
+// does not run yet, as [subqueryRefusal] says.
 func NewPlan(s stmt.Statement) Plan {
+	if subqueryRefusal(s) != nil {
+		panic("engine: no plan of a statement with a subquery")
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, IfNotExists: s.IfNotExists, PrimaryKey: []int{s.Key()}, SQL: s.SQL}
