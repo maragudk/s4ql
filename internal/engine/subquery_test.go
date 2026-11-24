@@ -346,6 +346,38 @@ func TestEngine_subquery(t *testing.T) {
 		is.Equal(t, 4*(25-7), y["excused: "+excusedType])
 	})
 
+	t.Run("should refuse an argument of the LIMIT of a subquery that is longer than the length limit as SQLite does, before the types, and change nothing", func(t *testing.T) {
+		// With a length limit of 1,000 bytes, as SQLite has it for the same connection.
+		const limit = 1000
+		i, o := newInstanceLimited(t, engine.Options{}, nil, limit), newOracleLimited(t, limit)
+		t.Cleanup(o.close)
+		for _, src := range subquerySetUp {
+			is.Equal(t, "", i.exec(src).err, src)
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		before := i.state()
+		long := strings.Repeat("x", limit+1)
+		for _, c := range []struct {
+			src  string
+			args []any
+		}{
+			{"select k from t where k = (select k from u order by k limit ?)", []any{long}},
+			{"select k from t where k = (select k from u order by k limit ?)", []any{[]byte(long)}},
+			// After the values of the conditions of the subquery, and before their types, those of the
+			// statement, and the argument of the LIMIT of the statement.
+			{"select k from t where k = (select k from u where x = ? limit ?)", []any{int64(1), long}},
+			{"select k from t where k = (select k from u limit ?) and v = ?", []any{long, int64(1)}},
+			{"select k from t where k = (select k from u limit ?) limit ?", []any{long, 1.5}},
+			{"update t set w = 1 where k = (select k from u limit ?)", []any{long}},
+			{"delete from t where (select k from u limit ?) = k returning k", []any{[]byte(long)}},
+		} {
+			is.Equal(t, tooBig, i.queryValues(c.src, values(c.args)).err, c.src)
+			is.Equal(t, tooBig, o.run(t, c.src, c.args...).err, "SQLite: "+c.src)
+		}
+		is.Equal(t, before, i.state())
+		is.Equal(t, o.state(t), i.state())
+	})
+
 	t.Run("should end a subquery with the error of its context, and change nothing", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		for _, src := range subquerySetUp {
