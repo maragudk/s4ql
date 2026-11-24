@@ -95,6 +95,8 @@ var subqueryReads = func() []subqueryTestCall {
 		{src: "select k from t where k = (select * from u1)"},
 		{src: "select k from t where k = (select * from u)"},
 		{src: "select k from t where (select * from u) > k"},
+		{src: "select k from t where (select * from u) != k"},
+		{src: "select k from t where k <> (select * from u)"},
 		{src: "select k from t where nope is null and k = (select * from u)"},
 		{src: "select nope from t where k = (select * from u)"},
 		{src: "select k from t where k = (select k from nope)"},
@@ -159,6 +161,9 @@ var subqueryWrites = []subqueryTestCall{
 	{src: "update t set w = 7 where v >= (select x from u order by y desc)", exec: true},
 	{src: "delete from t where r = (select r from t order by r limit 1) returning k"},
 	{src: "delete from t where (select b from t order by w desc, k limit 1) = b"},
+	// Another condition that is never true, so that the engine computes no subquery.
+	{src: "update t set w = 7 where k is null and k = (select k from u1) returning k"},
+	{src: "delete from t where w = ? and k = (select k from u1) returning *", args: []any{nil}},
 	// The table that the subquery reads, as it is before the statement.
 	{src: "update t set w = 9 where k = (select k from t where w = 0 order by k limit 1) returning *"},
 	{src: "update t set w = 5 where w = (select w from t order by k limit 1)", exec: true},
@@ -366,6 +371,8 @@ func TestEngine_subquery(t *testing.T) {
 			// After the values of the conditions of the subquery, and before their types, those of the
 			// statement, and the argument of the LIMIT of the statement.
 			{"select k from t where k = (select k from u where x = ? limit ?)", []any{int64(1), long}},
+			{"select k from t where k = (select k from u where x = ? limit ?)", []any{long, 1.5}},
+			{"select k from t where k = (select k from u where y = 7 and x = ?) and v = ?", []any{[]byte(long), int64(1)}},
 			{"select k from t where k = (select k from u limit ?) and v = ?", []any{long, int64(1)}},
 			{"select k from t where k = (select k from u limit ?) limit ?", []any{long, 1.5}},
 			{"update t set w = 1 where k = (select k from u limit ?)", []any{long}},
