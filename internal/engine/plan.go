@@ -27,7 +27,7 @@ type Node interface {
 }
 
 // Expr is an expression that gives a value: an [*Integer], a [*Real], a [*Text], a [*Blob], a
-// [*Null], or a [*Parameter].
+// [*Null], a [*Parameter], or, as the value of a condition, a [*Subquery].
 type Expr interface {
 	expr()
 }
@@ -95,12 +95,14 @@ type Insert struct {
 
 // Update sets the columns of Set in each row of Source, a [*Scan] of the table, or a [*Filter] of
 // one if the statement has a WHERE. It gives each row that it updates, with the values after the
-// update, if Returning is not nil.
+// update, if Returning is not nil. Subqueries holds the scalar subqueries of its WHERE, as for a
+// [Query].
 type Update struct {
-	Table     stmt.Name
-	Set       []Assignment
-	Source    Node
-	Returning *Returning
+	Table      stmt.Name
+	Set        []Assignment
+	Source     Node
+	Returning  *Returning
+	Subqueries []*Query
 }
 
 // Returning of an [Insert], an [Update], or a [Delete]: the columns of each row that the statement
@@ -119,17 +121,25 @@ type Assignment struct {
 
 // Delete deletes each row of Source, a [*Scan] of the table, or a [*Filter] of one if the statement
 // has a WHERE. It gives each row that it deletes, with the values that the row had, if Returning is
-// not nil.
+// not nil. Subqueries holds the scalar subqueries of its WHERE, as for a [Query].
 type Delete struct {
-	Table     stmt.Name
-	Source    Node
-	Returning *Returning
+	Table      stmt.Name
+	Source     Node
+	Returning  *Returning
+	Subqueries []*Query
 }
 
 // Query gives the rows of Root: a [*Project], over a [*Limit] if the select has a LIMIT, over an
 // [*Order] if it has an ORDER BY, over a [*Filter] if it has a WHERE, over the [*Scan] of its table.
+//
+// Subqueries holds the scalar subqueries of its WHERE, in the order of the text, each a Query of the
+// same shape whose Project has one column, or `*`, and whose own Subqueries is nil; a [*Subquery] of
+// a condition names one by its number, from 1. A subquery gives the value of its column in the first
+// row that it gives, or NULL if it gives none. It reads the state that the statement reads, once,
+// before the statement changes any row.
 type Query struct {
-	Root Node
+	Root       Node
+	Subqueries []*Query
 }
 
 // Scan gives every row of a table, forward or backward in the order of its primary key, or of the
@@ -227,6 +237,14 @@ type Parameter struct {
 	Number int
 }
 
+// Subquery is the value of the scalar subquery of the number Number, which counts from 1, in the
+// Subqueries of the statement, whose opening parenthesis is at Offset in the text. [Format] does not
+// print the offset.
+type Subquery struct {
+	Number int
+	Offset int
+}
+
 func (*CreateTable) plan() {}
 func (*DropTable) plan()   {}
 func (*CreateIndex) plan() {}
@@ -247,6 +265,7 @@ func (*Text) expr()        {}
 func (*Blob) expr()        {}
 func (*Null) expr()        {}
 func (*Parameter) expr()   {}
+func (*Subquery) expr()    {}
 
 // NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
 // column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
@@ -255,12 +274,10 @@ func (*Parameter) expr()   {}
 // Default. A select, an update, and a delete with WHERE read their rows through a [*Filter] of the
 // conditions, in the order of the text. A select with ORDER BY has an [*Order] of its columns over
 // that, and one with LIMIT a [*Limit] over that, as [Query] says. An insert, an update, and a delete
-// with RETURNING have its [*Returning]. It panics for a statement with a subquery, which the engine
-// does not run yet, as [subqueryRefusal] says.
+// with RETURNING have its [*Returning]. A select, an update, and a delete with scalar subqueries in
+// their WHERE have the [*Query] of each in their Subqueries, and a [*Subquery] as the value of the
+// condition that compares a column with it.
 func NewPlan(s stmt.Statement) Plan {
-	if subqueryRefusal(s) != nil {
-		panic("engine: no plan of a statement with a subquery")
-	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, IfNotExists: s.IfNotExists, PrimaryKey: []int{s.Key()}, SQL: s.SQL}
@@ -285,28 +302,48 @@ func NewPlan(s stmt.Statement) Plan {
 		}
 		return &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{row}}, Returning: returningOf(s.Returning)}
 	case *stmt.Update:
-		p := &Update{Table: s.Table, Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning)}
+		p := &Update{Table: s.Table, Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning), Subqueries: subqueriesOf(s.Subqueries)}
 		for _, a := range s.Set {
 			p.Set = append(p.Set, Assignment{Column: a.Column, Value: term(a.Value)})
 		}
 		return p
 	case *stmt.Delete:
-		return &Delete{Table: s.Table, Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning)}
+		return &Delete{Table: s.Table, Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning), Subqueries: subqueriesOf(s.Subqueries)}
 	case *stmt.Select:
-		source := rowsOf(s.Table, s.Where)
-		if s.OrderBy != nil {
-			o := &Order{Source: source}
-			for _, c := range s.OrderBy {
-				o.Columns = append(o.Columns, OrderColumn{Column: c.Name, Descending: c.Descending})
-			}
-			source = o
-		}
-		if s.Limited() {
-			source = &Limit{Source: source, Count: term(s.Limit)}
-		}
-		return &Query{Root: &Project{Source: source, Star: s.Columns == nil, Columns: s.Columns}}
+		q := queryOf(s)
+		q.Subqueries = subqueriesOf(s.Subqueries)
+		return q
 	}
 	panic(fmt.Sprintf("engine: a statement of type %T", s))
+}
+
+// queryOf the select s, without its subqueries.
+func queryOf(s *stmt.Select) *Query {
+	source := rowsOf(s.Table, s.Where)
+	if s.OrderBy != nil {
+		o := &Order{Source: source}
+		for _, c := range s.OrderBy {
+			o.Columns = append(o.Columns, OrderColumn{Column: c.Name, Descending: c.Descending})
+		}
+		source = o
+	}
+	if s.Limited() {
+		source = &Limit{Source: source, Count: term(s.Limit)}
+	}
+	return &Query{Root: &Project{Source: source, Star: s.Columns == nil, Columns: s.Columns}}
+}
+
+// subqueriesOf a statement whose subqueries are ss: the [*Query] of each, in their order, or nil if
+// it has none.
+func subqueriesOf(ss []stmt.Select) []*Query {
+	var qs []*Query
+	for i := range ss {
+		if ss[i].Subqueries != nil {
+			panic("engine: a subquery with subqueries")
+		}
+		qs = append(qs, queryOf(&ss[i]))
+	}
+	return qs
 }
 
 // returningOf the RETURNING clause r: its [*Returning], or nil for a statement without one.
@@ -336,8 +373,11 @@ func rowsOf(table stmt.Name, where []stmt.Condition) Node {
 }
 
 // term of a row of an insert, of an assignment, of a condition, or of a LIMIT, as an expression: its
-// literal, NULL among them, or its parameter.
+// literal, NULL among them, its parameter, or its subquery.
 func term(t stmt.Term) Expr {
+	if t.Subquery > 0 {
+		return &Subquery{Number: t.Subquery, Offset: t.Span.Start}
+	}
 	switch v := t.Value.(type) {
 	case stmt.Integer:
 		return &Integer{Value: int64(v)}
@@ -417,12 +457,15 @@ func Format(p Plan) string {
 		}
 		fmt.Fprint(&b, formatReturning(p.Returning), "\n")
 		formatNode(&b, p.Source, 1)
+		formatSubqueries(&b, p.Subqueries)
 	case *Delete:
 		fmt.Fprint(&b, "delete from ", p.Table.Raw, formatReturning(p.Returning), "\n")
 		formatNode(&b, p.Source, 1)
+		formatSubqueries(&b, p.Subqueries)
 	case *Query:
 		b.WriteString("query\n")
 		formatNode(&b, p.Root, 1)
+		formatSubqueries(&b, p.Subqueries)
 	default:
 		panic(fmt.Sprintf("engine: a plan of type %T", p))
 	}
@@ -494,6 +537,15 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 	}
 }
 
+// formatSubqueries of a statement: a line "subquery" and its number for each, in their order, with
+// the nodes of its query indented under it.
+func formatSubqueries(b *strings.Builder, qs []*Query) {
+	for i, q := range qs {
+		fmt.Fprint(b, "  subquery ", i+1, "\n")
+		formatNode(b, q.Root, 2)
+	}
+}
+
 // formatReturning of an insert, an update, or a delete: " returning" and its columns, or "" for a
 // statement without RETURNING.
 func formatReturning(r *Returning) string {
@@ -543,6 +595,8 @@ func formatExpr(e Expr) string {
 		return "null"
 	case *Parameter:
 		return fmt.Sprint("?", e.Number)
+	case *Subquery:
+		return fmt.Sprint("(subquery ", e.Number, ")")
 	}
 	panic(fmt.Sprintf("engine: an expression of type %T", e))
 }

@@ -67,7 +67,10 @@ func pin(t *testing.T, setup []string, src, want string, args ...any) {
 		is.Equal(t, "", i.exec(s).err, s)
 		is.Equal(t, "", o.run(t, s).err, s)
 	}
-	query := strings.Contains(strings.ToLower(src), "select")
+	// A text that the pass refuses is run as a query if it reads like one.
+	s, err := stmt.Check(src)
+	_, query := s.(*stmt.Select)
+	query = query || err != nil && strings.Contains(strings.ToLower(src), "select")
 	var got answer
 	if query {
 		got = i.queryValues(src, values(args))

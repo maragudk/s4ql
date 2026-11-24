@@ -94,6 +94,9 @@ type Engine struct {
 	// fixes, and not from the host.
 	seeded bool
 	draws  atomic.Uint64
+	// observe is the hook of the tests that is given the values of the scalar subqueries of each
+	// statement, as [reading] says, or nil.
+	observe func([]*s4qlpb.Value) []*s4qlpb.Value
 }
 
 // New engine for the database d, whose instance runs on the host h, which the engine reads the
@@ -121,7 +124,7 @@ func newEngine(d database, h host.Host, options Options) *Engine {
 // seed, which is splitmix64, so that the n-th query of two engines with one seed reads in the same
 // direction. A path with a direction draws nothing.
 func (e *Engine) reading(query bool) reading {
-	how := reading{path: e.path, bugs: e.bugs}
+	how := reading{path: e.path, bugs: e.bugs, e: e, observe: e.observe}
 	switch {
 	case how.path.direction != directionDrawn:
 		how.backward = how.path.direction == directionBackward
@@ -402,8 +405,7 @@ func Check(src string, n int) error {
 }
 
 // check the text src, as [Conn.Exec], [Conn.Query], and [Check] check it: its statement, or its
-// error, as [stmt.Check] gives it, or [ErrNoStatement], or the refusal of a statement that the pass
-// supports and the engine does not run, as [subqueryRefusal] gives it.
+// error, as [stmt.Check] gives it, or [ErrNoStatement].
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
@@ -411,9 +413,6 @@ func check(src string) (stmt.Statement, error) {
 	}
 	if s == nil {
 		return nil, ErrNoStatement
-	}
-	if err := subqueryRefusal(s); err != nil {
-		return nil, err
 	}
 	return s, nil
 }

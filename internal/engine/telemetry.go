@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"maragu.dev/s4ql/internal/core"
@@ -68,11 +69,34 @@ const (
 	// query without the attribute [attrAccess].
 	attrOrder = "statement.order"
 	// attrRowsRead is the number of rows that the statement read from the cache, whether or not its
-	// conditions held for them: by its scan or its get, and, for an update, also the row that it reads
+	// conditions held for them: by its scan or its get, by its scalar subqueries, and, for an update, also the row that it reads
 	// to check a NULL for a column that does not take it, and each row again that it changes, and, for
 	// a delete with RETURNING through [Conn.Query], each row again that it deletes, whose values it
 	// gives; through [Conn.Exec], which drops them, it reads none again.
 	attrRowsRead = "statement.rows_read"
+	// attrSubqueries is the number of scalar subqueries of a select, an update, or a delete, which a
+	// statement without one does not have.
+	attrSubqueries = "statement.subqueries"
+	// attrSubqueriesFound is the number of the scalar subqueries of the statement that found a row, of
+	// those that it computed: 0 for a subquery whose value is NULL because it found no row. A
+	// statement that failed before the choice of its access, as [attrAccess] says, has none of the
+	// attributes of the reading of its subqueries.
+	attrSubqueriesFound = "statement.subqueries.found"
+	// attrSubqueriesRowsRead is the number of rows that the scalar subqueries of the statement read
+	// from the cache, together, which [attrRowsRead] counts too.
+	attrSubqueriesRowsRead = "statement.subqueries.rows_read"
+	// attrSubqueriesAccess is how each scalar subquery of the statement read the rows of its table, in
+	// the words of [attrAccess], in the order of the text, joined by commas: none also for a subquery
+	// of LIMIT 0, which reads nothing.
+	attrSubqueriesAccess = "statement.subqueries.access"
+	// attrSubqueriesIndex is the name of the index that each scalar subquery of the statement read by,
+	// in the order of the text, joined by commas, empty for one that read by no index. A statement
+	// whose subqueries read by none has none.
+	attrSubqueriesIndex = "statement.subqueries.index"
+	// attrSubqueriesOrder is how the rows of each scalar subquery of the statement came in the order of
+	// its ORDER BY, in the words of [attrOrder], in the order of the text, joined by commas, empty for
+	// one without ORDER BY. A statement whose subqueries have no ORDER BY has none.
+	attrSubqueriesOrder = "statement.subqueries.order"
 	// attrNothing is whether a statement of IF NOT EXISTS or IF EXISTS did nothing because its object
 	// was there, or not there, as SQLite does nothing then: true, or false for one that went on to do
 	// what the plain statement does, also if it then failed, as in a read-only transaction. A
@@ -188,6 +212,10 @@ type report struct {
 	// order is how the rows of a query with ORDER BY came in its order, delivered or sorted, or empty
 	// for a statement without ORDER BY.
 	order string
+	// subqueries is the number of scalar subqueries of the statement, and read what each read, once
+	// they are computed.
+	subqueries int
+	read       []subqueryRead
 	// clause is set for a statement of IF NOT EXISTS or IF EXISTS, looked once its sink is built, and
 	// nothing if that sink does nothing.
 	clause, looked, nothing bool
@@ -214,16 +242,17 @@ func (r *report) of(s stmt.Statement) {
 	case *stmt.Insert:
 		r.kind, r.table = "insert", s.Table.Value
 	case *stmt.Update:
-		r.kind, r.table = "update", s.Table.Value
+		r.kind, r.table, r.subqueries = "update", s.Table.Value, len(s.Subqueries)
 	case *stmt.Delete:
-		r.kind, r.table = "delete", s.Table.Value
+		r.kind, r.table, r.subqueries = "delete", s.Table.Value, len(s.Subqueries)
 	case *stmt.Select:
-		r.kind, r.table = "select", s.Table.Value
+		r.kind, r.table, r.subqueries = "select", s.Table.Value, len(s.Subqueries)
 	}
 }
 
 // reads records how the statement reads the rows of its table in the transaction of rd: the access
-// of the scan of built, the operators of the statement, a source or a sink, if it has one.
+// of the scan of built, the operators of the statement, a source or a sink, if it has one, and what
+// its scalar subqueries read, whose rows count as rows that the statement read.
 func (r *report) reads(rd reader, built any) {
 	s := scanOf(built)
 	if s == nil {
@@ -245,7 +274,10 @@ func (r *report) reads(rd reader, built any) {
 	case sorted:
 		r.order = "sorted"
 	}
-	r.reader, r.before = rd, rd.rowsRead()
+	r.reader, r.before, r.read = rd, rd.rowsRead(), s.subqueries
+	for _, sub := range s.subqueries {
+		r.before -= sub.rows
+	}
 }
 
 // doesNothing reports whether the sink s of the statement is [nothing], and records it for a
@@ -281,6 +313,32 @@ func scanOf(built any) *scan {
 		return o.src.scanned()
 	}
 	return nil
+}
+
+// subqueryAttrs of what the scalar subqueries of the statement read: [attrSubqueriesFound],
+// [attrSubqueriesRowsRead], [attrSubqueriesAccess], and [attrSubqueriesIndex] and
+// [attrSubqueriesOrder] where a subquery has an index or an order.
+func (r *report) subqueryAttrs() []slog.Attr {
+	var found int
+	var rows int64
+	var access, index, order []string
+	indexed, ordered := false, false
+	for _, sub := range r.read {
+		if sub.found {
+			found++
+		}
+		rows += sub.rows
+		access, index, order = append(access, sub.access), append(index, sub.index), append(order, sub.order)
+		indexed, ordered = indexed || sub.index != "", ordered || sub.order != ""
+	}
+	attrs := []slog.Attr{slog.Int(attrSubqueriesFound, found), slog.Int64(attrSubqueriesRowsRead, rows), slog.String(attrSubqueriesAccess, strings.Join(access, ","))}
+	if indexed {
+		attrs = append(attrs, slog.String(attrSubqueriesIndex, strings.Join(index, ",")))
+	}
+	if ordered {
+		attrs = append(attrs, slog.String(attrSubqueriesOrder, strings.Join(order, ",")))
+	}
+	return attrs
 }
 
 // panicked ends the statement with [errPanicked], unless its event is logged already: then the
@@ -338,6 +396,12 @@ func (r *report) end(ctx context.Context, err error) {
 	}
 	if r.access != "" {
 		attrs = append(attrs, slog.Int64(attrRowsRead, r.reader.rowsRead()-r.before))
+	}
+	if r.subqueries > 0 {
+		attrs = append(attrs, slog.Int(attrSubqueries, r.subqueries))
+	}
+	if r.access != "" && r.read != nil {
+		attrs = append(attrs, r.subqueryAttrs()...)
 	}
 	if r.looked {
 		attrs = append(attrs, slog.Bool(attrNothing, r.nothing))

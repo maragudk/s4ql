@@ -439,11 +439,11 @@ func TestPrepare(t *testing.T) {
 		is.NotError(t, p.Close())
 		_, err = db.PrepareContext(t.Context(), "delete from t1 returning v1 + 1")
 		is.Equal(t, "result column other than a column or * (at offset 25)", notSupported(t, err))
-		// A statement with a subquery, which the pass supports and the engine does not run yet, is
-		// refused when it is prepared, at its subquery, and so is one with a token of its subquery that
-		// the pass does not support, for that token.
-		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = (select v1 from t1 where v1 > ?)")
-		is.Equal(t, "subquery (at offset 28)", notSupported(t, err))
+		// A statement with a subquery is prepared, and one with a token of its subquery that the pass
+		// does not support is refused for that token.
+		p, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = (select v1 from t1 where v1 > ?)")
+		is.NotError(t, err)
+		is.NotError(t, p.Close())
 		_, err = db.PrepareContext(t.Context(), "delete from t1 where v1 = (select v1, v1 from t1)")
 		is.Equal(t, "subquery of more than one column (at offset 38)", notSupported(t, err))
 		_, err = db.PrepareContext(t.Context(), "insert into t1 (v1) values ($v)")

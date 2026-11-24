@@ -69,6 +69,9 @@ type scan struct {
 	table *s4qlpb.CreateTable
 	// access is how the scan reads the rows of the table.
 	access access
+	// subqueries holds what each scalar subquery of the statement read, in the order of the text, once
+	// it is computed, for the event of the statement.
+	subqueries []subqueryRead
 }
 
 func (s *scan) scanned() *scan {
@@ -714,8 +717,19 @@ func changeRows(ctx context.Context, w writer, name string, key int, src source,
 // the first value of a condition, in the order of the text, that is of another type than its column,
 // and then for an argument of the LIMIT that is not an integer from 0, as [limitCount] says. Its
 // scan reads the rows as [build.access] says, by the reading how.
+//
+// A query with scalar subqueries looks the tables of its subqueries up after its own, in the order of
+// the text, as SQLite finds every table of a select before any column, and the names of each
+// subquery where the walk over its conditions reaches it, as [build.conditions] says. The lengths and
+// the types of the values of a subquery are checked where its condition is in the text, and the
+// value of each is computed after every check, before the access of the query is chosen; see
+// [subqueries].
 func buildQuery(ctx context.Context, r reader, q *Query, args []*s4qlpb.Value, limit int, how reading) (source, error) {
-	return build{r: r, args: args, limit: limit, how: how}.node(ctx, q.Root)
+	b := build{r: r, args: args, limit: limit, how: how}
+	if q.Subqueries != nil {
+		b.subs = newSubqueries(q.Subqueries, true)
+	}
+	return b.node(ctx, q.Root)
 }
 
 // build of the operators of a query, in the transaction of r, as [buildQuery] says.
@@ -729,6 +743,8 @@ type build struct {
 	// order is the ORDER BY and the LIMIT of the query whose rows are built, which its access is
 	// chosen for.
 	order orderBy
+	// subs are the scalar subqueries of the statement, or nil for a statement without one.
+	subs *subqueries
 }
 
 // node: the source of the rows of the node n of a query.
@@ -770,6 +786,9 @@ func (b build) node(ctx context.Context, n Node) (source, error) {
 		}
 		src, err := b.node(ctx, inner)
 		if err != nil {
+			return nil, err
+		}
+		if err := b.subs.tables(ctx, b.r, src.(*scan).table); err != nil {
 			return nil, err
 		}
 		p := &project{}
@@ -815,27 +834,23 @@ func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Lim
 	var conditions []condition
 	if f != nil {
 		var err error
-		if _, conditions, err = b.conditions(f, s); err != nil {
+		if _, conditions, err = b.conditions(ctx, f, s); err != nil {
 			return nil, err
 		}
 	}
 	if o != nil {
 		// SQLite looks the columns of the ORDER BY up in the order of the text.
-		var names []string
-		for _, c := range s.table.GetColumns() {
-			names = append(names, c.GetName())
+		columns, err := orderColumns(s.table, nil, o, nil)
+		if err != nil {
+			return nil, err
 		}
-		of := positionsOf(names)
-		for _, c := range o.Columns {
-			position, ok := of[c.Column.Fold()]
-			if !ok {
-				return nil, noSuchResultColumn(c.Column)
-			}
-			b.order.columns = append(b.order.columns, core.KeyColumn{Position: position, Descending: c.Descending})
-		}
+		b.order.columns = columns
 	}
 	b.order.limited = l != nil
 	b.order.turnMixed, b.order.ascendLast, b.order.skipGap = b.how.bugs.turnMixed, b.how.bugs.ascendLast, b.how.bugs.skipGap
+	if err := b.subs.uncorrelated(); err != nil {
+		return nil, err
+	}
 
 	if f != nil {
 		if err := b.values(f, conditions); err != nil {
@@ -860,6 +875,11 @@ func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Lim
 	if l != nil {
 		var err error
 		if n, err = limitCount(l.Count, count); err != nil {
+			return nil, err
+		}
+	}
+	if f != nil {
+		if err := b.compute(ctx, f, s, conditions); err != nil {
 			return nil, err
 		}
 	}
@@ -888,7 +908,7 @@ func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Lim
 // filter of the rows of src, a scan, by the conditions of f: the names of [build.conditions], and
 // then the values of [build.bind].
 func (b build) filter(ctx context.Context, f *Filter, src source) (source, error) {
-	s, conditions, err := b.conditions(f, src)
+	s, conditions, err := b.conditions(ctx, f, src)
 	if err != nil {
 		return nil, err
 	}
@@ -896,67 +916,141 @@ func (b build) filter(ctx context.Context, f *Filter, src source) (source, error
 }
 
 // conditions of the filter f of the rows of src, a scan, with the position of the column of each, and
-// no value yet. It looks the columns of the conditions up in the order of the text, as SQLite does:
-// the first comparison of a column that the table does not have fails with `no such column`. A test
-// for NULL of such a column does not stop SQLite, which goes on to the next condition with the error
-// of that column: a later test for NULL of a column that the table does not have replaces the error,
-// and the next comparison ends the walk with it, before SQLite looks its own column up.
-func (b build) conditions(f *Filter, src source) (*scan, []condition, error) {
+// no value yet. It looks the columns of the conditions up as [build.walk] says.
+func (b build) conditions(ctx context.Context, f *Filter, src source) (*scan, []condition, error) {
 	s, ok := src.(*scan)
 	if !ok {
 		return nil, nil, internalError("a filter of a node of type %T", src)
 	}
-	var names []string
-	for _, c := range s.table.GetColumns() {
-		names = append(names, c.GetName())
+	conditions, err := b.walk(ctx, f, s.table, nil)
+	if err != nil {
+		return nil, nil, err
 	}
-	of := positionsOf(names)
+	return s, conditions, nil
+}
+
+// walk over the conditions of the filter f of the rows of the table t: the conditions, with the
+// position of the column of each, and no value yet. It looks the columns of the conditions up in the
+// order of the text, as SQLite does: the first comparison of a column that the table does not have
+// fails with `no such column`. A test for NULL of such a column does not stop SQLite, which goes on
+// to the next condition with the error of that column: a later test for NULL of a column that the
+// table does not have replaces the error, and the next comparison ends the walk with it, before
+// SQLite looks its own column up.
+//
+// A comparison with a scalar subquery first fails, in a select, with SQLite's `row value misused` for
+// a subquery of `*` of more than one column, as SQLite checks the widths of a comparison before its
+// operands, and then looks the names of the subquery up where the text has it: before the column for
+// a subquery on the left, and after it otherwise, as [subqueries.names] says.
+//
+// For the conditions of a subquery, outer is the table of the statement, and a column that t does not
+// have and outer has is correlated: SQLite takes it for the column of outer, so the walk goes on, and
+// the subqueries refuse the statement once SQLite would have given every error of its names, as
+// [subqueries.uncorrelated] says. Its position is -1. For the conditions of the statement outer is
+// nil.
+func (b build) walk(ctx context.Context, f *Filter, t, outer *s4qlpb.CreateTable) ([]condition, error) {
+	of := columnPositions(t)
 	conditions := make([]condition, len(f.Conditions))
 	// missing is the column of a test for NULL that the table does not have, of the last such test
 	// since the last comparison, or nil.
 	var missing *stmt.Name
 	for i, c := range f.Conditions {
-		position, ok := of[c.Column.Fold()]
+		position, ok := b.subs.lookup(of, outer, c.Column)
 		switch c.Operator {
 		case stmt.OpIsNull, stmt.OpIsNotNull:
 			if c.Value != nil {
-				return nil, nil, internalError("a test for NULL with a value")
+				return nil, internalError("a test for NULL with a value")
 			}
 			if !ok {
 				missing = &f.Conditions[i].Column
 			}
 		case stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual:
 			if c.Value == nil {
-				return nil, nil, internalError("a comparison without a value")
+				return nil, internalError("a comparison without a value")
+			}
+			sub, subquery := c.Value.(*Subquery)
+			var in *inner
+			if subquery {
+				var err error
+				if in, err = b.subs.at(sub, outer); err != nil {
+					return nil, err
+				}
+				if b.subs.prepared && in.width > 1 {
+					// SQLite gives the offset of the left side of the comparison.
+					offset := c.Column.Offset
+					if c.ValueFirst {
+						offset = sub.Offset
+					}
+					return nil, rowValueMisused(offset)
+				}
 			}
 			if missing != nil {
-				return nil, nil, noSuchResultColumn(*missing)
+				return nil, noSuchResultColumn(*missing)
+			}
+			if subquery && c.ValueFirst {
+				if err := b.subs.names(ctx, b, in); err != nil {
+					return nil, err
+				}
 			}
 			if !ok {
-				return nil, nil, noSuchResultColumn(c.Column)
+				return nil, noSuchResultColumn(c.Column)
+			}
+			if subquery && !c.ValueFirst {
+				if err := b.subs.names(ctx, b, in); err != nil {
+					return nil, err
+				}
 			}
 		default:
-			return nil, nil, internalError("a condition with the operator %v", int(c.Operator))
+			return nil, internalError("a condition with the operator %v", int(c.Operator))
 		}
 		conditions[i] = condition{position: position, op: c.Operator, valueFirst: c.ValueFirst}
 	}
 	if missing != nil {
-		return nil, nil, noSuchResultColumn(*missing)
+		return nil, noSuchResultColumn(*missing)
 	}
-	return s, conditions, nil
+	return conditions, nil
+}
+
+// columnPositions of the table t, by the fold of the name of each column, as [positionsOf] gives
+// them.
+func columnPositions(t *s4qlpb.CreateTable) map[string]int {
+	var names []string
+	for _, c := range t.GetColumns() {
+		names = append(names, c.GetName())
+	}
+	return positionsOf(names)
+}
+
+// orderColumns of the ORDER BY o of a query of the table t: the position of each column and its
+// direction, in the order of the text, or SQLite's `no such column` for the first that t does not
+// have. For a subquery, outer is the table of the statement, and a correlated column is taken as
+// [build.walk] says, with the subqueries subs; for a statement outer and subs are nil.
+func orderColumns(t, outer *s4qlpb.CreateTable, o *Order, subs *subqueries) ([]core.KeyColumn, error) {
+	of := columnPositions(t)
+	var columns []core.KeyColumn
+	for _, c := range o.Columns {
+		position, ok := subs.lookup(of, outer, c.Column)
+		if !ok {
+			return nil, noSuchResultColumn(c.Column)
+		}
+		columns = append(columns, core.KeyColumn{Position: position, Descending: c.Descending})
+	}
+	return columns, nil
 }
 
 // bind the values of the conditions of the filter f to conditions, which [build.conditions] gave for
 // the scan s, and give the filter of the rows of s. It evaluates each value, and gives SQLite's error
 // for one that is longer than the limit, as [build.values] says, and then "not supported" for the
 // first value, in the order of the text, that is of another type than its column, as [build.types]
-// says. Last it gives the scan its access, as [build.reach] says, so the errors do not depend on the
-// access.
+// says. Then it computes the value of each subquery, as [build.compute] says. Last it gives the scan
+// its access, as [build.reach] says, so the errors do not depend on the access.
 func (b build) bind(ctx context.Context, f *Filter, s *scan, conditions []condition) (source, error) {
 	if err := b.values(f, conditions); err != nil {
 		return nil, err
 	}
 	if err := b.types(f, s, conditions); err != nil {
+		return nil, err
+	}
+	if err := b.compute(ctx, f, s, conditions); err != nil {
 		return nil, err
 	}
 	if err := b.reach(ctx, s, conditions); err != nil {
@@ -966,10 +1060,17 @@ func (b build) bind(ctx context.Context, f *Filter, s *scan, conditions []condit
 }
 
 // values of the conditions of the filter f, which it evaluates and puts in conditions: SQLite's error
-// for the first, in the order of the text, that is longer than the limit.
+// for the first, in the order of the text, that is longer than the limit. The values of a subquery
+// are checked where it is, as [subqueries.lengths] says, and its own value is computed later.
 func (b build) values(f *Filter, conditions []condition) error {
 	for i, c := range f.Conditions {
 		if c.Value == nil {
+			continue
+		}
+		if sub, ok := c.Value.(*Subquery); ok {
+			if err := b.subs.lengths(b, sub); err != nil {
+				return err
+			}
 			continue
 		}
 		v, err := eval(c.Value, b.args)
@@ -985,9 +1086,16 @@ func (b build) values(f *Filter, conditions []condition) error {
 }
 
 // types of the values of the conditions of the filter f of the scan s: "not supported" for the first
-// value, in the order of the text, that is of another type than its column.
+// value, in the order of the text, that is of another type than its column. A subquery is checked
+// where it is, as [subqueries.types] says.
 func (b build) types(f *Filter, s *scan, conditions []condition) error {
 	for i, c := range conditions {
+		if sub, ok := f.Conditions[i].Value.(*Subquery); ok {
+			if err := b.subs.types(b, sub, s.table, c.position); err != nil {
+				return err
+			}
+			continue
+		}
 		if c.value == nil {
 			continue
 		}
@@ -1144,9 +1252,9 @@ func null() *s4qlpb.Value {
 func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int, how reading) (sink, error) {
 	switch p := p.(type) {
 	case *Update:
-		return build{r: w, args: args, limit: limit, how: how, bugs: b}.change(ctx, w, p.Source, p.Set, p.Returning, true)
+		return build{r: w, args: args, limit: limit, how: how, bugs: b, subs: newSubqueries(p.Subqueries, false)}.change(ctx, w, p.Source, p.Set, p.Returning, true)
 	case *Delete:
-		return build{r: w, args: args, limit: limit, how: how, bugs: b}.change(ctx, w, p.Source, nil, p.Returning, false)
+		return build{r: w, args: args, limit: limit, how: how, bugs: b, subs: newSubqueries(p.Subqueries, false)}.change(ctx, w, p.Source, nil, p.Returning, false)
 	case *CreateIndex:
 		return buildCreateIndex(ctx, w, p, limit)
 	case *DropIndex:
@@ -1368,12 +1476,19 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 	}
 	var conditions []condition
 	if filtered {
-		if _, conditions, err = b.conditions(f, s); err != nil {
+		b.subs.from(t)
+		if _, conditions, err = b.conditions(ctx, f, s); err != nil {
+			return nil, err
+		}
+		if err := b.subs.widths(f); err != nil {
 			return nil, err
 		}
 	}
 	ret, err := buildReturning(t, returning, b.bugs)
 	if err != nil {
+		return nil, err
+	}
+	if err := b.subs.uncorrelated(); err != nil {
 		return nil, err
 	}
 	values := make([]*s4qlpb.Value, len(set))
