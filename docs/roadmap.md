@@ -523,7 +523,7 @@ Included:
 - `returning` at the end of an `insert`, an `update`, or a `delete`, with a list of column names of the statement's table, or `*` for all columns in the order of the table.
 - The statement gives one row for each row that it inserts, updates, or deletes. An `insert` and an `update` give the values after the change. A `delete` gives the values that the row had.
 - SQLite does not specify the order of the returned rows, so they follow the rule on row order of [the spec](spec.md), as the rows of a `select` without `order by` do.
-- Outside a transaction, the statement commits before it gives its first row. If the commit fails, the statement gives the error and no rows. So a row that a caller has read belongs to a change that is committed. Inside a transaction, the statement gives the rows at once, and the change belongs to the transaction like any other.
+- Outside a transaction, the statement commits before it gives its first row. If the commit fails, the statement gives the error and no rows. So a row that a caller has read belongs to a change that is committed. Inside a transaction, the statement gives the rows at once, and the change belongs to the transaction like any other. Agreed by Markus on 2026-11-24.
 - `Exec` runs a statement with `returning` and drops its rows. `RowsAffected` gives the same count as without `returning`. `Query` gives the rows.
 - The commit format does not change.
 - A column named twice in the list, a statement that changes no row, and whether an `update` that sets a row to the values it already has returns that row are decided when the slice is built, by SQLite's behaviour, and recorded in [the todo](todo.md).
