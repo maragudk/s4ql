@@ -489,3 +489,52 @@
 2	reached: goqite's send: an insert that leaves out a key with a default and gives the key by RETURNING
 1	reached: update with RETURNING that gives several rows
 2	reached: delete with RETURNING that gives several rows
+# The generated checks of slice 15, of 2026-11-24: a third of the total. Each statement with a
+# scalar subquery by its call, two subqueries, what a subquery finds on the state before the
+# statement, its operators, its table, SQLite's errors of its shape, and rows that tie under its
+# ORDER BY but for the key, which the sequences of the test put last in every ORDER BY of a
+# subquery. goqite's receive with its subquery is pinned by TestPair, since the generator does not
+# write the shape of goqite often enough for a profile to reach it three times.
+19	reached: select with a subquery through query ok
+10	reached: select with a subquery through prepare, query ok
+10	reached: select with a subquery through query, rows left open ok
+7	reached: select with a subquery through query row no rows
+1	reached: select with a subquery through prepare, exec several times ok
+14	reached: update with a subquery through exec ok
+14	reached: update with a subquery through prepare, exec several times ok
+4	reached: update with RETURNING with a subquery through query ok
+4	reached: update with RETURNING with a subquery through prepare, query ok
+1	reached: update with RETURNING with a subquery through prepare, exec several times ok
+4	reached: delete with a subquery through exec ok
+5	reached: delete with a subquery through prepare, exec several times ok
+3	reached: delete with RETURNING with a subquery through query ok
+2	reached: delete with RETURNING with a subquery through prepare, exec several times ok
+2	reached: select with a subquery with two subqueries ok
+1	reached: update with a subquery with two subqueries ok
+1	reached: delete with a subquery with two subqueries ok
+2	reached: delete with RETURNING with a subquery with two subqueries ok
+101	reached: subquery that finds no row
+5	reached: subquery whose first row has NULL
+47	reached: subquery whose first row has a value
+12	reached: subquery of LIMIT 0
+12	reached: select with a subquery: subquery of several rows
+5	reached: update with a subquery: subquery of several rows
+2	reached: update with RETURNING with a subquery: subquery of several rows
+1	reached: delete with a subquery: subquery of several rows
+1	reached: update with a subquery: subquery whose first row has NULL
+27	reached: update with a subquery: subquery that finds no row
+12	reached: delete with a subquery: subquery that finds no row
+2	reached: subquery whose first two rows tie under its ORDER BY but for the key
+87	reached: subquery compared by = on either side ok
+8	reached: subquery compared by != on either side ok
+7	reached: subquery compared by < on either side ok
+9	reached: subquery compared by <= on either side ok
+13	reached: subquery compared by > on either side ok
+7	reached: subquery compared by >= on either side ok
+29	reached: subquery compared by = with its value on the left ok
+114	reached: subquery of the table of its statement ok
+18	reached: subquery of another table ok
+52	reached: comparison with a subquery ok
+4	reached: select with a subquery through query row value misused
+5	reached: update with a subquery through exec sub-select returns
+2	reached: update with a subquery through exec attempt to write a readonly database
