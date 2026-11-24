@@ -200,21 +200,22 @@ func UpdateRule(table string, columns []TableColumn, u *stmt.Update, args []any,
 // DeleteRule of the delete d of the table of the name and the columns, with the arguments args, as
 // [ConditionRule] gives it for a select with the same WHERE.
 func DeleteRule(table string, columns []TableColumn, d *stmt.Delete, args []any) string {
-	return ConditionRule(table, columns, &stmt.Select{Table: d.Table, Where: d.Where}, args)
+	return ConditionRule(table, columns, &stmt.Select{Table: d.Table, Where: d.Where, Subqueries: d.Subqueries}, args)
 }
 
-// FoundQuery of the conditions of a WHERE on the table: a select that gives a row if the conditions
-// hold for a row of the table, and the arguments of its parameters, each as SQLite binds it, from the
-// literals of the conditions and from args for their parameters, as the statement of the conditions
-// numbers them.
-func FoundQuery(table stmt.Name, where []stmt.Condition, args []any) (string, []any) {
-	conditions, bound := whereText(where, args)
+// FoundQuery of the conditions of a WHERE on the table, whose scalar subqueries are subs: a select
+// that gives a row if the conditions hold for a row of the table, and the arguments of its
+// parameters, each as SQLite binds it, from the literals of the conditions and from args for their
+// parameters, as the statement of the conditions numbers them.
+func FoundQuery(table stmt.Name, where []stmt.Condition, subs []stmt.Select, args []any) (string, []any) {
+	conditions, bound := whereText(where, subs, args)
 	return "select 1 from " + Quote(table.Value) + conditions + " limit 1", bound
 }
 
 // SelectText of the select s with the arguments args of its parameters: the select again, with its
 // select list, or *, its table, and its WHERE, each name in double quotes, a ? for each value of a
-// condition, and orderBy after it, and the arguments of its parameters, as [FoundQuery] gives them.
+// condition, a subquery of slice 15 as [subqueryText] writes it, and orderBy after it, and the
+// arguments of its parameters, as [FoundQuery] gives them.
 func SelectText(s *stmt.Select, args []any, orderBy string) (string, []any) {
 	list := "*"
 	if s.Columns != nil {
@@ -224,21 +225,31 @@ func SelectText(s *stmt.Select, args []any, orderBy string) (string, []any) {
 		}
 		list = strings.Join(names, ", ")
 	}
-	conditions, bound := whereText(s.Where, args)
+	conditions, bound := whereText(s.Where, s.Subqueries, args)
 	return "select " + list + " from " + Quote(s.Table.Value) + conditions + orderBy, bound
 }
 
-// whereText of the conditions of a WHERE, with a ? for each value, after " where ", or "" for no
-// condition, and the arguments of its parameters, as [FoundQuery] gives them. A condition that says
+// whereText of the conditions of a WHERE, whose scalar subqueries are subs, with a ? for each value,
+// and a subquery as [subqueryText] writes it, after " where ", or "" for no condition, and the
+// arguments of its parameters, as [FoundQuery] gives them. A condition that says
 // [stmt.Condition.ValueFirst] is written so, with the ? on the left and the operator as the text
 // wrote it, so that a statement of the text runs the form that its conditions came from.
-func whereText(where []stmt.Condition, args []any) (string, []any) {
+func whereText(where []stmt.Condition, subs []stmt.Select, args []any) (string, []any) {
 	var conditions []string
 	var bound []any
 	for _, c := range where {
 		switch {
 		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
 			conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String())
+			continue
+		case c.Value.Subquery > 0:
+			text, inner := subqueryText(subs[c.Value.Subquery-1], args)
+			if c.ValueFirst {
+				conditions = append(conditions, text+" "+c.Operator.Swapped().String()+" "+Quote(c.Column.Value))
+			} else {
+				conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" "+text)
+			}
+			bound = append(bound, inner...)
 			continue
 		case c.ValueFirst:
 			conditions = append(conditions, "? "+c.Operator.Swapped().String()+" "+Quote(c.Column.Value))
@@ -251,6 +262,33 @@ func whereText(where []stmt.Condition, args []any) (string, []any) {
 		return "", nil
 	}
 	return " where " + strings.Join(conditions, " and "), bound
+}
+
+// subqueryText of the scalar subquery q, of slice 15, with the arguments args of the statement that
+// holds it: its select in parentheses, as [SelectText] writes a select, with its ORDER BY and its
+// LIMIT, a ? for an argument of LIMIT, and the arguments of its parameters, in the order of the text.
+func subqueryText(q stmt.Select, args []any) (string, []any) {
+	var by []string
+	for _, c := range q.OrderBy {
+		term := Quote(c.Name.Value)
+		if c.Descending {
+			term += " desc"
+		}
+		by = append(by, term)
+	}
+	orderBy := ""
+	if by != nil {
+		orderBy = " order by " + strings.Join(by, ", ")
+	}
+	text, bound := SelectText(&stmt.Select{Table: q.Table, Columns: q.Columns, Where: q.Where}, args, orderBy)
+	switch {
+	case q.Limit.Parameter > 0:
+		text += " limit ?"
+		bound = append(bound, args[q.Limit.Parameter-1])
+	case q.Limited():
+		text += fmt.Sprint(" limit ", int64(q.Limit.Value.(stmt.Integer)))
+	}
+	return "(" + text + ")", bound
 }
 
 // boundValue of a term, a literal or the argument of args for its parameter, as SQLite binds it: an
@@ -280,7 +318,7 @@ func boundValue(term stmt.Term, args []any) any {
 // and each measures the record of its row afresh, as a statement that changes many rows does not in
 // every build of SQLite: see the known difference of a record that is too long in docs/todo/sql-front-end.md.
 func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs []any, one string, oneArgs []any) {
-	conditions, bound := whereText(u.Where, args)
+	conditions, bound := whereText(u.Where, u.Subqueries, args)
 	table := Quote(u.Table.Value)
 	var sets []string
 	for _, a := range u.Set {
@@ -295,10 +333,11 @@ func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs
 // WhereRule of the conditions of a WHERE of the table of the name and the columns, which the table
 // has, with the arguments args of the statement, by the numbers of the parameters: s4ql's "not
 // supported" for the first condition, in the order of the text, whose value is of another type than
-// its column, as [ConditionRule] gives it, or "".
+// its column, as [ConditionRule] gives it, or "". A scalar subquery, of slice 15, has the type of the
+// column of its table, which the conditions do not hold, so the rule passes over it.
 func WhereRule(table string, columns []TableColumn, where []stmt.Condition, args []any) string {
 	for _, c := range where {
-		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || c.Value.Subquery > 0 {
 			continue
 		}
 		kind, what := ValueKind(c.Value, args)
@@ -558,7 +597,8 @@ func LeavesOutIndexed(columns []TableColumn, indexes []TableIndex, insert *stmt.
 // that the table does not have" for one in double quotes; and nothing more, since SQLite gives its
 // error first. Otherwise, with as many arguments as parameters: the operator of each condition on
 // the key or on another column, such as "<= on the key"; the value of each comparison, a literal by
-// its kind, as [LiteralKind] names it, or an argument, as [ArgumentKind] names it; "WHERE with a
+// its kind, as [LiteralKind] names it, an argument, as [ArgumentKind] names it, or "comparison with a
+// subquery" for a scalar subquery of slice 15; "WHERE with a
 // value of another type" if [ConditionRule] refuses the select, and nothing more; "WHERE that tests
 // a column more than once"; "WHERE with contradicting conditions" if two conditions on one column
 // are IS NULL and IS NOT NULL, or compare with one value by inverse operators, such as < and >=; and
@@ -601,6 +641,8 @@ func WhereCases(columns []TableColumn, s *stmt.Select, args []any) []string {
 		cases = append(cases, fmt.Sprint(c.Operator, " ", on))
 		switch {
 		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+		case c.Value.Subquery > 0:
+			cases = append(cases, "comparison with a subquery")
 		case c.Value.Parameter > 0:
 			cases = append(cases, "comparison with argument "+ArgumentKind(args[c.Value.Parameter-1]))
 		default:
@@ -659,8 +701,9 @@ func ValueFirstCases(s *stmt.Select, args []any) []string {
 
 // SelectOf the WHERE of the update or the delete s, with the arguments args of s: a select of * of its
 // table with its conditions, whose parameters are numbered from 1, as those of a select of its own
-// are, and the arguments of those parameters, as [WhereCases] and [KeyAccess] take them. It is nil for
-// another statement, and for another number of arguments than s has parameters.
+// are, and the arguments of those parameters, as [WhereCases] and [KeyAccess] take them, with the
+// scalar subqueries of s, of slice 15, whose parameters are numbered so too. It is nil for another
+// statement, and for another number of arguments than s has parameters.
 func SelectOf(s stmt.Statement, args []any) (*stmt.Select, []any) {
 	var table stmt.Name
 	var where []stmt.Condition
@@ -687,6 +730,19 @@ func SelectOf(s stmt.Statement, args []any) (*stmt.Select, []any) {
 			c.Value.Parameter -= offset
 		}
 		sel.Where = append(sel.Where, c)
+	}
+	for _, q := range subqueriesOf(s) {
+		// The parameters of a subquery come after those of SET too.
+		q.Where = slices.Clone(q.Where)
+		for i := range q.Where {
+			if q.Where[i].Value.Parameter > 0 {
+				q.Where[i].Value.Parameter -= offset
+			}
+		}
+		if q.Limit.Parameter > 0 {
+			q.Limit.Parameter -= offset
+		}
+		sel.Subqueries = append(sel.Subqueries, q)
 	}
 	return sel, args[offset:]
 }
@@ -757,9 +813,10 @@ func SetCases(columns []TableColumn, u *stmt.Update, args []any) []string {
 // bounds that hold no key" if no key is within them; and otherwise "a scan of every row". It is ""
 // for a select that SQLite or s4ql refuses: for a column that the table does not have, another
 // number of arguments than parameters, or a value of another type than its column, as
-// [ConditionRule] gives it.
+// [ConditionRule] gives it, and for a select with a scalar subquery of slice 15, whose access depends
+// on the value that the subquery gives.
 func KeyAccess(columns []TableColumn, s *stmt.Select, args []any) string {
-	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" {
+	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" || s.Subqueries != nil {
 		return ""
 	}
 	type bound struct {
@@ -936,9 +993,9 @@ type Access struct {
 //
 // It reports false for a select that SQLite or s4ql refuses, as [KeyAccess] gives "" for one, also
 // for a column of the ORDER BY that the table does not have, and for an argument of the LIMIT that is
-// no int64 from 0, which s4ql refuses.
+// no int64 from 0, which s4ql refuses, and for a select with a scalar subquery of slice 15.
 func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, args []any) (Access, bool) {
-	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" {
+	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" || s.Subqueries != nil {
 		return Access{}, false
 	}
 	if s.Limit.Parameter > 0 {

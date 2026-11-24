@@ -183,6 +183,9 @@ func (p *project) rows(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 type filter struct {
 	src        source
 	conditions []condition
+	// again computes the subqueries of the conditions again, and the access of the scan for their
+	// values, for the planted bug ownChanges, or is nil.
+	again func(ctx context.Context) error
 }
 
 // condition of a [filter] on a row: the value at position compared with value by op, or tested for
@@ -681,6 +684,9 @@ func changeRows(ctx context.Context, w writer, name string, key int, src source,
 		// The planted bug: the statement finds no row.
 		return 0, nil
 	}
+	if f, ok := src.(*filter); ok && f.again != nil {
+		return changedOneByOne(ctx, key, f, change)
+	}
 	var n int64
 	err := w.keys(ctx, name, func(k keySet) error {
 		for row, err := range src.rows(ctx) {
@@ -975,10 +981,11 @@ func (b build) walk(ctx context.Context, f *Filter, t, outer *s4qlpb.CreateTable
 					return nil, err
 				}
 				if b.subs.prepared && in.width > 1 {
-					// SQLite gives the offset of the left side of the comparison.
+					// SQLite gives the offset of the column on the left of the comparison, and none (-1)
+					// for the subquery on the left.
 					offset := c.Column.Offset
 					if c.ValueFirst {
-						offset = sub.Offset
+						offset = -1
 					}
 					return nil, rowValueMisused(offset)
 				}
@@ -1056,7 +1063,17 @@ func (b build) bind(ctx context.Context, f *Filter, s *scan, conditions []condit
 	if err := b.reach(ctx, s, conditions); err != nil {
 		return nil, err
 	}
-	return &filter{src: s, conditions: conditions}, nil
+	filtered := &filter{src: s, conditions: conditions}
+	if b.how.bugs.ownChanges && b.subs != nil {
+		// The planted bug: the subqueries are computed again, on the rows as the statement left them.
+		filtered.again = func(ctx context.Context) error {
+			if err := b.compute(ctx, f, s, conditions, false); err != nil {
+				return err
+			}
+			return b.reach(ctx, s, conditions)
+		}
+	}
+	return filtered, nil
 }
 
 // values of the conditions of the filter f, which it evaluates and puts in conditions: SQLite's error

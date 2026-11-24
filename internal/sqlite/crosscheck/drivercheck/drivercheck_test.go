@@ -752,6 +752,7 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		count("value on the left on a table that a create table if not exists found")
 	}
 	p.reachReturning(s, runs, got, o, kind, count)
+	p.reachSubquery(src, s, runs, got, o, kind, count)
 	switch s.(type) {
 	case *stmt.Update, *stmt.Delete:
 		p.reachChange(s, runs, got, o, kind, count)
@@ -943,6 +944,175 @@ func (p *pair) reachReturning(s stmt.Statement, runs [][]any, got outcome, o run
 	}
 }
 
+// reachSubquery counts what the select, the update, or the delete s of the text src with scalar subqueries, of slice
+// 15, with the arguments of each run, whose outcome of s4ql is got, reaches on the tables of o, as
+// [pair.reach] says, with the kind of each outcome as kind gives it: for each run, the statement by
+// its call and by its outcome, with two subqueries, and each subquery by its operator, on its side and
+// on either, and by its table, that of the statement or another; for the first run, which o has the tables of,
+// each subquery that s4ql computes, by its rows on o: none, LIMIT 0, a first row whose value is NULL
+// or is not, several rows, and several whose first two tie under its ORDER BY but for its last
+// column, the key, which [stmttest.Sequence.Decide] puts there; and goqite's receive, by its call,
+// as [goqiteReceive] says.
+func (p *pair) reachSubquery(src string, s stmt.Statement, runs [][]any, got outcome, o runner, kind func(outcome) string, count func(string)) {
+	tb := p.tb
+	tb.Helper()
+	subs := subqueriesIn(s)
+	if subs == nil {
+		return
+	}
+	statement := strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
+	if returns(s) {
+		statement += " with RETURNING"
+	}
+	statement += " with a subquery"
+	table, where := tableWhere(s)
+	_, columns := p.columnsIn(o, table.Value)
+	for _, out := range got.runs() {
+		outcome := kind(out)
+		count(statement + " through " + string(got.call) + " " + outcome)
+		if len(subs) > 1 {
+			count(statement + " with two subqueries " + outcome)
+		}
+		for _, c := range where {
+			if c.Value.Subquery == 0 {
+				continue
+			}
+			sub := subs[c.Value.Subquery-1]
+			count(fmt.Sprint("subquery compared by ", c.Operator, map[bool]string{true: " with its value on the left ", false: " "}[c.ValueFirst], outcome))
+			count(fmt.Sprint("subquery compared by ", c.Operator, " on either side ", outcome))
+			count("subquery of " + map[bool]string{true: "the table of its statement ", false: "another table "}[sub.Table.Fold() == table.Fold()] + outcome)
+		}
+		if columns != nil && goqiteReceive(s, columns, runs, out) {
+			count("goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, by an ORDER BY of two columns or more and LIMIT 1, beside a pin, that changes the row, through " + string(got.call))
+			count("goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, by an ORDER BY of two columns or more and LIMIT 1, beside a pin, that changes the row")
+		}
+	}
+	if columns == nil || len(runs) == 0 || len(runs[0]) != s.Parameters() || argumentRefusal(runs[0]) != "" {
+		return
+	}
+	var bound []any
+	for _, a := range runs[0] {
+		if v, ok := stmttest.Integers([]any{a}); ok {
+			a = v[0]
+		}
+		bound = append(bound, converted(a))
+	}
+	if p.subqueryRefusal(src, s, bound, o) != "" {
+		return
+	}
+	for _, sub := range subs {
+		_, inner := p.columnsIn(o, sub.Table.Value)
+		names := slices.Clone(sub.Columns)
+		for _, c := range sub.Where {
+			names = append(names, c.Column)
+		}
+		for _, c := range sub.OrderBy {
+			names = append(names, c.Name)
+		}
+		if inner == nil || sub.Columns == nil && len(inner) != 1 || slices.ContainsFunc(names, func(n stmt.Name) bool { return stmttest.ColumnOf(inner, n) < 0 }) ||
+			limitArgument(sub.Limit.Parameter, bound) != "" || stmttest.WhereRule("t", inner, sub.Where, bound) != "" {
+			continue
+		}
+		var by []string
+		for _, c := range sub.OrderBy {
+			term := stmttest.Quote(c.Name.Value)
+			if c.Descending {
+				term += " desc"
+			}
+			by = append(by, term)
+		}
+		orderBy := ""
+		if by != nil {
+			orderBy = " order by " + strings.Join(by, ", ")
+		}
+		text, args := stmttest.SelectText(&stmt.Select{Table: sub.Table, Columns: sub.Columns, Where: sub.Where}, bound, orderBy)
+		rows := run(tb, o, callQuery, text, [][]any{args}, mattnText)
+		if rows.failed != "" {
+			tb.Fatalf("%q: SQLite gives %v", text, rows)
+		}
+		limit := int64(-1)
+		switch {
+		case sub.Limit.Parameter > 0:
+			limit = bound[sub.Limit.Parameter-1].(int64)
+		case sub.Limited():
+			limit = int64(sub.Limit.Value.(stmt.Integer))
+		}
+		var what string
+		switch {
+		case limit == 0:
+			what = "subquery of LIMIT 0"
+		case len(rows.rows) == 0:
+			what = "subquery that finds no row"
+		case rows.rows[0] == `["<nil>:<nil>"]`:
+			what = "subquery whose first row has NULL"
+		default:
+			what = "subquery whose first row has a value"
+		}
+		count(what)
+		count(statement + ": " + what)
+		if limit == 0 || len(rows.rows) < 2 {
+			continue
+		}
+		count(statement + ": subquery of several rows")
+		if len(sub.OrderBy) < 2 {
+			continue
+		}
+		// The columns of the ORDER BY but the key, which [stmttest.Sequence.Decide] puts in each, of the
+		// first two rows.
+		var leading []stmt.Name
+		for _, c := range sub.OrderBy {
+			if !inner[stmttest.ColumnOf(inner, c.Name)].PrimaryKey {
+				leading = append(leading, c.Name)
+			}
+		}
+		if leading == nil {
+			continue
+		}
+		text, args = stmttest.SelectText(&stmt.Select{Table: sub.Table, Columns: leading, Where: sub.Where}, bound, orderBy+" limit 2")
+		if first := run(tb, o, callQuery, text, [][]any{args}, mattnText); first.failed == "" && len(first.rows) == 2 && first.rows[0] == first.rows[1] {
+			count("subquery whose first two rows tie under its ORDER BY but for the key")
+			count(statement + ": subquery whose first two rows tie under its ORDER BY but for the key")
+		}
+	}
+}
+
+// goqiteReceive reports whether the update s of the table of the columns, of the run out with the
+// arguments of the runs, is goqite's receive as slice 15 has it: an update with RETURNING whose WHERE
+// has a column outside the key equal to a value, and the key equal to a scalar subquery of the table
+// of the update, of the key, with a WHERE, an ORDER BY of two columns or more, and LIMIT 1, and that
+// changes one row.
+func goqiteReceive(s stmt.Statement, columns []stmttest.TableColumn, runs [][]any, out outcome) bool {
+	u, ok := s.(*stmt.Update)
+	if !ok || !u.Returning.Present() || out.failed != "" {
+		return false
+	}
+	changed := out.affected == "1" || out.columns != "" && len(out.rows) == 1 || out.call == callQueryRow
+	if !changed {
+		return false
+	}
+	key := slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })
+	pin, next := false, false
+	for _, c := range u.Where {
+		position := stmttest.ColumnOf(columns, c.Column)
+		switch {
+		case position < 0:
+			return false
+		case c.Value.Subquery > 0 && position == key && c.Operator == stmt.OpEqual:
+			sub := u.Subqueries[c.Value.Subquery-1]
+			limit := sub.Limit.Value == stmt.Value(stmt.Integer(1))
+			if sub.Limit.Parameter > 0 && len(runs) > 0 && sub.Limit.Parameter <= len(runs[0]) {
+				n, ok := stmttest.Integers([]any{runs[0][sub.Limit.Parameter-1]})
+				limit = ok && n[0] == 1
+			}
+			next = next || sub.Table.Fold() == u.Table.Fold() && len(sub.Columns) == 1 && stmttest.ColumnOf(columns, sub.Columns[0]) == key &&
+				sub.Where != nil && len(sub.OrderBy) >= 2 && limit
+		case c.Value.Subquery == 0 && position != key && c.Operator == stmt.OpEqual:
+			pin = true
+		}
+	}
+	return pin && next
+}
+
 // isInsert reports whether s is an insert.
 func isInsert(s stmt.Statement) bool {
 	_, ok := s.(*stmt.Insert)
@@ -1051,7 +1221,7 @@ func (p *pair) reachOrder(sel *stmt.Select, runs [][]any, got outcome, o runner,
 		} else {
 			limit = int64(sel.Limit.Value.(stmt.Integer))
 		}
-		whole, args := stmttest.SelectText(&stmt.Select{Table: sel.Table, Where: sel.Where}, bound, "")
+		whole, args := stmttest.SelectText(&stmt.Select{Table: sel.Table, Where: sel.Where, Subqueries: sel.Subqueries}, bound, "")
 		var n int64
 		is.NotError(tb, o.QueryRowContext(tb.Context(), "select count(*) from ("+whole+")", args...).Scan(&n))
 		if limit > 0 && limit < n {
@@ -1104,7 +1274,7 @@ func (p *pair) reachChange(s stmt.Statement, runs [][]any, got outcome, o runner
 		count(statement + map[bool]string{true: " with WHERE ", false: " without WHERE "}[where != nil] + outcome)
 		if len(runs[i]) != s.Parameters() || argumentRefusal(runs[i]) != "" {
 			count(statement + " with arguments that s4ql refuses " + outcome)
-			reachValueFirst(&stmt.Select{Where: where}, nil, kind(out), -1, count)
+			reachValueFirst(&stmt.Select{Where: where, Subqueries: subqueriesIn(s)}, nil, kind(out), -1, count)
 			continue
 		}
 		var bound []any
@@ -1196,7 +1366,7 @@ func messageKind(err string) string {
 		"already exists", "no such table", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name",
 		"too many columns on", "UNIQUE constraint failed", "NOT NULL constraint failed", "syntax error", "incomplete input", "no rows",
 		"wrong number of arguments", "attempt to write a readonly database", "there is already a table named", "there is already an index named",
-		"no such index",
+		"no such index", "row value misused", "sub-select returns",
 	} {
 		if strings.Contains(err, kind) {
 			return kind
@@ -1209,7 +1379,7 @@ func messageKind(err string) string {
 // SQLite gives when it prepares a statement, where s4ql gives them when the statement runs.
 var prepareKinds = []string{
 	"no such table", "already exists", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name", "too many columns on",
-	"there is already a table named", "there is already an index named", "no such index",
+	"there is already a table named", "there is already an index named", "no such index", "row value misused", "sub-select returns",
 }
 
 // The kinds of the texts that the comparison excuses, under which [tally.excused] counts them.
@@ -1258,6 +1428,29 @@ const (
 	// quotes, which mattn's SQLite reads as a string, and which [pair.checkQuoted] checks against the
 	// pinned build's error instead.
 	excusedQuoted = "a select, an update, a delete, a create index, or an insert with RETURNING with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error"
+	// excusedQuotedSubquery is a select, an update, or a delete with a scalar subquery, of slice 15,
+	// and a name in double quotes that is no column of the tables that SQLite looks it up in, which
+	// mattn's SQLite reads as a string, where the pinned build refuses the statement when it prepares
+	// it: [pair.checkQuotedSubquery] requires an error of the names of s4ql, when the statement runs,
+	// and does not run it in SQLite.
+	excusedQuotedSubquery = "a statement with a subquery with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked to fail on its names"
+	// excusedCorrelated is a statement with a correlated scalar subquery, which s4ql refuses after
+	// SQLite's errors of the names, and SQLite runs: it is checked against s4ql's rule by
+	// [pair.checkRefused], as [pair.subqueryRefusal] gives it, and not run in SQLite.
+	excusedCorrelated = "a correlated subquery, checked against s4ql's rule"
+	// excusedSubqueryType is a statement with a scalar subquery whose column is of another declared
+	// type than the column that it is compared with, INT and INTEGER being one, which SQLite compares by
+	// affinity: it is checked against s4ql's rule as [pair.subqueryRefusal] gives it.
+	excusedSubqueryType = "a subquery of a column of another type than the column that it is compared with, checked against s4ql's rule"
+	// excusedSubqueryLimit is a statement with a scalar subquery whose argument of LIMIT is no integer
+	// from 0, which SQLite reads as LIMIT (X <> 0): it is checked against s4ql's rule as
+	// [pair.subqueryRefusal] gives it.
+	excusedSubqueryLimit = "an argument of the LIMIT of a subquery that is no integer from 0, checked against s4ql's rule"
+	// excusedWideSubqueries is an update or a delete with two scalar subqueries of * of more than one
+	// column, for which SQLite gives `sub-select returns N columns - expected 1` for the one that its
+	// plan codes first, and s4ql refuses at the second: it is checked against s4ql's rule as
+	// [pair.subqueryRefusal] gives it.
+	excusedWideSubqueries = "two subqueries of * of more than one column, checked against s4ql's rule"
 )
 
 // rowsOpen is the error of s4ql for a statement in a transaction while the rows of a query of the
@@ -1887,7 +2080,11 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		}
 	}
 
-	if failure, ok := p.checkQuoted(src, s, got, o); ok {
+	if subqueriesIn(s) != nil {
+		if failure, ok := p.checkQuotedSubquery(src, s, got, o); ok {
+			return failure
+		}
+	} else if failure, ok := p.checkQuoted(src, s, got, o); ok {
 		return failure
 	}
 
@@ -2121,7 +2318,7 @@ func (p *pair) orderedDiffers(sel *stmt.Select, args []any, got, want []string, 
 	}
 	ranks := make([]string, len(rows))
 	if by != nil {
-		text, _ := stmttest.SelectText(&stmt.Select{Table: sel.Table, Where: sel.Where}, args, orderBy)
+		text, _ := stmttest.SelectText(&stmt.Select{Table: sel.Table, Where: sel.Where, Subqueries: sel.Subqueries}, args, orderBy)
 		rest, ok := strings.CutPrefix(text, "select *")
 		if !ok {
 			tb.Fatalf("%q does not start with select *", text)
@@ -2290,6 +2487,10 @@ func (p *pair) checkRefused(src string, s stmt.Statement, runs [][]any, got outc
 			kind = excusedArgument
 		} else if len(args) == s.Parameters() {
 			want = p.typeRefusal(src, s, args, o)
+			if kind == excusedType {
+				// A refusal of an argument of an earlier run keeps its excuse.
+				kind = refusalKind(s, want)
+			}
 		}
 		if len(args) != s.Parameters() || want == "" || r.failed == "prepare" || r.failed == "" || r.err != want {
 			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, where the rule gives %q", src, args, got, want)
@@ -2407,12 +2608,6 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 	default:
 		return ""
 	}
-	ps, err := o.PrepareContext(tb.Context(), firstStatement(src))
-	if err != nil {
-		return ""
-	}
-	is.NotError(tb, ps.Close())
-	name, columns := p.columnsIn(o, table.Value)
 	var bound []any
 	for _, a := range args {
 		if v, ok := stmttest.Integers([]any{a}); ok {
@@ -2420,6 +2615,15 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 		}
 		bound = append(bound, converted(a))
 	}
+	if subqueriesIn(s) != nil {
+		return p.subqueryRefusal(src, s, bound, o)
+	}
+	ps, err := o.PrepareContext(tb.Context(), firstStatement(src))
+	if err != nil {
+		return ""
+	}
+	is.NotError(tb, ps.Close())
+	name, columns := p.columnsIn(o, table.Value)
 	switch s := s.(type) {
 	case *stmt.Select:
 		if rule := stmttest.ConditionRule(name, columns, s, bound); rule != "" {
@@ -2434,7 +2638,7 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 			return stmttest.WhereRule(name, columns, s.Where, bound)
 		}
 		return stmttest.UpdateRule(name, columns, s, bound, func() bool {
-			q, args := stmttest.FoundQuery(s.Table, s.Where, bound)
+			q, args := stmttest.FoundQuery(s.Table, s.Where, s.Subqueries, bound)
 			rows, err := o.QueryContext(tb.Context(), q, args...)
 			is.NotError(tb, err)
 			defer func() { is.NotError(tb, rows.Close()) }()
@@ -2446,6 +2650,260 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 		})
 	}
 	return stmttest.TypeRule(name, columns, s.(*stmt.Insert), bound)
+}
+
+// subqueriesIn the select, the update, or the delete s: its scalar subqueries, of slice 15, in the
+// order of the text, or nil.
+func subqueriesIn(s stmt.Statement) []stmt.Select {
+	switch s := s.(type) {
+	case *stmt.Select:
+		return s.Subqueries
+	case *stmt.Update:
+		return s.Subqueries
+	case *stmt.Delete:
+		return s.Subqueries
+	}
+	return nil
+}
+
+// refusalKind of the "not supported" want that [pair.typeRefusal] gives for the statement s: the
+// kind of the excuse of its class, one of a scalar subquery, or [excusedType].
+func refusalKind(s stmt.Statement, want string) string {
+	switch {
+	case strings.HasPrefix(want, "s4ql: not supported: correlated subquery "):
+		return excusedCorrelated
+	case strings.HasPrefix(want, "s4ql: not supported: second subquery of * of more than one column "):
+		return excusedWideSubqueries
+	case strings.HasPrefix(want, "s4ql: not supported: subquery "):
+		return excusedSubqueryType
+	case strings.Contains(want, ", for LIMIT, which takes an integer from 0"):
+		for _, q := range subqueriesIn(s) {
+			if q.Limit.Parameter > 0 && strings.HasPrefix(want, fmt.Sprintf("s4ql: not supported: argument %v, ", q.Limit.Parameter)) {
+				return excusedSubqueryLimit
+			}
+		}
+	}
+	return excusedType
+}
+
+// scopeName is a name of a statement that SQLite looks up in the columns outer of the table of the
+// statement, or, for a name of a scalar subquery, in the columns inner of its table and then in
+// outer, where it takes a name that inner does not have, a correlated name.
+type scopeName struct {
+	name         stmt.Name
+	inner, outer []stmttest.TableColumn
+}
+
+// missing reports whether no table of the scope of the name has it.
+func (n scopeName) missing() bool {
+	if n.inner != nil && stmttest.ColumnOf(n.inner, n.name) >= 0 {
+		return false
+	}
+	return stmttest.ColumnOf(n.outer, n.name) < 0
+}
+
+// namesOf the select, the update, or the delete s with scalar subqueries, on the tables of o: every
+// name that SQLite looks up, of the statement on its table and of each subquery whose table o has on
+// its own, not in SQLite's order, and whether every table is there. It gives nil for a statement whose
+// own table o does not have.
+func (p *pair) namesOf(s stmt.Statement, o runner) ([]scopeName, bool) {
+	table, where := tableWhere(s)
+	_, outer := p.columnsIn(o, table.Value)
+	if outer == nil {
+		return nil, false
+	}
+	var names []stmt.Name
+	switch s := s.(type) {
+	case *stmt.Select:
+		names = append(names, s.Columns...)
+		for _, c := range s.OrderBy {
+			names = append(names, c.Name)
+		}
+	case *stmt.Update:
+		for _, a := range s.Set {
+			names = append(names, a.Column)
+		}
+		names = append(names, s.Returning.Columns...)
+	case *stmt.Delete:
+		names = append(names, s.Returning.Columns...)
+	}
+	for _, c := range where {
+		names = append(names, c.Column)
+	}
+	var scoped []scopeName
+	for _, n := range names {
+		scoped = append(scoped, scopeName{name: n, outer: outer})
+	}
+	tables := true
+	for _, q := range subqueriesIn(s) {
+		_, inner := p.columnsIn(o, q.Table.Value)
+		if inner == nil {
+			tables = false
+			continue
+		}
+		names := slices.Clone(q.Columns)
+		for _, c := range q.Where {
+			names = append(names, c.Column)
+		}
+		for _, c := range q.OrderBy {
+			names = append(names, c.Name)
+		}
+		for _, n := range names {
+			scoped = append(scoped, scopeName{name: n, inner: inner, outer: outer})
+		}
+	}
+	return scoped, tables
+}
+
+// checkQuotedSubquery is [pair.checkQuoted] of a select, an update, or a delete s with scalar
+// subqueries, of slice 15, whose names SQLite looks up in an order that differs between a select and
+// a change, and around each subquery: if a name in double quotes is no column of the tables of its
+// scope, as [scopeName.missing] says, the pinned build refuses the statement when it prepares it, for
+// that name or for an error of the names before it, where mattn's SQLite may read the name as a
+// string and run the statement, or give the error of a name after it, such as `no such table` of a
+// subquery of an update or a delete, whose table SQLite finds where its walk over the WHERE reaches
+// it. Each run of s4ql must then fail when the statement runs, since
+// Prepare checks only the text, with an error of the names: `no such column` of a name that the
+// tables of its scope do not have, `no such table`, `row value misused`, or `sub-select returns`.
+// Which of them is the first is the engine's differential test's to check, against the pinned build.
+// It reports whether s is such a statement, and gives what differs, or "".
+func (p *pair) checkQuotedSubquery(src string, s stmt.Statement, got outcome, o runner) (string, bool) {
+	p.tb.Helper()
+	names, _ := p.namesOf(s, o)
+	if !slices.ContainsFunc(names, func(n scopeName) bool { return n.name.Raw[0] == '"' && n.missing() }) {
+		return "", false
+	}
+	for _, r := range got.runs() {
+		ofNames := strings.HasPrefix(r.err, "1/1: no such table: ") || r.err == "1/1: row value misused" || strings.HasPrefix(r.err, "1/1: sub-select returns ")
+		for _, n := range names {
+			ofNames = ofNames || n.missing() && (r.err == "1/1: no such column: "+n.name.Value || r.err == fmt.Sprintf(`1/1: no such column: "%v" - should this be a string literal in single-quotes?`, n.name.Value))
+		}
+		if r.failed == "" || r.failed == "prepare" || !ofNames {
+			return fmt.Sprintf("%q: s4ql gives %v, and the pinned build of SQLite refuses its names when it prepares the statement", src, got), true
+		}
+	}
+	p.y.excused(excusedQuotedSubquery)
+	return "", true
+}
+
+// subqueryRefusal is [pair.typeRefusal] of the select, the update, or the delete s of the text src
+// with scalar subqueries, of slice 15, with the arguments args as SQLite binds them, on the tables of
+// o, as the engine checks them, which its differential test pins against the pinned build. It is ""
+// for a statement with a name that the tables of its scope do not have, as [scopeName.missing] says,
+// whose error comes first, also for one in double quotes that mattn's SQLite reads as a string. For a
+// statement that SQLite does not prepare on o, it is the refusal of a second subquery of * of more
+// than one column of an update or a delete, whose error SQLite gives for the one that its plan codes
+// first, and otherwise "". For one that SQLite prepares, it is the refusal of the first correlated
+// name, in the order of the conditions; then, condition by condition in the order of the text, the
+// rule of the type of a value, and for a subquery the rule of its conditions on its table, of its
+// argument of LIMIT, as [limitRefusal] gives it, and of the type of its column, which must be the
+// type of the column that it is compared with, INT and INTEGER being one; and then for a select the
+// rule of its LIMIT and for an update the rule of its SET, but in a read-only transaction, which
+// refuses the write first.
+func (p *pair) subqueryRefusal(src string, s stmt.Statement, args []any, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	names, ok := p.namesOf(s, o)
+	if !ok || slices.ContainsFunc(names, func(n scopeName) bool { return n.missing() }) {
+		return ""
+	}
+	table, where := tableWhere(s)
+	subs := subqueriesIn(s)
+	ps, err := o.PrepareContext(tb.Context(), firstStatement(src))
+	if err != nil {
+		message := mattnText(tb, err)
+		if _, isSelect := s.(*stmt.Select); isSelect || message != "1/1: row value misused" && !strings.HasPrefix(message, "1/1: sub-select returns ") {
+			return ""
+		}
+		var wide []stmt.Term
+		for _, c := range where {
+			if q := c.Value.Subquery; q > 0 {
+				if _, columns := p.columnsIn(o, subs[q-1].Table.Value); subs[q-1].Columns == nil && len(columns) > 1 {
+					wide = append(wide, c.Value)
+				}
+			}
+		}
+		if len(wide) < 2 {
+			return ""
+		}
+		return fmt.Sprintf("s4ql: not supported: second subquery of * of more than one column (at offset %v)", wide[1].Span.Start)
+	}
+	is.NotError(tb, ps.Close())
+	name, columns := p.columnsIn(o, table.Value)
+	for _, c := range where {
+		q := c.Value.Subquery
+		if q == 0 {
+			continue
+		}
+		_, inner := p.columnsIn(o, subs[q-1].Table.Value)
+		names := slices.Clone(subs[q-1].Columns)
+		for _, c := range subs[q-1].Where {
+			names = append(names, c.Column)
+		}
+		for _, c := range subs[q-1].OrderBy {
+			names = append(names, c.Name)
+		}
+		for _, n := range names {
+			if stmttest.ColumnOf(inner, n) < 0 {
+				return fmt.Sprintf("s4ql: not supported: correlated subquery (at offset %v)", n.Offset)
+			}
+		}
+	}
+	for _, c := range where {
+		q := c.Value.Subquery
+		if q == 0 {
+			if rule := stmttest.WhereRule(name, columns, []stmt.Condition{c}, args); rule != "" {
+				return rule
+			}
+			continue
+		}
+		sub := subs[q-1]
+		innerName, inner := p.columnsIn(o, sub.Table.Value)
+		if rule := stmttest.WhereRule(innerName, inner, sub.Where, args); rule != "" {
+			return rule
+		}
+		if rule := limitArgument(sub.Limit.Parameter, args); rule != "" {
+			return rule
+		}
+		position := 0
+		if sub.Columns != nil {
+			position = stmttest.ColumnOf(inner, sub.Columns[0])
+		}
+		in, out := inner[position], columns[stmttest.ColumnOf(columns, c.Column)]
+		if storageClass(in.Type) != storageClass(out.Type) {
+			return fmt.Sprintf("s4ql: not supported: subquery %v, of the column %v.%v of type %v, compared with the column %v.%v of type %v", q, innerName, in.Name, in.Type, name, out.Name, out.Type)
+		}
+	}
+	switch s := s.(type) {
+	case *stmt.Select:
+		return limitRefusal(columns, s, args)
+	case *stmt.Update:
+		if p.tx != nil && p.tx.readOnly {
+			return ""
+		}
+		set := &stmt.Update{Table: s.Table, Set: s.Set}
+		return stmttest.UpdateRule(name, columns, set, args[:set.Parameters()], func() bool {
+			q, bound := stmttest.FoundQuery(s.Table, s.Where, s.Subqueries, args)
+			rows, err := o.QueryContext(tb.Context(), q, bound...)
+			is.NotError(tb, err)
+			defer func() { is.NotError(tb, rows.Close()) }()
+			if rows.Next() {
+				return true
+			}
+			is.NotError(tb, rows.Err())
+			return false
+		})
+	}
+	return ""
+}
+
+// storageClass of the declared type of a column of a STRICT table: the kind of its values, which is
+// one for INT and INTEGER.
+func storageClass(typ string) string {
+	if typ == "INT" {
+		return "INTEGER"
+	}
+	return typ
 }
 
 // limitRefusal of the select s of the table with the columns, in the order of the table, with the
@@ -2462,8 +2920,19 @@ func limitRefusal(columns []stmttest.TableColumn, s *stmt.Select, args []any) st
 		slices.ContainsFunc(s.OrderBy, func(c stmt.OrderColumn) bool { return stmttest.ColumnOf(columns, c.Name) < 0 }) {
 		return ""
 	}
+	return limitArgument(s.Limit.Parameter, args)
+}
+
+// limitArgument is the engine's "not supported" of the argument of the parameter of the number
+// parameter of a LIMIT, of a select or of a scalar subquery, among the arguments args of its
+// statement, each as SQLite binds them, if it is no integer from 0, or "", also for a parameter of
+// 0, a LIMIT without one.
+func limitArgument(parameter int, args []any) string {
+	if parameter == 0 {
+		return ""
+	}
 	var which string
-	switch v := args[s.Limit.Parameter-1].(type) {
+	switch v := args[parameter-1].(type) {
 	case int64:
 		if v >= 0 {
 			return ""
@@ -2480,7 +2949,7 @@ func limitRefusal(columns []stmttest.TableColumn, s *stmt.Select, args []any) st
 	default:
 		return ""
 	}
-	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", s.Limit.Parameter, which)
+	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", parameter, which)
 }
 
 // columnsIn of the table with the name, as SQLite compares names, in SQLite on o, in the order of
@@ -3819,6 +4288,93 @@ func TestPair(t *testing.T) {
 			p.close()
 		}
 	})
+
+	t.Run("should run goqite's receive with its scalar subquery, through Query and a prepared statement run several times, with rows that tie broken by goqite's index, and none on an empty queue", func(t *testing.T) {
+		w := newWorld(t)
+		for _, pinned := range []bool{true, false} {
+			p := newPair(t, w, pinned, nil)
+			goqite := "create table goqite (id text primary key, created text not null, updated text not null, queue text not null, " +
+				"body blob not null, timeout text not null, received int not null default 0, priority int not null default 0) strict, without rowid"
+			for _, src := range []string{goqite, "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"} {
+				_, failure := p.step(src, callExec, false)
+				is.Equal(t, "", failure)
+			}
+			now := "2026-11-23T12:00:00.000Z"
+			send := "insert into goqite (id, created, updated, queue, body, timeout, priority) values (?, ?, ?, ?, ?, ?, ?)"
+			// m_2 and m_3 tie under the ORDER BY of the receive, which the index orders by their keys.
+			for _, m := range []struct {
+				id, created string
+				priority    int
+			}{{"m_1", now, 0}, {"m_3", now, 1}, {"m_2", now, 1}, {"m_4", "2026-11-23T11:00:00.000Z", 0}} {
+				_, failure := p.stepRuns(send, callExec, false, [][]any{{m.id, m.created, now, "default", []byte("body " + m.id), now, m.priority}})
+				is.Equal(t, "", failure)
+			}
+			// goqite's receive without its arithmetic, which slice 15 does not have.
+			receive := "update goqite set timeout = ? where queue = ? and id = (select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1) returning id, body, received"
+			later := "2026-11-23T12:01:00.000Z"
+			got, failure := p.stepRuns(receive, callPrepareQuery, false, [][]any{{later, "default", "default", now, 3}})
+			is.Equal(t, "", failure)
+			is.EqualSlice(t, []string{`["string:m_2" "[]uint8:[98 111 100 121 32 109 95 50]" "int64:0"]`}, got.rows)
+			// The timeout of m_2 is later now, so the next receives take m_3, m_4, and m_1, and then none.
+			got, failure = p.stepRuns(receive, callPrepareExecRuns, false, [][]any{{later, "default", "default", now, 3}, {later, "default", "default", now, 3}, {later, "default", "default", now, 3}, {later, "default", "default", now, 3}})
+			is.Equal(t, "", failure)
+			is.Equal(t, "prepare, exec several times: 1 affected, last insert id 0; then: 1 affected, last insert id 0; then: 1 affected, last insert id 0; then: 0 affected, last insert id 0", got.String())
+			is.Equal(t, "", p.compareTables())
+			p.restart(true)
+			is.Equal(t, "", p.compareTables())
+			p.close()
+		}
+	})
+
+	t.Run("should take each refusal of a scalar subquery that SQLite runs by s4ql's rule, under the excuse of its class, after the errors of the names", func(t *testing.T) {
+		w := newWorld(t)
+		for _, pinned := range []bool{true, false} {
+			y := tally{}
+			p := newPair(t, w, pinned, y)
+			for _, src := range []string{t1, t3, t4, t5, "insert into t1 values (1)", "insert into t4 values (1, 'a', 1.5, 1)", "insert into t3 values (1, 'b', 2.5)"} {
+				_, failure := p.step(src, callExec, false)
+				is.Equal(t, "", failure)
+			}
+			at := func(src, sub string) string { return fmt.Sprint(strings.Index(src, sub)) }
+			for _, c := range []struct {
+				src  string
+				args []any
+				// want is s4ql's error, kind the excuse, and want "" for one that the comparison takes.
+				want, kind string
+			}{
+				{src: "select v1 from t4 where v1 = (select v2 from t1)", want: "s4ql: not supported: correlated subquery (at offset " + at("select v1 from t4 where v1 = (select v2 from t1)", "v2 from") + ")", kind: excusedCorrelated},
+				{src: "delete from t4 where v1 = (select v1 from t1 order by v3)", want: "s4ql: not supported: correlated subquery (at offset " + at("delete from t4 where v1 = (select v1 from t1 order by v3)", "v3)") + ")", kind: excusedCorrelated},
+				{src: "select v1 from t4 where v2 = (select v1 from t1)", want: "s4ql: not supported: subquery 1, of the column t1.v1 of type INT, compared with the column t4.v2 of type TEXT", kind: excusedSubqueryType},
+				{src: "update t4 set v2 = 'z' where v4 = (select v1 from t1) and (select v3 from t3) > v1", want: "s4ql: not supported: subquery 2, of the column t3.v3 of type REAL, compared with the column t4.v1 of type INT", kind: excusedSubqueryType},
+				{src: "select v1 from t4 where v1 = (select v1 from t1 limit ?)", args: []any{int64(-1)}, want: "s4ql: not supported: argument 1, which is a negative integer, for LIMIT, which takes an integer from 0", kind: excusedSubqueryLimit},
+				{src: "delete from t4 where v1 = ? and v1 = (select v1 from t1 limit ?)", args: []any{int64(1), "1"}, want: "s4ql: not supported: argument 2, which is text, for LIMIT, which takes an integer from 0", kind: excusedSubqueryLimit},
+				{src: "update t4 set v2 = 'z' where v1 = (select * from t5) and v4 = (select * from t3)", want: "s4ql: not supported: second subquery of * of more than one column (at offset " + at("update t4 set v2 = 'z' where v1 = (select * from t5) and v4 = (select * from t3)", "(select * from t3)") + ")", kind: excusedWideSubqueries},
+				{src: "select v1 from t4 where v1 = (select v1 from t1 where v1 = 'a')", want: "s4ql: not supported: a string literal compared with the column t1.v1 of type INT", kind: excusedType},
+				{src: `select v1 from t4 where v1 = (select v1 from t1 where "nope" = 1)`, want: `1/1: no such column: "nope" - should this be a string literal in single-quotes?`, kind: excusedQuotedSubquery},
+				{src: `delete from t4 where "nope" = 1 and v1 = (select v1 from nope)`, want: `1/1: no such column: "nope" - should this be a string literal in single-quotes?`, kind: excusedQuotedSubquery},
+				// The errors of the names come first, and are compared with SQLite's; a decided subquery runs.
+				{src: "select v1 from t4 where nope = (select v2 from t1)", want: "1/1: no such column: nope"},
+				{src: "select v1 from t4 where v1 = (select v1 from t1 order by v1) and v2 = (select v2 from t3 order by v1 limit 1)"},
+				{src: "update t4 set v2 = 'z' where v1 = (select * from t5) returning v1", want: "1/1: sub-select returns 5 columns - expected 1"},
+			} {
+				before := maps.Clone(y)
+				got, failure := p.stepRuns(c.src, callQuery, false, [][]any{c.args})
+				is.Equal(t, "", failure, c.src)
+				is.Equal(t, c.want, got.err, c.src)
+				for kind, n := range y {
+					if strings.HasPrefix(kind, "excused: ") && n != before[kind] {
+						is.Equal(t, "excused: "+c.kind, kind, c.src)
+						is.Equal(t, before[kind]+1, n, c.src)
+					}
+				}
+				if c.kind != "" {
+					is.Equal(t, before["excused: "+c.kind]+1, y["excused: "+c.kind], c.src)
+				}
+			}
+			is.Equal(t, "", p.compareTables())
+			p.close()
+		}
+	})
 }
 
 // pick the call of a text of a sequence, which is a query if query, from r, in a transaction if inTx:
@@ -3895,18 +4451,27 @@ func pickLevel(r stmttest.Rand) string {
 // from 0, or the other way round, where every value of another type that s4ql refuses for LIMIT is
 // refused again.
 func again(q *stmttest.Sequence, src string, args []any) []any {
-	keep := -1
+	var keep []int
 	if s, err := stmt.Check(src); err == nil {
-		if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 && sel.Limit.Parameter <= len(args) {
-			if _, ok := args[sel.Limit.Parameter-1].(int64); ok {
-				keep = sel.Limit.Parameter - 1
+		var limits []stmt.Term
+		if sel, ok := s.(*stmt.Select); ok {
+			limits = append(limits, sel.Limit)
+		}
+		for _, q := range subqueriesIn(s) {
+			limits = append(limits, q.Limit)
+		}
+		for _, l := range limits {
+			if l.Parameter > 0 && l.Parameter <= len(args) {
+				if _, ok := args[l.Parameter-1].(int64); ok {
+					keep = append(keep, l.Parameter-1)
+				}
 			}
 		}
 	}
 	next := slices.Clone(args)
 	for i, a := range next {
-		// Each argument draws, so that the stream draws as it would without the one that stays.
-		if like := q.Like(a); i != keep {
+		// Each argument draws, so that the stream draws as it would without the ones that stay.
+		if like := q.Like(a); !slices.Contains(keep, i) {
 			next[i] = like
 		}
 	}
@@ -3949,6 +4514,11 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 	t.Helper()
 	q, err := stmttest.NewSequence(seed)
 	is.NotError(t, err)
+	// A subquery, of slice 15, whose ORDER BY does not decide its first row may give the value of any
+	// row that a legal order puts first, and s4ql draws among them where SQLite takes the first of its
+	// plan, which the test cannot see through database/sql: so every subquery of the sequence ends its
+	// ORDER BY with the key of its table, and the two sides must give the same value.
+	q.Decide()
 	// What the test draws for itself, its calls, the number of runs of a prepared statement, the nils
 	// of the arguments, and the end of a transaction, draws from a stream of its own, so that it moves
 	// no statement. The values of the runs after the first come from [stmttest.Sequence.Like], which
@@ -4084,7 +4654,9 @@ func TestGenerated(t *testing.T) {
 // open the most, of which a read-only transaction's insert is the rarest. The profile of RETURNING
 // runs 50 for the rows of RETURNING left open in a transaction, and for goqite's receive by id, an
 // update with RETURNING of several rows, and a delete with RETURNING through a prepared statement run
-// several times, each reached three to five times.
+// several times, each reached three to five times. The profile of the subqueries runs 60 for goqite's
+// receive with its subquery, and for the statements with subqueries through a prepared statement run
+// several times.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:
@@ -4103,6 +4675,8 @@ func generatedOf(p *stmttest.Profile) uint64 {
 		return 16
 	case stmttest.Order:
 		return 50
+	case stmttest.Subquery:
+		return 60
 	case stmttest.Returning:
 		return 50
 	case stmttest.Tables:

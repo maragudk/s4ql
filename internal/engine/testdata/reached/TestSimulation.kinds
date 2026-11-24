@@ -103,3 +103,58 @@
 350	statements with RETURNING with SQLite's error
 3	statements with RETURNING of their own through Query that failed in their write transaction
 2	statements with RETURNING of their own through Query whose outcome is unknown
+# Slice 15, a scalar subquery in a WHERE: a third of the total of 2026-11-24.
+1810	statements with subqueries
+146	selects with subqueries that succeeded
+58	selects with subqueries that succeeded of their own
+87	selects with subqueries that succeeded in a transaction
+49	selects with subqueries that succeeded, whose subqueries the engine computed of their own
+74	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+16	selects with subqueries that gave rows
+# Lowered from 453 by the review of the generated checks of slice 15 on 2026-11-24, which made
+# fewer of the statements with subqueries fail and halved the hammer cell: a third of the 414 then.
+138	selects with subqueries with SQLite's error
+97	updates with subqueries that succeeded
+40	updates with subqueries that succeeded of their own
+56	updates with subqueries that succeeded in a transaction
+37	updates with subqueries that succeeded, whose subqueries the engine computed of their own
+51	updates with subqueries that succeeded, whose subqueries the engine computed in a transaction
+4	updates with subqueries that changed rows of their own
+4	updates with subqueries that changed rows in a transaction
+1	updates with subqueries and RETURNING that gave rows
+422	updates with subqueries with SQLite's error
+61	deletes with subqueries that succeeded
+28	deletes with subqueries that succeeded of their own
+33	deletes with subqueries that succeeded in a transaction
+25	deletes with subqueries that succeeded, whose subqueries the engine computed of their own
+29	deletes with subqueries that succeeded, whose subqueries the engine computed in a transaction
+2	deletes with subqueries that changed rows of their own
+5	deletes with subqueries that changed rows in a transaction
+1	deletes with subqueries and RETURNING that gave rows
+221	deletes with subqueries with SQLite's error
+37	statements with subqueries that succeeded, whose subqueries the engine did not compute
+26	statements with two subqueries or more that succeeded
+41	statements with a correlated subquery, refused
+90	statements with a subquery of another type than its column, refused
+63	statements with subqueries and an argument of LIMIT that s4ql refuses
+35	statements with subqueries that failed: no lease
+77	statements with subqueries that failed: timeout
+89	statements with subqueries of their own whose values are checked against SQLite's
+46	statements with subqueries of the log whose values are checked against SQLite's
+157	statements with subqueries in a transaction whose values are checked against SQLite's
+64	subqueries of their own: subquery whose value was NULL
+28	subqueries of their own: subquery whose value was that of its one first row
+2	subqueries of their own: subquery with rows that tie for the first, whose value was that of SQLite's first
+1	subqueries of their own: subquery with rows that tie for the first, whose value was that of another
+25	subqueries of the log: subquery whose value was NULL
+22	subqueries of the log: subquery whose value was that of its one first row
+108	subqueries in a transaction: subquery whose value was NULL
+58	subqueries in a transaction: subquery whose value was that of its one first row
+1	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of SQLite's first
+4	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of another
+2	subqueries in a transaction: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of another
+# The aims of the review of the generated checks of slice 15, of 2026-11-24: a third of the total.
+7	selects with subqueries that the engine computed in a read-only transaction after a write was acknowledged
+1	selects with subqueries that gave rows in a read-only transaction after a write was acknowledged
+2	statements with subqueries refused of their own whose values are checked against SQLite's
+2	statements with subqueries refused in a transaction whose values are checked against SQLite's

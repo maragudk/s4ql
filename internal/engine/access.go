@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -513,10 +515,13 @@ type reading struct {
 	// e is the engine that draws the reading of a subquery, or nil, for a reading of a test, whose
 	// subqueries read forward by the path of the zero value.
 	e *Engine
-	// observe is the hook of the tests of this package that is given the values of the subqueries of
-	// the statement, in the order of the text, once they are computed, and gives the values that the
-	// statement uses; nil uses them as they are.
-	observe func([]*s4qlpb.Value) []*s4qlpb.Value
+	// observe is the hook of the tests of this package that is given the context of the statement and
+	// the values of its subqueries, in the order of the text, once they are computed, and gives the
+	// values that the statement uses; nil uses them as they are.
+	observe func(context.Context, []*s4qlpb.Value) []*s4qlpb.Value
+	// outside is the reader of the newest state that is committed, which the subqueries of a statement
+	// in a transaction read with the planted bug outsideTx, or nil.
+	outside reader
 }
 
 // inner is the reading of a scalar subquery of the statement: the one that the engine draws for a

@@ -303,6 +303,13 @@ type Generator struct {
 	// random has them, and no subquery of its own. With 0 the generator draws as it did before slice
 	// 15.
 	Subquery int
+	// Inner, if not nil, gives the select of a subquery of slice 15 that a hook of a WHERE gives as the
+	// value of a comparison, by its Term.Subquery, which is a number of the hook's own and not that of
+	// the subquery in the text: the raw text of the name of its table and of its one column, or nil
+	// Columns for *, its conditions as [Generator.Where] gives them, and its ORDER BY and its LIMIT as
+	// [Generator.Order] gives them. The generator writes it in parentheses in place of the value, and
+	// numbers it among the subqueries of the statement in the order of the text.
+	Inner func(n int) stmt.Select
 	// subqueries of the statement that the generator writes, in the order of the text, and inner
 	// reports whether it writes the select of one.
 	subqueries []stmt.Select
@@ -710,7 +717,7 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.N
 			// The value on the left, the operator swapped, and the column on the right, which reads as
 			// the condition c.
 			w := stmt.Condition{Operator: c.Operator, ValueFirst: true}
-			w.Value, args = g.conditionValue(random, table, c.Value.Value, args)
+			w.Value, args = g.conditionValue(random, table, c.Value, args)
 			g.gap(false)
 			g.punct(g.spelling(c.Operator.Swapped()))
 			g.gap(false)
@@ -741,7 +748,7 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.N
 			g.gap(false)
 			g.punct(spellings[g.r.IntN(len(spellings))])
 			g.gap(false)
-			w.Value, args = g.conditionValue(random, table, c.Value.Value, args)
+			w.Value, args = g.conditionValue(random, table, c.Value, args)
 		}
 		conditions = append(conditions, w)
 	}
@@ -750,45 +757,65 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.N
 
 // conditionValue of a comparison of a WHERE of the table, after the arguments args of the
 // parameters before it: if random, one time in [Generator.Subquery] a subquery, as
-// [Generator.subquery] writes it, outside the select of a subquery; and otherwise the term of v, as
-// [Generator.term] writes it. It gives the arguments with those of the value.
-func (g *Generator) conditionValue(random bool, table stmt.Name, v stmt.Value, args []any) (stmt.Term, []any) {
-	if random && g.Subquery > 0 && !g.inner && g.r.IntN(g.Subquery) == 0 {
-		return g.subquery(table, args)
+// [Generator.subquery] writes it, outside the select of a subquery; if not random, the subquery that
+// [Generator.Inner] gives for a given term that names one, outside the select of a subquery; and
+// otherwise the term of the value of given, as [Generator.term] writes it. It gives the arguments
+// with those of the value.
+func (g *Generator) conditionValue(random bool, table stmt.Name, given stmt.Term, args []any) (stmt.Term, []any) {
+	switch {
+	case random && g.Subquery > 0 && !g.inner && g.r.IntN(g.Subquery) == 0:
+		return g.subquery(table, nil, args)
+	case !random && given.Subquery > 0 && g.Inner != nil && !g.inner:
+		q := g.Inner(given.Subquery)
+		return g.subquery(table, &q, args)
 	}
-	return g.term(v, args)
+	return g.term(given.Value, args)
 }
 
 // subquery of slice 15 in the WHERE of the table, after the arguments args of the parameters before
-// it, as [Generator.Subquery] says: its select in parentheses, which it adds to the subqueries of
-// the statement. It gives the term that names it, and the arguments with those of its select.
-func (g *Generator) subquery(table stmt.Name, args []any) (stmt.Term, []any) {
+// it: its select in parentheses, which it adds to the subqueries of the statement, as given says, or
+// at random as [Generator.Subquery] says if given is nil. It gives the term that names it, and the
+// arguments with those of its select.
+func (g *Generator) subquery(table stmt.Name, given *stmt.Select, args []any) (stmt.Term, []any) {
 	start := g.b.Len()
 	g.punct("(")
 	g.gap(false)
 	q := stmt.Select{Span: stmt.Span{Start: g.b.Len()}}
 	g.keyword("select")
-	if g.r.IntN(8) == 0 {
+	if given != nil && given.Columns == nil || given == nil && g.r.IntN(8) == 0 {
 		g.gap(false)
 		g.punct("*")
 		g.gap(false)
 	} else {
 		g.gap(true)
-		q.Columns = []stmt.Name{g.name(SelectColumn)}
+		if given != nil {
+			q.Columns = []stmt.Name{g.write(given.Columns[0].Raw)}
+		} else {
+			q.Columns = []stmt.Name{g.name(SelectColumn)}
+		}
 		g.gap(true)
 	}
 	g.keyword("from")
 	g.gap(true)
-	if g.r.IntN(2) == 0 && (slices.Contains(g.pools[SelectTable], table.Raw) || slices.Contains(g.pools[SelectTable], strings.ToLower(table.Raw))) {
+	switch {
+	case given != nil:
+		q.Table = g.write(given.Table.Raw)
+	case g.r.IntN(2) == 0 && (slices.Contains(g.pools[SelectTable], table.Raw) || slices.Contains(g.pools[SelectTable], strings.ToLower(table.Raw))):
 		q.Table = g.write(table.Raw)
-	} else {
+	default:
 		q.Table = g.name(SelectTable)
 	}
 	g.inner = true
-	q.Where, args = g.conditions(g.randomConditions(), true, q.Table, q.Columns, args)
-	// The hook of ORDER BY and LIMIT gives those of a statement, so the subquery draws its own.
+	// The hook of ORDER BY and LIMIT gives those of a statement, so the subquery draws its own, or
+	// has those given.
 	order := g.Order
-	g.Order = nil
+	if given != nil {
+		q.Where, args = g.conditions(given.Where, false, q.Table, q.Columns, args)
+		g.Order = func(stmt.Name) ([]stmt.OrderColumn, stmt.Term) { return given.OrderBy, given.Limit }
+	} else {
+		q.Where, args = g.conditions(g.randomConditions(), true, q.Table, q.Columns, args)
+		g.Order = nil
+	}
 	q.OrderBy, q.Limit, args = g.order(&q, args)
 	g.Order = order
 	g.inner = false

@@ -81,11 +81,11 @@ func (e *Engine) SetPath(p Path) {
 	e.path = p.path()
 }
 
-// ObserveSubqueries gives f the values of the scalar subqueries of each statement of the engine e
-// from now on, in the order of the text, once the engine has computed them, and the statement uses
-// the values that f gives in their place; nil observes nothing. A test sets it between the
-// statements, as for [Engine.SetPath].
-func (e *Engine) ObserveSubqueries(f func([]*s4qlpb.Value) []*s4qlpb.Value) {
+// ObserveSubqueries gives f the context of each statement of the engine e from now on and the values
+// of its scalar subqueries, in the order of the text, once the engine has computed them, and the
+// statement uses the values that f gives in their place; nil observes nothing. A test sets it between
+// the statements, as for [Engine.SetPath], or once before the first.
+func (e *Engine) ObserveSubqueries(f func(context.Context, []*s4qlpb.Value) []*s4qlpb.Value) {
 	e.observe = f
 }
 
@@ -375,6 +375,15 @@ var plantable = map[string]func(b *bugs){
 	"deleteNone":      func(b *bugs) { b.deleteNone = true },
 	"dropLast":        func(b *bugs) { b.dropLast = true },
 	"starKeyFirst":    func(b *bugs) { b.starKeyFirst = true },
+	"lastRow":         func(b *bugs) { b.lastRow = true },
+	"firstNotNull":    func(b *bugs) { b.firstNotNull = true },
+	"ownChanges":      func(b *bugs) { b.ownChanges = true },
+	"keepValue":       func(b *bugs) { b.keepValue = true },
+	"noRowMatches":    func(b *bugs) { b.noRowMatches = true },
+	"outsideTx":       func(b *bugs) { b.outsideTx = true },
+	"swapSubqueries":  func(b *bugs) { b.swapSubqueries = true },
+	"limitZeroRow":    func(b *bugs) { b.limitZeroRow = true },
+	"orderIgnored":    func(b *bugs) { b.orderIgnored = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.

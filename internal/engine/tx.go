@@ -351,7 +351,22 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	planted.nullDefault = c.e.bugs.nullDefault
 	planted.oldValues, planted.deleteNone, planted.starKeyFirst = c.e.bugs.oldValues, c.e.bugs.deleteNone, c.e.bugs.starKeyFirst
 	order := c.e.order(p)
-	s, err := buildSink(ctx, w, p, args, planted, c.e.db.lengthLimit(), c.e.reading(false))
+	how := c.e.reading(false)
+	if c.e.bugs.outsideTx {
+		// The planted bug: the subqueries read the newest state that is committed, on a reader of their
+		// own, without the changes of the transaction.
+		rd, err := c.e.db.reader(ctx)
+		if err != nil {
+			return Result{}, nil, err
+		}
+		defer func() { _ = rd.close(ctx) }()
+		rt, err := rd.read(ctx)
+		if err != nil {
+			return Result{}, nil, err
+		}
+		how.outside = rt
+	}
+	s, err := buildSink(ctx, w, p, args, planted, c.e.db.lengthLimit(), how)
 	if err != nil {
 		return Result{}, nil, err
 	}

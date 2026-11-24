@@ -53,6 +53,7 @@ import (
 	"errors"
 	"iter"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 
 	"maragu.dev/s4ql/internal/core"
@@ -96,7 +97,9 @@ type Engine struct {
 	draws  atomic.Uint64
 	// observe is the hook of the tests that is given the values of the scalar subqueries of each
 	// statement, as [reading] says, or nil.
-	observe func([]*s4qlpb.Value) []*s4qlpb.Value
+	observe func(context.Context, []*s4qlpb.Value) []*s4qlpb.Value
+	// kept holds the values of the subqueries of the planted bug keepValue, by the plan of each.
+	kept sync.Map
 }
 
 // New engine for the database d, whose instance runs on the host h, which the engine reads the

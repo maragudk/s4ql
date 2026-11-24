@@ -531,3 +531,149 @@
 20	reached: insert with RETURNING * that gives a row of a table with a column without a default after one with a default
 7	reached: update with RETURNING * that gives a row of a table with a column without a default after one with a default
 3	reached: delete with RETURNING * that gives a row of a table with a column without a default after one with a default
+# Slice 15, the scalar subquery in a WHERE: a third of the total of 2026-11-24, of every kind of
+# what a subquery reaches that a run reaches three times, but for those of an error of a name, a
+# length, or a constraint, which the kinds of the statements count.
+8	reached: delete whose subquery reads what it changes, of one row
+2	reached: delete whose subquery reads what it changes, of several rows
+5	reached: delete with a subquery and RETURNING through Exec ok
+13	reached: delete with a subquery and RETURNING through Query not supported
+43	reached: delete with a subquery and RETURNING through Query ok
+2	reached: delete with a subquery of * of more than one column: row value misused
+6	reached: delete with a subquery of * of more than one column: sub-select returns
+15	reached: delete with a subquery refused: compared with the column
+2	reached: delete with a subquery refused: correlated subquery
+# Lowered from 14 by the review of the generated checks of slice 15 on 2026-11-24, which made an
+# argument of the LIMIT of a subquery that s4ql refuses rarer: a third of the 13 of that day.
+4	reached: delete with a subquery refused: for LIMIT
+17	reached: delete with a subquery through Exec not supported
+64	reached: delete with a subquery through Exec ok
+15	reached: delete with a subquery through Query not supported
+52	reached: delete with a subquery through Query ok
+12	reached: delete with a subquery whose text ran before not supported
+33	reached: delete with a subquery whose text ran before ok
+9	reached: delete with two subqueries not supported
+11	reached: delete with two subqueries ok
+3	reached: goqite's receive through Exec ok, no row found
+2	reached: goqite's receive through Exec ok, rows changed
+7	reached: goqite's receive through Query not supported
+35	reached: goqite's receive through Query ok, no row found
+8	reached: goqite's receive through Query ok, rows changed
+6	reached: goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, with a pin of another column
+4	reached: goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, with no other pin
+8	reached: select with a subquery of * of more than one column: row value misused
+13	reached: select with a subquery refused: compared with the column
+5	reached: select with a subquery refused: correlated subquery
+27	reached: select with a subquery refused: for LIMIT
+4	reached: select with a subquery through Exec not supported
+26	reached: select with a subquery through Exec ok
+41	reached: select with a subquery through Query not supported
+176	reached: select with a subquery through Query ok
+16	reached: select with a subquery whose text ran before not supported
+63	reached: select with a subquery whose text ran before ok
+9	reached: select with two subqueries not supported
+29	reached: select with two subqueries ok
+11	reached: subquery of another table in a delete
+23	reached: subquery of another table in a select
+11	reached: subquery of another table in a update
+116	reached: subquery of the table of the statement in a delete
+208	reached: subquery of the table of the statement in a select
+172	reached: subquery of the table of the statement in a update
+4	reached: subquery on the left of != in a delete
+5	reached: subquery on the left of != in a select
+1	reached: subquery on the left of != in a update
+6	reached: subquery on the left of < in a delete
+5	reached: subquery on the left of < in a select
+3	reached: subquery on the left of < in a update
+3	reached: subquery on the left of <= in a delete
+8	reached: subquery on the left of <= in a select
+2	reached: subquery on the left of <= in a update
+26	reached: subquery on the left of = in a delete
+46	reached: subquery on the left of = in a select
+15	reached: subquery on the left of = in a update
+4	reached: subquery on the left of > in a delete
+9	reached: subquery on the left of > in a select
+5	reached: subquery on the left of > in a update
+3	reached: subquery on the left of >= in a delete
+9	reached: subquery on the left of >= in a select
+2	reached: subquery on the left of >= in a update
+6	reached: subquery on the right of != in a delete
+11	reached: subquery on the right of != in a select
+4	reached: subquery on the right of != in a update
+9	reached: subquery on the right of < in a delete
+10	reached: subquery on the right of < in a select
+5	reached: subquery on the right of < in a update
+5	reached: subquery on the right of <= in a delete
+15	reached: subquery on the right of <= in a select
+6	reached: subquery on the right of <= in a update
+41	reached: subquery on the right of = in a delete
+86	reached: subquery on the right of = in a select
+130	reached: subquery on the right of = in a update
+10	reached: subquery on the right of > in a delete
+11	reached: subquery on the right of > in a select
+4	reached: subquery on the right of > in a update
+7	reached: subquery on the right of >= in a delete
+12	reached: subquery on the right of >= in a select
+2	reached: subquery on the right of >= in a update
+7	reached: subquery that an index serves
+44	reached: subquery that finds no row in a delete
+75	reached: subquery that finds no row in a select
+103	reached: subquery that finds no row in a update
+22	reached: subquery that finds one row in a delete
+36	reached: subquery that finds one row in a select
+25	reached: subquery that finds one row in a update
+2	reached: subquery that finds several rows that tie for the first, of which it gave SQLite's first, in a delete
+7	reached: subquery that finds several rows that tie for the first, of which it gave SQLite's first, in a select
+1	reached: subquery that finds several rows that tie for the first, of which it gave SQLite's first, in a update
+3	reached: subquery that finds several rows that tie for the first, of which it gave another, in a delete
+8	reached: subquery that finds several rows that tie for the first, of which it gave another, in a select
+3	reached: subquery that finds several rows that tie for the first, of which it gave another, in a update
+22	reached: subquery that the engine did not compute, of a select that gave no row
+28	reached: subquery that the engine did not compute, of an update or a delete
+19	reached: subquery whose ORDER BY decides the first of several rows in a delete
+50	reached: subquery whose ORDER BY decides the first of several rows in a select
+27	reached: subquery whose ORDER BY decides the first of several rows in a update
+22	reached: subquery whose ORDER BY puts NULL first of several rows
+77	reached: subquery whose order an index delivers
+307	reached: subquery whose value was NULL
+153	reached: subquery whose value was that of its one first row
+36	reached: subquery whose value was the NULL of a row
+51	reached: subquery with LIMIT 0
+103	reached: subquery with LIMIT ?
+1	reached: subquery with ORDER BY with rows that tie for the first, whose value was that of SQLite's first
+2	reached: subquery with ORDER BY with rows that tie for the first, whose value was that of another
+2	reached: subquery with WHERE and without ORDER BY with rows that tie for the first, whose value was that of SQLite's first
+4	reached: subquery with WHERE and without ORDER BY with rows that tie for the first, whose value was that of another
+18	reached: subquery with a LIMIT above 1
+11	reached: subquery with a parameter after it
+143	reached: subquery with a parameter before it
+231	reached: subquery with a parameter in it
+11	reached: subquery with rows that tie for the first, whose value was that of SQLite's first
+14	reached: subquery with rows that tie for the first, whose value was that of another
+7	reached: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of SQLite's first
+8	reached: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of another
+17	reached: update whose subquery reads what it changes, of one row
+2	reached: update with a subquery and RETURNING through Exec not supported
+8	reached: update with a subquery and RETURNING through Exec ok
+16	reached: update with a subquery and RETURNING through Query not supported
+81	reached: update with a subquery and RETURNING through Query ok
+7	reached: update with a subquery of * of more than one column: sub-select returns
+13	reached: update with a subquery refused: compared with the column
+1	reached: update with a subquery refused: correlated subquery
+27	reached: update with a subquery refused: for LIMIT
+27	reached: update with a subquery through Exec not supported
+82	reached: update with a subquery through Exec ok
+19	reached: update with a subquery through Query not supported
+91	reached: update with a subquery through Query ok
+14	reached: update with a subquery whose text ran before not supported
+48	reached: update with a subquery whose text ran before ok
+6	reached: update with two subqueries not supported
+9	reached: update with two subqueries ok
+# The aims of the review of the generated checks of slice 15, of 2026-11-24: a third of what the
+# profile of the subqueries reached that day.
+15	reached: select with a subquery and a LIMIT by a literal of 1 that gave rows
+4	reached: select with a subquery and a LIMIT by an argument of 1 that gave rows
+9	reached: select with a subquery and a LIMIT by a literal of more than 1 that gave rows
+3	reached: select with a subquery and a LIMIT by an argument of more than 1 that gave rows
+2	reached: goqite's receive: an update with RETURNING of the row whose key a subquery gives among rows that tie, of which it gave SQLite's first
+1	reached: goqite's receive: an update with RETURNING of the row whose key a subquery gives among rows that tie, of which it gave another

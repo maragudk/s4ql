@@ -186,6 +186,13 @@ type attempt struct {
 	// the numbers of the run's clock of events when its call began and returned.
 	gen         int
 	start, stop uint64
+	// subqueries are the values of the scalar subqueries of the statement, of slice 15, in the order of
+	// the text, as the engine computed them the last time that it ran the statement, which its hook
+	// gives the run (see [run.open]), or nil for a statement whose subqueries it did not compute.
+	subqueries []*s4qlpb.Value
+	// newer is set for a statement of a transaction that spans statements that started after a write
+	// was acknowledged since the begin of the transaction, which it must not see.
+	newer bool
 }
 
 // txRecord is a transaction that spans statements, as its caller saw it.
@@ -519,8 +526,23 @@ func (r *run) open(ctx context.Context, n *node) error {
 	r.ways[key] = way
 	r.mu.Unlock()
 	options.Logger = slog.New(handler{r})
+	e := engine.New(d, n.inst, options)
+	// The values that the engine computes for the subqueries of a statement, by the attempt of its
+	// context, which [run.flattened] checks against SQLite's candidates and SQLite then runs with:
+	// where the ORDER BY of a subquery does not decide its first row, the engine and SQLite may take
+	// another each.
+	e.ObserveSubqueries(func(ctx context.Context, vs []*s4qlpb.Value) []*s4qlpb.Value {
+		if id, ok := ctx.Value(idKey{}).(uint64); ok {
+			r.mu.Lock()
+			if a := r.attempts[id]; a != nil {
+				a.subqueries = slices.Clone(vs)
+			}
+			r.mu.Unlock()
+		}
+		return vs
+	})
 	n.mu.Lock()
-	n.d, n.e = d, engine.New(d, n.inst, options)
+	n.d, n.e = d, e
 	n.gen++
 	n.mu.Unlock()
 	return nil
@@ -566,7 +588,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked), args: values(call.Args), tx: tx, gen: gen, start: r.tick()}
 	if tx != nil {
 		// A statement of a transaction must see what was acknowledged before the transaction began.
-		a.acked = tx.acked
+		a.acked, a.newer = tx.acked, len(r.acked) > tx.acked
 		tx.stmts = append(tx.stmts, a)
 	}
 	a.src = withID(call.Src, a.id)
@@ -659,10 +681,11 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 		kind, failure := checkArguments(call, a.answer)
 		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
-		if kind == "" && supported && a.answer.err == "not supported" && (typeRefusal(a.src, a.answer.message) || strings.Contains(a.answer.message, ", for LIMIT, which takes ")) {
+		if kind == "" && supported && a.answer.err == "not supported" && (typeRefusal(a.src, a.answer.message) || strings.Contains(a.answer.message, ", for LIMIT, which takes ") || subqueryRefused(s, a.answer.message)) {
 			// The refusal of a value of another type than its column, after the insert or the select
-			// found its table and its columns, or of an argument of LIMIT, of slice 13, after those, which
-			// [run.verify] checks against SQLite on the state that it saw, by [typeRule].
+			// found its table and its columns, or of an argument of LIMIT, of slice 13, after those, or of
+			// a scalar subquery, of slice 15, as [subqueryRefused] says, which [run.verify] checks against
+			// SQLite on the state that it saw, by [typeRule].
 			kind, a.typeRefused = excusedType, true
 		}
 		if kind == "" && (supported || a.answer.err == wrongArguments) {
@@ -699,6 +722,85 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	}
 	r.world.Trace(ctx, "statement %v ends as %v: %v", a.id, a.state, err)
 	return a
+}
+
+// subqueryKinds of the attempt a of the statement s with scalar subqueries, of slice 15, a select,
+// an update, or a delete, which kind names in the plural, for [tallyOf]: the statement, by its kind
+// and how it ended, of its own or in a transaction, whether the engine computed its subqueries, with
+// two of them, with RETURNING that gave rows, by the rows that it changed, and by the refusal of
+// s4ql.
+func subqueryKinds(a *attempt, s stmt.Statement, kind string) []string {
+	kinds := []string{"statements with subqueries"}
+	in := map[bool]string{true: " of their own", false: " in a transaction"}[a.tx == nil]
+	switch a.state {
+	case succeeded:
+		kinds = append(kinds, kind+" with subqueries that succeeded", kind+" with subqueries that succeeded"+in)
+		if a.subqueries == nil {
+			kinds = append(kinds, "statements with subqueries that succeeded, whose subqueries the engine did not compute")
+		} else {
+			kinds = append(kinds, kind+" with subqueries that succeeded, whose subqueries the engine computed"+in)
+		}
+		if len(subqueriesIn(s)) > 1 {
+			kinds = append(kinds, "statements with two subqueries or more that succeeded")
+		}
+		if hasReturning(a.src) && a.query && len(a.answer.rows) > 0 {
+			kinds = append(kinds, kind+" with subqueries and RETURNING that gave rows")
+		}
+		if isChange(s) && !a.unchanged {
+			kinds = append(kinds, kind+" with subqueries that changed rows"+in)
+		}
+		if a.query && len(a.answer.rows) > 0 {
+			kinds = append(kinds, kind+" with subqueries that gave rows")
+		}
+		if a.tx != nil && a.tx.readOnly && a.subqueries != nil && a.newer {
+			// A write was acknowledged after the begin of the read-only transaction and before the
+			// statement, so that the newest state is not the one that its subqueries must read.
+			kinds = append(kinds, kind+" with subqueries that the engine computed in a read-only transaction after a write was acknowledged")
+			if a.query && len(a.answer.rows) > 0 {
+				kinds = append(kinds, kind+" with subqueries that gave rows in a read-only transaction after a write was acknowledged")
+			}
+		}
+	case sqliteFailed:
+		kinds = append(kinds, kind+" with subqueries with SQLite's error")
+	case skipped:
+		switch m := a.answer.message; {
+		case strings.Contains(m, ": correlated subquery "):
+			kinds = append(kinds, "statements with a correlated subquery, refused")
+		case strings.Contains(m, ": subquery ") && strings.Contains(m, " compared with the column "):
+			kinds = append(kinds, "statements with a subquery of another type than its column, refused")
+		case strings.Contains(m, ", for LIMIT, which takes "):
+			kinds = append(kinds, "statements with subqueries and an argument of LIMIT that s4ql refuses")
+		default:
+			kinds = append(kinds, "statements with subqueries refused otherwise")
+		}
+	case unknown:
+		kinds = append(kinds, "statements with subqueries whose outcome is unknown")
+	case failed:
+		kinds = append(kinds, "statements with subqueries that failed: "+a.reason)
+	}
+	return kinds
+}
+
+// subqueryFinds are the violations by which [TestSimulation_plantedBugs] finds a planted bug of the
+// scalar subqueries of slice 15, own, the bug's own, first: a value that is not among SQLite's
+// candidates, and the answers, the counts of changes, and the states that follow from a wrong value.
+func subqueryFinds(own string) []string {
+	finds := []string{own}
+	for _, f := range []string{"gives the subquery", ", and in SQLite", "rows in SQLite, and its caller was told", "the replay of the log holds", "which began at commit",
+		"gives the rows of RETURNING", "fails in SQLite", "is in no commit, and changes"} {
+		if f != own {
+			finds = append(finds, f)
+		}
+	}
+	return finds
+}
+
+// subqueryRefused reports whether message is s4ql's refusal of the statement s with a scalar
+// subquery, of slice 15, that the rule of [subqueryRule] gives by the state of the database beside
+// the refusals of a type: of a correlated subquery, and of a second subquery of * of more than one
+// column in an update or a delete.
+func subqueryRefused(s stmt.Statement, message string) bool {
+	return s != nil && subqueried(s) && (strings.Contains(message, ": correlated subquery (at offset ") || strings.Contains(message, ": second subquery of * of more than one column (at offset "))
 }
 
 // hasClause reports whether s is a create table or a create index with IF NOT EXISTS, or a drop
@@ -1694,7 +1796,11 @@ func (r *run) verify(ctx context.Context) {
 			if a.nothing {
 				before = o.state(r.t)
 			}
-			want := o.run(r.t, a.src, oracleValues(a.args)...)
+			src, args, failure := r.flattened(o, a, a.src, oracleValues(a.args), "of their own")
+			if failure != "" {
+				r.violate(ctx, "the statement %v at commit %v: %v", a.id, k, failure)
+			}
+			want := o.run(r.t, src, args...)
 			changes, _ := o.changes(r.t)
 			if a.nothing {
 				if after := o.state(r.t); want.err == "" && after != before {
@@ -1711,7 +1817,7 @@ func (r *run) verify(ctx context.Context) {
 				// compared by its error alone.
 				want.columns, want.rows = "", nil
 			}
-			if got := a.answer.String(); differs(r.t, o, a, want) {
+			if got := a.answer.String(); differs(r.t, o, a, src, args, want) {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %v, and in SQLite %v", a.id, a.src, k, got, want)
 			}
 			if a.unchanged && want.err == "" && changes != 0 {
@@ -1723,7 +1829,12 @@ func (r *run) verify(ctx context.Context) {
 			r.countWhere(a, "of their own")
 		}
 		for _, a := range refused[k] {
-			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.answer.message != want {
+			// The values that the engine computed decide the order of the rule, as whether an update
+			// changes a row before the types of its SET, so each must be among SQLite's candidates first.
+			if _, _, failure := r.flattened(o, a, a.src, oracleValues(a.args), "refused of their own"); failure != "" {
+				r.violate(ctx, "the statement %v at commit %v: %v", a.id, k, failure)
+			}
+			if want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...); a.answer.message != want {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %q, and the rule for the type of a value %q", a.id, a.src, k, a.answer.message, want)
 			}
 		}
@@ -1734,7 +1845,16 @@ func (r *run) verify(ctx context.Context) {
 				if want := typeRule(r.t, o, note, oracleValues(log[k].params[i])); want != "" {
 					r.violate(ctx, "commit %v, %q, stores a value of another type than its column: %v", k+1, note, want)
 				}
-				ran := o.run(r.t, note, oracleValues(log[k].params[i])...)
+				var of *attempt
+				if m := idPattern.FindStringSubmatch(note); m != nil {
+					id, _ := strconv.ParseUint(m[1], 10, 64)
+					of = r.attempts[id]
+				}
+				src, args, failure := r.flattened(o, of, note, oracleValues(log[k].params[i]), "of the log")
+				if failure != "" {
+					r.violate(ctx, "commit %v: %v", k+1, failure)
+				}
+				ran := o.run(r.t, src, args...)
 				if ran.err != "" {
 					r.violate(ctx, "commit %v, %q, fails in SQLite: %v", k+1, note, ran.err)
 				}
@@ -1849,7 +1969,14 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		o := newOracle(r.t)
 		for _, c := range log[:at] {
 			for i, note := range c.notes {
-				o.run(r.t, note, oracleValues(c.params[i])...)
+				// [run.verify] checks the values of the subqueries of the log on the same states.
+				var of *attempt
+				if m := idPattern.FindStringSubmatch(note); m != nil {
+					id, _ := strconv.ParseUint(m[1], 10, 64)
+					of = r.attempts[id]
+				}
+				src, args, _ := r.flattened(o, of, note, oracleValues(c.params[i]), "")
+				o.run(r.t, src, args...)
 			}
 		}
 		if tx.readOnly {
@@ -1859,8 +1986,12 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		for _, a := range tx.stmts {
 			if a.typeRefused {
 				// A read-only transaction refuses an insert before it looks at its value, and runs a
-				// select.
-				want := typeRule(r.t, o, a.src, oracleValues(a.args))
+				// select. The values that the engine computed must be among SQLite's candidates, as for
+				// a statement of its own that was refused.
+				if _, _, failure := r.flattened(o, a, a.src, oracleValues(a.args), "refused in a transaction"); failure != "" {
+					r.violate(ctx, "the statement %v of the transaction %v (%v), which began at commit %v: %v", a.id, tx.id, kind, at, failure)
+				}
+				want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...)
 				if tx.readOnly {
 					want = readOnlyRule(r.t, o, a.src, oracleValues(a.args))
 				}
@@ -1872,7 +2003,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if a.position == "" || (a.state != succeeded && a.state != sqliteFailed) {
 				continue
 			}
-			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.state == succeeded && want != "" {
+			if want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...); a.state == succeeded && want != "" {
 				// The check of the log does not see an insert of a transaction that did not commit.
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v) succeeded, and stores a value of another type than its column: %v", a.id, a.src, tx.id, kind, want)
 			}
@@ -1880,7 +2011,11 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if a.nothing {
 				stateBefore = o.state(r.t)
 			}
-			want := o.run(r.t, a.src, oracleValues(a.args)...)
+			src, args, failure := r.flattened(o, a, a.src, oracleValues(a.args), "in a transaction")
+			if failure != "" {
+				r.violate(ctx, "the statement %v of the transaction %v (%v), which began at commit %v: %v", a.id, tx.id, kind, at, failure)
+			}
+			want := o.run(r.t, src, args...)
 			changes, _ := o.changes(r.t)
 			if a.nothing {
 				if after := o.state(r.t); want.err == "" && after != stateBefore {
@@ -1894,7 +2029,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if !a.query {
 				want.columns, want.rows = "", nil
 			}
-			if got := a.answer.String(); differs(r.t, o, a, want) {
+			if got := a.answer.String(); differs(r.t, o, a, src, args, want) {
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v, gives %v, and in SQLite %v", a.id, a.src, tx.id, kind, at, got, want)
 			}
 			if a.query && a.state == succeeded && hasReturning(a.src) {
@@ -1941,6 +2076,55 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		}
 	}
 	return nothing
+}
+
+// computed are the values that the engine computed for the subqueries of the attempt a, as its hook
+// recorded them, or nil.
+func (r *run) computed(a *attempt) []*s4qlpb.Value {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return a.subqueries
+}
+
+// flattened gives the text and the arguments that SQLite runs on the database of o in place of the
+// text src, with the arguments args as SQLite binds them, of the statement of the attempt a, or of a
+// note of the log of it, and "" or a violation. Where the engine computed the scalar subqueries of
+// the statement, as [attempt.subqueries] holds them, each value must be one that a legal order puts
+// first on the database of o, as [subqueryCall.check] says, and SQLite runs the text with each
+// subquery replaced by a parameter bound to that value, as [subqueryCall.flatten] gives it, so that
+// SQLite takes the row that the engine took where the ORDER BY of a subquery leaves several. A
+// statement whose subqueries the engine did not compute, and one of no attempt, runs as it is. What
+// the values reach is counted as events after where, and not for an empty where, as for the log that
+// a transaction began from, whose values [run.verify] counts.
+func (r *run) flattened(o *oracle, a *attempt, src string, args []any, where string) (string, []any, string) {
+	if a == nil {
+		return src, args, ""
+	}
+	r.mu.Lock()
+	computed := a.subqueries
+	r.mu.Unlock()
+	if computed == nil {
+		return src, args, ""
+	}
+	s, err := stmt.Check(src)
+	if err != nil || s == nil || !subqueried(s) || len(args) != s.Parameters() {
+		return src, args, fmt.Sprintf("the engine computed %v subqueries of %q, with %v arguments, whose subqueries SQLite does not run", len(computed), src, len(args))
+	}
+	sc := &subqueryCall{src: src, s: s, subs: subqueriesIn(s), args: args}
+	for _, q := range sc.subs {
+		candidates, first := subqueryCandidates(r.t, o, src, q, args)
+		sc.candidates, sc.first = append(sc.candidates, candidates), append(sc.first, first)
+	}
+	count := func(string) {}
+	if where != "" {
+		count = func(kind string) { r.event("subqueries " + where + ": " + kind) }
+		r.event("statements with subqueries " + where + " whose values are checked against SQLite's")
+	}
+	if failure := sc.check(r.t, fmt.Sprint("the statement ", a.id), computed, count); failure != "" {
+		return src, args, failure
+	}
+	flat, bound := sc.flatten(computed)
+	return flat, bound, ""
 }
 
 // way in which the engine of the attempt a read its rows: see [run.ways].
@@ -2399,6 +2583,11 @@ func tallyOf(s simulation) map[string]int {
 				counts["statements with RETURNING of their own through Query whose outcome is unknown"]++
 			}
 		}
+		if s != nil && subqueried(s) {
+			for _, what := range subqueryKinds(a, s, kind) {
+				counts[what]++
+			}
+		}
 		if hasValueFirst(s) {
 			counts["statements with a value on the left"]++
 			switch {
@@ -2497,14 +2686,14 @@ type simCell struct {
 }
 
 // differs reports whether the answer of the statement a of the simulation differs from want,
-// SQLite's answer on the database of o: for a query of a select with ORDER BY or LIMIT that both
-// answer with rows, as [ordered.compare] says, and otherwise by their texts, as [answer.String] gives
-// them.
-func differs(t testing.TB, o *oracle, a *attempt, want answer) bool {
+// SQLite's answer on the database of o to the text src of the statement with the arguments args, as
+// [run.flattened] gives them: for a query of a select with ORDER BY or LIMIT that both answer with
+// rows, as [ordered.compare] says, and otherwise by their texts, as [answer.String] gives them.
+func differs(t testing.TB, o *oracle, a *attempt, src string, args []any, want answer) bool {
 	t.Helper()
-	if s, _ := stmt.Check(a.src); a.query && a.answer.err == "" && want.err == "" {
+	if s, _ := stmt.Check(src); a.query && a.answer.err == "" && want.err == "" {
 		if sel, ok := s.(*stmt.Select); ok && (sel.OrderBy != nil || sel.Limited()) {
-			return orderedOf(sel, oracleValues(a.args)).compare(t, o, a.answer, want) != ""
+			return orderedOf(sel, args).compare(t, o, a.answer, want) != ""
 		}
 	}
 	return a.answer.String() != want.String()
@@ -2530,10 +2719,10 @@ type simEnvironment struct {
 // environment adds to what the environment reaches, and takes nothing from another cell.
 var simEnvironments = []simEnvironment{
 	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 34}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 6}}, 0.07},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 6}, {stmttest.Subquery, 8}}, 0.07},
 	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
 	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 16}}, 0.06},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 16}, {stmttest.Subquery, 20}}, 0.06},
 }
 
 // TestSimulation runs each environment of [simEnvironments], the default, the idle, and the hammer
@@ -2877,6 +3066,40 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// oldValues is, in a transaction more often than of its own: 143 of 200 seeds find the bug, 125
 		// of them by its own violation.
 		{"dropLast", hammerWorkload, "hammer", stmttest.Returning, []string{", and in SQLite", "gives the rows of RETURNING"}},
+		// The bugs of the scalar subqueries of slice 15, of 200 seeds on 2026-11-24, before the aims of
+		// the review of their checks that day, which changed the profile and did not count them again;
+		// every bug was still found by two seeds of its own violation after them. A value that is not among SQLite's candidates is found by [run.flattened], whose
+		// violation says that the statement "gives the subquery" a value, and SQLite one of others. The
+		// hammer environment has no crashes, so the first 100 of the seeds are those of the sanitizer's
+		// setting; on the profile before its last aims they found each bug 14 to 87 times.
+		//
+		// The value of the last row of several: 184 seeds, all by their own violation.
+		{"lastRow", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
+		// The first row whose value is not NULL, which needs NULL first under an ORDER BY that decides
+		// it: 104 seeds, all by their own violation.
+		{"firstNotNull", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
+		// An update or a delete that sees its own changes, found by the count of its changes in SQLite's
+		// run of the log or of its transaction: 138 seeds, 77 of them by their own violation.
+		{"ownChanges", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("rows in SQLite, and its caller was told")},
+		// A value kept from the last run of a statement of the same plan, which the profile's texts run
+		// again: 106 seeds, all by their own violation.
+		{"keepValue", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
+		// No row taken for a value that every row matches, found by the rows of a select: 192 seeds, 186
+		// of them by their own violation.
+		{"noRowMatches", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds(", and in SQLite")},
+		// A subquery of a write in a transaction that reads the newest committed state: 106 seeds, 60 of
+		// them by a value that is not a candidate on the state of the transaction. The others find that
+		// the committed state lacks a table that the transaction created, which the storage refuses.
+		{"outsideTx", hammerWorkload, "hammer", stmttest.Subquery, append(subqueryFinds("gives the subquery"), "the storage core refused a call that the engine had checked")},
+		// The values of two subqueries swapped: 150 seeds, 147 of them by their own violation. The others
+		// find that a value of another type than its column, which the swap gave a condition after the
+		// check of the types, reaches the storage, which refuses it.
+		{"swapSubqueries", hammerWorkload, "hammer", stmttest.Subquery, append(subqueryFinds("gives the subquery"), "the storage core refused a call that the engine had checked")},
+		// The first row of a subquery with LIMIT 0: 138 seeds, all by their own violation.
+		{"limitZeroRow", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
+		// The first row of the access of the conditions alone, and not of the ORDER BY: 174 seeds, all by
+		// their own violation.
+		{"orderIgnored", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {

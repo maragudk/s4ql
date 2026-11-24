@@ -59,7 +59,8 @@ func TestSequence_where(t *testing.T) {
 		}
 		counts := map[string]int{}
 		for range 4000 {
-			cs := q.where(table)
+			// The WHERE without the subqueries of slice 15, which [TestSequence_subqueries] reads.
+			cs := q.selectWhere(table)
 			if cs == nil {
 				counts["no WHERE"]++
 				continue
@@ -401,7 +402,7 @@ func TestSequence_createIndex(t *testing.T) {
 			q, err := newSequence(13, p)
 			is.NotError(t, err)
 			table := stmt.Name{Raw: "t", Value: "t"}
-			is.True(t, q.indexConditions(table) == nil, "no WHERE of an index before a create index")
+			is.True(t, q.indexConditions(q.rIndexes, table) == nil, "no WHERE of an index before a create index")
 			q.live["t"] = true
 			for range 20 {
 				q.insert(table)
@@ -442,4 +443,112 @@ func typeOf(v stmt.Value) stmt.Type {
 func valueKey(v stmt.Value) string {
 	text, _ := Literal(rand.New(rand.NewPCG(0, 0)), v)
 	return text
+}
+
+func TestSequence_subqueries(t *testing.T) {
+	t.Run("should write the scalar subqueries of slice 15 that the profile of the subqueries aims at, each a statement that the pass reads", func(t *testing.T) {
+		counts := map[string]int{}
+		for k := range uint64(10) {
+			q, err := NewSequence(Subquery.Seed(k))
+			is.NotError(t, err)
+			seen := map[string]bool{}
+			for range 300 {
+				c := q.Next()
+				s, err := stmt.Check(c.Src)
+				if err != nil || s == nil {
+					continue
+				}
+				subs := subqueriesOf(s)
+				if subs == nil {
+					continue
+				}
+				if seen[c.Src] {
+					counts["a text again"]++
+				}
+				seen[c.Src] = true
+				var table stmt.Name
+				var where []stmt.Condition
+				switch s := s.(type) {
+				case *stmt.Select:
+					counts["select"]++
+					table, where = s.Table, s.Where
+					if s.Limit.Value == stmt.Value(stmt.Integer(0)) || s.Limit.Parameter > 0 && c.Args[s.Limit.Parameter-1] == any(int64(0)) {
+						counts["select with LIMIT 0"]++
+					}
+				case *stmt.Update:
+					counts["update"]++
+					table, where = s.Table, s.Where
+					if s.Returning.Present() {
+						counts["update with RETURNING"]++
+					}
+				case *stmt.Delete:
+					counts["delete"]++
+					table, where = s.Table, s.Where
+				}
+				counts[fmt.Sprint(len(subs), " subqueries")]++
+				for _, w := range where {
+					switch {
+					case w.Value.Subquery > 0 && w.ValueFirst:
+						counts["value first"]++
+					case w.Value.Subquery > 0:
+						counts["column first"]++
+					case w.Operator == stmt.OpIsNull || w.Value.Value == stmt.Value(stmt.Null{}):
+						counts["a condition that may be never true"]++
+					}
+					if w.Value.Subquery > 0 {
+						counts[fmt.Sprint("operator ", w.Operator)]++
+					}
+				}
+				for _, sub := range subs {
+					counts[map[bool]string{true: "of the table of the statement", false: "of another table"}[sub.Table.Fold() == table.Fold()]]++
+					switch {
+					case sub.Columns == nil:
+						counts["*"]++
+					case sub.OrderBy == nil:
+						counts["no ORDER BY"]++
+					default:
+						counts["ORDER BY"]++
+					}
+					switch {
+					case sub.Limit.Parameter > 0:
+						counts["LIMIT ?"]++
+					case sub.Limited() && sub.Limit.Value == stmt.Integer(0):
+						counts["LIMIT 0"]++
+					case sub.Limited():
+						counts["LIMIT"]++
+					default:
+						counts["no LIMIT"]++
+					}
+					if slices.ContainsFunc(sub.Where, func(c stmt.Condition) bool { return c.Value.Parameter > 0 }) {
+						counts["a parameter in the subquery"]++
+					}
+				}
+			}
+		}
+		t.Log(counts)
+		for _, kind := range []string{"select", "update", "delete", "update with RETURNING", "select with LIMIT 0", "1 subqueries", "2 subqueries", "value first", "column first",
+			"a condition that may be never true", "operator =", "operator !=", "operator <", "operator <=", "operator >", "operator >=", "of the table of the statement",
+			"of another table", "*", "no ORDER BY", "ORDER BY", "LIMIT ?", "LIMIT 0", "LIMIT", "no LIMIT", "a parameter in the subquery", "a text again"} {
+			is.True(t, counts[kind] >= 10, kind)
+		}
+	})
+
+	t.Run("should end the ORDER BY of every subquery with the primary key of its table after Decide", func(t *testing.T) {
+		for k := range uint64(5) {
+			q, err := NewSequence(Subquery.Seed(k))
+			is.NotError(t, err)
+			q.Decide()
+			for range 300 {
+				s, err := stmt.Check(q.Next().Src)
+				if err != nil || s == nil {
+					continue
+				}
+				for _, sub := range subqueriesOf(s) {
+					shape := q.shapeOf(sub.Table)
+					key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+					is.True(t, slices.ContainsFunc(sub.OrderBy, func(c stmt.OrderColumn) bool { return c.Name.Fold() == key.Name.Value }), "an ORDER BY with the key")
+				}
+			}
+		}
+	})
 }

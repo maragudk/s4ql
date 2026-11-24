@@ -113,6 +113,37 @@ type bugs struct {
 	// the order of the table, as the record of a row without rowid holds them, and not all of them in
 	// the order of the table.
 	starKeyFirst bool
+	// lastRow makes a scalar subquery of slice 15 give the value of the last row of its access, and not
+	// of the first.
+	lastRow bool
+	// firstNotNull makes a scalar subquery give the value of the first row of its access whose value is
+	// not NULL, and NULL only where every row has NULL.
+	firstNotNull bool
+	// ownChanges makes an update or a delete with a scalar subquery change the rows that it finds one at
+	// a time, and compute its subqueries again after each change, so that a subquery of the table that
+	// it changes sees the rows that it changed, where SQLite computes each once, before it changes any.
+	ownChanges bool
+	// keepValue makes a scalar subquery keep its value from the last run of a statement whose plan
+	// prints as its own, as a prepared statement could, also when the arguments or the rows changed
+	// since.
+	keepValue bool
+	// noRowMatches makes a scalar subquery that finds no row make its comparison true of every row whose
+	// column is not NULL, where the comparison of a column with NULL is never true.
+	noRowMatches bool
+	// outsideTx makes a scalar subquery of an update or a delete in a transaction read the newest state
+	// that is committed, and not the state of its transaction with the changes of the statements before
+	// it.
+	outsideTx bool
+	// swapSubqueries makes a statement with two scalar subqueries or more give the first the value of
+	// the second and the second that of the first.
+	swapSubqueries bool
+	// limitZeroRow makes a scalar subquery with LIMIT 0 give the value of its first row, where it gives
+	// no row and its value is NULL.
+	limitZeroRow bool
+	// orderIgnored makes a scalar subquery with an ORDER BY give the value of the first row of the access
+	// that its conditions alone choose, read forward or backward as the engine draws it, and not of the
+	// first row of its ORDER BY.
+	orderIgnored bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.
@@ -243,4 +274,34 @@ func zeroOf(t s4qlpb.Type) *s4qlpb.Value {
 		return s4qlpb.Value_builder{Blob: []byte{}}.Build()
 	}
 	return s4qlpb.Value_builder{Integer: new(int64(0))}.Build()
+}
+
+// changedOneByOne calls change with the primary key of each row that the filter f gives, whose key is
+// the column at the position key, one row at a time, and computes the subqueries of f again after
+// each change, as [filter.again] does, so that the next row is the first that f gives then of those
+// that it did not change: the planted bug ownChanges, in place of [changeRows].
+func changedOneByOne(ctx context.Context, key int, f *filter, change func(key []*s4qlpb.Value) error) (int64, error) {
+	var done []*s4qlpb.Value
+	for {
+		var next *s4qlpb.Value
+		for row, err := range f.rows(ctx) {
+			if err != nil {
+				return int64(len(done)), err
+			}
+			if !slices.ContainsFunc(done, func(v *s4qlpb.Value) bool { n, _ := compare(v, row[key]); return n == 0 }) {
+				next = row[key]
+				break
+			}
+		}
+		if next == nil {
+			return int64(len(done)), nil
+		}
+		if err := change([]*s4qlpb.Value{next}); err != nil {
+			return int64(len(done)), err
+		}
+		done = append(done, next)
+		if err := f.again(ctx); err != nil {
+			return int64(len(done)), err
+		}
+	}
 }
