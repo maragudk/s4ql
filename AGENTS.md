@@ -20,6 +20,13 @@ Do not use human-team effort or duration ("years of work", comparisons with how 
 - **Why:** Markus said on 2026-11-10, after being told that writing our own SQL engine would be "years of work": "You are an AI. What you can do now wasn't possible a year ago, and progress is accelerating. I'm counting on 'years of work' not being true because of exponential AI progress. I want us to be ambitious for this project. My main concerns are trust in correctness, so that's what we're aiming for."
 - **How to apply:** argue from correctness, verifiability, and risk, not from how much code or calendar time a human team would need. Relay findings about other projects' effort as facts about those projects, not as estimates for this one. Scope cuts are still fine when they improve trust or remove something that does not need to exist. Do not give unmeasured time estimates.
 
+### glue and goqite are a milestone, not a specification
+
+s4ql's own design decisions take precedence over what glue and goqite happen to need.
+
+- **Why:** Markus said on 2026-11-24, when asked whether `without rowid` stays required although none of glue's tables has it: "take care not to overfit to accomodate goqite and glue. They just serve as a milestone. If anything in their design conflicts with ours, let me know, but assume that our decisions here in s4ql take precedence."
+- **How to apply:** decide what s4ql supports from its own rules: the spec, exact types, SQLite's answer or an error, and no compatibility quirks. Use glue and goqite to choose what comes next, not to decide how it works. When something in their design conflicts with s4ql's, tell Markus, and assume that they change (he owns both), not s4ql.
+
 ### Nothing is in use yet, so formats break freely
 
 Do not build an upgrade or a migration for the commit format, the manifest, or the cache while s4ql is used only in its own tests.
@@ -39,7 +46,7 @@ Do not spend effort scrubbing Markus's email address from documents, transcripts
 `AGENTS.md` holds only guidance on how agents should work in this repository. Do not record decisions in it.
 
 - **Why:** Markus said on 2026-11-10: "Stop putting decisions into AGENTS.md, we need a better spot for it. We want to keep that file lean, not a dumping ground."
-- **How to apply:** agreed rules go in `docs/spec.md`, with Markus's explicit agreement on the wording. Things that are agreed but not built, and open design questions, go in the files of `docs/todo/`, which `docs/todo.md` indexes, and are deleted from them when built. A builder records the decisions and notes of its step in the file of its slice, `docs/todo/slice-NN.md`, under a heading for its step, and an open item in the file of its area, so that two branches on different slices never write to the same file. How things were done is read from the code, its tests, and its comments. Research goes in `docs/research/`.
+- **How to apply:** agreed rules go in `docs/spec.md`, with Markus's explicit agreement on the wording. Things that are agreed but not built, and open design questions, go in the files of `docs/todo/`, which `docs/todo.md` indexes, and are deleted from them when built. A builder records the decisions and notes of its step in the file of its piece of work, under a heading for its step, and an open item in the file of its area, so that two branches on different pieces of work never write to the same file: for slices 1 to 15 that is the file of the slice, `docs/todo/slice-NN.md`, and from then on a file named after the feature of the piece of work, such as `docs/todo/expressions.md`. How things were done is read from the code, its tests, and its comments. Research goes in `docs/research/`.
 
 ### Keep the README lean too
 
@@ -53,7 +60,7 @@ Do not spend effort scrubbing Markus's email address from documents, transcripts
 Commit agreed work and merge pull requests when you judge them ready, without asking Markus first. Involve him in high-level design, architecture, and goals.
 
 - **Why:** Markus said on 2026-11-10: "If it's what we agreed you can just commit. Less friction, I don't want to be the bottleneck in this project", and later the same day: "merge whenever you like. We can always revert. But I'd like to stay involved in high-level design, architecture, goals, etc." On 2026-11-12, when asked to approve the wording of a comment in the schema: "Remember, you own the code. I want to be part of high-level design and architecture decisions (such as specs, data formats), you handle the details." On 2026-11-18, when asked which literals and errors the first slice of SQL includes: "I think you should decide on these low-level decisions. Use your best judgment."
-- **How to apply:** check the work yourself against what was agreed, and commit and merge it if it matches and CI passes. Decide implementation details yourself and tell him what you chose. A detail inside a file he reviewed, such as a comment in the schema, is still a detail: fix it and do not ask. What a single statement, literal, or error does within an agreed slice is a detail too: decide it by SQLite's behaviour and the agreed rules, record it in the file of its slice in `docs/todo/` or the roadmap, and tell him. Bring him questions of design, architecture, scope, and goals, and anything that deviates from what was agreed. Wording in `docs/spec.md` still needs his explicit agreement before it is written.
+- **How to apply:** check the work yourself against what was agreed, and commit and merge it if it matches and CI passes. Decide implementation details yourself and tell him what you chose. A detail inside a file he reviewed, such as a comment in the schema, is still a detail: fix it and do not ask. What a single statement, literal, or error does within an agreed piece of work is a detail too: decide it by SQLite's behaviour and the agreed rules, record it in the file of its piece of work in `docs/todo/` or the roadmap, and tell him. Bring him questions of design, architecture, scope, and goals, and anything that deviates from what was agreed. Wording in `docs/spec.md` still needs his explicit agreement before it is written.
 
 ### On the public site, only the "Status" and "Roadmap" sections are kept up to date
 
@@ -61,6 +68,13 @@ Do not update the public site in `site/` (served at www.s4ql.com) as a side effe
 
 - **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while", and then: "feel free to update the Status section on the site, but only that", "and the roadmap."
 - **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo/`. Keep the site's status as short as the README's, and by feature like it, not slice by slice. When `docs/roadmap.md` changes or a slice of it is built, update the section with the id `roadmap` in `site/index.html` to match. A slice that is built stays in both, marked as built, and is never removed or folded into another; Markus on 2026-11-19: "don't delete the old slices entirely from the roadmap? It's nice to see progress". Leave everything else in `site/` alone unless Markus asks. Neither the lead nor the builder makes these updates: the lead spawns a small sub-agent for them after the work is merged, so that the lead's context stays clean and the builder concentrates on the code. Markus: "I want to keep your context clean. Delegate", and: "A small subagent after the work is done sounds better to me."
+
+### On the site, design before words
+
+Make usage self-evident through the design of a page, and keep its words to a minimum.
+
+- **Why:** Markus said on 2026-11-24, when he had the note above the simulator's SQL box removed and the page's introduction cut to one line: "It's better to use the design to make usage self-evident where possible. Minimize words."
+- **How to apply:** before adding an explanation, a hint, or a label to a page in `site/`, see whether the layout, a default value, or the state of a control can say it instead. Add text only where the design cannot carry it, and keep it short. This holds for the pages' interface, not for `docs/`.
 
 ### A new page on the site gets a preview image of its own
 

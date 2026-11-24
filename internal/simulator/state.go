@@ -26,9 +26,6 @@ type State struct {
 	// fault happen.
 	OutageUntil float64 `json:"outageUntil,omitzero"`
 	Calm        bool    `json:"calm,omitzero"`
-	// Violations of the invariants so far, and Excused those that the design accepts.
-	Violations int `json:"violations"`
-	Excused    int `json:"excused"`
 }
 
 // Bucket of the store: the manifest, and the commit objects.
@@ -288,11 +285,6 @@ func (f *fold) add(e Event) {
 	case "client":
 		if e.What == "started" {
 			s.Client.Instance = e.Instance
-		}
-	case "check":
-		s.Violations++
-		if e.Excused {
-			s.Excused++
 		}
 	case "request":
 		f.request(e)

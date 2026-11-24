@@ -1,0 +1,16 @@
+# Expressions and functions
+
+What is agreed and not built about expressions and functions, and what is open. The short statement is in [the roadmap](../roadmap.md#expressions-and-functions). Today the engine has no evaluator: a value in a plan is a literal or a `?` (`Expr` in `internal/engine/plan.go`). The options behind the decisions are in [the feature map](../research/feature-map.md), core gap 1.
+
+- **Agreed with Markus on 2026-11-24, not built: an evaluator of s4ql's own.** The engine evaluates expressions itself, in Go. The cache's SQLite does not evaluate them, so the spec's rule that "SQLite does not run the application's SQL" holds for expressions too. The evaluator is checked against SQLite with generated expressions. It may support only a subset of what SQLite supports. Markus: "a, but we might want only a subset of what SQLite supports. In particular, we don't want to copy all quirks that may still be there in the name of backwards compatibility." The option that he did not take was to evaluate expressions in the cache's SQLite, in statements that s4ql writes.
+- **Agreed with Markus on 2026-11-24, not built: SQLite's answer or an error.** For every expression, s4ql gives the answer that SQLite gives, or an error, and never a different answer. Where SQLite's answer is a quirk, s4ql refuses the expression. So an application written for s4ql also runs unchanged on SQLite. Refused:
+  - arithmetic on text, such as `'1' + 1` and `'abc' + 1`;
+  - an integer overflow, where SQLite silently gives a float;
+  - a division by zero, where SQLite gives null;
+  - a comparison of values of different types by SQLite's order of types.
+
+  An integer with a real, such as `1 + 0.5`, works as in SQLite.
+- **Agreed with Markus on 2026-11-24, not built: time and randomness come from the host.** `'now'` is the host's clock, read once for each statement, so every `'now'` in one statement has the same value. This also holds inside a transaction, where each statement reads the clock again. Random bytes come from the host's source of randomness. The simulation drives both, as the spec has it for time and randomness. A commit records rows, so replay never calls such a function again. The check against SQLite gives both sides the same instant. For random bytes it compares their type and their length, and the simulation checks that the same seed gives the same bytes.
+- **Decided by the lead on 2026-11-24: which operators and functions come first is decided by what is needed next,** and the others follow by need. The arithmetic `received = received + 1` in the `set` of goqite's receive is left out of [slice 15](../roadmap.md#slice-15-a-scalar-subquery-in-where), and comes after it.
+- **Open: how the annotation records the time and the random bytes of a statement.** The spec says that a commit object stores each statement "with their parameters and their non-deterministic inputs, such as the time and random seeds". `Statement` in `proto/s4ql/v1/commit.proto` has no field for them yet; its comment says that they become fields when they are first needed.
+- **Open: which error a refused expression gets, and when.** An overflow or a division by zero can depend on the rows and the arguments, so it may be found only when the value is computed, and not when the statement is checked.

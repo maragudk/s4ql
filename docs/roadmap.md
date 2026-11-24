@@ -1,16 +1,29 @@
 # SQL roadmap
 
-A working document on which SQL the engine supports and what comes next. It changes as slices are agreed and built. The rules that do not change are in [spec.md](spec.md).
+A working document on which SQL s4ql supports, what is decided and not built, and what is undecided or rejected, by area. The rules that do not change are in [spec.md](spec.md). The details of what is agreed and not built are in the files of [the todo](todo.md).
+
+A piece of work is named by its feature, such as "upserts", and no longer by a number. The slices 1 to 15 at the end are the record of what was built until 2026-11-24, in order.
+
+## At a glance
+
+| Area | Supported now | Decided next |
+| --- | --- | --- |
+| [Expressions and functions](#expressions-and-functions) | Literals, `null`, and `?`. No operators or functions. | An evaluator of s4ql's own, in Go. SQLite's answer or an error. Time and randomness from the host. |
+| [Reading](#reading) | `select` from one table, with `where`, `order by`, `limit`, and a scalar subquery in the `where`. | Operators of s4ql's own for grouping and joining. |
+| [Writing](#writing) | `insert` of one row, `update`, `delete`, and `returning`. | `on conflict (key) do nothing` and `do update`. Several rows per `insert`. |
+| [Schema](#schema) | `strict, without rowid` tables with one key column, defaults, indexes, and `if not exists`. | `strict, without rowid` with a primary key stays required. |
+| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and one statement per text. | Several statements in one `Exec`. |
+| [Limits of the core](#limits-of-the-core) | A commit that is too large fails. The rows of a `returning` are held in memory without a bound. | A limit on the memory of an operator, with a clear error. Spooling later. |
 
 ## Principles
 
 - **Everything is opt-in.** Nothing is supported until it is listed here, all the way down to `select 1`. Anything else is rejected as not supported.
 - **Reject, never reinterpret.** Whatever the engine accepts behaves exactly as in SQLite. Legacy behaviour is left behind by refusing it, not by changing what it means.
-- **Small slices.** Support grows one small slice at a time. Each slice goes through every layer and is checked against the oracle before the next one starts.
+- **Small pieces.** Support grows one small piece of work at a time. Each piece goes through every layer and is checked against the oracle before the next one starts. The slices were checked by table tests against SQLite, by generated sequences in the engine's differential tests and in the driver's against mattn/go-sqlite3, by the simulation with planted bugs, by independent reviews, and by mutation testing.
 
 ## Restrictions
 
-These hold for every slice unless this document says otherwise.
+These hold for everything that s4ql supports, unless this document says otherwise.
 
 - All tables are `STRICT`.
 - All tables are `WITHOUT ROWID`. Every table therefore has a primary key, and no integer keys are generated.
@@ -25,15 +38,136 @@ These hold for every slice unless this document says otherwise.
 - UTF-8 only. SQL text, identifiers, and text values are always valid UTF-8. A statement whose text is not valid UTF-8 is rejected before it is parsed, and so is a parameter or an expression that would produce text that is not valid UTF-8. SQLite accepts such text.
 - No NUL byte in SQL text. A statement whose text has a NUL byte is rejected before it is parsed. SQLite reads such text up to the NUL byte and ignores the rest.
 
-Rejected for now, to be decided later: upserts, and join variants such as comma joins and `NATURAL JOIN`.
+Rejected for now, to be decided later: join variants such as comma joins and `NATURAL JOIN`. Upserts were here until 2026-11-24; what is decided for them is under [Writing](#writing).
 
 ## Milestones
 
-A milestone is a goal that several slices lead to. It helps to choose which slice comes next.
+A milestone is a goal that several pieces of work lead to. It helps to choose what comes next. It is not a specification: s4ql's own decisions take precedence over what a milestone needs, and a conflict with its design is reported to Markus. Markus on 2026-11-24: "take care not to overfit to accomodate goqite and glue. They just serve as a milestone."
 
-- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md). Slices 5 to 15 lead to it. After slice 15 comes the rest of what glue needs, which is not agreed as slices yet.
+- **The first application on s4ql: [glue](https://www.maragu.dev/glue).** `maragu.dev/glue` runs on s4ql in place of SQLite. Markus on 2026-11-19: "a nice second milestone: get maragu.dev/glue working on this storage instead of SQLite." The SQL that it needs and s4ql does not have yet is in [the research note on glue](research/glue-on-s4ql.md), and by area in [the feature map](research/feature-map.md). Slices 5 to 15 led towards it. Its known conflicts with s4ql's design:
+  - None of glue's six tables is `strict, without rowid`.
+  - The table `migrations` of maragu.dev/migrate has no primary key.
+  - goqite, the queue that glue uses, has a trigger.
+  - The session store that glue uses, scs, writes with `REPLACE INTO` and `$1` parameters.
+  - One test reads `sqlite_master`.
 
-## Slices
+## Expressions and functions
+
+**Supported now:**
+
+- Literals: a decimal integer that fits 64 bits, with at most one `-` in front; a real, such as `1.5`, `.5`, or `1e3`, read to the same float as SQLite reads it, bit for bit; a string in single quotes; a blob, such as `x'6162'`; and `null` (slices 1, 4, and 6).
+- A plain `?` in place of a value in `values`, `set`, `where`, and `limit` (slices 2, 7, 8, and 13).
+- Exact types: a value that is not null has the type of its column (slice 4).
+- No operator and no function. A `where` compares a column with a value; see [Reading](#reading).
+
+**Decided,** with the details in [todo/expressions.md](todo/expressions.md):
+
+- Expressions are evaluated by an evaluator of s4ql's own, in Go, which is checked against SQLite with generated expressions. The cache's SQLite does not evaluate them. Agreed by Markus on 2026-11-24.
+- For every expression, s4ql gives SQLite's answer or an error, never a different answer. An integer with a real, such as `1 + 0.5`, works as in SQLite. So an application written for s4ql also runs unchanged on SQLite. Agreed by Markus on 2026-11-24.
+- Time and randomness come from the host. `'now'` is the host's clock, one value for each statement (also inside a transaction, where each statement reads the clock again), and random bytes come from the host's source. Agreed by Markus on 2026-11-24.
+- Which operators and functions come first is decided by what is needed next, and the others follow by need. Decided by the lead on 2026-11-24.
+
+**Undecided:**
+
+- How the annotation of a statement records the time and the random bytes that it used. The spec asks for "the time and random seeds", and the commit format has no field for them yet.
+- Other literals, such as `+1`, `0x10`, `1_000`, and `true`.
+
+**Rejected,** where SQLite's answer is a quirk (agreed by Markus on 2026-11-24): arithmetic on text, such as `'1' + 1` and `'abc' + 1`; an integer overflow, where SQLite silently gives a float; a division by zero, where SQLite gives null; and a comparison of values of different types by SQLite's order of types.
+
+## Reading
+
+**Supported now:**
+
+- `select` of named columns, in any order and also more than once, or of `*`, from one table (slice 5).
+- `where` with comparisons of a column with a literal, a `?`, or a scalar subquery, with the value on either side, by `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, and `>=`; `is null` and `is not null`; all joined by `and` (slices 7, 12, and 15).
+- `order by` one or more columns, each `asc` or `desc`, and `limit` with a number or a `?` (slice 13).
+- The scalar subquery is a `select` of one column from one table, in the `where` of a `select`, an `update`, or a `delete` (slice 15). It is built in the statement pass, the engine, and the driver. Its generated checks are being built, and its mutation testing is to come.
+- A read uses the primary key or an index, chosen by fixed rules, and scans the whole table otherwise (slices 7, 9, and 13). Rows without `order by` come in an order that varies, as [the spec](spec.md) says.
+
+**Decided,** with the details in [todo/operators.md](todo/operators.md):
+
+- Grouping and joining get operators of s4ql's own, in Go, on top of the ordered scans and the lookups by key that the cache gives. Sorting stays an ordered scan of the cache. Agreed by Markus on 2026-11-24.
+- An operator that holds rows has a limit on its memory; see [Limits of the core](#limits-of-the-core).
+
+**Undecided:** which shapes come, and in which order. Among them are `count(*)` and the other aggregates, `group by`, the forms of `join`, `distinct`, `offset`, aliases, a `select` without `from`, `exists`, `in (select ...)`, `union`, and `or`, `not`, and parentheses in a `where`.
+
+**Rejected,** for now: comma joins and `natural join` (see [Restrictions](#restrictions)).
+
+## Writing
+
+**Supported now:**
+
+- `insert` of one row, with or without a list of columns. A column that the list leaves out gets its default, or null (slices 1, 5, 6, and 11).
+- `update ... set` with literals, `null`, and `?`, also of the primary key, and `delete`, each with or without a `where`. `RowsAffected` counts as SQLite counts (slice 8).
+- `returning` a list of columns or `*`, on `insert`, `update`, and `delete` (slice 14).
+- A statement that would give a key twice fails with SQLite's error and changes nothing (slices 1 and 8).
+
+**Decided,** with the details in [todo/writing.md](todo/writing.md):
+
+- Upserts. An `insert` without a clause fails on a conflict and changes nothing, as today, which is SQLite's `abort`. `insert ... on conflict (key) do nothing` and `insert ... on conflict (key) do update set ...` are built when they are next. Agreed by Markus on 2026-11-24.
+- Several rows per `insert`, and `insert ... select`, are details, built when they are next. Decided by the lead on 2026-11-24.
+
+**Undecided:** `insert ... default values`, `update ... from`, and `set (a, b) = (...)`.
+
+**Rejected:** `replace into`, and the spellings `insert or abort`, `or fail`, `or rollback`, `or ignore`, and `or replace`. A `replace` deletes the old row and inserts a new one, so a column that the statement does not name falls back to its default. Agreed by Markus on 2026-11-24: "b sounds like the least surprising right choice here."
+
+## Schema
+
+**Supported now:**
+
+- `create table` of a `strict, without rowid` table, with one primary-key column at any position, and columns of the types `int`, `integer`, `real`, `text`, and `blob`, each `not null` or taking null, with or without a `default` that is a literal (slices 1, 4, 5, 6, and 11).
+- `drop table`; `create index` on one or more columns, each `asc` or `desc`, and `drop index`. An index is not unique (slices 1 and 9).
+- `if not exists` and `if exists` on all four (slice 10).
+
+**Decided:** `strict, without rowid` with a primary key stays required. Markus on 2026-11-24: "a, definitely, for the reasons we agreed on earlier when discussing that design."
+
+**Undecided:**
+
+- Triggers are deferred. Markus on 2026-11-24: "Let's defer triggers, not sure yet". When they come, replay must not run them ([todo/storage-formats.md](todo/storage-formats.md)).
+- Reading the schema, `unique`, `check`, foreign keys, and `alter table` stay undecided until one of them is next. Decided by the lead on 2026-11-24.
+- Also open: a key of several columns, views, a partial index or one on an expression, and `create table ... as select`.
+
+**Rejected:** a table that is not `strict` or that has a rowid, and so also a table without a primary key and `autoincrement` (see [Restrictions](#restrictions)).
+
+## The driver
+
+**Supported now:**
+
+- `s4ql.Open`, which returns a `*sql.DB`, and `s4ql.Register`, for `sql.Open` by name ([todo/driver.md](todo/driver.md)).
+- A plain `?`, directly and through prepared statements (slice 2).
+- Arguments: Go integers, a `float64` or `float32`, a `string`, a `[]byte` that is not nil, and nil, also through a `driver.Valuer` (slices 2, 4, and 6).
+- Transactions with `db.BeginTx`: a write transaction, which waits for the single writer, and a read-only one, at `sql.LevelDefault` or `sql.LevelSerializable`. A statement outside a transaction is a transaction of its own (slice 3).
+- One statement for each text.
+
+**Decided,** with the details in [todo/driver.md](todo/driver.md):
+
+- Several statements in one `Exec` mean the same as running them one after another. Inside a transaction they are part of it. Outside one, each commits on its own, and a failure halfway leaves the earlier ones applied, as in SQLite and mattn's driver. Agreed by Markus on 2026-11-24. `Query` with several statements stays refused, as the lead decided the same day.
+- A statement while rows of the same transaction are open stays refused until an application needs it. Decided by the lead on 2026-11-24.
+- The other forms of a parameter, such as `$1` and `:name`, and Go types such as `time.Time` are details for when they are next. Decided by the lead on 2026-11-24.
+
+**Undecided:** the SQL texts `begin`, `commit`, `rollback`, `savepoint`, and `release`, and the other isolation levels.
+
+**Rejected:** a nil `[]byte`, because it does not say whether it means null or the empty blob (slice 4).
+
+## Limits of the core
+
+**Today:**
+
+- A transaction whose commit object is larger than the store takes fails at its commit with `s4ql.ErrTooLarge` (slice 3).
+- A text or a blob holds up to 1,000,000,000 bytes, SQLite's limit (slice 4).
+- A sort that no index gives runs in the cache's SQLite, which spills to a temporary file ([research/memory-bounds.md](research/memory-bounds.md)).
+- The rows of a `returning` are held in memory without a bound ([todo/operators.md](todo/operators.md)).
+- A stop of the instance does not stop a sort that runs ([todo/storage-core.md](todo/storage-core.md)), and the first phase of `db.Close()` has no bound ([todo/driver.md](todo/driver.md)).
+
+**Decided,** with the details in [todo/operators.md](todo/operators.md): an operator that holds rows gets a limit with a clear error first, so that a statement that would hold more than a set amount fails and changes nothing. Spooling to the cache comes later, one operator at a time, starting with the rows of a `returning`. A spool that fills the disk stops the whole instance ([research/memory-bounds.md](research/memory-bounds.md)). Agreed by Markus on 2026-11-24.
+
+**Undecided:** the size and the form of the limit.
+
+**Rejected:** nothing.
+
+## What was built, slice by slice
+
+Until 2026-11-24 the work was planned as numbered slices. Slices 1 to 15 below are the record of what was built, in order. A built slice stays here as it was built, and is never removed or folded into another.
 
 ### Slice 1: one integer column
 
@@ -540,7 +674,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 15: a scalar subquery in `where`
 
-Status: agreed by Markus on 2026-11-24, not built. It will be checked as the slices before it are: by tests of the statement pass, by the engine's differential tests against SQLite, by a new area of the generated workload, by the simulation with planted bugs, by the driver's generated test against mattn/go-sqlite3, and by mutation testing.
+Status: agreed by Markus on 2026-11-24, built on 2026-11-24 in the statement pass, the engine, and the driver. It is checked by their tests, by the engine's differential tests against SQLite, and by an independent review. It will be checked as the slices before it are, with the rest: by a new area of the generated workload, by the simulation with planted bugs, by the driver's generated test against mattn/go-sqlite3, and by mutation testing. Those are still to come.
 
 ```sql
 select v1 from t1 where v2 = (select v2 from t2 where v1 = ?);
@@ -558,7 +692,7 @@ Included:
 - The `?` parameters are numbered in the order of the text over the whole statement, the subquery's included. In goqite's receive, the `?` of `queue = ?` inside the subquery is the third argument.
 - A subquery that finds no row gives `null`, so the comparison matches no row. One that finds several rows gives the first, as in SQLite. Without an `order by` that says which row is first, it gives whichever row comes first, as SQLite documents.
 - The subquery runs once, before the outer statement changes anything, and inside the same transaction. In an `update` or a `delete`, it sees the rows as they were before the statement.
-- The errors of a statement with a subquery, their order, and how the rule of exact types applies to the value of a subquery are decided when the slice is built, by SQLite's behaviour and the rules of this document, and recorded in [the todo](todo.md).
+- The errors of a statement with a subquery, their order, and how the rule of exact types applies to the value of a subquery are decided, and recorded in [the todo of slice 15](todo/slice-15.md).
 - Everything of slices 1 to 14 with a subquery: arguments, prepared statements, transactions, `returning`, and a restart with an empty cache.
 - The reason: goqite, the queue that glue uses, picks the message that it receives with `id = (select id from goqite where ... order by priority desc, created limit 1)`. The same statement has `received = received + 1` in its `set`. That arithmetic is not in this slice. It comes after, as a design question on how s4ql evaluates expressions.
 
@@ -571,5 +705,7 @@ Rejected as not supported, where SQLite would accept it:
 - `in (select ...)` and `exists (select ...)`.
 - A subquery in `from`.
 - A subquery anywhere else: in the select list, in `set`, in `values`, in `order by`, in `limit`, and in `returning`.
+- A subquery whose column has another declared type than the column it is compared with (`int` and `integer` count as one type), also when it finds no row.
+- An argument of the subquery's `limit` that is not an integer from 0.
 
-Refused as well, as SQLite refuses them: a subquery with more than one result column, such as `v1 = (select v1, v2 from t2)`, and a subquery in a default. Which error s4ql gives for each is decided when the slice is built.
+Refused as well, as SQLite refuses them: a subquery with more than one result column, such as `v1 = (select v1, v2 from t2)`, and a subquery in a default. Which error s4ql gives for each is recorded in [the todo of slice 15](todo/slice-15.md).
