@@ -11,7 +11,9 @@
 // fake time by the real time, turbo by five times it, and the log and the commit objects grow; Pause
 // holds fake time; the stick figure on the frame of the log stood still while the page played with
 // sound off, and with sound on it stays still while paused, dances while the page plays, and stands
-// again after Pause; the client calls a from the start, and b gets no call; each action on an instance
+// again after Pause; when the browser suspends the audio context while sound is on, the figure stands,
+// and the page asks to resume it when its state changes, at the next sound, key, and click, and
+// Sound off and on again makes a new context; the client calls a from the start, and b gets no call; each action on an instance
 // has its effect in the state, and an action switched off again takes it away; the client keeps
 // calling a while a is crashed and after its restart, and its switch moves its calls to b and back; a
 // crash of the instance that serves lets the other take over; fake time goes
