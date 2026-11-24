@@ -874,7 +874,7 @@ A test checks that every name the pass gives in any test is in these tables.
 | `OR` | WHERE has OR. The offset is that of the first OR, after the conditions before it. |
 | `IS DISTINCT FROM` | A condition of WHERE is IS DISTINCT FROM or IS NOT DISTINCT FROM. The offset is that of DISTINCT. |
 | `IS with a value other than NULL` | A condition of WHERE is IS or IS NOT with a literal other than NULL, a parameter, a name, or a value after a sign, as in `v is 1` or `v is true`. The offset is that of the value. |
-| `WHERE deeper than SQLite's limit` | The conditions of WHERE make an expression deeper than 1,000, `SQLITE_MAX_EXPR_DEPTH`. SQLite gives `Expression tree is too large (maximum depth 1000)`. The offset is that of the AND that makes it too deep. |
+| `WHERE deeper than SQLite's limit` | The conditions of WHERE make an expression deeper than 1,000, `SQLITE_MAX_EXPR_DEPTH`. SQLite gives `Expression tree is too large (maximum depth 1000)`. The offset is that of the AND that makes it too deep, or of the closing parenthesis of a subquery whose select makes it too deep, or of the token after a comparison with a subquery that makes it too deep. |
 | `DROP VIEW` | The statement is DROP VIEW. |
 | `DROP TRIGGER` | The statement is DROP TRIGGER. |
 | `index beyond SQLite's limit` | CREATE INDEX has more than 2,000 columns, `SQLITE_MAX_COLUMN`. SQLite gives `too many columns in index` once it has found the table. The offset is that of the 2,001st column. |
@@ -886,6 +886,9 @@ A test checks that every name the pass gives in any test is in these tables.
 | `negative LIMIT` | The count of LIMIT has a `-` before it, whatever follows it, as in `-1`, which SQLite reads as no limit, `-0`, and `-?`. The offset is that of the `-`. |
 | `LIMIT of an expression` | The count of LIMIT is an expression other than a literal, a parameter, a value after a sign, TRUE or FALSE, or parentheses, such as `1 + 1`, `~1`, or a name. |
 | `OFFSET` | LIMIT has OFFSET, or a second number after a comma, `limit 10, 5`, whose first number is the offset. The offset of the error is that of the OFFSET or of the comma. |
+| `subquery in a subquery` | A condition of the WHERE of a subquery has a subquery as its value, on either side of its column. The offset is that of the parenthesis of the inner subquery. |
+| `subquery of more than one column` | The select of a subquery has a second result column. SQLite gives `row value misused` when it prepares the statement, once it has found the tables. The offset is that of the second column. |
+| `subquery after a sign` | The value of a comparison is a subquery after a `-`. The offset is that of the parenthesis of the subquery. A `+` before a subquery is `+ sign`, at the `+`. |
 
 ### Names of fields
 

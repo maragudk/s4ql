@@ -22,6 +22,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
+	"maragu.dev/s4ql/internal/sql/token"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
@@ -375,15 +376,15 @@ func canonical(s stmt.Statement) string {
 		if s.Columns != nil {
 			list = quoteNames(s.Columns)
 		}
-		return fmt.Sprintf("select %v from %v%v%v", list, quote(s.Table.Value), canonicalWhere(s.Where), canonicalOrder(s))
+		return fmt.Sprintf("select %v from %v%v%v", list, quote(s.Table.Value), canonicalWhere(s.Where, s.Subqueries), canonicalOrder(s))
 	case *stmt.Update:
 		var set []string
 		for _, a := range s.Set {
 			set = append(set, quote(a.Column.Value)+" = "+canonicalTerm(a.Value))
 		}
-		return fmt.Sprintf("update %v set %v%v%v", quote(s.Table.Value), strings.Join(set, ", "), canonicalWhere(s.Where), canonicalReturning(s.Returning))
+		return fmt.Sprintf("update %v set %v%v%v", quote(s.Table.Value), strings.Join(set, ", "), canonicalWhere(s.Where, s.Subqueries), canonicalReturning(s.Returning))
 	case *stmt.Delete:
-		return fmt.Sprintf("delete from %v%v%v", quote(s.Table.Value), canonicalWhere(s.Where), canonicalReturning(s.Returning))
+		return fmt.Sprintf("delete from %v%v%v", quote(s.Table.Value), canonicalWhere(s.Where, s.Subqueries), canonicalReturning(s.Returning))
 	case *stmt.DropTable:
 		if s.IfExists {
 			return "drop table if exists " + quote(s.Table.Value)
@@ -420,13 +421,17 @@ func canonicalTerm(v stmt.Term) string {
 	return literal(v.Value)
 }
 
-// canonicalWhere of the conditions where: " where " and the conditions joined by " and ", or "" for
-// no conditions.
-func canonicalWhere(where []stmt.Condition) string {
+// canonicalWhere of the conditions where, whose subqueries are subqueries: " where " and the
+// conditions joined by " and ", each with its column first and a subquery as its canonical select in
+// parentheses, or "" for no conditions.
+func canonicalWhere(where []stmt.Condition, subqueries []stmt.Select) string {
 	var conditions []string
 	for _, c := range where {
 		condition := quote(c.Column.Value) + " " + c.Operator.String()
-		if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
+		switch {
+		case c.Value.Subquery > 0:
+			condition += " (" + canonical(&subqueries[c.Value.Subquery-1]) + ")"
+		case c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull:
 			condition += " " + canonicalTerm(c.Value)
 		}
 		conditions = append(conditions, condition)
@@ -508,6 +513,9 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 		t.Fatalf("%q: the canonical text %q gives %q", src, canonical(s), canonical(c))
 	}
 
+	if checkSubqueries(t, open, src, s) {
+		return
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		checkCreateTable(t, open, src, s)
@@ -1789,7 +1797,7 @@ func checkChangeReturning(t testing.TB, open func(testing.TB) *db, src string, s
 		d := open(t)
 		d.must(a.create(a.names))
 		d.insert(a.name, rows)
-		_, chosen, err := d.run(`select "s4ql key" from `+quote(a.name)+canonicalWhere(where), args[assigned:])
+		_, chosen, err := d.run(`select "s4ql key" from `+quote(a.name)+canonicalWhere(where, nil), args[assigned:])
 		is.NotError(t, err)
 		var keys []string
 		for _, row := range chosen {
@@ -1821,6 +1829,222 @@ func checkChangeReturning(t testing.TB, open func(testing.TB) *db, src string, s
 	if where != nil {
 		count(&returningReads, n, len(rows))
 	}
+}
+
+// subqueryReads counts the subqueries that [checkSubqueries] ran, by whether they gave no row, and so
+// NULL, or a value, so that a test can see that the check compares both.
+var subqueryReads [2]atomic.Int64
+
+// checkSubqueries is [checkMeaning] of a select, an update, or a delete with a scalar subquery, and
+// reports whether s is one. Each table of the statement is an [anyTable] of the columns that the
+// statement names of it, by the fold of the name of the table, so that a subquery of the table of
+// the statement reads that table. It holds the values around those of the conditions on it, as
+// [anyTable.rows] gives them, and NULL and the least value of each type but the real in a column of
+// a condition with a subquery and in the column of a subquery. On it, src does what the text does in
+// which each subquery is a ? whose argument is the value that SQLite gives the select of the
+// subquery, as the span of the select holds it, run alone with its arguments, on the tables as they
+// are before src: of its column in its first row, or NULL without a row. So the parentheses, the
+// span of each select, and the numbers of the parameters are those of the text, and the value of a
+// subquery is that of its first row before the statement changes any. The canonical text does the
+// same. A select gives the same rows, by the same names, and an update or a delete the same count of
+// changes, the same rows of RETURNING, and the same rows left in its table. SQLite gives `no such
+// table` for src without any table, and for the table of a subquery that is not the table of the
+// statement without that table. A subquery of * of a table of more than one column gives `row value
+// misused`, and the check ends there.
+func checkSubqueries(t testing.TB, open func(testing.TB) *db, src string, s stmt.Statement) bool {
+	t.Helper()
+	var table stmt.Name
+	var named []stmt.Name
+	var where []stmt.Condition
+	var subqueries []stmt.Select
+	var terms []stmt.Term
+	switch s := s.(type) {
+	case *stmt.Select:
+		table, where, subqueries = s.Table, s.Where, s.Subqueries
+		named = slices.Clone(s.Columns)
+		for _, c := range s.OrderBy {
+			named = append(named, c.Name)
+		}
+		terms = append(terms, s.Limit)
+	case *stmt.Update:
+		table, where, subqueries = s.Table, s.Where, s.Subqueries
+		for _, a := range s.Set {
+			named = append(named, a.Column)
+			terms = append(terms, a.Value)
+		}
+		named = append(named, s.Returning.Columns...)
+	case *stmt.Delete:
+		table, where, subqueries = s.Table, s.Where, s.Subqueries
+		named = slices.Clone(s.Returning.Columns)
+	}
+	if subqueries == nil {
+		return false
+	}
+	terms = append(terms, conditionValues(where)...)
+
+	// The tables, the one of the statement first, by the folds of their names.
+	type tableOf struct {
+		name  stmt.Name
+		named []stmt.Name
+		where []stmt.Condition
+		// selected are the columns of the subqueries of the table.
+		selected []stmt.Name
+	}
+	var folds []string
+	tables := map[string]*tableOf{}
+	add := func(n stmt.Name, named []stmt.Name, where []stmt.Condition) *tableOf {
+		tb := tables[n.Fold()]
+		if tb == nil {
+			tb = &tableOf{name: n}
+			tables[n.Fold()] = tb
+			folds = append(folds, n.Fold())
+		}
+		tb.named = append(tb.named, named...)
+		for _, c := range where {
+			tb.named = append(tb.named, c.Column)
+		}
+		tb.where = append(tb.where, where...)
+		return tb
+	}
+	add(table, named, where)
+	for _, q := range subqueries {
+		named := slices.Clone(q.Columns)
+		for _, c := range q.OrderBy {
+			named = append(named, c.Name)
+		}
+		tb := add(q.Table, named, q.Where)
+		tb.selected = append(tb.selected, q.Columns...)
+		terms = append(terms, q.Limit)
+		terms = append(terms, conditionValues(q.Where)...)
+	}
+	checkLiterals(t, open, src, terms)
+
+	args := whereArgs(src, s.Parameters())
+	if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 {
+		args[sel.Limit.Parameter-1] = limitArg(src)
+	}
+	for _, q := range subqueries {
+		if q.Limit.Parameter > 0 {
+			args[q.Limit.Parameter-1] = limitArg(src)
+		}
+	}
+	type built struct {
+		a    anyTable
+		rows [][]stmt.Value
+	}
+	all := map[string]built{}
+	for _, f := range folds {
+		tb := tables[f]
+		a := newAnyTable(swapCase(tb.name.Value), tb.named)
+		var plain []stmt.Condition
+		for _, c := range tb.where {
+			if c.Value.Subquery == 0 {
+				plain = append(plain, c)
+			}
+		}
+		pools := a.pools(plain, args)
+		others := slices.Clone(tb.selected)
+		for _, c := range tb.where {
+			if c.Value.Subquery > 0 {
+				others = append(others, c.Column)
+			}
+		}
+		for _, n := range others {
+			if i := a.index[n.Fold()]; pools[i] == nil {
+				pools[i] = []stmt.Value{stmt.Null{}, stmt.Integer(math.MinInt64), stmt.Text(""), stmt.Blob{}}
+			}
+		}
+		all[f] = built{a: a, rows: whereRows(src+" "+f, pools, a.key, 3)}
+	}
+	// build a database of the tables, without the one of the fold without.
+	build := func(without string) *db {
+		d := open(t)
+		for _, f := range folds {
+			if f != without {
+				d.must(all[f].a.create(all[f].a.names))
+				d.insert(all[f].a.name, all[f].rows)
+			}
+		}
+		return d
+	}
+	for _, q := range subqueries {
+		if n := len(all[q.Table.Fold()].a.names); q.Columns == nil && n > 1 {
+			_, _, err := build("").run(src, args)
+			sqliteError(t, src, err, 1, "row value misused")
+			return true
+		}
+	}
+
+	// The parameters of the statement, by the offsets of their ?, to find those before a subquery.
+	var offsets []int
+	for _, tk := range token.Tokens(src) {
+		if tk.Kind == token.Variable {
+			offsets = append(offsets, tk.Offset)
+		}
+	}
+	is.Equal(t, len(args), len(offsets), src)
+	spans := make([]stmt.Span, len(subqueries))
+	for _, c := range where {
+		if k := c.Value.Subquery; k > 0 {
+			spans[k-1] = c.Value.Span
+		}
+	}
+	text, textArgs := src, slices.Clone(args)
+	for k := len(subqueries) - 1; k >= 0; k-- {
+		q, sp := subqueries[k], spans[k]
+		before := 0
+		for _, o := range offsets {
+			if o < sp.Start {
+				before++
+			}
+		}
+		own := q.Parameters()
+		_, rows, err := build("").run(src[q.Span.Start:q.Span.End], args[before:before+own])
+		if err != nil {
+			t.Fatalf("%q: the subquery %q: %v", src, src[q.Span.Start:q.Span.End], err)
+		}
+		var v stmt.Value = stmt.Null{}
+		if len(rows) > 0 {
+			v = rows[0][0]
+			subqueryReads[1].Add(1)
+		} else {
+			subqueryReads[0].Add(1)
+		}
+		text = text[:sp.Start] + "?" + text[sp.End:]
+		textArgs = slices.Concat(textArgs[:before], []stmt.Value{v}, textArgs[before+own:])
+	}
+
+	_, isSelect := s.(*stmt.Select)
+	outer := all[table.Fold()].a
+	run := func(sql string, args []stmt.Value) string {
+		d := build("")
+		is.Equal(t, d.parameters(sql), len(args), sql)
+		names, rows, err := d.run(sql, args)
+		if err != nil {
+			t.Fatalf("%q: %v", sql, err)
+		}
+		got := fmt.Sprint(names, "\n", sortedRows(rows))
+		if !isSelect {
+			_, left, err := d.run("select * from "+quote(outer.name), nil)
+			is.NotError(t, err)
+			got += fmt.Sprint("\n", show(d.value("select changes()")), "\n", showRows(left))
+		}
+		return got
+	}
+	is.Equal(t, s.Parameters(), len(args), src)
+	got := run(src, args)
+	is.Equal(t, run(text, textArgs), got, src)
+	is.Equal(t, run(canonical(s), args), got, src)
+
+	_, _, err := open(t).run(src, args)
+	sqliteError(t, src, err, 1, "no such table: "+table.Value)
+	for _, q := range subqueries {
+		if q.Table.Fold() != table.Fold() {
+			_, _, err := build(q.Table.Fold()).run(src, args)
+			sqliteError(t, src, err, 1, "no such table: "+q.Table.Value)
+		}
+	}
+	return true
 }
 
 // sortedRows of a result, as [showRows] shows them, in the order of their text.
@@ -2086,45 +2310,13 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		parameters := 0
 		end := b.Start
 		for _, v := range s.Values {
-			checkTerm(t, src, b, &end, &parameters, v)
+			names = append(names, checkTerm(t, src, b, &end, &parameters, v, nil)...)
 		}
 		names = append(names, checkReturning(t, src, b, end, s.Returning)...)
 		is.Equal(t, parameters, s.Parameters(), src)
 	case *stmt.Select:
-		names = append([]stmt.Name{s.Table}, s.Columns...)
-		if s.Columns != nil && len(s.Columns) == 0 {
-			t.Fatalf("%q: an empty list of columns", src)
-		}
 		parameters := 0
-		names = append(names, checkConditions(t, src, b, s.Table.Offset+len(s.Table.Raw), &parameters, s.Where)...)
-		// The columns of ORDER BY come after the conditions, each after the one before it, and the
-		// LIMIT after them, with a ? numbered after those of the conditions.
-		end := s.Table.Offset + len(s.Table.Raw)
-		for _, c := range s.Where {
-			end = max(end, c.Column.Offset+len(c.Column.Raw), c.Value.Span.End)
-		}
-		if s.OrderBy != nil && len(s.OrderBy) == 0 {
-			t.Fatalf("%q: an empty ORDER BY", src)
-		}
-		var columns []stmt.Name
-		for _, c := range s.OrderBy {
-			if c.Name.Offset < end {
-				t.Fatalf("%q: ORDER BY %q at %v", src, c.Name.Raw, c.Name.Offset)
-			}
-			end = c.Name.Offset + len(c.Name.Raw)
-			columns = append(columns, c.Name)
-		}
-		checkOnce(t, src, columns)
-		names = append(names, columns...)
-		if s.Limited() {
-			checkTerm(t, src, b, &end, &parameters, s.Limit)
-			if v, ok := s.Limit.Value.(stmt.Integer); s.Limit.Parameter == 0 && (!ok || v < 0) {
-				t.Fatalf("%q: LIMIT %v", src, s.Limit.Value)
-			}
-		} else if s.Limit != (stmt.Term{}) {
-			t.Fatalf("%q: no LIMIT, and the term %+v", src, s.Limit)
-		}
-		is.Equal(t, parameters, s.Parameters(), src)
+		names = checkSelectPositions(t, src, b, s, &parameters, &subqueryState{all: s.Subqueries})
 	case *stmt.Update:
 		names = []stmt.Name{s.Table}
 		if len(s.Set) == 0 {
@@ -2141,17 +2333,21 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 			}
 			end = a.Column.Offset + len(a.Column.Raw)
 			columns = append(columns, a.Column)
-			checkTerm(t, src, b, &end, &parameters, a.Value)
+			names = append(names, checkTerm(t, src, b, &end, &parameters, a.Value, nil)...)
 		}
 		checkOnce(t, src, columns)
 		names = append(names, columns...)
-		names = append(names, checkConditions(t, src, b, end, &parameters, s.Where)...)
+		subs := &subqueryState{all: s.Subqueries}
+		names = append(names, checkConditions(t, src, b, end, &parameters, s.Where, subs)...)
+		subs.done(t, src)
 		names = append(names, checkReturning(t, src, b, conditionsEnd(end, s.Where), s.Returning)...)
 		is.Equal(t, parameters, s.Parameters(), src)
 	case *stmt.Delete:
 		parameters := 0
 		end := s.Table.Offset + len(s.Table.Raw)
-		names = append([]stmt.Name{s.Table}, checkConditions(t, src, b, end, &parameters, s.Where)...)
+		subs := &subqueryState{all: s.Subqueries}
+		names = append([]stmt.Name{s.Table}, checkConditions(t, src, b, end, &parameters, s.Where, subs)...)
+		subs.done(t, src)
 		names = append(names, checkReturning(t, src, b, conditionsEnd(end, s.Where), s.Returning)...)
 		is.Equal(t, parameters, s.Parameters(), src)
 	case *stmt.DropTable:
@@ -2181,6 +2377,69 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		if n.Offset < b.Start || n.Offset+len(n.Raw) > b.End || src[n.Offset:n.Offset+len(n.Raw)] != n.Raw {
 			t.Fatalf("%q: name %q at %v", src, n.Raw, n.Offset)
 		}
+	}
+}
+
+// checkSelectPositions of the select s of src in the bounds b, after as many parameters, whose
+// subqueries are those of subs, or of a subquery, without subqueries of its own, for a nil subs: its
+// conditions come after its table, the columns of ORDER BY after them, each after the one before it,
+// and the LIMIT after them, with a ? numbered after those of the conditions and of their subqueries.
+// It moves parameters past those of s, and gives the names of s, those of its subqueries among them.
+func checkSelectPositions(t testing.TB, src string, b stmt.Span, s *stmt.Select, parameters *int, subs *subqueryState) []stmt.Name {
+	t.Helper()
+	start := *parameters
+	names := append([]stmt.Name{s.Table}, s.Columns...)
+	if s.Columns != nil && len(s.Columns) == 0 {
+		t.Fatalf("%q: an empty list of columns", src)
+	}
+	if subs == nil && (len(s.Columns) > 1 || s.Subqueries != nil) {
+		t.Fatalf("%q: a subquery of %v columns and %v subqueries", src, len(s.Columns), len(s.Subqueries))
+	}
+	names = append(names, checkConditions(t, src, b, s.Table.Offset+len(s.Table.Raw), parameters, s.Where, subs)...)
+	if subs != nil {
+		subs.done(t, src)
+	}
+	end := conditionsEnd(s.Table.Offset+len(s.Table.Raw), s.Where)
+	if s.OrderBy != nil && len(s.OrderBy) == 0 {
+		t.Fatalf("%q: an empty ORDER BY", src)
+	}
+	var columns []stmt.Name
+	for _, c := range s.OrderBy {
+		if c.Name.Offset < end {
+			t.Fatalf("%q: ORDER BY %q at %v", src, c.Name.Raw, c.Name.Offset)
+		}
+		end = c.Name.Offset + len(c.Name.Raw)
+		columns = append(columns, c.Name)
+	}
+	checkOnce(t, src, columns)
+	names = append(names, columns...)
+	if s.Limited() {
+		checkTerm(t, src, b, &end, parameters, s.Limit, nil)
+		if v, ok := s.Limit.Value.(stmt.Integer); s.Limit.Parameter == 0 && (!ok || v < 0) {
+			t.Fatalf("%q: LIMIT %v", src, s.Limit.Value)
+		}
+	} else if s.Limit != (stmt.Term{}) {
+		t.Fatalf("%q: no LIMIT, and the term %+v", src, s.Limit)
+	}
+	is.Equal(t, *parameters-start, s.Parameters(), src)
+	return names
+}
+
+// subqueryState of the subqueries of a statement in [checkPositions]: all of them, and how many of
+// them the terms before have named.
+type subqueryState struct {
+	all  []stmt.Select
+	used int
+}
+
+// done requires that the terms of the statement named every subquery of it.
+func (s *subqueryState) done(t testing.TB, src string) {
+	t.Helper()
+	if s.used != len(s.all) {
+		t.Fatalf("%q: %v subqueries, of which the conditions name %v", src, len(s.all), s.used)
+	}
+	if s.all != nil && len(s.all) == 0 {
+		t.Fatalf("%q: an empty list of subqueries", src)
 	}
 }
 
@@ -2249,14 +2508,30 @@ func checkOnce(t testing.TB, src string, names []stmt.Name) {
 }
 
 // checkTerm v of a statement of src in the bounds b, after the end of what comes before it and after
-// as many parameters: its span is after end and in b, and it is either a ? with the number after
-// parameters, or a literal. It moves end and parameters past v.
-func checkTerm(t testing.TB, src string, b stmt.Span, end, parameters *int, v stmt.Term) {
+// as many parameters, where the statement has the subqueries of subs, or none for a nil subs: its
+// span is after end and in b, and it is either a ? with the number after parameters, a literal, or
+// the next subquery of subs, whose select is inside its parentheses with only spaces and comments
+// around it, and whose positions [checkSelectPositions] checks. It moves end and parameters past v,
+// and gives the names of its subquery.
+func checkTerm(t testing.TB, src string, b stmt.Span, end, parameters *int, v stmt.Term, subs *subqueryState) []stmt.Name {
 	t.Helper()
 	if v.Span.Start < *end || v.Span.End > b.End || v.Span.Start >= v.Span.End {
 		t.Fatalf("%q: value %v at %v", src, v.Value, v.Span)
 	}
 	*end = v.Span.End
+	if v.Subquery > 0 {
+		if subs == nil || v.Value != nil || v.Parameter != 0 || v.Subquery != subs.used+1 || v.Subquery > len(subs.all) {
+			t.Fatalf("%q: the subquery %v with the value %v and the parameter %v at %v", src, v.Subquery, v.Value, v.Parameter, v.Span)
+		}
+		subs.used++
+		q := &subs.all[v.Subquery-1]
+		sp := q.Span
+		if src[v.Span.Start] != '(' || src[v.Span.End-1] != ')' || sp.Start <= v.Span.Start || sp.End >= v.Span.End ||
+			!onlySpace(src[v.Span.Start+1:sp.Start]) || !onlySpace(src[sp.End:v.Span.End-1]) || !strings.EqualFold(src[sp.Start:sp.Start+len("select")], "select") {
+			t.Fatalf("%q: the subquery at %v, its select at %v", src, v.Span, sp)
+		}
+		return checkSelectPositions(t, src, sp, q, parameters, nil)
+	}
 	// The value of a literal at its span is checked against SQLite in checkMeaning.
 	if v.Parameter > 0 {
 		*parameters++
@@ -2267,13 +2542,15 @@ func checkTerm(t testing.TB, src string, b stmt.Span, end, parameters *int, v st
 	if v.Parameter == 0 && v.Value == nil {
 		t.Fatalf("%q: no value and no parameter", src)
 	}
+	return nil
 }
 
 // checkConditions of a WHERE of a statement of src in the bounds b, after the end of what comes
-// before them and after as many parameters: each condition comes after the one before it, its column
-// first, or its value first if it says ValueFirst, which only a comparison says, and a ? has the
-// number after that of the ? before it. It gives the names of their columns.
-func checkConditions(t testing.TB, src string, b stmt.Span, end int, parameters *int, where []stmt.Condition) []stmt.Name {
+// before them and after as many parameters, with the subqueries of subs, or none for a nil subs: each
+// condition comes after the one before it, its column first, or its value first if it says
+// ValueFirst, which only a comparison says, and a ? has the number after that of the ? before it,
+// also in a subquery. It gives the names of their columns, and those of their subqueries.
+func checkConditions(t testing.TB, src string, b stmt.Span, end int, parameters *int, where []stmt.Condition, subs *subqueryState) []stmt.Name {
 	t.Helper()
 	if where != nil && len(where) == 0 {
 		t.Fatalf("%q: an empty list of conditions", src)
@@ -2299,12 +2576,12 @@ func checkConditions(t testing.TB, src string, b stmt.Span, end int, parameters 
 			t.Fatalf("%q: the operator %v", src, c.Operator)
 		}
 		if c.ValueFirst {
-			checkTerm(t, src, b, &end, parameters, c.Value)
+			names = append(names, checkTerm(t, src, b, &end, parameters, c.Value, subs)...)
 			column(c)
 			continue
 		}
 		column(c)
-		checkTerm(t, src, b, &end, parameters, c.Value)
+		names = append(names, checkTerm(t, src, b, &end, parameters, c.Value, subs)...)
 	}
 	return names
 }
