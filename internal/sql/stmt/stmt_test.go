@@ -1979,7 +1979,7 @@ func checkSubqueries(t testing.TB, open func(testing.TB) *db, src string, s stmt
 			// SQLite names the fault in a select, and the number of the columns in an update and a
 			// delete, but for != with the subquery on the left, where it names the fault too.
 			want := "row value misused"
-			if !isSelect && !(c.ValueFirst && c.Operator == stmt.OpNotEqual) {
+			if !isSelect && (!c.ValueFirst || c.Operator != stmt.OpNotEqual) {
 				want = fmt.Sprintf("sub-select returns %v columns - expected 1", n)
 			}
 			_, _, err := build("").run(src, args)
