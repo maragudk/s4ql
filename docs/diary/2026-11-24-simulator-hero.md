@@ -126,3 +126,52 @@ The sticky bar. Its rectangle moves with the scroll once it sticks, and a redraw
 ### Future work
 
 - The card page that makes `og.png` is still not in the repository; this is the second time it was written from the diary's recipe.
+
+## Step 3: Self-review
+
+**Author:** builder (simulator hero)
+
+### Prompt Context
+
+**Verbatim prompt:** (as in step 1: self-review with the code-review skill, then the automated checks)
+
+**Interpretation:** review `main...HEAD`, fix what matters, and run the checks again.
+
+**Inferred intent:** hand the lead a branch that does what the brief says.
+
+### What I did
+
+Ran the code-review skill at medium over `main...HEAD`. It found no bug and two nits:
+
+- The `h1`'s box is wider than its lines: `width: fit-content` with `max-width: 25ch` sets the box before `text-wrap: balance` shortens the lines, so at 1440 px the box ends at about 1248 px while the longer line ends at 1133, and the space right of "s4ql," was kept free of stars as well. True; fixed. Headings (`HEADINGS`: `h1, .about h2`) now keep the sky clear only by the rectangle of each of their lines (`Range.getClientRects`), and the other words (`WORDS`) by their box and their glyphs as before. The CSS comment of the hero no longer claims that the box is as wide as the longest line.
+- The new card is served at the URL of the old one, which sites that make previews may have cached. Left as it is: the front page's card was redrawn at its URL before, and `AGENTS.md` already asks for a check with a card extractor after the deploy. A new URL (`og.png?v=2`) is a one-line change if that check shows the old card.
+
+Then the sweep over the 19 widths three times, each with a new sky (every star 10.0 px or more from all content, none in `header`, no sideways scroll), new screenshots, and `make site-check` (exit 0, `sitecheck: ok` twice, no `FAIL`).
+
+### Why
+
+The first nit was a gap between what the comment and the brief say and what the page does, and the fix is small.
+
+### What worked
+
+The sweep measures glyphs, not boxes, so it showed at once that headings kept clear by their lines alone are still 10 px or more from every star.
+
+### What didn't work
+
+A Bash command that committed the fix, appended this step with a heredoc, and committed again was refused: "this command is too complex to verify that it stays inside the worktree". Split into plain commands, and this step written with the Edit tool.
+
+### What I learned
+
+`text-wrap: balance` changes where lines break, not the width that `fit-content` gave the element's box.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+Nothing beyond step 2.
+
+### Future work
+
+The preview's URL, if the check after the deploy shows the old card.
