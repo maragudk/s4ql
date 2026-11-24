@@ -42,7 +42,7 @@ func orderedOf(s *stmt.Select, args []any) ordered {
 		}
 		q.columns = strings.Join(names, ", ")
 	}
-	whole, bound := stmttest.SelectText(&stmt.Select{Table: s.Table, Where: s.Where}, args, "")
+	whole, bound := stmttest.SelectText(&stmt.Select{Table: s.Table, Where: s.Where, Subqueries: s.Subqueries}, args, "")
 	q.where = strings.TrimPrefix(strings.TrimPrefix(whole, "select * from "+q.table), " where ")
 	q.args = bound
 	q.by = strings.Join(orderTerms(s.OrderBy), ", ")

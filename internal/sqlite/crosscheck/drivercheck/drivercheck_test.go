@@ -2434,7 +2434,7 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 			return stmttest.WhereRule(name, columns, s.Where, bound)
 		}
 		return stmttest.UpdateRule(name, columns, s, bound, func() bool {
-			q, args := stmttest.FoundQuery(s.Table, s.Where, bound)
+			q, args := stmttest.FoundQuery(s.Table, s.Where, s.Subqueries, bound)
 			rows, err := o.QueryContext(tb.Context(), q, args...)
 			is.NotError(tb, err)
 			defer func() { is.NotError(tb, rows.Close()) }()

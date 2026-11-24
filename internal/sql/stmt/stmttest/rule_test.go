@@ -305,10 +305,10 @@ func TestUpdateRule(t *testing.T) {
 		s, err := stmt.Check(`update t set a = ? where k >= ? and "A""b" is not null and b < 1.5 and c = x'01' and a != 'x' and a = null and k <= ?`)
 		is.NotError(t, err)
 		u := s.(*stmt.Update)
-		src, bound := stmttest.FoundQuery(u.Table, u.Where, []any{"s", int64(1), int64(9)})
+		src, bound := stmttest.FoundQuery(u.Table, u.Where, nil, []any{"s", int64(1), int64(9)})
 		is.Equal(t, `select 1 from "t" where "k" >= ? and "A""b" IS NOT NULL and "b" < ? and "c" = ? and "a" != ? and "a" = ? and "k" <= ? limit 1`, src)
 		is.Equal(t, `[1 1.5 [1] x <nil> 9]`, fmt.Sprint(bound))
-		src, bound = stmttest.FoundQuery(u.Table, nil, nil)
+		src, bound = stmttest.FoundQuery(u.Table, nil, nil, nil)
 		is.Equal(t, `select 1 from "t" limit 1`, src)
 		is.Equal(t, 0, len(bound))
 	})
@@ -320,6 +320,18 @@ func TestUpdateRule(t *testing.T) {
 		src, bound := stmttest.SelectText(sel, []any{int64(1), "x"}, " order by k")
 		is.Equal(t, `select * from "t" where ? < "k" and "a" = ? and ? >= "b" and ? != "c" and ? = "a" order by k`, src)
 		is.Equal(t, `[1 x 1.5 [1] <nil>]`, fmt.Sprint(bound))
+	})
+
+	t.Run("should write a scalar subquery with its ORDER BY and its LIMIT, on either side, and bind its values where the text has them", func(t *testing.T) {
+		s, err := stmt.Check(`update t set a = ? where k = ? and k = (select * from u where v > ? order by w desc, x limit ?) and (select v from "U" limit 0) <= a and b = 1.5`)
+		is.NotError(t, err)
+		sel, args := stmttest.SelectOf(s, []any{"s", int64(1), int64(2), int64(3)})
+		src, bound := stmttest.SelectText(sel, args, "")
+		is.Equal(t, `select * from "t" where "k" = ? and "k" = (select * from "u" where "v" > ? order by "w" desc, "x" limit ?) and (select "v" from "U" limit 0) <= "a" and "b" = ?`, src)
+		is.Equal(t, `[1 2 3 1.5]`, fmt.Sprint(bound))
+		found, bound := stmttest.FoundQuery(sel.Table, sel.Where, sel.Subqueries, args)
+		is.Equal(t, `select 1 from "t" where "k" = ? and "k" = (select * from "u" where "v" > ? order by "w" desc, "x" limit ?) and (select "v" from "U" limit 0) <= "a" and "b" = ? limit 1`, found)
+		is.Equal(t, `[1 2 3 1.5]`, fmt.Sprint(bound))
 	})
 }
 
@@ -371,6 +383,9 @@ func TestWhereCases(t *testing.T) {
 		{src: "select * from t where 1 <= k and 'x' > a", want: "[>= on the key comparison with literal integer < on another column comparison with literal text WHERE that reads a scan from a lower bound]", access: "a scan from a lower bound"},
 		{src: "select * from t where ? = k", args: []any{int64(1)}, want: "[= on the key comparison with argument int64 WHERE that reads a get of one key]", access: "a get of one key"},
 		{src: "select * from t where 1 = x", want: "[WHERE with a column that the table does not have in a comparison, alone]"},
+		// A scalar subquery of slice 15 has no type of its own here, and its value decides the access.
+		{src: "select * from t where k = (select k from u) and a = 'x'", want: "[= on the key comparison with a subquery = on another column comparison with literal text WHERE that reads ]"},
+		{src: "select * from t where (select a from u limit ?) > a", args: []any{int64(1)}, want: "[< on another column comparison with a subquery WHERE that reads ]"},
 	}
 	for _, c := range cases {
 		t.Run(c.src, func(t *testing.T) {

@@ -3593,7 +3593,7 @@ func typeRule(t testing.TB, o *oracle, src string, args []any) string {
 		}
 		table, columns := o.columns(t, s.Table.Value)
 		return stmttest.UpdateRule(table, columns, s, args, func() bool {
-			q, bound := stmttest.FoundQuery(s.Table, s.Where, args)
+			q, bound := stmttest.FoundQuery(s.Table, s.Where, s.Subqueries, args)
 			return len(o.run(t, q, bound...).rows) > 0
 		})
 	case *stmt.Delete:
