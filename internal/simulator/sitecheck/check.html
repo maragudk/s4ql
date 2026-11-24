@@ -748,7 +748,9 @@ async function check() {
 // dancer checks the stick figure on the top line of the frame of the log and the commit objects, on
 // the paused page after it played with sound off: it is decoration, standing with its feet on the
 // line, and it has stood still so far. With sound on it stays still while paused, changes pose while
-// the page plays, and stands still again after Pause. It turns sound off again at the end.
+// the page plays, and stands still again after Pause. It turns sound off again at the end. sitecheck
+// starts Chromium without the need of a gesture for audio, so the check does not see whether a
+// visitor's click starts the audio context, only that the page's context runs.
 async function dancer(p) {
   const fig = p.$("#dancer"), sound = p.$("#sound"), play = p.$("#play");
   const pose = () => `${fig.dataset.pose}, ${fig.dataset.moves} changes of pose`;

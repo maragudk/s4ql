@@ -855,7 +855,7 @@ async function reset() {
 // sounds at most five poses a second. A sound that comes while a pose holds waits, unless one of a
 // higher rank comes, and is left out once it is STALE. A move is one pose or a few, by the kind of
 // its sound; a move of one pose takes turns with its mirror, so that a run of one sound is a dance
-// and not a pose that stays. A move cuts into another only from as high a rank; once its poses have
+// and not a pose that stays. A move cuts into another only from a higher rank; once its poses have
 // held, any move may follow, and after REST the figure stands again.
 //
 // The figure is drawn on a grid of DW by DH of its pixels from the joints of each pose, with lines a
@@ -993,7 +993,9 @@ const dancer = {
 
 // dancerPose shows the pose, by its name, at the time now.
 function dancerPose(name, now) {
-  if (!dancer.el || dancer.pose === name) return;
+  if (!dancer.el) return;
+  dancer.since = now;
+  if (dancer.pose === name) return;
   if (!dancer.paths.has(name)) {
     const pose = name.startsWith("-") ? mirror(POSES[name.slice(1)]) : POSES[name];
     dancer.paths.set(name, figurePath(pose));
@@ -1001,7 +1003,6 @@ function dancerPose(name, now) {
   dancer.el.firstElementChild.setAttribute("d", dancer.paths.get(name));
   if (dancer.pose) dancer.moves++;
   dancer.pose = name;
-  dancer.since = now;
   dancer.el.dataset.pose = name;
   dancer.el.dataset.moves = String(dancer.moves);
 }
@@ -1031,8 +1032,10 @@ function dance(now) {
   }
   if (now - dancer.since < HOLD) return;
   const move = dancer.move, next = dancer.next;
+  // done is whether the move has held each of its poses.
+  const done = !move || (move.i === move.poses.length - 1 && now >= move.until);
   if (next && now > next.due + STALE) dancer.next = null;
-  else if (next && now >= next.due && (!move || MOVES[next.kind].rank >= move.rank || now >= move.until)) {
+  else if (next && now >= next.due && (done || MOVES[next.kind].rank > move.rank)) {
     const m = MOVES[next.kind];
     const turn = (dancer.turns[next.kind] = (dancer.turns[next.kind] || 0) + 1);
     const flip = m.poses.length === 1 && turn % 2 === 0;
