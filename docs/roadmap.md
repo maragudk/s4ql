@@ -81,7 +81,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - `select` of named columns, in any order and also more than once, or of `*`, from one table (slice 5).
 - `where` with comparisons of a column with a literal, a `?`, or a scalar subquery, with the value on either side, by `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, and `>=`; `is null` and `is not null`; all joined by `and` (slices 7, 12, and 15).
 - `order by` one or more columns, each `asc` or `desc`, and `limit` with a number or a `?` (slice 13).
-- The scalar subquery is a `select` of one column from one table, in the `where` of a `select`, an `update`, or a `delete` (slice 15). It is built in the statement pass, the engine, and the driver. Its generated checks are being built, and its mutation testing is to come.
+- The scalar subquery is a `select` of one column from one table, in the `where` of a `select`, an `update`, or a `delete` (slice 15). It is built in the statement pass, the engine, and the driver. Its generated workload, simulation with planted bugs, and driver test are done, and its mutation testing is to come.
 - A read uses the primary key or an index, chosen by fixed rules, and scans the whole table otherwise (slices 7, 9, and 13). Rows without `order by` come in an order that varies, as [the spec](spec.md) says.
 
 **Decided,** with the details in [todo/operators.md](todo/operators.md):
@@ -674,7 +674,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 15: a scalar subquery in `where`
 
-Status: agreed by Markus on 2026-11-24, built on 2026-11-24 in the statement pass, the engine, and the driver. It is checked by their tests, by the engine's differential tests against SQLite, and by an independent review. It will be checked as the slices before it are, with the rest: by a new area of the generated workload, by the simulation with planted bugs, by the driver's generated test against mattn/go-sqlite3, and by mutation testing. Those are still to come.
+Status: agreed by Markus on 2026-11-24, built on 2026-11-24 in the statement pass, the engine, and the driver. It is checked by their tests, by the engine's differential tests against SQLite, and by an independent review. As the slices before it are, it is also checked by a new area of the generated workload, by the simulation with planted bugs, and by the driver's generated test against mattn/go-sqlite3. Those are done as of 2026-11-24, with an independent review of them. Mutation testing is not done: Markus parked it on 2026-11-24 with the next work.
 
 ```sql
 select v1 from t1 where v2 = (select v2 from t2 where v1 = ?);
