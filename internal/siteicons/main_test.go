@@ -178,6 +178,8 @@ func TestManifest(t *testing.T) {
 			ThemeColor      string `json:"theme_color"`
 			BackgroundColor string `json:"background_color"`
 			Display         string `json:"display"`
+			StartURL        string `json:"start_url"`
+			ID              string `json:"id"`
 			Icons           []struct {
 				Src     string `json:"src"`
 				Sizes   string `json:"sizes"`
@@ -191,6 +193,10 @@ func TestManifest(t *testing.T) {
 		is.Equal(t, "#000000", m.ThemeColor)
 		is.Equal(t, "#000000", m.BackgroundColor)
 		is.Equal(t, "standalone", m.Display)
+		// Both resolve to the directory of the manifest, the site's root, so that an install from any
+		// page is one app that opens on the front page.
+		is.Equal(t, "./", m.StartURL)
+		is.Equal(t, "./", m.ID)
 		is.Equal(t, 3, len(m.Icons))
 		for i, want := range []struct{ size, purpose string }{{"192", "any"}, {"512", "any"}, {"512", "maskable"}} {
 			is.Equal(t, "web-app-manifest-"+want.size+"x"+want.size+".png", m.Icons[i].Src)

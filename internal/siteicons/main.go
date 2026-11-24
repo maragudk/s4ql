@@ -186,7 +186,14 @@ func manifest() ([]byte, error) {
 		ThemeColor      string `json:"theme_color"`
 		BackgroundColor string `json:"background_color"`
 		Display         string `json:"display"`
-	}{Name: "s4ql", ShortName: "s4ql", ThemeColor: "#000000", BackgroundColor: "#000000", Display: "standalone"}
+		StartURL        string `json:"start_url"`
+		ID              string `json:"id"`
+	}{
+		Name: "s4ql", ShortName: "s4ql", ThemeColor: "#000000", BackgroundColor: "#000000", Display: "standalone",
+		// The directory of the manifest, the site's root, for both, so that an install from any page is
+		// one app that opens on the front page.
+		StartURL: "./", ID: "./",
+	}
 	for _, size := range []int{192, 512} {
 		add := func(purpose string) {
 			m.Icons = append(m.Icons, icon{Src: fmt.Sprintf("web-app-manifest-%[1]dx%[1]d.png", size), Sizes: fmt.Sprintf("%[1]dx%[1]d", size), Type: "image/png", Purpose: purpose})
