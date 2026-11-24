@@ -3,193 +3,244 @@
 # required of it, a third, or = for a count that is pinned exactly, and the kind. The kinds are
 # those of testdata/reached/TestSimulation.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
 # Do not edit a number by hand.
-default	191	63	NULL values in the log
-default	4790	1596	SQLite's error
-default	1964	654	acknowledged writes
-default	134	44	close and open
-default	1332	444	commits
-default	263	87	commits of more than one statement
-default	445	148	commits with a parameter
-default	46	15	crash, then a copy of the cache
-default	60	20	crash, then an empty cache
+default	205	68	NULL values in the log
+default	5362	1787	SQLite's error
+default	2032	677	acknowledged writes
+default	145	48	close and open
+default	1381	460	commits
+default	268	89	commits of more than one statement
+default	466	155	commits with a parameter
+default	51	17	crash, then a copy of the cache
+default	63	21	crash, then an empty cache
 default	7	2	crash, then an empty cache, of a log with an index
-default	111	37	create index: 1/1: index … already exists
-default	35	11	create index: 1/1: no such column: …
-default	170	56	create index: 1/1: no such table: …
-default	128	42	create index: 1/1: there is already a table named …
+default	118	39	create index: 1/1: index … already exists
+default	37	12	create index: 1/1: no such column: …
+default	199	66	create index: 1/1: no such table: …
+default	130	43	create index: 1/1: there is already a table named …
 default	35	11	create index: 8/8: attempt to write a readonly database
-default	216	72	create index: ok
-default	70	23	create tables with a default in the log
-default	14	4	deletes read by an index
-default	161	53	drop index: 1/1: no such index: …
-default	113	37	drop index: ok
-default	342	114	failed: no lease
-default	14	4	failed: stopped
-default	105	35	failed: timeout
-default	102	34	fault: broken read
-default	52	17	fault: conflict
-default	43	14	fault: cut-off
-default	214	71	fault: lost request
-default	205	68	fault: lost response
-default	182	60	fault: no answer
-default	23	7	fault: outage
-default	381	127	fault: slow way
+default	227	75	create index: ok
+default	68	22	create tables with a default in the log
+default	16	5	deletes read by an index
+default	12	4	deletes with subqueries that succeeded
+default	6	2	deletes with subqueries that succeeded in a transaction
+default	6	2	deletes with subqueries that succeeded of their own
+default	6	2	deletes with subqueries that succeeded, whose subqueries the engine computed in a transaction
+default	5	1	deletes with subqueries that succeeded, whose subqueries the engine computed of their own
+default	78	26	deletes with subqueries with SQLite's error
+default	176	58	drop index: 1/1: no such index: …
+default	6	2	drop index: 8/8: attempt to write a readonly database
+default	114	38	drop index: ok
+default	372	124	failed: no lease
+default	15	5	failed: stopped
+default	102	34	failed: timeout
+default	104	34	fault: broken read
+default	55	18	fault: conflict
+default	41	13	fault: cut-off
+default	232	77	fault: lost request
+default	215	71	fault: lost response
+default	190	63	fault: no answer
+default	24	8	fault: outage
+default	419	139	fault: slow way
 default	19	6	fault: write applied after a crash
-default	39	13	fault: write applied after its caller gave up
-default	131	43	fault: write stuck in the network
+default	46	15	fault: write applied after its caller gave up
+default	125	41	fault: write stuck in the network
 default	17	5	indexes dropped while the rows of a query that read by them were open
-default	106	=	integrity checks after a crash
-default	106	=	integrity checks after the replay
-default	212	=	integrity checks at the end
-default	82	27	pending
-default	388	129	query not read to its end
-default	429	143	read-only transactions
-default	376	125	refused for the type
-default	33	11	replays of a log with an index
-default	661	220	rows of several columns
-default	71	23	selects read by an index
-default	3	1	selects with LIMIT and without ORDER BY that gave rows
-default	38	12	selects with LIMIT and without ORDER BY with SQLite's error
-default	88	29	selects with LIMIT that succeeded
-default	26	8	selects with ORDER BY that gave rows
-default	90	30	selects with ORDER BY with SQLite's error
-default	545	181	selects with WHERE in a transaction compared with SQLite
-default	53	17	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
-default	147	49	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
-default	28	9	selects with WHERE in a transaction compared with SQLite, read by an index
-default	68	22	selects with WHERE in a transaction that give rows, compared with SQLite
-default	279	93	selects with WHERE of their own compared with SQLite
-default	27	9	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
-default	65	21	selects with WHERE of their own compared with SQLite, on an engine that reads every row
-default	14	4	selects with WHERE of their own compared with SQLite, read by an index
-default	40	13	selects with WHERE of their own that give rows, compared with SQLite
-default	1125	375	skipped
-default	6083	2027	statements in a transaction
-default	237	79	statements of IF NOT EXISTS or IF EXISTS that did nothing
-default	133	44	statements of IF NOT EXISTS or IF EXISTS that did their work
-default	106	35	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-default	985	328	statements on an engine that forces an index path
-default	44	14	statements read by the index that their engine forces
-default	131	43	statements that do nothing in a transaction, compared with SQLite
-default	106	35	statements that do nothing, compared with SQLite
-default	613	204	statements with RETURNING
-default	84	28	statements with RETURNING in a transaction whose rows are compared with SQLite
-default	20	6	statements with RETURNING of their own that gave rows
-default	20	6	statements with RETURNING of their own whose rows are compared with the log
-default	38	12	statements with RETURNING that gave rows in a transaction
-default	16	5	statements with RETURNING that gave rows in a transaction that was rolled back
-default	362	120	statements with RETURNING with SQLite's error
-default	483	161	statements with a value on the left
+default	114	=	integrity checks after a crash
+default	114	=	integrity checks after the replay
+default	228	=	integrity checks at the end
+default	90	30	pending
+default	404	134	query not read to its end
+default	495	165	read-only transactions
+default	432	144	refused for the type
+default	36	12	replays of a log with an index
+default	699	233	rows of several columns
+default	68	22	selects read by an index
+default	5	1	selects with LIMIT and without ORDER BY that gave rows
+default	59	19	selects with LIMIT and without ORDER BY with SQLite's error
+default	94	31	selects with LIMIT that succeeded
+default	22	7	selects with ORDER BY that gave rows
+default	86	28	selects with ORDER BY with SQLite's error
+default	657	219	selects with WHERE in a transaction compared with SQLite
+default	71	23	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+default	167	55	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+default	29	9	selects with WHERE in a transaction compared with SQLite, read by an index
+default	70	23	selects with WHERE in a transaction that give rows, compared with SQLite
+default	317	105	selects with WHERE of their own compared with SQLite
+default	38	12	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+default	69	23	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+default	13	4	selects with WHERE of their own compared with SQLite, read by an index
+default	35	11	selects with WHERE of their own that give rows, compared with SQLite
+default	30	10	selects with subqueries that succeeded
+default	21	7	selects with subqueries that succeeded in a transaction
+default	9	3	selects with subqueries that succeeded of their own
+default	14	4	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+default	9	3	selects with subqueries that succeeded, whose subqueries the engine computed of their own
+default	145	48	selects with subqueries with SQLite's error
+default	1186	395	skipped
+default	6605	2201	statements in a transaction
+default	232	77	statements of IF NOT EXISTS or IF EXISTS that did nothing
+default	130	43	statements of IF NOT EXISTS or IF EXISTS that did their work
+default	110	36	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+default	1114	371	statements on an engine that forces an index path
+default	41	13	statements read by the index that their engine forces
+default	132	44	statements that do nothing in a transaction, compared with SQLite
+default	100	33	statements that do nothing, compared with SQLite
+default	776	258	statements with RETURNING
+default	94	31	statements with RETURNING in a transaction whose rows are compared with SQLite
+default	26	8	statements with RETURNING of their own that gave rows
+default	3	1	statements with RETURNING of their own through Query whose outcome is unknown
+default	26	8	statements with RETURNING of their own whose rows are compared with the log
+default	45	15	statements with RETURNING that gave rows in a transaction
+default	18	6	statements with RETURNING that gave rows in a transaction that was rolled back
+default	463	154	statements with RETURNING with SQLite's error
+default	4	1	statements with a correlated subquery, refused
+default	18	6	statements with a subquery of another type than its column, refused
+default	677	225	statements with a value on the left
 default	106	35	statements with a value on the left read by a key or an index
-default	30	10	statements with a value on the left that found rows
-default	200	66	statements with a value on the left with SQLite's error
-default	3864	1288	succeeded
-default	1087	362	transactions committed
-default	34	11	transactions not committed
-default	371	123	transactions rolled back
-default	35	11	transactions unknown
-default	61	20	unknown
-default	1731	577	updates and deletes
-default	388	129	updates and deletes in a transaction whose count of changes is compared with SQLite
-default	70	23	updates and deletes of their own whose count of changes is compared with SQLite
-default	168	56	updates and deletes that change no row, compared with SQLite
-default	209	69	updates and deletes that succeeded and changed rows
-default	791	263	updates and deletes with SQLite's error
-default	16	5	updates read by an index
-default	110	36	values of a default in the log
-default/mixed	33	11	NULL values in the log
-default/mixed	1633	544	SQLite's error
-default/mixed	453	151	acknowledged writes
-default/mixed	45	15	close and open
-default/mixed	328	109	commits
-default/mixed	60	20	commits of more than one statement
+default	28	9	statements with a value on the left that found rows
+default	325	108	statements with a value on the left with SQLite's error
+default	535	178	statements with subqueries
+default	14	4	statements with subqueries and an argument of LIMIT that s4ql refuses
+default	35	11	statements with subqueries in a transaction whose values are checked against SQLite's
+default	7	2	statements with subqueries of the log whose values are checked against SQLite's
+default	22	7	statements with subqueries of their own whose values are checked against SQLite's
+default	16	5	statements with subqueries that failed: no lease
+default	10	3	statements with subqueries that succeeded, whose subqueries the engine did not compute
+default	9	3	statements with two subqueries or more that succeeded
+default	24	8	subqueries in a transaction: subquery whose value was NULL
+default	16	5	subqueries in a transaction: subquery whose value was that of its one first row
+default	3	1	subqueries of the log: subquery whose value was NULL
+default	4	1	subqueries of the log: subquery whose value was that of its one first row
+default	18	6	subqueries of their own: subquery whose value was NULL
+default	4	1	subqueries of their own: subquery whose value was that of its one first row
+default	3987	1329	succeeded
+default	1168	389	transactions committed
+default	38	12	transactions not committed
+default	424	141	transactions rolled back
+default	37	12	transactions unknown
+default	68	22	unknown
+default	1989	663	updates and deletes
+default	394	131	updates and deletes in a transaction whose count of changes is compared with SQLite
+default	72	24	updates and deletes of their own whose count of changes is compared with SQLite
+default	189	63	updates and deletes that change no row, compared with SQLite
+default	202	67	updates and deletes that succeeded and changed rows
+default	985	328	updates and deletes with SQLite's error
+default	15	5	updates read by an index
+default	30	10	updates with subqueries that succeeded
+default	16	5	updates with subqueries that succeeded in a transaction
+default	14	4	updates with subqueries that succeeded of their own
+default	15	5	updates with subqueries that succeeded, whose subqueries the engine computed in a transaction
+default	13	4	updates with subqueries that succeeded, whose subqueries the engine computed of their own
+default	140	46	updates with subqueries with SQLite's error
+default	111	37	values of a default in the log
+default/mixed	34	11	NULL values in the log
+default/mixed	1638	546	SQLite's error
+default/mixed	444	148	acknowledged writes
+default/mixed	47	15	close and open
+default/mixed	326	108	commits
+default/mixed	59	19	commits of more than one statement
 default/mixed	83	27	commits with a parameter
-default/mixed	16	5	crash, then a copy of the cache
-default/mixed	18	6	crash, then an empty cache
-default/mixed	3	1	crash, then an empty cache, of a log with an index
-default/mixed	30	10	create index: 1/1: index … already exists
-default/mixed	22	7	create index: 1/1: no such column: …
-default/mixed	91	30	create index: 1/1: no such table: …
+default/mixed	17	5	crash, then a copy of the cache
+default/mixed	17	5	crash, then an empty cache
+default/mixed	28	9	create index: 1/1: index … already exists
+default/mixed	24	8	create index: 1/1: no such column: …
+default/mixed	90	30	create index: 1/1: no such table: …
 default/mixed	69	23	create index: 1/1: there is already a table named …
-default/mixed	15	5	create index: 8/8: attempt to write a readonly database
-default/mixed	66	22	create index: ok
-default/mixed	47	15	create tables with a default in the log
-default/mixed	51	17	drop index: 1/1: no such index: …
-default/mixed	47	15	drop index: ok
-default/mixed	112	37	failed: no lease
-default/mixed	6	2	failed: stopped
-default/mixed	36	12	failed: timeout
-default/mixed	34	11	fault: broken read
-default/mixed	13	4	fault: conflict
-default/mixed	18	6	fault: cut-off
-default/mixed	54	18	fault: lost request
-default/mixed	62	20	fault: lost response
-default/mixed	66	22	fault: no answer
-default/mixed	10	3	fault: outage
-default/mixed	111	37	fault: slow way
+default/mixed	13	4	create index: 8/8: attempt to write a readonly database
+default/mixed	67	22	create index: ok
+default/mixed	45	15	create tables with a default in the log
+default/mixed	15	5	deletes with subqueries with SQLite's error
+default/mixed	48	16	drop index: 1/1: no such index: …
+default/mixed	46	15	drop index: ok
+default/mixed	111	37	failed: no lease
+default/mixed	3	1	failed: stopped
+default/mixed	30	10	failed: timeout
+default/mixed	31	10	fault: broken read
+default/mixed	11	3	fault: conflict
+default/mixed	15	5	fault: cut-off
+default/mixed	58	19	fault: lost request
+default/mixed	57	19	fault: lost response
+default/mixed	65	21	fault: no answer
+default/mixed	9	3	fault: outage
+default/mixed	113	37	fault: slow way
 default/mixed	7	2	fault: write applied after a crash
-default/mixed	10	3	fault: write applied after its caller gave up
-default/mixed	47	15	fault: write stuck in the network
+default/mixed	9	3	fault: write applied after its caller gave up
+default/mixed	38	12	fault: write stuck in the network
 default/mixed	5	1	indexes dropped while the rows of a query that read by them were open
 default/mixed	34	=	integrity checks after a crash
 default/mixed	34	=	integrity checks after the replay
 default/mixed	68	=	integrity checks at the end
-default/mixed	23	7	pending
-default/mixed	76	25	query not read to its end
-default/mixed	109	36	read-only transactions
-default/mixed	120	40	refused for the type
+default/mixed	24	8	pending
+default/mixed	74	24	query not read to its end
+default/mixed	122	40	read-only transactions
+default/mixed	123	41	refused for the type
 default/mixed	11	3	replays of a log with an index
-default/mixed	106	35	rows of several columns
-default/mixed	14	4	selects read by an index
-default/mixed	3	1	selects with LIMIT and without ORDER BY that gave rows
+default/mixed	113	37	rows of several columns
+default/mixed	11	3	selects read by an index
+default/mixed	5	1	selects with LIMIT and without ORDER BY that gave rows
 default/mixed	33	11	selects with LIMIT and without ORDER BY with SQLite's error
-default/mixed	40	13	selects with LIMIT that succeeded
-default/mixed	10	3	selects with ORDER BY that gave rows
-default/mixed	59	19	selects with ORDER BY with SQLite's error
-default/mixed	125	41	selects with WHERE in a transaction compared with SQLite
-default/mixed	24	8	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
-default/mixed	25	8	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
-default/mixed	5	1	selects with WHERE in a transaction compared with SQLite, read by an index
-default/mixed	8	2	selects with WHERE in a transaction that give rows, compared with SQLite
-default/mixed	77	25	selects with WHERE of their own compared with SQLite
-default/mixed	11	3	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+default/mixed	41	13	selects with LIMIT that succeeded
+default/mixed	6	2	selects with ORDER BY that gave rows
+default/mixed	55	18	selects with ORDER BY with SQLite's error
+default/mixed	140	46	selects with WHERE in a transaction compared with SQLite
+default/mixed	23	7	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+default/mixed	26	8	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+default/mixed	6	2	selects with WHERE in a transaction compared with SQLite, read by an index
+default/mixed	10	3	selects with WHERE in a transaction that give rows, compared with SQLite
+default/mixed	72	24	selects with WHERE of their own compared with SQLite
+default/mixed	12	4	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
 default/mixed	11	3	selects with WHERE of their own compared with SQLite, on an engine that reads every row
-default/mixed	3	1	selects with WHERE of their own compared with SQLite, read by an index
-default/mixed	9	3	selects with WHERE of their own that give rows, compared with SQLite
-default/mixed	559	186	skipped
-default/mixed	1838	612	statements in a transaction
-default/mixed	143	47	statements of IF NOT EXISTS or IF EXISTS that did nothing
-default/mixed	74	24	statements of IF NOT EXISTS or IF EXISTS that did their work
-default/mixed	70	23	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-default/mixed	586	195	statements on an engine that forces an index path
-default/mixed	16	5	statements read by the index that their engine forces
-default/mixed	80	26	statements that do nothing in a transaction, compared with SQLite
-default/mixed	63	21	statements that do nothing, compared with SQLite
+default/mixed	4	1	selects with WHERE of their own that give rows, compared with SQLite
+default/mixed	7	2	selects with subqueries that succeeded
+default/mixed	3	1	selects with subqueries that succeeded in a transaction
+default/mixed	4	1	selects with subqueries that succeeded of their own
+default/mixed	3	1	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+default/mixed	4	1	selects with subqueries that succeeded, whose subqueries the engine computed of their own
+default/mixed	24	8	selects with subqueries with SQLite's error
+default/mixed	567	189	skipped
+default/mixed	1835	611	statements in a transaction
+default/mixed	138	46	statements of IF NOT EXISTS or IF EXISTS that did nothing
+default/mixed	71	23	statements of IF NOT EXISTS or IF EXISTS that did their work
+default/mixed	74	24	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+default/mixed	552	184	statements on an engine that forces an index path
+default/mixed	13	4	statements read by the index that their engine forces
+default/mixed	81	27	statements that do nothing in a transaction, compared with SQLite
+default/mixed	57	19	statements that do nothing, compared with SQLite
 default/mixed	317	105	statements with RETURNING
-default/mixed	25	8	statements with RETURNING in a transaction whose rows are compared with SQLite
-default/mixed	14	4	statements with RETURNING of their own that gave rows
-default/mixed	14	4	statements with RETURNING of their own whose rows are compared with the log
-default/mixed	13	4	statements with RETURNING that gave rows in a transaction
-default/mixed	5	1	statements with RETURNING that gave rows in a transaction that was rolled back
-default/mixed	191	63	statements with RETURNING with SQLite's error
-default/mixed	301	100	statements with a value on the left
-default/mixed	64	21	statements with a value on the left read by a key or an index
-default/mixed	20	6	statements with a value on the left that found rows
-default/mixed	149	49	statements with a value on the left with SQLite's error
-default/mixed	926	308	succeeded
-default/mixed	330	110	transactions committed
-default/mixed	8	2	transactions not committed
-default/mixed	108	36	transactions rolled back
-default/mixed	8	2	transactions unknown
+default/mixed	24	8	statements with RETURNING in a transaction whose rows are compared with SQLite
+default/mixed	16	5	statements with RETURNING of their own that gave rows
+default/mixed	16	5	statements with RETURNING of their own whose rows are compared with the log
+default/mixed	15	5	statements with RETURNING that gave rows in a transaction
+default/mixed	3	1	statements with RETURNING that gave rows in a transaction that was rolled back
+default/mixed	184	61	statements with RETURNING with SQLite's error
+default/mixed	339	113	statements with a value on the left
+default/mixed	62	20	statements with a value on the left read by a key or an index
+default/mixed	17	5	statements with a value on the left that found rows
+default/mixed	164	54	statements with a value on the left with SQLite's error
+default/mixed	109	36	statements with subqueries
+default/mixed	8	2	statements with subqueries and an argument of LIMIT that s4ql refuses
+default/mixed	7	2	statements with subqueries in a transaction whose values are checked against SQLite's
+default/mixed	3	1	statements with subqueries of the log whose values are checked against SQLite's
+default/mixed	5	1	statements with subqueries of their own whose values are checked against SQLite's
+default/mixed	3	1	statements with subqueries that failed: no lease
+default/mixed	5	1	subqueries in a transaction: subquery whose value was NULL
+default/mixed	5	1	subqueries of their own: subquery whose value was NULL
+default/mixed	902	300	succeeded
+default/mixed	320	106	transactions committed
+default/mixed	10	3	transactions not committed
+default/mixed	123	41	transactions rolled back
+default/mixed	7	2	transactions unknown
 default/mixed	17	5	unknown
-default/mixed	502	167	updates and deletes
-default/mixed	90	30	updates and deletes in a transaction whose count of changes is compared with SQLite
-default/mixed	17	5	updates and deletes of their own whose count of changes is compared with SQLite
-default/mixed	35	11	updates and deletes that change no row, compared with SQLite
-default/mixed	52	17	updates and deletes that succeeded and changed rows
-default/mixed	237	79	updates and deletes with SQLite's error
-default/mixed	7	2	updates read by an index
-default/mixed	43	14	values of a default in the log
+default/mixed	507	169	updates and deletes
+default/mixed	80	26	updates and deletes in a transaction whose count of changes is compared with SQLite
+default/mixed	18	6	updates and deletes of their own whose count of changes is compared with SQLite
+default/mixed	39	13	updates and deletes that change no row, compared with SQLite
+default/mixed	43	14	updates and deletes that succeeded and changed rows
+default/mixed	250	83	updates and deletes with SQLite's error
+default/mixed	6	2	updates read by an index
+default/mixed	4	1	updates with subqueries that succeeded
+default/mixed	22	7	updates with subqueries with SQLite's error
+default/mixed	44	14	values of a default in the log
 default/tables	12	4	NULL values in the log
 default/tables	310	103	SQLite's error
 default/tables	86	28	acknowledged writes
@@ -731,172 +782,287 @@ default/returning	38	12	updates and deletes that succeeded and changed rows
 default/returning	209	69	updates and deletes with SQLite's error
 default/returning	4	1	updates read by an index
 default/returning	36	12	values of a default in the log
+default/subquery	13	4	NULL values in the log
+default/subquery	567	189	SQLite's error
+default/subquery	77	25	acknowledged writes
+default/subquery	9	3	close and open
+default/subquery	51	17	commits
+default/subquery	6	2	commits of more than one statement
+default/subquery	21	7	commits with a parameter
+default/subquery	4	1	crash, then a copy of the cache
+default/subquery	4	1	crash, then an empty cache
+default/subquery	9	3	create index: 1/1: index … already exists
+default/subquery	30	10	create index: 1/1: no such table: …
+default/subquery	10	3	create index: ok
+default/subquery	10	3	deletes with subqueries that succeeded
+default/subquery	4	1	deletes with subqueries that succeeded in a transaction
+default/subquery	6	2	deletes with subqueries that succeeded of their own
+default/subquery	4	1	deletes with subqueries that succeeded, whose subqueries the engine computed in a transaction
+default/subquery	5	1	deletes with subqueries that succeeded, whose subqueries the engine computed of their own
+default/subquery	63	21	deletes with subqueries with SQLite's error
+default/subquery	18	6	drop index: 1/1: no such index: …
+default/subquery	31	10	failed: no lease
+default/subquery	4	1	failed: stopped
+default/subquery	3	1	failed: timeout
+default/subquery	5	1	fault: broken read
+default/subquery	5	1	fault: conflict
+default/subquery	14	4	fault: lost request
+default/subquery	15	5	fault: lost response
+default/subquery	9	3	fault: no answer
+default/subquery	36	12	fault: slow way
+default/subquery	8	2	fault: write applied after its caller gave up
+default/subquery	3	1	fault: write stuck in the network
+default/subquery	8	=	integrity checks after a crash
+default/subquery	8	=	integrity checks after the replay
+default/subquery	16	=	integrity checks at the end
+default/subquery	7	2	pending
+default/subquery	18	6	query not read to its end
+default/subquery	53	17	read-only transactions
+default/subquery	53	17	refused for the type
+default/subquery	3	1	replays of a log with an index
+default/subquery	31	10	rows of several columns
+default/subquery	21	7	selects with LIMIT and without ORDER BY with SQLite's error
+default/subquery	5	1	selects with LIMIT that succeeded
+default/subquery	97	32	selects with WHERE in a transaction compared with SQLite
+default/subquery	19	6	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+default/subquery	19	6	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+default/subquery	43	14	selects with WHERE of their own compared with SQLite
+default/subquery	10	3	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+default/subquery	4	1	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+default/subquery	23	7	selects with subqueries that succeeded
+default/subquery	18	6	selects with subqueries that succeeded in a transaction
+default/subquery	5	1	selects with subqueries that succeeded of their own
+default/subquery	11	3	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+default/subquery	5	1	selects with subqueries that succeeded, whose subqueries the engine computed of their own
+default/subquery	121	40	selects with subqueries with SQLite's error
+default/subquery	53	17	skipped
+default/subquery	525	175	statements in a transaction
+default/subquery	163	54	statements on an engine that forces an index path
+default/subquery	163	54	statements with RETURNING
+default/subquery	11	3	statements with RETURNING in a transaction whose rows are compared with SQLite
+default/subquery	4	1	statements with RETURNING of their own that gave rows
+default/subquery	4	1	statements with RETURNING of their own whose rows are compared with the log
+default/subquery	5	1	statements with RETURNING that gave rows in a transaction
+default/subquery	4	1	statements with RETURNING that gave rows in a transaction that was rolled back
+default/subquery	108	36	statements with RETURNING with SQLite's error
+default/subquery	4	1	statements with a correlated subquery, refused
+default/subquery	17	5	statements with a subquery of another type than its column, refused
+default/subquery	156	52	statements with a value on the left
+default/subquery	110	36	statements with a value on the left with SQLite's error
+default/subquery	426	142	statements with subqueries
+default/subquery	6	2	statements with subqueries and an argument of LIMIT that s4ql refuses
+default/subquery	28	9	statements with subqueries in a transaction whose values are checked against SQLite's
+default/subquery	4	1	statements with subqueries of the log whose values are checked against SQLite's
+default/subquery	17	5	statements with subqueries of their own whose values are checked against SQLite's
+default/subquery	13	4	statements with subqueries that failed: no lease
+default/subquery	10	3	statements with subqueries that succeeded, whose subqueries the engine did not compute
+default/subquery	8	2	statements with two subqueries or more that succeeded
+default/subquery	19	6	subqueries in a transaction: subquery whose value was NULL
+default/subquery	14	4	subqueries in a transaction: subquery whose value was that of its one first row
+default/subquery	3	1	subqueries of the log: subquery whose value was that of its one first row
+default/subquery	13	4	subqueries of their own: subquery whose value was NULL
+default/subquery	4	1	subqueries of their own: subquery whose value was that of its one first row
+default/subquery	147	49	succeeded
+default/subquery	91	30	transactions committed
+default/subquery	38	12	transactions rolled back
+default/subquery	3	1	transactions unknown
+default/subquery	7	2	unknown
+default/subquery	253	84	updates and deletes
+default/subquery	16	5	updates and deletes in a transaction whose count of changes is compared with SQLite
+default/subquery	17	5	updates and deletes that change no row, compared with SQLite
+default/subquery	181	60	updates and deletes with SQLite's error
+default/subquery	26	8	updates with subqueries that succeeded
+default/subquery	14	4	updates with subqueries that succeeded in a transaction
+default/subquery	12	4	updates with subqueries that succeeded of their own
+default/subquery	13	4	updates with subqueries that succeeded, whose subqueries the engine computed in a transaction
+default/subquery	11	3	updates with subqueries that succeeded, whose subqueries the engine computed of their own
+default/subquery	118	39	updates with subqueries with SQLite's error
 idle	22	7	NULL values in the log
-idle	1731	577	SQLite's error
-idle	155	51	acknowledged writes
-idle	86	28	close and open
-idle	102	34	commits
-idle	30	10	commits of more than one statement
+idle	1755	585	SQLite's error
+idle	157	52	acknowledged writes
+idle	87	29	close and open
+idle	107	35	commits
+idle	29	9	commits of more than one statement
 idle	36	12	commits with a parameter
-idle	33	11	crash, then a copy of the cache
-idle	36	12	crash, then an empty cache
-idle	5	1	create index: 1/1: index … already exists
+idle	36	12	crash, then a copy of the cache
+idle	33	11	crash, then an empty cache
+idle	6	2	create index: 1/1: index … already exists
 idle	8	2	create index: 1/1: no such column: …
-idle	146	48	create index: 1/1: no such table: …
+idle	152	50	create index: 1/1: no such table: …
 idle	11	3	create index: 1/1: there is already a table named …
 idle	9	3	create index: 8/8: attempt to write a readonly database
-idle	37	12	create index: ok
-idle	9	3	create tables with a default in the log
-idle	57	19	drop index: 1/1: no such index: …
-idle	50	16	drop index: ok
-idle	419	139	failed: no lease
-idle	180	60	failed: stopped
-idle	778	259	failed: timeout
-idle	79	26	fault: broken read
+idle	36	12	create index: ok
+idle	10	3	create tables with a default in the log
+idle	9	3	deletes with subqueries with SQLite's error
+idle	58	19	drop index: 1/1: no such index: …
+idle	51	17	drop index: ok
+idle	417	139	failed: no lease
+idle	195	65	failed: stopped
+idle	751	250	failed: timeout
+idle	78	26	fault: broken read
 idle	54	18	fault: conflict
-idle	39	13	fault: cut-off
-idle	77	25	fault: lost request
-idle	106	35	fault: lost response
-idle	767	255	fault: no answer
-idle	13	4	fault: outage
-idle	264	88	fault: slow way
-idle	26	8	fault: write applied after its caller gave up
-idle	1209	403	fault: write stuck in the network
+idle	36	12	fault: cut-off
+idle	79	26	fault: lost request
+idle	107	35	fault: lost response
+idle	777	259	fault: no answer
+idle	12	4	fault: outage
+idle	261	87	fault: slow way
+idle	23	7	fault: write applied after its caller gave up
+idle	1193	397	fault: write stuck in the network
 idle	69	=	integrity checks after a crash
 idle	69	=	integrity checks after the replay
 idle	138	=	integrity checks at the end
-idle	98	32	kept transactions ended for the lease
-idle	56	18	pending
+idle	99	33	kept transactions ended for the lease
+idle	55	18	pending
 idle	56	18	query not read to its end
-idle	237	79	read-only transactions
-idle	46	15	refused for the type
+idle	236	78	read-only transactions
+idle	53	17	refused for the type
 idle	9	3	replays of a log with an index
-idle	40	13	rows of several columns
-idle	10	3	selects read by an index
-idle	32	10	selects with LIMIT and without ORDER BY with SQLite's error
+idle	42	14	rows of several columns
+idle	11	3	selects read by an index
+idle	29	9	selects with LIMIT and without ORDER BY with SQLite's error
 idle	8	2	selects with LIMIT that succeeded
-idle	39	13	selects with ORDER BY with SQLite's error
-idle	171	57	selects with WHERE in a transaction compared with SQLite
-idle	27	9	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
-idle	29	9	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
-idle	5	1	selects with WHERE in a transaction compared with SQLite, read by an index
+idle	40	13	selects with ORDER BY with SQLite's error
+idle	184	61	selects with WHERE in a transaction compared with SQLite
+idle	29	9	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+idle	34	11	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+idle	6	2	selects with WHERE in a transaction compared with SQLite, read by an index
 idle	8	2	selects with WHERE in a transaction that give rows, compared with SQLite
 idle	133	44	selects with WHERE of their own compared with SQLite
-idle	26	8	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
-idle	22	7	selects with WHERE of their own compared with SQLite, on an engine that reads every row
-idle	3	1	selects with WHERE of their own that give rows, compared with SQLite
-idle	323	107	skipped
-idle	2091	697	statements in a transaction
-idle	103	34	statements of IF NOT EXISTS or IF EXISTS that did nothing
+idle	20	6	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+idle	27	9	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+idle	4	1	selects with subqueries that succeeded
+idle	3	1	selects with subqueries that succeeded in a transaction
+idle	3	1	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+idle	31	10	selects with subqueries with SQLite's error
+idle	331	110	skipped
+idle	2116	705	statements in a transaction
+idle	105	35	statements of IF NOT EXISTS or IF EXISTS that did nothing
 idle	62	20	statements of IF NOT EXISTS or IF EXISTS that did their work
-idle	60	20	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-idle	458	152	statements on an engine that forces an index path
+idle	65	21	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+idle	461	153	statements on an engine that forces an index path
 idle	13	4	statements read by the index that their engine forces
-idle	54	18	statements that do nothing in a transaction, compared with SQLite
-idle	49	16	statements that do nothing, compared with SQLite
+idle	55	18	statements that do nothing in a transaction, compared with SQLite
+idle	50	16	statements that do nothing, compared with SQLite
 idle	203	67	statements with RETURNING
 idle	12	4	statements with RETURNING in a transaction whose rows are compared with SQLite
-idle	8	2	statements with RETURNING that gave rows in a transaction that was rolled back
-idle	85	28	statements with RETURNING with SQLite's error
-idle	192	64	statements with a value on the left
-idle	13	4	statements with a value on the left read by a key or an index
-idle	3	1	statements with a value on the left that found rows
-idle	85	28	statements with a value on the left with SQLite's error
-idle	707	235	succeeded
-idle	197	65	transactions committed
-idle	99	33	transactions ended for the lease
-idle	15	5	transactions not committed
-idle	226	75	transactions rolled back
-idle	6	2	transactions unknown
-idle	4	1	unknown
+idle	3	1	statements with RETURNING that gave rows in a transaction
+idle	7	2	statements with RETURNING that gave rows in a transaction that was rolled back
+idle	89	29	statements with RETURNING with SQLite's error
+idle	228	76	statements with a value on the left
+idle	12	4	statements with a value on the left read by a key or an index
+idle	108	36	statements with a value on the left with SQLite's error
+idle	101	33	statements with subqueries
+idle	3	1	statements with subqueries in a transaction whose values are checked against SQLite's
+idle	11	3	statements with subqueries that failed: no lease
+idle	11	3	statements with subqueries that failed: timeout
+idle	700	233	succeeded
+idle	199	66	transactions committed
+idle	100	33	transactions ended for the lease
+idle	17	5	transactions not committed
+idle	229	76	transactions rolled back
+idle	7	2	transactions unknown
+idle	3	1	unknown
 idle	824	274	updates and deletes
-idle	84	28	updates and deletes in a transaction whose count of changes is compared with SQLite
+idle	81	27	updates and deletes in a transaction whose count of changes is compared with SQLite
 idle	4	1	updates and deletes of their own whose count of changes is compared with SQLite
-idle	9	3	updates and deletes that change no row, compared with SQLite
+idle	7	2	updates and deletes that change no row, compared with SQLite
 idle	23	7	updates and deletes that succeeded and changed rows
-idle	318	106	updates and deletes with SQLite's error
-idle	4	1	updates read by an index
-idle	4	1	values of a default in the log
+idle	330	110	updates and deletes with SQLite's error
+idle	3	1	updates read by an index
+idle	11	3	updates with subqueries with SQLite's error
+idle	7	2	values of a default in the log
 idle/mixed	16	5	NULL values in the log
-idle/mixed	800	266	SQLite's error
-idle/mixed	59	19	acknowledged writes
-idle/mixed	46	15	close and open
-idle/mixed	45	15	commits
-idle/mixed	12	4	commits of more than one statement
+idle/mixed	824	274	SQLite's error
+idle/mixed	61	20	acknowledged writes
+idle/mixed	47	15	close and open
+idle/mixed	50	16	commits
+idle/mixed	11	3	commits of more than one statement
 idle/mixed	15	5	commits with a parameter
-idle/mixed	12	4	crash, then a copy of the cache
-idle/mixed	21	7	crash, then an empty cache
-idle/mixed	3	1	create index: 1/1: index … already exists
-idle/mixed	71	23	create index: 1/1: no such table: …
+idle/mixed	15	5	crash, then a copy of the cache
+idle/mixed	18	6	crash, then an empty cache
+idle/mixed	4	1	create index: 1/1: index … already exists
+idle/mixed	77	25	create index: 1/1: no such table: …
 idle/mixed	7	2	create index: 1/1: there is already a table named …
 idle/mixed	4	1	create index: 8/8: attempt to write a readonly database
-idle/mixed	14	4	create index: ok
-idle/mixed	9	3	create tables with a default in the log
-idle/mixed	18	6	drop index: 1/1: no such index: …
-idle/mixed	28	9	drop index: ok
-idle/mixed	202	67	failed: no lease
-idle/mixed	114	38	failed: stopped
-idle/mixed	364	121	failed: timeout
-idle/mixed	36	12	fault: broken read
+idle/mixed	13	4	create index: ok
+idle/mixed	10	3	create tables with a default in the log
+idle/mixed	9	3	deletes with subqueries with SQLite's error
+idle/mixed	19	6	drop index: 1/1: no such index: …
+idle/mixed	29	9	drop index: ok
+idle/mixed	200	66	failed: no lease
+idle/mixed	129	43	failed: stopped
+idle/mixed	337	112	failed: timeout
+idle/mixed	35	11	fault: broken read
 idle/mixed	20	6	fault: conflict
-idle/mixed	24	8	fault: cut-off
-idle/mixed	37	12	fault: lost request
-idle/mixed	53	17	fault: lost response
-idle/mixed	376	125	fault: no answer
-idle/mixed	8	2	fault: outage
-idle/mixed	125	41	fault: slow way
-idle/mixed	10	3	fault: write applied after its caller gave up
-idle/mixed	555	185	fault: write stuck in the network
+idle/mixed	21	7	fault: cut-off
+idle/mixed	39	13	fault: lost request
+idle/mixed	54	18	fault: lost response
+idle/mixed	386	128	fault: no answer
+idle/mixed	7	2	fault: outage
+idle/mixed	122	40	fault: slow way
+idle/mixed	7	2	fault: write applied after its caller gave up
+idle/mixed	539	179	fault: write stuck in the network
 idle/mixed	33	=	integrity checks after a crash
 idle/mixed	33	=	integrity checks after the replay
 idle/mixed	66	=	integrity checks at the end
-idle/mixed	44	14	kept transactions ended for the lease
-idle/mixed	28	9	pending
+idle/mixed	45	15	kept transactions ended for the lease
+idle/mixed	27	9	pending
 idle/mixed	26	8	query not read to its end
-idle/mixed	114	38	read-only transactions
-idle/mixed	30	10	refused for the type
+idle/mixed	113	37	read-only transactions
+idle/mixed	37	12	refused for the type
 idle/mixed	5	1	replays of a log with an index
-idle/mixed	18	6	rows of several columns
-idle/mixed	7	2	selects read by an index
-idle/mixed	32	10	selects with LIMIT and without ORDER BY with SQLite's error
+idle/mixed	20	6	rows of several columns
+idle/mixed	8	2	selects read by an index
+idle/mixed	29	9	selects with LIMIT and without ORDER BY with SQLite's error
 idle/mixed	8	2	selects with LIMIT that succeeded
-idle/mixed	39	13	selects with ORDER BY with SQLite's error
-idle/mixed	56	18	selects with WHERE in a transaction compared with SQLite
-idle/mixed	13	4	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
-idle/mixed	8	2	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
-idle/mixed	3	1	selects with WHERE in a transaction compared with SQLite, read by an index
+idle/mixed	40	13	selects with ORDER BY with SQLite's error
+idle/mixed	69	23	selects with WHERE in a transaction compared with SQLite
+idle/mixed	15	5	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
+idle/mixed	13	4	selects with WHERE in a transaction compared with SQLite, on an engine that reads every row
+idle/mixed	4	1	selects with WHERE in a transaction compared with SQLite, read by an index
 idle/mixed	55	18	selects with WHERE of their own compared with SQLite
-idle/mixed	15	5	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
-idle/mixed	5	1	selects with WHERE of their own compared with SQLite, on an engine that reads every row
-idle/mixed	307	102	skipped
-idle/mixed	970	323	statements in a transaction
-idle/mixed	58	19	statements of IF NOT EXISTS or IF EXISTS that did nothing
+idle/mixed	9	3	selects with WHERE of their own compared with SQLite, on an engine that forces an index path
+idle/mixed	10	3	selects with WHERE of their own compared with SQLite, on an engine that reads every row
+idle/mixed	4	1	selects with subqueries that succeeded
+idle/mixed	3	1	selects with subqueries that succeeded in a transaction
+idle/mixed	3	1	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+idle/mixed	31	10	selects with subqueries with SQLite's error
+idle/mixed	315	105	skipped
+idle/mixed	995	331	statements in a transaction
+idle/mixed	60	20	statements of IF NOT EXISTS or IF EXISTS that did nothing
 idle/mixed	32	10	statements of IF NOT EXISTS or IF EXISTS that did their work
-idle/mixed	36	12	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-idle/mixed	225	75	statements on an engine that forces an index path
+idle/mixed	41	13	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+idle/mixed	228	76	statements on an engine that forces an index path
 idle/mixed	13	4	statements read by the index that their engine forces
-idle/mixed	28	9	statements that do nothing in a transaction, compared with SQLite
-idle/mixed	30	10	statements that do nothing, compared with SQLite
+idle/mixed	29	9	statements that do nothing in a transaction, compared with SQLite
+idle/mixed	31	10	statements that do nothing, compared with SQLite
 idle/mixed	203	67	statements with RETURNING
 idle/mixed	12	4	statements with RETURNING in a transaction whose rows are compared with SQLite
-idle/mixed	8	2	statements with RETURNING that gave rows in a transaction that was rolled back
-idle/mixed	85	28	statements with RETURNING with SQLite's error
-idle/mixed	192	64	statements with a value on the left
-idle/mixed	13	4	statements with a value on the left read by a key or an index
-idle/mixed	3	1	statements with a value on the left that found rows
-idle/mixed	85	28	statements with a value on the left with SQLite's error
-idle/mixed	281	93	succeeded
-idle/mixed	87	29	transactions committed
-idle/mixed	44	14	transactions ended for the lease
-idle/mixed	9	3	transactions not committed
-idle/mixed	108	36	transactions rolled back
+idle/mixed	3	1	statements with RETURNING that gave rows in a transaction
+idle/mixed	7	2	statements with RETURNING that gave rows in a transaction that was rolled back
+idle/mixed	89	29	statements with RETURNING with SQLite's error
+idle/mixed	228	76	statements with a value on the left
+idle/mixed	12	4	statements with a value on the left read by a key or an index
+idle/mixed	108	36	statements with a value on the left with SQLite's error
+idle/mixed	101	33	statements with subqueries
+idle/mixed	3	1	statements with subqueries in a transaction whose values are checked against SQLite's
+idle/mixed	11	3	statements with subqueries that failed: no lease
+idle/mixed	11	3	statements with subqueries that failed: timeout
+idle/mixed	274	91	succeeded
+idle/mixed	89	29	transactions committed
+idle/mixed	45	15	transactions ended for the lease
+idle/mixed	11	3	transactions not committed
+idle/mixed	111	37	transactions rolled back
+idle/mixed	3	1	transactions unknown
 idle/mixed	365	121	updates and deletes
-idle/mixed	24	8	updates and deletes in a transaction whose count of changes is compared with SQLite
-idle/mixed	5	1	updates and deletes that change no row, compared with SQLite
+idle/mixed	21	7	updates and deletes in a transaction whose count of changes is compared with SQLite
+idle/mixed	3	1	updates and deletes that change no row, compared with SQLite
 idle/mixed	5	1	updates and deletes that succeeded and changed rows
-idle/mixed	129	43	updates and deletes with SQLite's error
-idle/mixed	4	1	updates read by an index
-idle/mixed	4	1	values of a default in the log
+idle/mixed	141	47	updates and deletes with SQLite's error
+idle/mixed	3	1	updates read by an index
+idle/mixed	11	3	updates with subqueries with SQLite's error
+idle/mixed	7	2	values of a default in the log
 idle/changes	137	45	SQLite's error
 idle/changes	13	4	acknowledged writes
 idle/changes	11	3	close and open
@@ -1085,168 +1251,249 @@ idle/transactions	200	66	updates and deletes
 idle/transactions	29	9	updates and deletes in a transaction whose count of changes is compared with SQLite
 idle/transactions	11	3	updates and deletes that succeeded and changed rows
 idle/transactions	98	32	updates and deletes with SQLite's error
-hammer	428	142	NULL values in the log
-hammer	11226	3742	SQLite's error
-hammer	3978	1326	acknowledged writes
-hammer	2546	848	commits
-hammer	556	185	commits of more than one statement
-hammer	990	330	commits with a parameter
-hammer	216	72	create index: 1/1: index … already exists
-hammer	42	14	create index: 1/1: no such column: …
-hammer	387	129	create index: 1/1: no such table: …
-hammer	299	99	create index: 1/1: there is already a table named …
-hammer	96	32	create index: 8/8: attempt to write a readonly database
-hammer	349	116	create index: ok
-hammer	136	45	create tables with a default in the log
-hammer	27	9	deletes read by an index
-hammer	341	113	drop index: 1/1: no such index: …
-hammer	28	9	drop index: 8/8: attempt to write a readonly database
-hammer	235	78	drop index: ok
-hammer	670	223	failed: no lease
-hammer	1618	539	failed: timeout
-hammer	6	2	fault: broken read
-hammer	87	29	fault: conflict
-hammer	31	10	fault: cut-off
-hammer	157	52	fault: lost request
-hammer	135	45	fault: lost response
-hammer	147	49	fault: no answer
-hammer	12	4	fault: outage
-hammer	262	87	fault: slow way
-hammer	61	20	fault: write applied after its caller gave up
-hammer	263	87	fault: write stuck in the network
-hammer	33	11	indexes dropped while the rows of a query that read by them were open
-hammer	123	=	integrity checks after the replay
-hammer	123	=	integrity checks at the end
-hammer	986	328	query not read to its end
-hammer	1125	375	read-only transactions
-hammer	742	247	refused for the type
-hammer	29	9	replays of a log with an index
-hammer	1543	514	rows of several columns
-hammer	139	46	selects read by an index
-hammer	12	4	selects with LIMIT and without ORDER BY that gave rows
-hammer	59	19	selects with LIMIT and without ORDER BY with SQLite's error
-hammer	230	76	selects with LIMIT that succeeded
-hammer	72	24	selects with ORDER BY that gave rows
-hammer	148	49	selects with ORDER BY with SQLite's error
-hammer	1220	406	selects with WHERE in a transaction compared with SQLite
-hammer	44	14	selects with WHERE in a transaction compared with SQLite, read by an index
-hammer	159	53	selects with WHERE in a transaction that give rows, compared with SQLite
-hammer	828	276	selects with WHERE of their own compared with SQLite
+hammer	766	255	NULL values in the log
+hammer	15900	5300	SQLite's error
+hammer	5265	1755	acknowledged writes
+hammer	3356	1118	commits
+hammer	757	252	commits of more than one statement
+hammer	1412	470	commits with a parameter
+hammer	325	108	create index: 1/1: index … already exists
+hammer	46	15	create index: 1/1: no such column: …
+hammer	541	180	create index: 1/1: no such table: …
+hammer	340	113	create index: 1/1: there is already a table named …
+hammer	125	41	create index: 8/8: attempt to write a readonly database
+hammer	474	158	create index: ok
+hammer	132	44	create tables with a default in the log
+hammer	33	11	deletes read by an index
+hammer	4	1	deletes with subqueries and RETURNING that gave rows
+hammer	16	5	deletes with subqueries that changed rows in a transaction
+hammer	8	2	deletes with subqueries that changed rows of their own
+hammer	173	57	deletes with subqueries that succeeded
+hammer	93	31	deletes with subqueries that succeeded in a transaction
+hammer	80	26	deletes with subqueries that succeeded of their own
+hammer	81	27	deletes with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer	70	23	deletes with subqueries that succeeded, whose subqueries the engine computed of their own
+hammer	576	192	deletes with subqueries with SQLite's error
+hammer	443	147	drop index: 1/1: no such index: …
+hammer	37	12	drop index: 8/8: attempt to write a readonly database
+hammer	298	99	drop index: ok
+hammer	884	294	failed: no lease
+hammer	2141	713	failed: timeout
+hammer	11	3	fault: broken read
+hammer	130	43	fault: conflict
+hammer	43	14	fault: cut-off
+hammer	194	64	fault: lost request
+hammer	160	53	fault: lost response
+hammer	195	65	fault: no answer
+hammer	14	4	fault: outage
+hammer	325	108	fault: slow way
+hammer	70	23	fault: write applied after its caller gave up
+hammer	331	110	fault: write stuck in the network
+hammer	35	11	indexes dropped while the rows of a query that read by them were open
+hammer	163	=	integrity checks after the replay
+hammer	163	=	integrity checks at the end
+hammer	1156	385	query not read to its end
+hammer	1498	499	read-only transactions
+hammer	1553	517	refused for the type
+hammer	51	17	replays of a log with an index
+hammer	2256	752	rows of several columns
+hammer	150	50	selects read by an index
+hammer	11	3	selects with LIMIT and without ORDER BY that gave rows
+hammer	270	90	selects with LIMIT and without ORDER BY with SQLite's error
+hammer	284	94	selects with LIMIT that succeeded
+hammer	71	23	selects with ORDER BY that gave rows
+hammer	146	48	selects with ORDER BY with SQLite's error
+hammer	2126	708	selects with WHERE in a transaction compared with SQLite
+hammer	52	17	selects with WHERE in a transaction compared with SQLite, read by an index
+hammer	185	61	selects with WHERE in a transaction that give rows, compared with SQLite
+hammer	1377	459	selects with WHERE of their own compared with SQLite
 hammer	31	10	selects with WHERE of their own compared with SQLite, read by an index
-hammer	114	38	selects with WHERE of their own that give rows, compared with SQLite
-hammer	2210	736	skipped
-hammer	13795	4598	statements in a transaction
-hammer	467	155	statements of IF NOT EXISTS or IF EXISTS that did nothing
-hammer	183	61	statements of IF NOT EXISTS or IF EXISTS that did their work
-hammer	253	84	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-hammer	234	78	statements that do nothing in a transaction, compared with SQLite
-hammer	233	77	statements that do nothing, compared with SQLite
-hammer	1969	656	statements with RETURNING
-hammer	307	102	statements with RETURNING in a transaction whose rows are compared with SQLite
-hammer	55	18	statements with RETURNING of their own that gave rows
-hammer	8	2	statements with RETURNING of their own through Query that failed in their write transaction
-hammer	3	1	statements with RETURNING of their own through Query whose outcome is unknown
-hammer	55	18	statements with RETURNING of their own whose rows are compared with the log
-hammer	125	41	statements with RETURNING that gave rows in a transaction
-hammer	43	14	statements with RETURNING that gave rows in a transaction that was rolled back
-hammer	1006	335	statements with RETURNING with SQLite's error
-hammer	1062	354	statements with a value on the left
-hammer	329	109	statements with a value on the left read by a key or an index
-hammer	60	20	statements with a value on the left that found rows
-hammer	416	138	statements with a value on the left with SQLite's error
-hammer	8421	2807	succeeded
-hammer	2427	809	transactions committed
-hammer	91	30	transactions not committed
-hammer	881	293	transactions rolled back
-hammer	60	20	transactions unknown
-hammer	118	39	unknown
-hammer	4555	1518	updates and deletes
-hammer	1025	341	updates and deletes in a transaction whose count of changes is compared with SQLite
-hammer	177	59	updates and deletes of their own whose count of changes is compared with SQLite
-hammer	389	129	updates and deletes that change no row, compared with SQLite
-hammer	556	185	updates and deletes that succeeded and changed rows
-hammer	1977	659	updates and deletes with SQLite's error
-hammer	18	6	updates read by an index
-hammer	238	79	values of a default in the log
-hammer/mixed	74	24	NULL values in the log
-hammer/mixed	3035	1011	SQLite's error
-hammer/mixed	798	266	acknowledged writes
-hammer/mixed	585	195	commits
-hammer/mixed	76	25	commits of more than one statement
-hammer/mixed	161	53	commits with a parameter
-hammer/mixed	71	23	create index: 1/1: index … already exists
-hammer/mixed	24	8	create index: 1/1: no such column: …
-hammer/mixed	176	58	create index: 1/1: no such table: …
-hammer/mixed	92	30	create index: 1/1: there is already a table named …
-hammer/mixed	17	5	create index: 8/8: attempt to write a readonly database
-hammer/mixed	133	44	create index: ok
-hammer/mixed	68	22	create tables with a default in the log
-hammer/mixed	80	26	drop index: 1/1: no such index: …
-hammer/mixed	8	2	drop index: 8/8: attempt to write a readonly database
-hammer/mixed	70	23	drop index: ok
-hammer/mixed	141	47	failed: no lease
-hammer/mixed	388	129	failed: timeout
-hammer/mixed	9	3	fault: conflict
-hammer/mixed	4	1	fault: cut-off
-hammer/mixed	40	13	fault: lost request
-hammer/mixed	29	9	fault: lost response
-hammer/mixed	29	9	fault: no answer
-hammer/mixed	4	1	fault: outage
-hammer/mixed	53	17	fault: slow way
-hammer/mixed	13	4	fault: write applied after its caller gave up
-hammer/mixed	65	21	fault: write stuck in the network
+hammer	135	45	selects with WHERE of their own that give rows, compared with SQLite
+hammer	50	16	selects with subqueries that gave rows
+hammer	405	135	selects with subqueries that succeeded
+hammer	239	79	selects with subqueries that succeeded in a transaction
+hammer	166	55	selects with subqueries that succeeded of their own
+hammer	207	69	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer	140	46	selects with subqueries that succeeded, whose subqueries the engine computed of their own
+hammer	1184	394	selects with subqueries with SQLite's error
+hammer	3030	1010	skipped
+hammer	18782	6260	statements in a transaction
+hammer	465	155	statements of IF NOT EXISTS or IF EXISTS that did nothing
+hammer	188	62	statements of IF NOT EXISTS or IF EXISTS that did their work
+hammer	251	83	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+hammer	222	74	statements that do nothing in a transaction, compared with SQLite
+hammer	243	81	statements that do nothing, compared with SQLite
+hammer	3636	1212	statements with RETURNING
+hammer	469	156	statements with RETURNING in a transaction whose rows are compared with SQLite
+hammer	130	43	statements with RETURNING of their own that gave rows
+hammer	16	5	statements with RETURNING of their own through Query that failed in their write transaction
+hammer	13	4	statements with RETURNING of their own through Query whose outcome is unknown
+hammer	130	43	statements with RETURNING of their own whose rows are compared with the log
+hammer	222	74	statements with RETURNING that gave rows in a transaction
+hammer	75	25	statements with RETURNING that gave rows in a transaction that was rolled back
+hammer	1914	638	statements with RETURNING with SQLite's error
+hammer	120	40	statements with a correlated subquery, refused
+hammer	250	83	statements with a subquery of another type than its column, refused
+hammer	2871	957	statements with a value on the left
+hammer	389	129	statements with a value on the left read by a key or an index
+hammer	86	28	statements with a value on the left that found rows
+hammer	1525	508	statements with a value on the left with SQLite's error
+hammer	4794	1598	statements with subqueries
+hammer	173	57	statements with subqueries and an argument of LIMIT that s4ql refuses
+hammer	435	145	statements with subqueries in a transaction whose values are checked against SQLite's
+hammer	132	44	statements with subqueries of the log whose values are checked against SQLite's
+hammer	247	82	statements with subqueries of their own whose values are checked against SQLite's
+hammer	80	26	statements with subqueries that failed: no lease
+hammer	222	74	statements with subqueries that failed: timeout
+hammer	102	34	statements with subqueries that succeeded, whose subqueries the engine did not compute
+hammer	71	23	statements with two subqueries or more that succeeded
+hammer	300	100	subqueries in a transaction: subquery whose value was NULL
+hammer	159	53	subqueries in a transaction: subquery whose value was that of its one first row
+hammer	5	1	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of SQLite's first
+hammer	12	4	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of another
+hammer	7	2	subqueries in a transaction: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of another
+hammer	74	24	subqueries of the log: subquery whose value was NULL
+hammer	64	21	subqueries of the log: subquery whose value was that of its one first row
+hammer	176	58	subqueries of their own: subquery whose value was NULL
+hammer	81	27	subqueries of their own: subquery whose value was that of its one first row
+hammer	7	2	subqueries of their own: subquery with rows that tie for the first, whose value was that of SQLite's first
+hammer	3	1	subqueries of their own: subquery with rows that tie for the first, whose value was that of another
+hammer	10406	3468	succeeded
+hammer	3329	1109	transactions committed
+hammer	114	38	transactions not committed
+hammer	1162	387	transactions rolled back
+hammer	86	28	transactions unknown
+hammer	149	49	unknown
+hammer	7316	2438	updates and deletes
+hammer	1237	412	updates and deletes in a transaction whose count of changes is compared with SQLite
+hammer	195	65	updates and deletes of their own whose count of changes is compared with SQLite
+hammer	544	181	updates and deletes that change no row, compared with SQLite
+hammer	604	201	updates and deletes that succeeded and changed rows
+hammer	3615	1205	updates and deletes with SQLite's error
+hammer	22	7	updates read by an index
+hammer	4	1	updates with subqueries and RETURNING that gave rows
+hammer	13	4	updates with subqueries that changed rows in a transaction
+hammer	11	3	updates with subqueries that changed rows of their own
+hammer	261	87	updates with subqueries that succeeded
+hammer	153	51	updates with subqueries that succeeded in a transaction
+hammer	108	36	updates with subqueries that succeeded of their own
+hammer	140	46	updates with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer	99	33	updates with subqueries that succeeded, whose subqueries the engine computed of their own
+hammer	1116	372	updates with subqueries with SQLite's error
+hammer	239	79	values of a default in the log
+hammer/mixed	88	29	NULL values in the log
+hammer/mixed	2985	995	SQLite's error
+hammer/mixed	752	250	acknowledged writes
+hammer/mixed	557	185	commits
+hammer/mixed	80	26	commits of more than one statement
+hammer/mixed	150	50	commits with a parameter
+hammer/mixed	81	27	create index: 1/1: index … already exists
+hammer/mixed	21	7	create index: 1/1: no such column: …
+hammer/mixed	166	55	create index: 1/1: no such table: …
+hammer/mixed	104	34	create index: 1/1: there is already a table named …
+hammer/mixed	16	5	create index: 8/8: attempt to write a readonly database
+hammer/mixed	134	44	create index: ok
+hammer/mixed	64	21	create tables with a default in the log
+hammer/mixed	10	3	deletes with subqueries that succeeded
+hammer/mixed	5	1	deletes with subqueries that succeeded in a transaction
+hammer/mixed	5	1	deletes with subqueries that succeeded of their own
+hammer/mixed	5	1	deletes with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer/mixed	5	1	deletes with subqueries that succeeded, whose subqueries the engine computed of their own
+hammer/mixed	23	7	deletes with subqueries with SQLite's error
+hammer/mixed	79	26	drop index: 1/1: no such index: …
+hammer/mixed	6	2	drop index: 8/8: attempt to write a readonly database
+hammer/mixed	75	25	drop index: ok
+hammer/mixed	147	49	failed: no lease
+hammer/mixed	413	137	failed: timeout
+hammer/mixed	11	3	fault: conflict
+hammer/mixed	9	3	fault: cut-off
+hammer/mixed	28	9	fault: lost request
+hammer/mixed	23	7	fault: lost response
+hammer/mixed	36	12	fault: no answer
+hammer/mixed	50	16	fault: slow way
+hammer/mixed	15	5	fault: write applied after its caller gave up
+hammer/mixed	78	26	fault: write stuck in the network
 hammer/mixed	5	1	indexes dropped while the rows of a query that read by them were open
 hammer/mixed	33	=	integrity checks after the replay
 hammer/mixed	33	=	integrity checks at the end
-hammer/mixed	181	60	query not read to its end
-hammer/mixed	253	84	read-only transactions
-hammer/mixed	124	41	refused for the type
-hammer/mixed	13	4	replays of a log with an index
-hammer/mixed	206	68	rows of several columns
-hammer/mixed	13	4	selects read by an index
-hammer/mixed	7	2	selects with LIMIT and without ORDER BY that gave rows
+hammer/mixed	144	48	query not read to its end
+hammer/mixed	231	77	read-only transactions
+hammer/mixed	147	49	refused for the type
+hammer/mixed	11	3	replays of a log with an index
+hammer/mixed	210	70	rows of several columns
+hammer/mixed	12	4	selects read by an index
+hammer/mixed	5	1	selects with LIMIT and without ORDER BY that gave rows
 hammer/mixed	56	18	selects with LIMIT and without ORDER BY with SQLite's error
-hammer/mixed	98	32	selects with LIMIT that succeeded
-hammer/mixed	18	6	selects with ORDER BY that gave rows
-hammer/mixed	110	36	selects with ORDER BY with SQLite's error
-hammer/mixed	194	64	selects with WHERE in a transaction compared with SQLite
+hammer/mixed	97	32	selects with LIMIT that succeeded
+hammer/mixed	17	5	selects with ORDER BY that gave rows
+hammer/mixed	108	36	selects with ORDER BY with SQLite's error
+hammer/mixed	223	74	selects with WHERE in a transaction compared with SQLite
 hammer/mixed	4	1	selects with WHERE in a transaction compared with SQLite, read by an index
-hammer/mixed	12	4	selects with WHERE in a transaction that give rows, compared with SQLite
-hammer/mixed	162	54	selects with WHERE of their own compared with SQLite
-hammer/mixed	4	1	selects with WHERE of their own compared with SQLite, read by an index
-hammer/mixed	7	2	selects with WHERE of their own that give rows, compared with SQLite
-hammer/mixed	898	299	skipped
-hammer/mixed	3184	1061	statements in a transaction
-hammer/mixed	276	92	statements of IF NOT EXISTS or IF EXISTS that did nothing
-hammer/mixed	125	41	statements of IF NOT EXISTS or IF EXISTS that did their work
-hammer/mixed	146	48	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
-hammer/mixed	137	45	statements that do nothing in a transaction, compared with SQLite
-hammer/mixed	139	46	statements that do nothing, compared with SQLite
-hammer/mixed	566	188	statements with RETURNING
-hammer/mixed	32	10	statements with RETURNING in a transaction whose rows are compared with SQLite
-hammer/mixed	19	6	statements with RETURNING of their own that gave rows
-hammer/mixed	5	1	statements with RETURNING of their own through Query that failed in their write transaction
-hammer/mixed	19	6	statements with RETURNING of their own whose rows are compared with the log
+hammer/mixed	10	3	selects with WHERE in a transaction that give rows, compared with SQLite
+hammer/mixed	182	60	selects with WHERE of their own compared with SQLite
+hammer/mixed	11	3	selects with WHERE of their own that give rows, compared with SQLite
+hammer/mixed	5	1	selects with subqueries that gave rows
+hammer/mixed	17	5	selects with subqueries that succeeded
+hammer/mixed	8	2	selects with subqueries that succeeded in a transaction
+hammer/mixed	9	3	selects with subqueries that succeeded of their own
+hammer/mixed	8	2	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer/mixed	6	2	selects with subqueries that succeeded, whose subqueries the engine computed of their own
+hammer/mixed	65	21	selects with subqueries with SQLite's error
+hammer/mixed	930	310	skipped
+hammer/mixed	3156	1052	statements in a transaction
+hammer/mixed	274	91	statements of IF NOT EXISTS or IF EXISTS that did nothing
+hammer/mixed	130	43	statements of IF NOT EXISTS or IF EXISTS that did their work
+hammer/mixed	144	48	statements of IF NOT EXISTS or IF EXISTS with SQLite's error
+hammer/mixed	125	41	statements that do nothing in a transaction, compared with SQLite
+hammer/mixed	149	49	statements that do nothing, compared with SQLite
+hammer/mixed	562	187	statements with RETURNING
+hammer/mixed	33	11	statements with RETURNING in a transaction whose rows are compared with SQLite
+hammer/mixed	28	9	statements with RETURNING of their own that gave rows
+hammer/mixed	4	1	statements with RETURNING of their own through Query that failed in their write transaction
+hammer/mixed	3	1	statements with RETURNING of their own through Query whose outcome is unknown
+hammer/mixed	28	9	statements with RETURNING of their own whose rows are compared with the log
 hammer/mixed	18	6	statements with RETURNING that gave rows in a transaction
-hammer/mixed	5	1	statements with RETURNING that gave rows in a transaction that was rolled back
-hammer/mixed	343	114	statements with RETURNING with SQLite's error
-hammer/mixed	521	173	statements with a value on the left
-hammer/mixed	145	48	statements with a value on the left read by a key or an index
-hammer/mixed	29	9	statements with a value on the left that found rows
-hammer/mixed	235	78	statements with a value on the left with SQLite's error
-hammer/mixed	1705	568	succeeded
-hammer/mixed	559	186	transactions committed
-hammer/mixed	20	6	transactions not committed
-hammer/mixed	210	70	transactions rolled back
-hammer/mixed	11	3	transactions unknown
-hammer/mixed	21	7	unknown
+hammer/mixed	9	3	statements with RETURNING that gave rows in a transaction that was rolled back
+hammer/mixed	322	107	statements with RETURNING with SQLite's error
+hammer/mixed	5	1	statements with a correlated subquery, refused
+hammer/mixed	7	2	statements with a subquery of another type than its column, refused
+hammer/mixed	621	207	statements with a value on the left
+hammer/mixed	132	44	statements with a value on the left read by a key or an index
+hammer/mixed	27	9	statements with a value on the left that found rows
+hammer/mixed	292	97	statements with a value on the left with SQLite's error
+hammer/mixed	231	77	statements with subqueries
+hammer/mixed	9	3	statements with subqueries and an argument of LIMIT that s4ql refuses
+hammer/mixed	16	5	statements with subqueries in a transaction whose values are checked against SQLite's
+hammer/mixed	6	2	statements with subqueries of the log whose values are checked against SQLite's
+hammer/mixed	9	3	statements with subqueries of their own whose values are checked against SQLite's
+hammer/mixed	6	2	statements with subqueries that failed: no lease
+hammer/mixed	9	3	statements with subqueries that failed: timeout
+hammer/mixed	5	1	statements with subqueries that succeeded, whose subqueries the engine did not compute
+hammer/mixed	4	1	statements with two subqueries or more that succeeded
+hammer/mixed	8	2	subqueries in a transaction: subquery whose value was NULL
+hammer/mixed	9	3	subqueries in a transaction: subquery whose value was that of its one first row
+hammer/mixed	3	1	subqueries of the log: subquery whose value was NULL
+hammer/mixed	3	1	subqueries of the log: subquery whose value was that of its one first row
+hammer/mixed	6	2	subqueries of their own: subquery whose value was NULL
+hammer/mixed	3	1	subqueries of their own: subquery whose value was that of its one first row
+hammer/mixed	1666	555	succeeded
+hammer/mixed	543	181	transactions committed
+hammer/mixed	25	8	transactions not committed
+hammer/mixed	202	67	transactions rolled back
+hammer/mixed	9	3	transactions unknown
+hammer/mixed	27	9	unknown
 hammer/mixed	944	314	updates and deletes
-hammer/mixed	116	38	updates and deletes in a transaction whose count of changes is compared with SQLite
-hammer/mixed	38	12	updates and deletes of their own whose count of changes is compared with SQLite
-hammer/mixed	96	32	updates and deletes that change no row, compared with SQLite
-hammer/mixed	85	28	updates and deletes that succeeded and changed rows
-hammer/mixed	457	152	updates and deletes with SQLite's error
-hammer/mixed	68	22	values of a default in the log
+hammer/mixed	108	36	updates and deletes in a transaction whose count of changes is compared with SQLite
+hammer/mixed	39	13	updates and deletes of their own whose count of changes is compared with SQLite
+hammer/mixed	88	29	updates and deletes that change no row, compared with SQLite
+hammer/mixed	88	29	updates and deletes that succeeded and changed rows
+hammer/mixed	459	153	updates and deletes with SQLite's error
+hammer/mixed	7	2	updates with subqueries that succeeded
+hammer/mixed	4	1	updates with subqueries that succeeded in a transaction
+hammer/mixed	3	1	updates with subqueries that succeeded of their own
+hammer/mixed	3	1	updates with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer/mixed	33	11	updates with subqueries with SQLite's error
+hammer/mixed	69	23	values of a default in the log
 hammer/tables	10	3	NULL values in the log
 hammer/tables	767	255	SQLite's error
 hammer/tables	211	70	acknowledged writes
@@ -1746,3 +1993,120 @@ hammer/returning	216	72	updates and deletes that succeeded and changed rows
 hammer/returning	706	235	updates and deletes with SQLite's error
 hammer/returning	4	1	updates read by an index
 hammer/returning	145	48	values of a default in the log
+hammer/subquery	324	108	NULL values in the log
+hammer/subquery	4724	1574	SQLite's error
+hammer/subquery	1333	444	acknowledged writes
+hammer/subquery	838	279	commits
+hammer/subquery	197	65	commits of more than one statement
+hammer/subquery	433	144	commits with a parameter
+hammer/subquery	99	33	create index: 1/1: index … already exists
+hammer/subquery	7	2	create index: 1/1: no such column: …
+hammer/subquery	164	54	create index: 1/1: no such table: …
+hammer/subquery	29	9	create index: 1/1: there is already a table named …
+hammer/subquery	30	10	create index: 8/8: attempt to write a readonly database
+hammer/subquery	124	41	create index: ok
+hammer/subquery	6	2	deletes read by an index
+hammer/subquery	4	1	deletes with subqueries and RETURNING that gave rows
+hammer/subquery	16	5	deletes with subqueries that changed rows in a transaction
+hammer/subquery	6	2	deletes with subqueries that changed rows of their own
+hammer/subquery	163	54	deletes with subqueries that succeeded
+hammer/subquery	88	29	deletes with subqueries that succeeded in a transaction
+hammer/subquery	75	25	deletes with subqueries that succeeded of their own
+hammer/subquery	76	25	deletes with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer/subquery	65	21	deletes with subqueries that succeeded, whose subqueries the engine computed of their own
+hammer/subquery	553	184	deletes with subqueries with SQLite's error
+hammer/subquery	103	34	drop index: 1/1: no such index: …
+hammer/subquery	11	3	drop index: 8/8: attempt to write a readonly database
+hammer/subquery	58	19	drop index: ok
+hammer/subquery	208	69	failed: no lease
+hammer/subquery	498	166	failed: timeout
+hammer/subquery	5	1	fault: broken read
+hammer/subquery	41	13	fault: conflict
+hammer/subquery	7	2	fault: cut-off
+hammer/subquery	49	16	fault: lost request
+hammer/subquery	31	10	fault: lost response
+hammer/subquery	41	13	fault: no answer
+hammer/subquery	4	1	fault: outage
+hammer/subquery	66	22	fault: slow way
+hammer/subquery	7	2	fault: write applied after its caller gave up
+hammer/subquery	55	18	fault: write stuck in the network
+hammer/subquery	40	=	integrity checks after the replay
+hammer/subquery	40	=	integrity checks at the end
+hammer/subquery	207	69	query not read to its end
+hammer/subquery	395	131	read-only transactions
+hammer/subquery	788	262	refused for the type
+hammer/subquery	24	8	replays of a log with an index
+hammer/subquery	709	236	rows of several columns
+hammer/subquery	12	4	selects read by an index
+hammer/subquery	211	70	selects with LIMIT and without ORDER BY with SQLite's error
+hammer/subquery	55	18	selects with LIMIT that succeeded
+hammer/subquery	877	292	selects with WHERE in a transaction compared with SQLite
+hammer/subquery	8	2	selects with WHERE in a transaction compared with SQLite, read by an index
+hammer/subquery	28	9	selects with WHERE in a transaction that give rows, compared with SQLite
+hammer/subquery	529	176	selects with WHERE of their own compared with SQLite
+hammer/subquery	17	5	selects with WHERE of their own that give rows, compared with SQLite
+hammer/subquery	45	15	selects with subqueries that gave rows
+hammer/subquery	388	129	selects with subqueries that succeeded
+hammer/subquery	231	77	selects with subqueries that succeeded in a transaction
+hammer/subquery	157	52	selects with subqueries that succeeded of their own
+hammer/subquery	199	66	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer/subquery	134	44	selects with subqueries that succeeded, whose subqueries the engine computed of their own
+hammer/subquery	1119	373	selects with subqueries with SQLite's error
+hammer/subquery	788	262	skipped
+hammer/subquery	5015	1671	statements in a transaction
+hammer/subquery	1671	557	statements with RETURNING
+hammer/subquery	161	53	statements with RETURNING in a transaction whose rows are compared with SQLite
+hammer/subquery	66	22	statements with RETURNING of their own that gave rows
+hammer/subquery	9	3	statements with RETURNING of their own through Query that failed in their write transaction
+hammer/subquery	8	2	statements with RETURNING of their own through Query whose outcome is unknown
+hammer/subquery	66	22	statements with RETURNING of their own whose rows are compared with the log
+hammer/subquery	97	32	statements with RETURNING that gave rows in a transaction
+hammer/subquery	28	9	statements with RETURNING that gave rows in a transaction that was rolled back
+hammer/subquery	929	309	statements with RETURNING with SQLite's error
+hammer/subquery	115	38	statements with a correlated subquery, refused
+hammer/subquery	243	81	statements with a subquery of another type than its column, refused
+hammer/subquery	1709	569	statements with a value on the left
+hammer/subquery	73	24	statements with a value on the left read by a key or an index
+hammer/subquery	28	9	statements with a value on the left that found rows
+hammer/subquery	1052	350	statements with a value on the left with SQLite's error
+hammer/subquery	4563	1521	statements with subqueries
+hammer/subquery	164	54	statements with subqueries and an argument of LIMIT that s4ql refuses
+hammer/subquery	419	139	statements with subqueries in a transaction whose values are checked against SQLite's
+hammer/subquery	126	42	statements with subqueries of the log whose values are checked against SQLite's
+hammer/subquery	238	79	statements with subqueries of their own whose values are checked against SQLite's
+hammer/subquery	74	24	statements with subqueries that failed: no lease
+hammer/subquery	213	71	statements with subqueries that failed: timeout
+hammer/subquery	97	32	statements with subqueries that succeeded, whose subqueries the engine did not compute
+hammer/subquery	67	22	statements with two subqueries or more that succeeded
+hammer/subquery	292	97	subqueries in a transaction: subquery whose value was NULL
+hammer/subquery	150	50	subqueries in a transaction: subquery whose value was that of its one first row
+hammer/subquery	5	1	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of SQLite's first
+hammer/subquery	12	4	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of another
+hammer/subquery	7	2	subqueries in a transaction: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of another
+hammer/subquery	71	23	subqueries of the log: subquery whose value was NULL
+hammer/subquery	61	20	subqueries of the log: subquery whose value was that of its one first row
+hammer/subquery	170	56	subqueries of their own: subquery whose value was NULL
+hammer/subquery	78	26	subqueries of their own: subquery whose value was that of its one first row
+hammer/subquery	7	2	subqueries of their own: subquery with rows that tie for the first, whose value was that of SQLite's first
+hammer/subquery	3	1	subqueries of their own: subquery with rows that tie for the first, whose value was that of another
+hammer/subquery	2024	674	succeeded
+hammer/subquery	918	306	transactions committed
+hammer/subquery	18	6	transactions not committed
+hammer/subquery	289	96	transactions rolled back
+hammer/subquery	28	9	transactions unknown
+hammer/subquery	25	8	unknown
+hammer/subquery	2761	920	updates and deletes
+hammer/subquery	220	73	updates and deletes in a transaction whose count of changes is compared with SQLite
+hammer/subquery	17	5	updates and deletes of their own whose count of changes is compared with SQLite
+hammer/subquery	163	54	updates and deletes that change no row, compared with SQLite
+hammer/subquery	45	15	updates and deletes that succeeded and changed rows
+hammer/subquery	1636	545	updates and deletes with SQLite's error
+hammer/subquery	4	1	updates with subqueries and RETURNING that gave rows
+hammer/subquery	12	4	updates with subqueries that changed rows in a transaction
+hammer/subquery	11	3	updates with subqueries that changed rows of their own
+hammer/subquery	254	84	updates with subqueries that succeeded
+hammer/subquery	149	49	updates with subqueries that succeeded in a transaction
+hammer/subquery	105	35	updates with subqueries that succeeded of their own
+hammer/subquery	137	45	updates with subqueries that succeeded, whose subqueries the engine computed in a transaction
+hammer/subquery	97	32	updates with subqueries that succeeded, whose subqueries the engine computed of their own
+hammer/subquery	1083	361	updates with subqueries with SQLite's error
