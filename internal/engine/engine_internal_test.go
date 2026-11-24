@@ -283,6 +283,14 @@ func TestEngine_report(t *testing.T) {
 				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:0 subqueries.access:primary_key access:none rows_read:0 rows:0 outcome:ok"},
 			{src: "select * from t where k = (select k from t limit 0)",
 				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:0 subqueries.access:none access:none rows_read:0 rows:0 outcome:ok"},
+			// Rows that the subquery reads and its filter rejects, as a receive of goqite on a queue with
+			// messages of which none is due: it reads them, and finds none.
+			{src: "select * from t where k = (select k from t where w = 20 and k != 2 and k != 4)",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:2 subqueries.access:index subqueries.index:i access:none rows_read:2 rows:0 outcome:ok"},
+			{src: "update t set w = 50 where k = (select k from t where w = 20 and k != 2 and k != 4 order by w limit 1)",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:2 subqueries.access:index subqueries.index:i subqueries.order:delivered access:none rows_read:2 rows:0 outcome:ok"},
+			{src: "delete from t where (select k from t where w != 10 and w != 20 and w != 30) = k",
+				want: "subqueries:1 subqueries.found:0 subqueries.rows_read:4 subqueries.access:full_scan access:none rows_read:4 rows:0 outcome:ok"},
 			// Two subqueries, in the order of the text.
 			{src: "select * from t where k >= (select k from t where k = 2) and w = (select w from t where w > 15 order by w limit 1)",
 				want: "subqueries:2 subqueries.found:2 subqueries.rows_read:2 subqueries.access:primary_key,index subqueries.index:,i subqueries.order:,delivered access:index rows_read:4 rows:2 outcome:ok"},
