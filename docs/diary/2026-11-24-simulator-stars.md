@@ -58,3 +58,72 @@ Nothing yet.
 ### Future work
 
 None yet.
+
+## Step 2: The sky, and how it was checked
+
+**Author:** builder (simulator stars)
+
+### Prompt Context
+
+**Verbatim prompt:** (as in step 1)
+
+**Interpretation:** build what step 1 planned, look at it in a browser at three widths, and measure its cost while Turbo plays.
+
+**Inferred intent:** as in step 1.
+
+### What I did
+
+All of it is in `/site/simulator/index.html`:
+
+- An empty `<div class="sky" id="sky" aria-hidden="true">` at the end of the body. Its CSS, a block of its own before the rules of the footer: `position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none`. The body gets `position: relative` (so the sky is exactly the body's size and never adds to the scroll size) and `isolation: isolate` (so the sky's `z-index: -1` paints above the body's own background and below everything else). The bands and boxes that had no background, `.intro, .requests, .node, .box, .s3, .logs, .ask`, get `var(--void)`, so they are opaque over the sky.
+- A script in the `<head>`, started on `DOMContentLoaded`. It cuts the page into cells of 40 px; a cell has a star with chance 0.34, at a place in it from a hash of the cell and a seed drawn per load, so the same cells give the same stars for the whole load and a change of layout only hides or shows the ones that content moves over. A star is drawn only if it is 10 px or more from all content: everything above `.panel` (the header, intro, bar, and alarm are bands), `.ask` across the page, `.requests, .fork, .inst, .s3, .logs, #dancer, footer p, footer li`, and the edges of the instances to S3 where they run below the boxes down to S3 (read from the `bottom` of `.link::before`).
+- Kinds: a dot (66 %), a 2 by 2 block, a dim plus, drawn once into one SVG of three paths, one per opacity (0.26, 0.38, 0.52), in device pixels with `shape-rendering="crispEdges"`; and stars that blink (13 %) or glint (5 %). A pixel of a star is `round(dpr)` device pixels, at least one, so 1 px at a ratio of 1, 2, or 3, and 2 device pixels at 1.5; the script sets it as `--p`.
+- At most 12 blink and 3 glint on the whole page, chosen by a draw of their cell; the rest stand still as dots. A blinker is a `span` whose opacity steps in one of three keyframe sets (`sky-a` brighter and dimmer, `sky-b` two quick flicks, `sky-c` dims, goes out, and comes back) with `step-end`, of a length of its own (6 to 30 s) and a negative delay of its own. A glint is a `span` with three `i`: a core that brightens, and two rings of four pixels drawn by `box-shadow` that come on 1 px and 2 px out and go again, over 14 to 40 s. All animations are inside `@media (prefers-reduced-motion: no-preference)`, besides the page's global rule that turns animations off under `reduce`.
+- `@media print, (forced-colors: active)` hides the sky.
+- A `ResizeObserver` on the sky, the body, `.panel, .instances, .s3, .logs, .ask, footer` calls the drawing after layout and before paint; a `matchMedia` on the resolution redraws on a change of the device pixel ratio. Nothing runs in the page's frames.
+
+Checked by hand with playwright (Markus decided that decoration gets no step in the site check):
+
+- Screenshots at 390, 900, and 1440 px wide, at a device pixel ratio of 2, two of the top and two of the lower part, 3 s apart, while the simulation plays, and an enlarged crop (6 times, nearest neighbour) of a glint held at its widest.
+- A sweep over 19 widths from 320 to 2560 px, with rows shown in the box for SQL: every pixel of every star is at least 10.0 px from every box, band, paragraph, link, button, list item, and drawing; no star in view is covered by another element; the scroll width equals the window's.
+- `page.emulateMedia`: under `reducedMotion: 'reduce'`, 0 animations and the stars still there; under `media: 'print'` and `forcedColors: 'active'`, the sky is `display: none`, and the stars come back after either. Hiding the sky changes neither `scrollWidth` nor `scrollHeight`. No focusable element in the sky, `pointer-events: none`, `aria-hidden="true"`.
+- Cost, at 1440 by 900 and a ratio of 2, Turbo playing, 10 s each, Chromium's `Performance.getMetrics`, alternating with the sky shown and set to `display: none`: main-thread task time 6.4 % and 6.5 % with the sky against 5.5 % and 5.4 % without in one run, and 8.1 % and 7.5 % against 6.7 % and 6.6 % in a later one (the machine was shared with other agents). Frame intervals were the same with and without: median 16.7 ms, 95th percentile 16.7 to 16.8 ms, no frame over 20 ms in 600.
+
+`make site-check` and `go test -tags s4ql_browser ./internal/simulator/...` pass.
+
+### Why
+
+- **Scrolls with the page, not fixed to the window.** A star placed in a gutter stays in the gutter, so it can be kept clear of content once, after each change of layout, and the compositor scrolls it for free. A fixed sky would slide behind the content, and could be kept clear only by opaque boxes, with stars that touch borders as they pass.
+- **Placed by the layout, and opaque boxes besides.** The script keeps stars off and away from content, which a CSS-only sky cannot do; the opaque boxes make sure that a star never shows through, even for a frame.
+- **Static stars in one SVG, few twinklers.** A static star costs nothing after its paint, and an animated one is a layer; capping them at 15 elements keeps the layers few at any width.
+- **A stable hash per cell.** The sky does not reshuffle when the SQL box shows rows or the window is resized.
+
+### What worked
+
+The sweep over widths and the emulation of media in playwright gave exact answers quickly, and showed the two real problems below.
+
+### What didn't work
+
+- `make site-serve SITEADDR=127.0.0.1:8093` failed: `serve: listen tcp 127.0.0.1:8093: bind: address already in use` (another agent's server). Port 8147 worked.
+- `playwright-cli eval "..."` was refused by the worktree's guard: "this command runs a string through eval, which can't be verified to stay inside the worktree". `playwright-cli run-code "async page => page.evaluate(...)"` works, with longer scripts in files of the scratchpad passed as `"$(cat file)"`.
+- `playwright-cli -s=stars screenshot` from the scratchpad said "The browser 'stars' is not open": the sessions belong to the directory they were opened from. Run every command from the worktree, with absolute file names.
+- The first sweep found 70 twinkling stars at 2560 px, which made too many layers; now at most 15.
+- The first `make site-check` failed four times on `FAIL at zero, no text of the page says client`: the script was inline in the body, so its text was in `document.body.textContent`, and `getBoundingClientRect` contains "Client". The script moved into the head.
+
+### What I learned
+
+In this headless Chromium any running CSS animation, even a single opacity animation on a blank page, costs a style recalculation on the main thread in every frame (`RecalcStyleCount` went up by 120 in 120 frames for a lone `div`). So the sky's cost while it twinkles is about one point of a main thread, whatever the number of stars; it stays out of the frames' length. A script that stepped the opacities from a timer a few times a second would avoid the per-frame recalculation, at the price of more script; I kept CSS, as the brief prefers.
+
+### What was tricky
+
+- The sticky `.bar` moves with scrolling, so its box cannot be a keep-out; everything above `.panel` is a band, which made one rectangle enough.
+- The edges to S3 are pseudo-elements that run outside their `.link`, down to S3; their length is read from the computed `bottom` of `::before`, which is negative only where the instances stand side by side.
+
+### What warrants review
+
+- `/site/simulator/index.html`, the selector `CONTENT` and the bands in `draw`: a new kind of content outside these boxes on the page would need adding there, or stars could come close to it (the opaque boxes still hide stars under the boxes listed).
+- The new backgrounds on `.intro, .requests, .node, .box, .s3, .logs, .ask` are all `var(--void)`, which is black there, so nothing changes in how they look.
+
+### Future work
+
+None.
