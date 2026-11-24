@@ -95,5 +95,4 @@
 9	reached: update with a subquery attempt to write a readonly database in a read-only transaction
 5	reached: delete with a subquery attempt to write a readonly database in a read-only transaction
 21	reached: subquery whose value was that of its one first row
-2	reached: subquery that finds several rows that tie for the first, of which it gave another, in a select
 5	reached: subquery that the engine did not compute, of an update or a delete

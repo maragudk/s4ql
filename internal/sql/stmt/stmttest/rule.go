@@ -200,7 +200,7 @@ func UpdateRule(table string, columns []TableColumn, u *stmt.Update, args []any,
 // DeleteRule of the delete d of the table of the name and the columns, with the arguments args, as
 // [ConditionRule] gives it for a select with the same WHERE.
 func DeleteRule(table string, columns []TableColumn, d *stmt.Delete, args []any) string {
-	return ConditionRule(table, columns, &stmt.Select{Table: d.Table, Where: d.Where}, args)
+	return ConditionRule(table, columns, &stmt.Select{Table: d.Table, Where: d.Where, Subqueries: d.Subqueries}, args)
 }
 
 // FoundQuery of the conditions of a WHERE on the table, whose scalar subqueries are subs: a select

@@ -970,13 +970,15 @@ func (q *Sequence) subqueries(table stmt.Name, cs []stmt.Condition, update bool)
 //     and INTEGER being one, if it has one, and one time in two one that takes NULL if one does. Each
 //     of the two faults is a quarter as likely in a profile without the subqueries among
 //     [Profile.Faults], as [Sequence.fault] says.
-//   - Its WHERE is, one time in four of a table of which the sequence keeps an index, the one that
+//   - Its WHERE is none, and its ORDER BY its column ascending, one time in three for a column that
+//     takes NULL, where NULL comes first.
+//   - Otherwise its WHERE is, one time in four of a table of which the sequence keeps an index, the one that
 //     [Sequence.aimedWhere] draws, with its ORDER BY, which is goqite's receive where two indexes
 //     begin alike, with LIMIT 1, or the one that [Sequence.indexConditions] draws, each one time in
 //     two; two times in eight none; one time in eight the key equal to a value that an insert gave
 //     it, which finds one row or none; and else as [Sequence.conditions] draws one, with the faults
 //     of a select, so that it mostly reads its table.
-//   - Its ORDER BY, but for an aimed one, is none two times in eight; the key, ascending or
+//   - Otherwise its ORDER BY, but for an aimed one, is none two times in eight; the key, ascending or
 //     descending, which decides the first row, one time in eight; its own column two times in eight,
 //     ascending two times in three, where NULL comes first; the columns that [Sequence.orderColumns]
 //     draws for its WHERE, as for a select, one time in eight; or a column of the table, alone, where
@@ -1069,7 +1071,14 @@ func (q *Sequence) innerSelect(r Rand, table stmt.Name, column *stmt.Column) stm
 	defer func() { q.selected, q.aimed, q.aimedLimit = selected, aimed, aimedLimit }()
 	q.aimed = nil
 	stored := q.stored[[2]string{inner.Fold(), key.Name.Value}]
+	// nullFirst is set for a subquery of a column that takes NULL, one time in three, which reads every
+	// row of its table in the order of its column, where NULL comes first.
+	nullFirst := false
+	if c := columnOfShape(shape, result); sub.Columns != nil && c != nil && !c.PrimaryKey && !c.NotNull {
+		nullFirst = r.IntN(3) == 0
+	}
 	switch n := r.IntN(8); {
+	case nullFirst:
 	case n < 2 && len(q.indexed[inner.Fold()]) > 0 && r.IntN(2) == 0:
 		sub.Where = q.aimedWhere(r, inner)
 	case n < 2 && len(q.indexed[inner.Fold()]) > 0:
@@ -1084,6 +1093,8 @@ func (q *Sequence) innerSelect(r Rand, table stmt.Name, column *stmt.Column) stm
 	var by []orderColumn
 	var named []stmt.OrderColumn
 	switch n := r.IntN(8); {
+	case nullFirst:
+		by = []orderColumn{{fold: result}}
 	case q.aimed != nil:
 		by = q.aimed
 	case n < 2:
