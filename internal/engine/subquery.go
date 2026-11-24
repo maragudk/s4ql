@@ -57,7 +57,9 @@ type subqueries struct {
 // inner is a subquery that is being built: its plan, its parts, and what each step of the build has
 // found.
 type inner struct {
-	number  int
+	number int
+	// query is the plan of the subquery.
+	query   *Query
 	project *Project
 	filter  *Filter
 	order   *Order
@@ -86,7 +88,7 @@ func newSubqueries(qs []*Query, prepared bool) *subqueries {
 	}
 	s := &subqueries{prepared: prepared}
 	for i, q := range qs {
-		in := &inner{number: i + 1}
+		in := &inner{number: i + 1, query: q}
 		p, ok := q.Root.(*Project)
 		if !ok || q.Subqueries != nil {
 			panic(fmt.Sprintf("engine: a subquery of a root of type %T", q.Root))
@@ -384,7 +386,8 @@ func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []con
 		return nil
 	}
 	var values []*s4qlpb.Value
-	var at []int
+	// matches are the conditions of the planted bug noRowMatches.
+	var at, matches []int
 	for i, c := range f.Conditions {
 		sub, ok := c.Value.(*Subquery)
 		if !ok {
@@ -398,26 +401,50 @@ func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []con
 		if err != nil {
 			return err
 		}
+		if b.how.bugs.keepValue && b.how.e != nil {
+			// The planted bug: the value of the last run of a statement whose plan prints alike.
+			key := fmt.Sprint(in.number, "\n", Format(in.query))
+			if kept, ok := b.how.e.kept.Load(key); ok {
+				v = kept.(*s4qlpb.Value)
+			}
+			b.how.e.kept.Store(key, v)
+		}
+		if b.how.bugs.noRowMatches && !read.found {
+			matches = append(matches, i)
+		}
 		s.subqueries = append(s.subqueries, read)
 		values, at = append(values, v), append(at, i)
 	}
+	if b.how.bugs.swapSubqueries && len(values) > 1 {
+		// The planted bug: the first subquery gets the value of the second, and the second that of the
+		// first.
+		values[0], values[1] = values[1], values[0]
+	}
 	if b.how.observe != nil {
 		// The hook of the tests, which may give other values.
-		values = b.how.observe(values)
+		values = b.how.observe(ctx, values)
 	}
 	for j, i := range at {
 		conditions[i].value = values[j]
+	}
+	for _, i := range matches {
+		// The planted bug: no row makes the comparison true of every row whose column is not NULL.
+		conditions[i].op, conditions[i].value = stmt.OpIsNotNull, nil
 	}
 	return nil
 }
 
 // value of the subquery in, and what it read.
 func (b build) value(ctx context.Context, in *inner) (*s4qlpb.Value, subqueryRead, error) {
-	if in.limit != nil && in.n == 0 {
-		// LIMIT 0 gives no row, and reads none.
+	if in.limit != nil && in.n == 0 && !b.how.bugs.limitZeroRow {
+		// LIMIT 0 gives no row, and reads none; the planted bug limitZeroRow reads the first.
 		return null(), subqueryRead{access: "none"}, nil
 	}
 	inside := build{r: b.r, args: b.args, limit: b.limit, how: b.how.inner(), order: in.by}
+	if b.how.bugs.orderIgnored {
+		// The planted bug: the access of the conditions alone, whose first row is taken.
+		inside.order = orderBy{}
+	}
 	inside.order.limited = true
 	inside.order.turnMixed, inside.order.ascendLast, inside.order.skipGap = inside.how.bugs.turnMixed, inside.how.bugs.ascendLast, inside.how.bugs.skipGap
 	if in.filter != nil || in.order != nil {
@@ -428,8 +455,14 @@ func (b build) value(ctx context.Context, in *inner) (*s4qlpb.Value, subqueryRea
 		in.s.access.backward = inside.how.backward
 	}
 	var src source = in.s
+	if b.how.outside != nil {
+		// The planted bug outsideTx: the scan reads the newest state that is committed.
+		outside := *in.s
+		outside.r = b.how.outside
+		src = &outside
+	}
 	if in.filter != nil {
-		src = &filter{src: in.s, conditions: in.conditions}
+		src = &filter{src: src, conditions: in.conditions}
 	}
 	read := readOf(in.s.access)
 	before := b.r.rowsRead()
@@ -441,8 +474,15 @@ func (b build) value(ctx context.Context, in *inner) (*s4qlpb.Value, subqueryRea
 		if in.position < 0 || in.position >= len(row) {
 			return nil, subqueryRead{}, internalError("a subquery of the column at %v of a row of %v values", in.position, len(row))
 		}
+		if b.how.bugs.firstNotNull && row[in.position].HasNull() {
+			// The planted bug: a row whose value is NULL is passed over.
+			continue
+		}
 		v, read.found = row[in.position], true
-		break
+		if !b.how.bugs.lastRow {
+			break
+		}
+		// Else the planted bug: the rows after the first are read too, and the last gives the value.
 	}
 	read.rows = b.r.rowsRead() - before
 	return v, read, nil

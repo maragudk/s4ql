@@ -1078,7 +1078,7 @@ func (p *pair) step(c stmttest.Call) string {
 	// What SQLite gives for the subqueries of the call, before it runs, and the values that the
 	// instance computes for them; see [subqueryCall].
 	p.sub, p.computed, p.force = p.subqueriesOf(c), nil, nil
-	i.e.ObserveSubqueries(func(vs []*s4qlpb.Value) []*s4qlpb.Value {
+	i.e.ObserveSubqueries(func(_ context.Context, vs []*s4qlpb.Value) []*s4qlpb.Value {
 		p.computed = slices.Clone(vs)
 		return vs
 	})
@@ -2126,7 +2126,7 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		return failure
 	}
 	var otherComputed []*s4qlpb.Value
-	other.e.ObserveSubqueries(func(vs []*s4qlpb.Value) []*s4qlpb.Value {
+	other.e.ObserveSubqueries(func(_ context.Context, vs []*s4qlpb.Value) []*s4qlpb.Value {
 		otherComputed = slices.Clone(vs)
 		if p.force != nil {
 			return p.force
