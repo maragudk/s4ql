@@ -103,7 +103,7 @@ const live = async (call) => {
     session.events.splice(0, Math.max(0, session.events.length - 200));
     const { state } = answer.ended ? { state: { instances: [] } } : await engine.now(5);
     $('live').textContent = answer.ended
-      ? `Ended at ${answer.t} ms after ${answer.steps} steps, ${answer.summary.violations} violations, hash ${answer.hash.slice(0, 16)}.`
+      ? `Ended at ${answer.t} ms after ${answer.steps} steps, hash ${answer.hash.slice(0, 16)}.`
       : `At ${(answer.t / 1000).toFixed(1)} s of fake time, ${answer.steps} steps; the last answer took ${session.ms.toFixed(1)} ms; SQLite memory ${engine.memory}.`;
     $('instances').textContent = state.instances.map((i) => JSON.stringify(i)).join('\n');
     $('liveEvents').textContent = session.events.map((e) => JSON.stringify(e)).join('\n');

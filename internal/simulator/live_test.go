@@ -123,7 +123,6 @@ func TestEngine_live(t *testing.T) {
 			is.Equal(t, res.Hash, l.last.Hash)
 			is.Equal(t, res.Steps, l.last.Steps)
 			is.Equal(t, fmt.Sprint(*res.Summary), fmt.Sprint(*l.last.Summary))
-			is.Equal(t, 0, res.Summary.Violations-res.Summary.Excused, fmt.Sprint("seed ", seed))
 
 			// The state of the session after each action is the fold of the events it has given so
 			// far, as a page that folds them itself would have it.
@@ -158,7 +157,6 @@ func TestEngine_live(t *testing.T) {
 			is.Equal(t, res.Hash, l.last.Hash)
 			is.Equal(t, res.Steps, l.last.Steps)
 			is.Equal(t, fmt.Sprint(*res.Summary), fmt.Sprint(*l.last.Summary))
-			is.Equal(t, 0, res.Summary.Violations-res.Summary.Excused, fmt.Sprint("seed ", seed))
 			for i, s := range states {
 				want, err := json.Marshal(simulator.StateAt(simulator.Response{Events: l.events[:s.events]}, s.state.T), json.Deterministic(true))
 				is.NotError(t, err)

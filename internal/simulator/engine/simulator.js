@@ -175,7 +175,7 @@ export class Engine {
     return this.#serial(() => this.#send('now', commits ? { commits } : {}));
   }
 
-  // end the session, with the last checks of its invariants, and resolve with its summary and hash.
+  // end the session, and resolve with its summary and hash.
   end() {
     return this.#serial(() => this.#send('end', {}));
   }

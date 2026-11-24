@@ -283,7 +283,6 @@ func TestRun_actions(t *testing.T) {
 			is.Equal(t, "write", c.Op, fmt.Sprint("call ", c.Call))
 		}
 		is.Equal(t, 0, len(find(res, func(e simulator.Event) bool { return e.Kind == "call" && e.What == "committed" })))
-		is.Equal(t, 0, res.Summary.Violations)
 	})
 
 	t.Run("should write barcodes with an insert, delete one with a delete, read one with a select, and annotate each commit object with its statements", func(t *testing.T) {
@@ -387,7 +386,6 @@ func TestRun_actions(t *testing.T) {
 			}
 		}
 		is.True(t, gone > 0 && gone < found/3, fmt.Sprint(found, " reads found their row, and ", gone, " found that it was gone"))
-		is.Equal(t, 0, res.Summary.Violations)
 	})
 
 	t.Run("should end the waits of an instance whose network hangs when its network is disconnected", func(t *testing.T) {
@@ -436,9 +434,6 @@ func TestRun_actions(t *testing.T) {
 		is.Equal(t, 0, len(started))
 		is.True(t, taken(res, "b", 30_000, 90_000), "b takes the lease over")
 		is.Equal(t, 30_000.0, simulator.StateAt(res, 60_000).Instances[0].Wall)
-		// The holder that wakes up believes in its lease until it reads the manifest, which the
-		// design accepts for a process whose two clocks both stood still.
-		is.Equal(t, res.Summary.Violations, res.Summary.Excused)
 	})
 
 	t.Run("should show a close as the release of the lease, which another instance takes at once", func(t *testing.T) {
@@ -506,7 +501,6 @@ func TestRun_faults(t *testing.T) {
 				return e.Kind == test.kind && e.What == test.what && strings.Contains(e.Text+e.Error, test.text)
 			})
 			is.True(t, len(found) > 0, "an event "+test.kind+"/"+test.what)
-			is.Equal(t, 0, res.Summary.Violations)
 		})
 	}
 

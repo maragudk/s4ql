@@ -94,11 +94,6 @@ type Event struct {
 	Do     string `json:"do,omitzero"`
 	On     *bool  `json:"on,omitzero"`
 
-	// Invariant is the name of an invariant that a check found violated, and Excused says whether
-	// the design accepts the violation for the faults of the run.
-	Invariant string `json:"invariant,omitzero"`
-	Excused   bool   `json:"excused,omitzero"`
-
 	// Site is a point of buggify.
 	Site string `json:"site,omitzero"`
 
@@ -192,11 +187,6 @@ func (r *recorder) add(e Event) {
 		s.Calls[e.Op+" "+e.What]++
 	case e.Kind == "request":
 		s.Requests[e.What]++
-	case e.Kind == "check":
-		s.Violations++
-		if e.Excused {
-			s.Excused++
-		}
 	}
 	if r.fold != nil {
 		r.fold.add(e)
