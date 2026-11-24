@@ -62,6 +62,13 @@ Do not update the public site in `site/` (served at www.s4ql.com) as a side effe
 - **Why:** Markus said on 2026-11-16: "you don't need to keep the public site updated automatically, I'll do that once in a while", and then: "feel free to update the Status section on the site, but only that", "and the roadmap."
 - **How to apply:** when a piece of the project is merged, update the "Status" section of `README.md`, the section with the id `status` in `site/index.html`, and `docs/todo/`. Keep the site's status as short as the README's, and by feature like it, not slice by slice. When `docs/roadmap.md` changes or a slice of it is built, update the section with the id `roadmap` in `site/index.html` to match. A slice that is built stays in both, marked as built, and is never removed or folded into another; Markus on 2026-11-19: "don't delete the old slices entirely from the roadmap? It's nice to see progress". Leave everything else in `site/` alone unless Markus asks. Neither the lead nor the builder makes these updates: the lead spawns a small sub-agent for them after the work is merged, so that the lead's context stays clean and the builder concentrates on the code. Markus: "I want to keep your context clean. Delegate", and: "A small subagent after the work is done sounds better to me."
 
+### On the site, design before words
+
+Make usage self-evident through the design of a page, and keep its words to a minimum.
+
+- **Why:** Markus said on 2026-11-24, when he had the note above the simulator's SQL box removed and the page's introduction cut to one line: "It's better to use the design to make usage self-evident where possible. Minimize words."
+- **How to apply:** before adding an explanation, a hint, or a label to a page in `site/`, see whether the layout, a default value, or the state of a control can say it instead. Add text only where the design cannot carry it, and keep it short. This holds for the pages' interface, not for `docs/`.
+
 ### A new page on the site gets a preview image of its own
 
 A page added to the public site in `site/` gets its own image for link previews, with its own headline, and does not reuse the image of another page.
