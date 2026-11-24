@@ -214,13 +214,14 @@ export function resetLine(e, first) {
 // makes each instance that starts under another holder ID wait for it, because the instance cannot
 // know that the holder is gone: it takes the lease only after it has watched the manifest stand still
 // for the lease's duration and a margin, by its own monotonic clock, whatever the lease's time of
-// renewal says (acquire in internal/core/lease.go). An instance that waits for a to serve before it
-// starts does not wait for the lease. Nothing in S3 says which instance held it.
+// renewal says (acquire in internal/core/lease.go). Only an instance that is starting or running
+// waits: one that waits for a to serve before it starts does not. Nothing in S3 says which instance
+// held the lease. The duration of the state's manifest is in ms.
 export function storedLine(name, n, manifest, instances) {
   const text = `S3 still holds ${name}: ${n.toLocaleString("en")} commit object${n === 1 ? "" : "s"}.`;
   const lease = manifest && manifest.lease;
   if (!lease) return text;
-  const waiting = (instances || []).filter((i) => i.state !== "waiting" && i.holder !== lease.holder).map((i) => i.instance);
+  const waiting = (instances || []).filter((i) => (i.state === "starting" || i.state === "running") && i.holder !== lease.holder).map((i) => i.instance);
   if (waiting.length === 0) return text;
   const one = waiting.length === 1;
   return `${text} ${waiting.join(" and ")} wait${one ? "s" : ""} for the lease of ${lease.duration / 1000} s from before the reload to run out by ${one ? "its own clock" : "their own clocks"}.`;
