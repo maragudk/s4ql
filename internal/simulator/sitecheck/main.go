@@ -9,7 +9,9 @@
 //
 // The check passes if the engine becomes ready and the page waits at zero until Play; Play advances
 // fake time by the real time, turbo by five times it, and the log and the commit objects grow; Pause
-// holds fake time; the client calls a from the start, and b gets no call; each action on an instance
+// holds fake time; the stick figure on the frame of the log stood still while the page played with
+// sound off, and with sound on it stays still while paused, dances while the page plays, and stands
+// again after Pause; the client calls a from the start, and b gets no call; each action on an instance
 // has its effect in the state, and an action switched off again takes it away; the client keeps
 // calling a while a is crashed and after its restart, and its switch moves its calls to b and back; a
 // crash of the instance that serves lets the other take over; fake time goes
@@ -264,6 +266,9 @@ func startBrowser(chromium, page string) (*browser, error) {
 		// The page plays its run in animation frames, which Chromium does not run for a frame out of
 		// sight, so the window holds the frame of check.html whole.
 		"--window-size=1600,1200",
+		// The check turns the page's sound on with a click of a script, which is no gesture of a user,
+		// and the page's dancer moves only while its audio context runs.
+		"--autoplay-policy=no-user-gesture-required",
 	}
 	flags = append(flags, strings.Fields(os.Getenv("S4QL_CHROMIUM_FLAGS"))...)
 	flags = append(flags, page)

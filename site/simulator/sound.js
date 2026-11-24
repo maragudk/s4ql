@@ -51,6 +51,9 @@
 //
 // player plays into any BaseAudioContext, so a check can render the figures into an
 // OfflineAudioContext with the code path of the page.
+//
+// watch is the hook of the page's dancer: it hears of each figure and tick that the page's player
+// plays, when the player plays it, and that sound is off. It does not change what sounds.
 
 export const MASTER = 0.018; // the gain of the master, the peak of one ordinary figure
 export const VOICES = 3; // the figures that sound at once
@@ -163,8 +166,9 @@ function fade(v, at) {
 }
 
 // player of figures into dest of the context, with the limits of the package comment. play gives
-// whether it plays the figure; silence fades every voice out now.
-export function player(ctx, dest) {
+// whether it plays the figure; silence fades every voice out now. played, if given, is called with
+// the kind and the start of each figure and tick that plays.
+export function player(ctx, dest, played = null) {
   const voices = [];
   const last = new Map(); // the start of the last figure of each kind
   const starts = []; // the starts of the figures in the last second, but the alarm
@@ -182,6 +186,7 @@ export function player(ctx, dest) {
       ticks.push(figure(ctx, dest, kind, at, TICKS, hz));
       lastTick = at;
       if (kind === "error") lastError = at;
+      if (played) played(kind, at);
       return true;
     },
     play(kind, at = ctx.currentTime + LEAD) {
@@ -202,6 +207,7 @@ export function player(ctx, dest) {
       last.set(kind, at);
       if (!alarm) starts.push(at);
       latest = at;
+      if (played) played(kind, at);
       return true;
     },
     // silence forgets the figures too, so that the next figure plays whatever was cut.
@@ -313,7 +319,25 @@ let ctx = null;
 let out = null; // the player of the page
 let on = false;
 let toggle = null; // the button Sound
+let watcher = null; // the function that watch was given
 const classify = listener();
+
+// watch calls fn(kind, delay) for each figure and tick that sounds, with its kind, of FIGURES or
+// TICKS, and the time in ms until it starts, and fn(null) when sound goes off. It tells of a sound
+// only while the context runs, so that a context that the browser holds suspended moves nothing. A
+// fault in fn never reaches the sound.
+export function watch(fn) {
+  watcher = fn;
+}
+
+function tell(kind, at) {
+  if (!watcher || (kind && ctx && ctx.state !== "running")) return;
+  try {
+    watcher(kind, kind ? Math.max(0, (at - ctx.currentTime) * 1000) : 0);
+  } catch {
+    // The dancer is decoration.
+  }
+}
 
 // hear the event of the engine, and play its figure if sound is on and the event is live.
 export function hear(e, live) {
@@ -351,6 +375,7 @@ function play(kind) {
 function broken() {
   on = false;
   out = null;
+  tell(null);
   if (ctx) {
     const c = ctx;
     Promise.resolve().then(() => c.close()).catch(() => {});
@@ -379,7 +404,7 @@ export function wire(button) {
         const master = ctx.createGain();
         master.gain.value = MASTER;
         master.connect(ctx.destination);
-        out = player(ctx, master);
+        out = player(ctx, master, tell);
         ctx.addEventListener("statechange", () => {
           if (out) button.dataset.audio = ctx.state;
         });
@@ -393,6 +418,7 @@ export function wire(button) {
         play("blip");
       } else {
         out.silence();
+        tell(null);
         // Suspend once the fades have ended, unless sound is on again by then.
         setTimeout(() => {
           if (!on && out) ctx.suspend().catch(() => {});
