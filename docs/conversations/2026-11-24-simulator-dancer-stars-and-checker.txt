@@ -4187,3 +4187,291 @@
   session.
 
 ✻ Sautéed for 1s · done 1:41 PM
+
+❯ /export                                                                       
+  ⎿  Conversation exported to /Users/maragubot/Developer/s4ql/2026-11-24-134109-
+     id-like-the-sql-query-box-and-results-table-to-b.txt
+
+❯ exported conversation                                                         
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The export is in
+  docs/conversations/2026-11-24-simulator-dancer-stars-and-checker.txt,
+  committed as bed0066 and pushed to main.
+
+✻ Baked for 15s · done 1:41 PM
+
+※ recap: Today's goal was polishing the simulator page, and everything asked for is live: SQL section, strolling stick figure, stars, favicons, remembered toggles, one-line hero, and the page's checker removed. Nothing is pending; the next action is whatever you ask for. (turn off recaps in /config)
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+
+❯ All the cool kids have a website with something that follows the mouse cursor 
+  around these days. Often nerdy, like ASCII art. What could we do on the       
+  simulator page that fits into our vibe?                                       
+
+⏺ Four ideas that reuse what the page already has:
+
+  1. The stick figure follows the cursor. When it isn't dancing, it walks along
+     its line to stand under the pointer, and stops there. This is the cheapest
+     of the four, because the walk cycle is already there and only its target
+     changes.
+  2. Constellations. The cursor joins the three or four nearest stars with thin
+     pixel lines, which fade as you move on. This is the closest to the
+     ASCII-art trend, and the line-drawing code exists already.
+  3. Barcode scanner. A thin red scan line trails the cursor, and passing over a
+     commit object or the logo gives a scanner beep when Sound is on. It ties
+     in with the logo and the barcodes table, but it is the loudest visually and
+     competes with the log.
+  4. Lantern. Stars within a radius of the cursor brighten and twinkle faster.
+     It is subtle, and most visitors would probably not notice it.
+
+  I'd build 1 and 2 together: the figure covers the panel, the constellations
+  cover the rest of the page, and neither needs a word of explanation. Both
+  would switch off on touch screens and under reduced motion.
+
+  Which do you want?
+
+✻ Churned for 14s · done 2:31 PM
+
+※ recap: We're picking a cursor-following effect for the simulator page; I proposed four and recommend the stick figure walking to the pointer plus constellations between nearby stars. Next: tell me which to build.
+
+❯ 2                                                                             
+
+⏺ fabrik:builder(Build cursor constellations)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A builder is on the constellations now, on its own branch. I'll merge and
+  deploy when it reports back.
+
+  What I asked for:
+
+  - Lines: the three or four stars nearest the pointer are joined by thin,
+    stepped pixel lines, dimmer than the stars, which fade as the pointer moves
+    on, rests, or leaves.
+  - Where: in the sky's layer behind the content, never across text, and not in
+    the header.
+  - Off: on touch screens, under reduced motion, in print, and in forced
+    colours.
+  - Cost: no animation loop while the pointer is still.
+  - No extras: no words on the page and no new site-check step.
+
+✻ Churned for 34s · done 2:53 PM
+
+❯ What does that Cost mean?                                                     
+
+⏺ It means the constellations use no CPU when nothing is happening. The page
+  only redraws them while the pointer is moving or lines are still fading; once
+  the last line has faded, the drawing stops completely until the pointer moves
+  again.
+
+  I asked for it because the simulator's engine and log run on the same page,
+  and a decoration that redraws 60 times a second forever would take time from
+  them and drain laptop batteries.
+
+✻ Cogitated for 2s · done 2:55 PM
+
+❯ Good point.                                                                   
+⏺ The builder is still running; I'll report when the constellations are live.
+
+✻ Churned for 1s · done 2:55 PM
+
+› Message from fabrik:builder
+  The constellations are built and committed on branch `constellations` (4
+  commits on `main`, not pushed). The simulator's tests and `make site-check`
+  both pass, and I checked every case in your list by hand in Chromium. Firefox,
+  Safari, a real touch device and device pixel ratio 1.5 are not checked.
+
+  **What I built and where**
+  - `site/simulator/index.html`: the head script's `draw` now records each star
+  it places, as its centre and how far its pixels reach. After each layout it
+  sets `sky.layout = { stars, out, left, top, dpr, k }` and fires a `layout`
+  event on `#sky`. `out` is the script's existing list of content rectangles,
+  with their 10 px margin. I also added CSS for `.sky .con`.
+  - `site/simulator/constellations.js` (new): reads `sky.layout`, handles the
+  pointer, and draws the lines.
+  - `site/simulator/page.js`: `start()` loads the module with
+  `"./constellations.js" + version`, the same way it loads `sound.js`. So it is
+  versioned on deploy, and the site check's "every request has the query" rule
+  already covers it. Nothing under `internal/` changed.
+
+  **Choices**
+  - **How many stars:** the root is the nearest star within 120 px of the
+  pointer that has a constellation. From it a tree of 3 to 4 stars grows, always
+  taking the shortest edge (Prim). Candidates must be within 130 px of the
+  root, and edges are at most 110 px long.
+  - **Stability:** the constellation depends only on its root, and a new root
+  takes over only when it is 8 px nearer. So small moves don't flicker. If the
+  pointer comes back to a root while its lines are fading, the same lines come
+  back rather than a second copy.
+  - **Look:** each constellation is a small SVG sized to its lines. The lines
+  are drawn pixel by pixel on the stars' own grid (Bresenham, as for the stick
+  figure), with a 4 px gap at each star. Colour is `fill: var(--lumin)` at
+  opacity 0.2; the stars are 0.26 to 0.52. They step in over 0.2 s and out over
+  0.8 s, like the twinkles, not a smooth fade.
+  - **Fading:** lines fade 900 ms after the last move, when the pointer leaves
+  the window or the window loses focus, and over the header. I also treated the
+  playback bar like the header. It is opaque and sticks to the top, so lines
+  near it would only peek out from behind it. That goes slightly beyond the
+  brief.
+  - **Keeping lines off text:** an edge that crosses any content rectangle is
+  never drawn, so no line can run behind words or boxes, or into the header.
+  - **When it is off:** the script only acts under `(hover: hover) and (pointer:
+  fine) and (prefers-reduced-motion: no-preference)` and ignores touch events.
+  The CSS also hides the lines under `(hover: none), (pointer: coarse),
+  (pointer: none), (prefers-reduced-motion: reduce)`. Print and forced colours
+  already hide the whole sky.
+  - **Cost:** a pointer move stores `pageX`/`pageY`, checks `closest()` and
+  schedules at most one animation frame. That frame scans about 250 stars. The
+  page is only changed when the constellation changes, and nothing reads layout
+  per event. The fades are CSS animations, and while the pointer is still
+  nothing runs except one timer. In 8 s of Turbo play the sky never re-laid
+  itself out, so the simulation doesn't disturb the lines.
+
+  **What I checked**
+  - **Readability:** I swept the pointer around the log and commit objects, the
+  SQL box, "What runs here" and the footer, at 1440×900 with Turbo playing. Fake
+  time and log lines kept advancing, and there were no console messages.
+  - **Fading and header:** by counting the line elements:
+    - while moving: 1 constellation shown
+    - after 1.1 s at rest: none shown
+    - after 1.9 s: all removed
+    - over the header or the stuck bar: none
+    - after the pointer leaves: none, gone within 0.9 s
+  - **Reduced motion:** turning it on cleared the lines at once, and none
+  appeared while moving.
+  - **Touch:** a context with `hasTouch` (`pointer: coarse`) showed nothing for
+  mouse moves or a tap.
+  - **Print and forced colours:** both hide the lines.
+  - **Resize:** at device pixel ratio 2, before and after resizing from 1300 to
+  860 px wide, zoomed screenshots show the lines meeting their stars with even
+  gaps.
+  - **Tests:** `go test -tags s4ql_browser -shuffle on ./internal/simulator/...`
+  and `make site-check` both pass, run again after the review fixes.
+
+  **Self-review** (code-review skill, medium, over `main...HEAD`): 1 important
+  finding and 6 nits.
+  - **Fixed:**
+    - A relayout that moved only content, not stars, removed the lines abruptly.
+  This was the important one, though it never happened during play. The lines
+  now stay if they are still clear, and fade if not.
+    - A second copy was drawn when the pointer returned to a fading
+  constellation.
+    - The nearest star with no constellation hid a neighbour's.
+    - An empty `.catch` in `page.js` hid errors from the module; now only a
+  failed import is ignored.
+    - The diary step was missing.
+  - **Left:**
+    - At ratio 2 a line pixel can sit one device pixel off a star's grid. The
+  gaps make this invisible in the zoomed screenshots.
+    - After a wheel scroll the lines scroll with their stars until the next move
+  or the rest timer.
+
+  I wrote the diary, `docs/diary/2026-11-24-constellations.md`, in two steps. It
+  notes that `playwright-cli eval` was refused in this sub-agent, so I used
+  `run-code` with `page.evaluate` instead. I stopped the local server, closed
+  the browser, and deleted the `site/simulator/engine` build output and
+  `.playwright-cli`.
+
+  Files are in `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a1f6409
+  -2444-4c23-8123-ed5164204cd4/scratchpad/`. The first three show the page
+  before the review fixes, which did not change how the lines look:
+  - hero.png
+  - logs.png
+  - about.png
+  - dpr2-resized-zoom.png
+
+  Read 2 files, ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Build cursor constellations" finished · 17m 12s
+
+⏺ Agent(Merge and deploy constellations) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The constellations are built and a second agent is taking them through the
+  pull request, merge, and deploy now. The builder checked them in Chromium
+  only, so Safari and Firefox are untested until you see them live.
+
+  How they behave:
+
+  - Which stars: the star nearest the pointer (within 120 px) becomes the root,
+    and it is joined to its two or three closest neighbours. Small pointer moves
+    don't change the constellation, so it doesn't flicker.
+  - Look: stepped pixel lines on the stars' own grid, dimmer than the stars,
+    with a small gap at each star. They step in over 0.2 s and out over 0.8 s,
+    like the twinkles.
+  - Fading: lines go 0.9 s after the pointer stops, when it leaves the window,
+    and over the header.
+  - Text: a line that would cross any content box is never drawn, so nothing
+    runs behind words.
+
+  Two things differ from what I asked for or are left as is:
+
+  - The builder also treats the sticky playback bar like the header, because
+    lines would only peek out from behind it.
+  - After a wheel scroll, the lines scroll with their stars until the next
+    pointer move or the 0.9 s timer.
+
+✻ Baked for 26s · done 3:11 PM
+
+⏺ Agent "Merge and deploy constellations" is waiting on its own background work 
+  · 1m 3s
+
+⏺ The merge agent is still waiting on the pull request's checks; nothing to
+  report yet.
+
+✻ Baked for 19m 15s · done 3:12 PM
+
+› Message from general-purpose
+  PR #146 is merged and the deploy is live. One thing I did not check: the
+  browser's resolved `version` value at runtime.
+
+  - **Checks:** 18 in total: 3 pass (`changes`, `site`, `govulncheck /
+  govulncheck`), 15 skipping, 0 pending or failing. The PR was MERGEABLE.
+  - **Merge:** merge commit `4848ddf9d7c44ddf35c79cc671db3ec125b4c09e`, with
+  state `MERGED` confirmed. `main` was fast-forwarded. I deleted the remote
+  branch `constellations` myself, and I left the local branch and the worktree
+  alone.
+  - **Deploy:** the "pages" run 45411843172 succeeded, and its deploy job
+  finished in 11s.
+  - **Curl checks:**
+    - `https://www.s4ql.com/simulator/` contains the full SHA three times, and
+  references `page.js?v=4848ddf9d7c44ddf35c79cc671db3ec125b4c09e`.
+    - The versioned `page.js` has `import("./constellations.js" + version)` at
+  line 1252. The page appends a `version` variable at runtime, so I did not see
+  the final URL string. I took `version` to be that same `?v=<sha>` query.
+    - `https://www.s4ql.com/simulator/constellations.js?v=4848ddf9d7c44ddf35c79c
+  c671db3ec125b4c09e` returned HTTP 200.
+  - **Cleanup:** no background watches are left running.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Merge and deploy constellations" is waiting on its own background work 
+  · 4m 16s
+
+  Listed 1 directory, ran 3 shell commands (ctrl+o to expand)
+
+⏺ The constellations are live at www.s4ql.com/simulator/ (PR #146, merge commit
+  4848ddf). Move the pointer over the sky below the header to see them.
+
+  All 18 checks were pass or skipped, the Pages deploy succeeded on the first
+  try, and the page serves the merge commit with constellations.js behind a
+  versioned URL. The builder's worktree and branches are removed.
+
+  They are still only tested in Chromium, so tell me if anything looks off in
+  Safari.
+
+✻ Sautéed for 19s · done 3:15 PM
+
+❯ Nice. Works in Safari.                                                        
+
+⏺ Good, then nothing is open from this session.
+
+✻ Sautéed for 1s · done 3:18 PM
+
+❯ Good work bottie!                                                             
+
+⏺ Thanks, Markus! That was a fun one.
+
+✻ Churned for 1s · done 3:23 PM
