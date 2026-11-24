@@ -332,6 +332,26 @@ function setTurbo(on) {
   $("turbo").setAttribute("aria-pressed", String(on));
 }
 
+// The browser remembers Turbo in localStorage, under TURBO_ITEM, as "on" or "off", across reloads,
+// tabs, and visits. Any other value, or storage that the browser refuses, is on, as on a first visit.
+const TURBO_ITEM = "s4ql:turbo";
+
+function turboRemembered() {
+  try {
+    return window.localStorage.getItem(TURBO_ITEM) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function rememberTurbo() {
+  try {
+    window.localStorage.setItem(TURBO_ITEM, turbo ? "on" : "off");
+  } catch {
+    // Storage is a convenience.
+  }
+}
+
 function frame(ts) {
   if (playing) debt += Math.min(FRAME, Math.max(0, ts - last));
   last = ts;
@@ -410,7 +430,10 @@ function wire() {
     }
   });
   $("reset").addEventListener("click", () => reset());
-  $("turbo").addEventListener("click", () => setTurbo(!turbo));
+  $("turbo").addEventListener("click", () => {
+    setTurbo(!turbo);
+    rememberTurbo();
+  });
   const text = $("sql-text");
   const kept = keeper.boxText();
   if (kept !== null) text.value = kept;
@@ -1064,6 +1087,7 @@ function dance(now) {
 // the failure box.
 async function start() {
   drawMark();
+  setTurbo(turboRemembered());
   dancer.el = $("dancer");
   dancerStand();
   const sound = import("./sound.js" + version).catch(() => null);
