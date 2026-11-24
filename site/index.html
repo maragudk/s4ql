@@ -846,7 +846,7 @@ footer ul {
   <div class="wrap">
     <div class="block-head">
       <h2 id="status-h">Status</h2>
-      <p>As of 23 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
+      <p>As of 24 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
     </div>
     <table class="status-table">
       <tbody>
@@ -861,6 +861,7 @@ footer ul {
               <li><code>insert</code> of one row, with literals and arguments, with or without a list of columns. A column that the list leaves out gets its default.</li>
               <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>. A comparison may have its value on either side. Rows without <code>order by</code> come in a varying order.</li>
               <li><code>order by</code> of one or more columns, each ascending or descending, and <code>limit</code> with a number or <code>?</code>, on <code>select</code>.</li>
+              <li>A scalar subquery in a <code>where</code>, on the right or the left of a comparison, in a <code>select</code>, an <code>update</code>, and a <code>delete</code>. It is not correlated, and runs once before the statement changes anything.</li>
               <li><code>update</code> and <code>delete</code>, with or without that <code>where</code>. An update may change the primary key, and <code>RowsAffected</code> is what SQLite reports.</li>
               <li><code>returning</code> at the end of an <code>insert</code>, an <code>update</code>, and a <code>delete</code>, with column names or <code>*</code>. Outside a transaction, the statement commits before it gives its first row.</li>
               <li><code>create index</code> and <code>drop index</code>, on one or more columns, each ascending or descending, not unique. The engine picks the index for a <code>where</code> by fixed rules.</li>
@@ -881,7 +882,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>A scalar subquery in a <code>where</code>, then the rest of the SQL that glue needs, agreed one slice at a time (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>The rest of the SQL that glue needs, agreed one slice at a time (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
         </tr>
       </tbody>
     </table>
@@ -1000,10 +1001,10 @@ footer ul {
         <div><h3>Slice 14: <code>returning</code> on <code>insert</code>, <code>update</code>, and <code>delete</code></h3><p>An <code>insert</code>, an <code>update</code>, or a <code>delete</code> may end with <code>returning</code> and a list of columns or <code>*</code>. It gives one row for each row that it changes. Outside a transaction, the statement commits before it gives its first row. The commit format stays as it is. The statements run, and table tests compare them with SQLite, and through the driver with mattn/go-sqlite3, with goqite's send and its receive by id among them. Generated sequences with <code>returning</code> run in the engine's differential tests and in the driver's against mattn/go-sqlite3, and the simulation checks that the rows a caller read belong to a committed change and finds the planted bugs. Mutation testing of the new code left no mutant unexplained.</p></div>
         <span class="where caps">Built</span>
       </li>
-      <li class="agreed">
+      <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 15: a scalar subquery in <code>where</code></h3><p>In the <code>where</code> of a <code>select</code>, an <code>update</code>, or a <code>delete</code>, a <code>select</code> in parentheses may stand for one value in a comparison, as goqite's receive needs. It gives the one column of its first row, or null when it finds no row. It runs once, before the statement changes anything. A subquery that names a column of the outer statement is refused, and so is a subquery in any other place.</p></div>
-        <span class="where caps">Agreed</span>
+        <div><h3>Slice 15: a scalar subquery in <code>where</code></h3><p>In the <code>where</code> of a <code>select</code>, an <code>update</code>, or a <code>delete</code>, a <code>select</code> in parentheses may stand for one value in a comparison, as goqite's receive needs. It gives the one column of its first row, or null when it finds no row. It runs once, before the statement changes anything. A subquery that names a column of the outer statement is refused, and so is a subquery in any other place. A subquery whose column has another declared type than the column it is compared with is refused too. The statements run, and table tests and the engine's differential tests compare them with SQLite. An independent review found no wrong result. The generated workload, the simulation with planted bugs, the driver's generated test, and mutation testing are still to come.</p></div>
+        <span class="where caps">Built</span>
       </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>

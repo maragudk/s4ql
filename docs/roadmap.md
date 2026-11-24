@@ -540,7 +540,7 @@ Rejected as not supported, where SQLite would accept it:
 
 ### Slice 15: a scalar subquery in `where`
 
-Status: agreed by Markus on 2026-11-24, not built. It will be checked as the slices before it are: by tests of the statement pass, by the engine's differential tests against SQLite, by a new area of the generated workload, by the simulation with planted bugs, by the driver's generated test against mattn/go-sqlite3, and by mutation testing.
+Status: agreed by Markus on 2026-11-24, built on 2026-11-24 in the statement pass, the engine, and the driver. It is checked by their tests, by the engine's differential tests against SQLite, and by an independent review. It will be checked as the slices before it are, with the rest: by a new area of the generated workload, by the simulation with planted bugs, by the driver's generated test against mattn/go-sqlite3, and by mutation testing. Those are still to come.
 
 ```sql
 select v1 from t1 where v2 = (select v2 from t2 where v1 = ?);
@@ -558,7 +558,7 @@ Included:
 - The `?` parameters are numbered in the order of the text over the whole statement, the subquery's included. In goqite's receive, the `?` of `queue = ?` inside the subquery is the third argument.
 - A subquery that finds no row gives `null`, so the comparison matches no row. One that finds several rows gives the first, as in SQLite. Without an `order by` that says which row is first, it gives whichever row comes first, as SQLite documents.
 - The subquery runs once, before the outer statement changes anything, and inside the same transaction. In an `update` or a `delete`, it sees the rows as they were before the statement.
-- The errors of a statement with a subquery, their order, and how the rule of exact types applies to the value of a subquery are decided when the slice is built, by SQLite's behaviour and the rules of this document, and recorded in [the todo](todo.md).
+- The errors of a statement with a subquery, their order, and how the rule of exact types applies to the value of a subquery are decided, and recorded in [the todo of slice 15](todo/slice-15.md).
 - Everything of slices 1 to 14 with a subquery: arguments, prepared statements, transactions, `returning`, and a restart with an empty cache.
 - The reason: goqite, the queue that glue uses, picks the message that it receives with `id = (select id from goqite where ... order by priority desc, created limit 1)`. The same statement has `received = received + 1` in its `set`. That arithmetic is not in this slice. It comes after, as a design question on how s4ql evaluates expressions.
 
@@ -571,5 +571,7 @@ Rejected as not supported, where SQLite would accept it:
 - `in (select ...)` and `exists (select ...)`.
 - A subquery in `from`.
 - A subquery anywhere else: in the select list, in `set`, in `values`, in `order by`, in `limit`, and in `returning`.
+- A subquery whose column has another declared type than the column it is compared with (`int` and `integer` count as one type), also when it finds no row.
+- An argument of the subquery's `limit` that is not an integer from 0.
 
-Refused as well, as SQLite refuses them: a subquery with more than one result column, such as `v1 = (select v1, v2 from t2)`, and a subquery in a default. Which error s4ql gives for each is decided when the slice is built.
+Refused as well, as SQLite refuses them: a subquery with more than one result column, such as `v1 = (select v1, v2 from t2)`, and a subquery in a default. Which error s4ql gives for each is recorded in [the todo of slice 15](todo/slice-15.md).
