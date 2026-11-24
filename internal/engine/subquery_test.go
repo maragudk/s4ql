@@ -102,6 +102,7 @@ var subqueryReads = func() []subqueryTestCall {
 		{src: "select k from t where k = (select k from u where w = 0)"},
 		{src: "select k from t where k = (select k from u order by r)"},
 		{src: "select k from t where k = (select v from u where nope = 1)"},
+		{src: "select k from t where k = (select v from u where w = 0 order by r)"},
 		{src: "select k from t where k = (select k from u where w is null and nope is null)"},
 		{src: "select k from t where k = (select v from u) order by nope"},
 		// LIMIT of the subquery: 0, arguments of each kind, and those that s4ql refuses.
