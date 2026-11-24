@@ -232,7 +232,7 @@ func TestEngine_subquery(t *testing.T) {
 				is.Equal(t, p.o.state(t), i.state())
 			}
 		}
-		for _, k := range []string{"reached: subquery whose value was NULL", "reached: subquery whose value was that of its one first row", "reached: subquery that the engine did not compute, of a select that gave no row", "excused: " + excusedType} {
+		for _, k := range []string{"reached: subquery whose value was NULL", "reached: subquery whose value was that of its one first row", "reached: subquery that the engine did not compute, of a select that gave no row", "reached: subquery that the engine did not compute, of an update or a delete", "excused: " + excusedType} {
 			t.Log(k, y[k])
 			is.True(t, y[k] > 0, k)
 		}

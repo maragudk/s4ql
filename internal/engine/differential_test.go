@@ -1197,10 +1197,16 @@ func (p *pair) step(c stmttest.Call) string {
 	// as it computes none for a select that can give no row whatever they give: it must give no row,
 	// and SQLite runs its text, so that the rows of SQLite say whether the engine was right to compute
 	// none. The comparisons of its order and its access below read a statement without a subquery, and
-	// a select without a row has nothing for them.
+	// a select without a row has nothing for them. It is counted only through Query, where its rows
+	// are compared. An update or a delete that still has its subqueries and did not fail is one that
+	// can change no row, and the count of changes below and the state compare it with SQLite's run of
+	// its text.
 	sel, isSelect := u.(*stmt.Select)
 	uncomputed := isSelect && subqueried(sel) && got.err == ""
-	if uncomputed {
+	if u != nil && !isSelect && subqueried(u) && got.err == "" {
+		p.count("subquery that the engine did not compute, of an update or a delete")
+	}
+	if uncomputed && c.Query {
 		p.count("subquery that the engine did not compute, of a select that gave no row")
 		if len(got.rows) > 0 {
 			return fmt.Sprintf("%q with the arguments %v: the engine gives the rows %v without computing its subqueries", src, args, got.rows)
@@ -1429,7 +1435,8 @@ func (p *pair) returnedInOrder(s stmt.Statement, args []any) []string {
 		return nil
 	}
 	// A statement with a subquery is flattened by [pair.step] once the engine has computed it, so one
-	// that is not has failed before it changed a row.
+	// that is not has failed before it changed a row, or can change none, and has no order of RETURNING
+	// to check.
 	if !r.Present() || len(args) != s.Parameters() || subqueried(s) {
 		return nil
 	}

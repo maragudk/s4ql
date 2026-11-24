@@ -70,6 +70,17 @@ A plant that every test passes means a real fault of that shape would ship. Each
 - The `uncomputed` branch in `pair.step` in `/internal/engine/differential_test.go`, and that it cannot hide a select that gave rows. It returns a failure if the engine gave rows, and `differs` compares with SQLite otherwise.
 - The threshold `canceled > 40` in the context subtest of `/internal/engine/subquery_test.go`.
 
+### Self-review
+
+The code-review skill (medium) over `slice-15-engine...HEAD` found no blocking bug. It ran `TestEngine_subquery|TestEngine_report` with `-count=30`, all passing. It reported four nits:
+
+- The count of an uncomputed select went up through Exec too, where the engine's rows are always empty and SQLite's are cleared, so nothing was checked. It is now counted only when `c.Query` is set.
+- The new update and delete with a condition that is never true claimed that no subquery is computed, but nothing checked that. The pair now counts "subquery that the engine did not compute, of an update or a delete", and `TestEngine_subquery` requires it. A plant that drops `never(...)` from `build.compute` leaves the count at 0, so the test fails.
+- The comment in `pair.returnedInOrder` said that an unflattened write "has failed before it changed a row". It is reworded: such a write may also have succeeded and changed no row.
+- No diary or todo note: it reviewed before the commit that wrote them.
+
+After the fixes, `TestEngine_subquery` passes with `-count=50`, and `golangci-lint` reports 0 issues. `make test` and `make lint` both passed before the fixes.
+
 ### Future work
 
 - Running the pair's subquery cases under a lowered length limit needs `pair.checkLength` to read the literals of a subquery. This is in `/docs/todo/generated-workload.md`.
