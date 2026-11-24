@@ -903,8 +903,8 @@ async function reset() {
 // how many dance poses it has taken, for a check of sound; the poses of the walk are walk0 to
 // walk11, mirrored when it walks to the left.
 const DW = 15, DH = 18; // the grid of the figure, in its pixels; the feet are on its last row
-const PX = 2; // the size in px of a pixel of the grid
-const RIGHT = 40; // px from the right end of the line to the figure's old place, as the CSS sets it
+const PX = 2; // the size in px of a pixel of the grid, as the width of .dancer in index.html sets it
+const RIGHT = 40; // px from the right end of the line to the figure's old place, as .dancer's right sets it
 const HOLD = 200; // ms, the least time that a dance pose holds
 const STALE = 300; // ms, how long after its sound a move may still start
 const REST = 450; // ms, how long the last pose of a move stays before the figure stands
@@ -1055,7 +1055,7 @@ const dancer = {
   paths: new Map(), // the path of each pose, and of its mirror: {d, l, r}
   pose: "", // the pose it shows
   moves: 0, // the dance poses it has taken so far
-  since: -Infinity, // the time of the last dance pose, or of the stand after a move
+  since: -Infinity, // the time of the last dance pose, or of the stand of dancerRest
   move: null, // the move it dances: {rank, poses, i, until, rest}
   next: null, // the move that waits for its turn: {kind, due}
   turns: {}, // by kind: how many moves of the kind it has started, for the mirror
@@ -1107,13 +1107,13 @@ function dancerPath(name) {
   return dancer.paths.get(name);
 }
 
-// dancerPlace moves the figure in until every pixel of its pose lies on the line, and shows it where
-// it is. Under reduced motion it stays at its old place.
+// dancerPlace moves the figure in until every pixel of its pose, and of any pose of its stroll, lies
+// on the line, and shows it where it is. Under reduced motion it stays at its old place.
 function dancerPlace() {
   if (!dancer.el || !dancer.pose) return;
   if (dancer.still.matches) walker.x = 0;
   else if (walker.width) {
-    const p = dancerPath(dancer.pose), [lo, hi] = span(p.l, p.r);
+    const p = dancerPath(dancer.pose), [lo, hi] = span(Math.min(p.l, walker.l), Math.max(p.r, walker.r));
     walker.x = Math.max(lo, Math.min(hi, walker.x));
   }
   if (walker.shown === walker.x) return;
@@ -1124,7 +1124,7 @@ function dancerPlace() {
 // dancerPose shows the pose, by its name, at the time now.
 function dancerPose(name, now) {
   if (!dancer.el) return;
-  if (!/^-?walk/.test(name)) dancer.since = now;
+  if (!strolls(name)) dancer.since = now;
   if (dancer.pose !== name) {
     dancer.el.firstElementChild.setAttribute("d", dancerPath(name).d);
     if (!strolls(name)) dancer.moves++;
@@ -1143,6 +1143,7 @@ function dancerRest(now) {
   walker.walking = false;
   walker.after = "rest";
   walker.due = now;
+  dancer.since = now;
   dancerPose("stand", now);
 }
 

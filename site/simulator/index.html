@@ -590,7 +590,8 @@ h2 {
 .logs { position: relative; display: grid; grid-template-columns: minmax(0, 3fr) minmax(440px, 2fr); border: var(--rule); margin: 48px 0 40px; }
 /* The dancer stands on the top line of the frame, in the margin above it, dances to the sounds, and
    strolls along the line: see page.js. This is its old place, near the right end, from which a
-   transform moves it. It is drawn in pixels of 2 px. */
+   transform moves it. It is drawn in pixels of 2 px. page.js has its right and its pixels as RIGHT
+   and PX, to keep it on the line: change them together. */
 .dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; pointer-events: none; }
 .logs > section { min-width: 0; }
 .logs > .objects { border-left: var(--rule); }

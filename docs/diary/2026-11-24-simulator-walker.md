@@ -119,3 +119,53 @@ Keeping the walk, the dance, and the place apart: the dance's least hold of 200 
 ### Future work
 
 None.
+
+## Step 3: Self-review
+
+**Author:** builder (simulator walker)
+
+### Prompt Context
+
+**Verbatim prompt:** (as in step 1: self-review with the code-review skill, then the automated checks)
+
+**Interpretation:** review the two commits of this branch, fix what matters, and run the checks again.
+
+**Inferred intent:** hand the lead a branch that does what the brief, as changed, says.
+
+### What I did
+
+Ran the code-review skill at medium effort over `b0bbe2a..HEAD`. It reported three nits, and I fixed all three in `/site/simulator/page.js` and `/site/simulator/index.html`:
+
+- `dancerPose` set `dancer.since` for the stand at the end of a stretch too, so a sound right after a stretch could wait up to 200 ms more, against what the comment and step 2 of this diary said. Now only dance poses and the stand of `dancerRest` set it.
+- `dancerPlace` clamped the place to the span of the pose on screen only, so a resize during a narrow dance pose could leave the figure where the stand after it does not fit, and the stand would then jump in. It now clamps to the span of the pose and of every pose of the stroll together.
+- `RIGHT` and `PX` copy `right: 40px` and the width of `.dancer` from the CSS. The comments on both sides now name the other.
+
+Then a short look by hand in playwright (64 frames at 390 px, walking and then dancing with sound on: no sliding foot, nothing past the ends, feet on the line), `make site-check`, and `go test -tags s4ql_browser ./internal/simulator/...`.
+
+### Why
+
+The first and second were true and cheap. The third cannot break today, but with the figure's check gone nothing else would notice a change to the CSS.
+
+### What worked
+
+The review read the code without my plan and found the gap between the comment on `since` and the code.
+
+### What didn't work
+
+The playwright browser closed by itself during the first try at the look by hand: `The browser 'default' is not open, please run open first`. Opening it again worked.
+
+### What I learned
+
+Nothing new beyond step 2.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+As in step 2.
+
+### Future work
+
+None.
