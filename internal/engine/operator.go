@@ -731,10 +731,7 @@ func changeRows(ctx context.Context, w writer, name string, key int, src source,
 // value of each is computed after every check, before the access of the query is chosen; see
 // [subqueries].
 func buildQuery(ctx context.Context, r reader, q *Query, args []*s4qlpb.Value, limit int, how reading) (source, error) {
-	b := build{r: r, args: args, limit: limit, how: how}
-	if q.Subqueries != nil {
-		b.subs = newSubqueries(q.Subqueries, true)
-	}
+	b := build{r: r, args: args, limit: limit, how: how, subs: newSubqueries(q.Subqueries)}
 	return b.node(ctx, q.Root)
 }
 
@@ -980,9 +977,11 @@ func (b build) walk(ctx context.Context, f *Filter, t, outer *s4qlpb.CreateTable
 				if in, err = b.subs.at(sub, outer); err != nil {
 					return nil, err
 				}
-				if b.subs.prepared && in.width > 1 {
-					// SQLite gives the offset of the column on the left of the comparison, and none (-1)
-					// for the subquery on the left.
+				if in.width > 1 {
+					// Only a select has found the table of a subquery, and so its width, before the walk
+					// reaches it: an update and a delete find it after, as subqueries.names does, and
+					// fail with subqueries.widths. SQLite gives the offset of the column on the left of
+					// the comparison, and none (-1) for the subquery on the left.
 					offset := c.Column.Offset
 					if c.ValueFirst {
 						offset = -1
@@ -1269,9 +1268,9 @@ func null() *s4qlpb.Value {
 func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bugs, limit int, how reading) (sink, error) {
 	switch p := p.(type) {
 	case *Update:
-		return build{r: w, args: args, limit: limit, how: how, bugs: b, subs: newSubqueries(p.Subqueries, false)}.change(ctx, w, p.Source, p.Set, p.Returning, true)
+		return build{r: w, args: args, limit: limit, how: how, bugs: b, subs: newSubqueries(p.Subqueries)}.change(ctx, w, p.Source, p.Set, p.Returning, true)
 	case *Delete:
-		return build{r: w, args: args, limit: limit, how: how, bugs: b, subs: newSubqueries(p.Subqueries, false)}.change(ctx, w, p.Source, nil, p.Returning, false)
+		return build{r: w, args: args, limit: limit, how: how, bugs: b, subs: newSubqueries(p.Subqueries)}.change(ctx, w, p.Source, nil, p.Returning, false)
 	case *CreateIndex:
 		return buildCreateIndex(ctx, w, p, limit)
 	case *DropIndex:

@@ -45,9 +45,6 @@ import (
 // order of the text. A nil *subqueries is the subqueries of a statement without one.
 type subqueries struct {
 	list []*inner
-	// prepared is set for a select, which finds the tables of its subqueries and expands their `*`
-	// before it looks any name up.
-	prepared bool
 	// outer is the table of the statement, once it is found.
 	outer *s4qlpb.CreateTable
 	// correlated is the first name of a subquery that is correlated, or nil.
@@ -80,13 +77,13 @@ type inner struct {
 	named bool
 }
 
-// newSubqueries of a statement whose subqueries are qs, a select if prepared, or nil for a statement
-// without one. It panics for a subquery of another shape than [Query] says.
-func newSubqueries(qs []*Query, prepared bool) *subqueries {
+// newSubqueries of a statement whose subqueries are qs, or nil for a statement without one. It panics
+// for a subquery of another shape than [Query] says.
+func newSubqueries(qs []*Query) *subqueries {
 	if qs == nil {
 		return nil
 	}
-	s := &subqueries{prepared: prepared}
+	s := &subqueries{}
 	for i, q := range qs {
 		in := &inner{number: i + 1, query: q}
 		p, ok := q.Root.(*Project)

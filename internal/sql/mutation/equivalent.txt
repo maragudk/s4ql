@@ -989,7 +989,7 @@ internal/engine/access.go orderBy.better operator: len(a.equal) > len(best.equal
 	The comparison is made only where the two lengths differ, so > and >= agree.
 internal/engine/access.go orderBy.place condition: !ok => true #2
 	Where the key delivers the order, skippedGaps leaves out of the key only columns after the first that the ORDER BY names and that it does not name, which are pinned ones, which delivers skips anyway, or ones after the end of the ORDER BY, so delivers gives the same answer for it.
-internal/engine/operator.go build.ordered condition: f != nil => true #4
+internal/engine/operator.go build.ordered condition: f != nil => true #5
 	A filter of no conditions gives every row of its source, in its order, and its errors.
 internal/engine/operator.go build.access condition: err != nil => false #4
 	fit fails only for bounds of values of two types, which checkType refuses before the access is chosen.
