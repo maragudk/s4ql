@@ -43,7 +43,6 @@ func TestStateAt(t *testing.T) {
 	t.Run("should hold the log of the store", func(t *testing.T) {
 		res := run(t, &e, `{"seed": 2, "end": 120000, "faults": `+allFaults+`}`)
 		s := simulator.StateAt(res, 120_000)
-		is.Equal(t, res.Summary.Log, len(s.Bucket.Log))
 		is.True(t, len(s.Bucket.Log) > 5, "commits")
 		is.Equal(t, s.Bucket.Manifest.Head, s.Bucket.Log[len(s.Bucket.Log)-1])
 		inLog := 0

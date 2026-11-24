@@ -913,8 +913,7 @@ const STRIDE = 6; // the pixels of a step of the walk, half its cycle of 12 fram
 
 // POSES by name: the head's centre h, the neck n, the pelvis p, the elbow and hand of each arm, la
 // and ra, and the knee and foot of each leg, ll and rl, on the grid, with the line under row 17. l is
-// the viewer's left. up lifts the whole pose by that many rows, for a jump. Each pose has a mirror,
-// named "-" and its name.
+// the viewer's left. Each pose has a mirror, named "-" and its name.
 const POSES = {
   // Standing, arms at its sides.
   stand: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 8], [10, 11]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
@@ -948,15 +947,11 @@ const POSES = {
   pump2: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[11, 7], [11, 3]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
   // A tap of the toe, for the blip of a control.
   tap: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 8], [10, 11]], ll: [[6, 14], [5, 17]], rl: [[9, 14], [11, 16]] },
-  // Panic, for the alarm: arms flailing over its head, and jumps.
-  panic: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[3, 5], [4, 1]], ra: [[11, 4], [13, 2]], ll: [[5, 14], [4, 17]], rl: [[9, 14], [10, 17]] },
-  jump: { up: 1, h: [7, 3], n: [7, 6], p: [7, 11], la: [[3, 4], [1, 2]], ra: [[11, 5], [10, 1]], ll: [[6, 14], [6, 17]], rl: [[8, 14], [8, 17]] },
 };
 
 // MOVES by the kind of sound, of FIGURES and TICKS in sound.js: its rank, and its poses, each with
 // the least time in ms that it holds, at least HOLD.
 const MOVES = {
-  alarm: { rank: 5, poses: [["panic", 220], ["jump", 220], ["-panic", 220], ["-jump", 220]] },
   down: { rank: 4, poses: [["slump", 220], ["flat", 900]] },
   failing: { rank: 4, poses: [["shrug", 500]] },
   up: { rank: 3, poses: [["tada", 400]] },
@@ -999,7 +994,6 @@ const strolls = (name) => name === "stand" || /^-?walk/.test(name);
 function figurePath(pose) {
   const on = new Set();
   const dot = (x, y) => {
-    y -= pose.up || 0;
     if (x >= 0 && x < DW && y >= 0 && y < DH) on.add(y * DW + x);
   };
   const line = ([x0, y0], [x1, y1]) => {
@@ -1047,7 +1041,7 @@ function figurePath(pose) {
 function mirror(pose) {
   const m = ([x, y]) => [DW - 1 - x, y];
   const limb = ([a, b]) => [m(a), m(b)];
-  return { up: pose.up, h: m(pose.h), n: m(pose.n), p: m(pose.p), la: limb(pose.ra), ra: limb(pose.la), ll: limb(pose.rl), rl: limb(pose.ll) };
+  return { h: m(pose.h), n: m(pose.n), p: m(pose.p), la: limb(pose.ra), ra: limb(pose.la), ll: limb(pose.rl), rl: limb(pose.ll) };
 }
 
 const dancer = {

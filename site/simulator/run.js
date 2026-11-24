@@ -250,9 +250,8 @@ function actionWords(e) {
 }
 
 // The tiers of the log: "stream" is the reads and writes that the instance with the lease serves,
-// "story" is what happens to the lease, the instances, and S3, "you" is an action of the visitor, and
-// "alarm" is a violation that the engine's checker found and the design does not excuse. An event
-// without a tier is not in the log.
+// "story" is what happens to the lease, the instances, and S3, and "you" is an action of the visitor.
+// An event without a tier is not in the log.
 
 // teller gives a function that takes the events of a session one at a time, in order, and returns the
 // line of each: {text, tier}, with tier null for an event that is not in the log. It keeps what it
@@ -426,14 +425,6 @@ export function teller() {
         if (e.do === "client" && e.what === "done") failures = null;
         if (e.what === "done") say(actionWords(e), "you");
         else say(`${actionWords(e)} ${e.what === "failed" ? "It fails" : "Ignored"}: ${e.text}.`, "you");
-        break;
-      case "check":
-        // The design accepts a stale read on a process whose two clocks both went wrong, its
-        // monotonic clock stopped and its wall clock stopped or moved back, and the checker excuses
-        // it: the log says so once a spell, in the words of the story. On the page only a pause of
-        // the clocks stops the monotonic clock, and it stops the wall clock too.
-        if (e.excused && e.invariant === "fresh") once("lease:stale", `${who} serves a stale read after its clocks were paused, which the spec allows.`);
-        else say(`The checker finds a violation of ${e.invariant}: ${e.text}.`, "alarm");
         break;
       case "buggify":
         say(`Buggify fires: ${e.site}.`);

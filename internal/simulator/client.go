@@ -93,7 +93,7 @@ func (r *run) callTarget(ctx context.Context, in *instance, c *call) {
 	// The task has returned, or its process has crashed. A call that the task ended keeps its end.
 	e := c.event(in, p, "lost")
 	e.Error = "the process of the instance crashed during the call"
-	r.callEnded(ctx, c, e)
+	r.callEnded(c, e)
 }
 
 // callDown ends the call c on the instance in, whose process is p or nil, with "down", for the
@@ -101,7 +101,7 @@ func (r *run) callTarget(ctx context.Context, in *instance, c *call) {
 func (r *run) callDown(ctx context.Context, c *call, in *instance, p *process, why string) {
 	e := c.event(in, p, "down")
 	e.Error = why
-	r.callEnded(ctx, c, e)
+	r.callEnded(c, e)
 }
 
 // down says why the process p cannot take a call of the client, or returns "" if it can. It cannot if
