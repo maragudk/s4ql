@@ -207,6 +207,14 @@ code { font-family: inherit; }
   flex: none;
 }
 .btn[aria-pressed="true"] .led { background: currentColor; }
+/* A toggle that waits, as Sound that the browser remembers on does until the first click: the
+   button does not invert, and its square has a dot that blinks, or holds under reduced motion. */
+.btn[aria-pressed="mixed"] .led {
+  background: currentColor;
+  box-shadow: inset 0 0 0 2px var(--void);
+  animation: led-wait 1.2s steps(1, end) infinite;
+}
+@keyframes led-wait { 50% { background: transparent; } }
 .btn .bars {
   display: block;
   width: 32px;
@@ -587,7 +595,10 @@ h2 {
 /* The log and the commit objects, below the system, side by side, and one above the other below 960
    px. The commit objects keep at least the width of the line under a bar code. */
 
-.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(440px, 2fr); border: var(--rule); margin: 48px 0 40px; }
+.logs { position: relative; display: grid; grid-template-columns: minmax(0, 3fr) minmax(440px, 2fr); border: var(--rule); margin: 48px 0 40px; }
+/* The dancer stands on the top line of the frame, near its right end, in the margin above it, and
+   dances to the sounds: see page.js. It is drawn in pixels of 2 px. */
+.dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; pointer-events: none; }
 .logs > section { min-width: 0; }
 .logs > .objects { border-left: var(--rule); }
 .log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 12px 20px; border-bottom: var(--rule); }
@@ -866,6 +877,7 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
       </dl>
     </section>
     <div class="logs">
+      <svg class="dancer" id="dancer" viewBox="0 0 15 18" shape-rendering="crispEdges" aria-hidden="true" focusable="false" data-pose="" data-moves="0"><path fill="currentColor"/></svg>
       <section class="log" aria-labelledby="log-h">
         <div class="log-head"><h2 id="log-h">Log</h2><span id="lines"></span></div>
         <div class="scroll" tabindex="0" aria-label="Log, newest first">

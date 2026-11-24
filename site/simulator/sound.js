@@ -1,6 +1,11 @@
 // The sound of the simulator page: short notes of a square wave on the important events of the
 // session, off until the visitor turns it on with the toggle Sound. The page creates no AudioContext
-// before that click, and a reload starts with sound off again. The module loads no other file.
+// before that click. The module loads no other file.
+//
+// The browser remembers the toggle in localStorage, under SOUND, as "on" or "off", across reloads,
+// tabs, and visits. Any other value, or storage that the browser refuses, is off. A browser starts no
+// audio without a gesture of the visitor, so sound that is remembered on waits: the toggle shows
+// that it waits, and the visitor's first click or key on the page turns sound on, in that gesture.
 //
 // Each kind of event has one figure, so that a visitor learns them. The pitches are those of one
 // scale, A minor pentatonic from A4 to A6. A figure rises for something that comes back, falls for
@@ -51,6 +56,9 @@
 //
 // player plays into any BaseAudioContext, so a check can render the figures into an
 // OfflineAudioContext with the code path of the page.
+//
+// watch is the hook of the page's dancer: it hears of each figure and tick that the page's player
+// plays, when the player plays it, and that sound is off. It does not change what sounds.
 
 export const MASTER = 0.018; // the gain of the master, the peak of one ordinary figure
 export const VOICES = 3; // the figures that sound at once
@@ -163,8 +171,9 @@ function fade(v, at) {
 }
 
 // player of figures into dest of the context, with the limits of the package comment. play gives
-// whether it plays the figure; silence fades every voice out now.
-export function player(ctx, dest) {
+// whether it plays the figure; silence fades every voice out now. played, if given, is called with
+// the kind and the start of each figure and tick that plays.
+export function player(ctx, dest, played = null) {
   const voices = [];
   const last = new Map(); // the start of the last figure of each kind
   const starts = []; // the starts of the figures in the last second, but the alarm
@@ -182,6 +191,7 @@ export function player(ctx, dest) {
       ticks.push(figure(ctx, dest, kind, at, TICKS, hz));
       lastTick = at;
       if (kind === "error") lastError = at;
+      if (played) played(kind, at);
       return true;
     },
     play(kind, at = ctx.currentTime + LEAD) {
@@ -202,6 +212,7 @@ export function player(ctx, dest) {
       last.set(kind, at);
       if (!alarm) starts.push(at);
       latest = at;
+      if (played) played(kind, at);
       return true;
     },
     // silence forgets the figures too, so that the next figure plays whatever was cut.
@@ -313,11 +324,30 @@ let ctx = null;
 let out = null; // the player of the page
 let on = false;
 let toggle = null; // the button Sound
+let watcher = null; // the function that watch was given
 const classify = listener();
+
+// watch calls fn(kind, delay) for each figure and tick that sounds, with its kind, of FIGURES or
+// TICKS, and the time in ms until it starts, and fn(null) when sound goes off. It tells of a sound
+// only while the context runs, so that a context that the browser holds suspended moves nothing. A
+// fault in fn never reaches the sound.
+export function watch(fn) {
+  watcher = fn;
+}
+
+function tell(kind, at) {
+  if (!watcher || (kind && ctx && ctx.state !== "running")) return;
+  try {
+    watcher(kind, kind ? Math.max(0, (at - ctx.currentTime) * 1000) : 0);
+  } catch {
+    // The dancer is decoration.
+  }
+}
 
 // hear the event of the engine, and play its figure if sound is on and the event is live.
 export function hear(e, live) {
   try {
+    if (live) wake();
     const kind = classify(e);
     if (kind && on && live && out) play(kind);
     const tk = tickOf(e);
@@ -333,10 +363,18 @@ export function hear(e, live) {
 // blip plays the neutral blip of a control, if sound is on.
 export function blip() {
   try {
+    wake();
     if (on && out) play("blip");
   } catch {
     broken();
   }
+}
+
+// wake resumes the context if sound is on and the browser has suspended or interrupted it, as Safari
+// can, for instance when the output device changes. Outside a click the browser may refuse; the next
+// sound, click, or key tries again.
+function wake() {
+  if (on && out && ctx.state !== "running") ctx.resume().catch(() => {});
 }
 
 function play(kind) {
@@ -351,6 +389,8 @@ function play(kind) {
 function broken() {
   on = false;
   out = null;
+  unwait();
+  tell(null);
   if (ctx) {
     const c = ctx;
     Promise.resolve().then(() => c.close()).catch(() => {});
@@ -362,10 +402,92 @@ function broken() {
   }
 }
 
+// SOUND is the item of localStorage that remembers the toggle.
+const SOUND = "s4ql:sound";
+const GESTURES = ["click", "keydown"];
+const NO_GESTURE = ["Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "Fn", "CapsLock", "Escape", "Tab"];
+let waiting = false; // whether sound that is remembered on waits for its context to run
+
+// remembered says whether the browser remembers sound on.
+function remembered() {
+  try {
+    return window.localStorage.getItem(SOUND) === "on";
+  } catch {
+    return false;
+  }
+}
+
+// remember the toggle, if the browser lets the page.
+function remember(v) {
+  try {
+    window.localStorage.setItem(SOUND, v ? "on" : "off");
+  } catch {
+    // Storage is a convenience.
+  }
+}
+
+// open the AudioContext, its master, and the player, in a gesture of the visitor, so that the
+// browser lets the context run.
+function open() {
+  ctx = new AudioContext();
+  const master = ctx.createGain();
+  master.gain.value = MASTER;
+  master.connect(ctx.destination);
+  out = player(ctx, master, tell);
+  ctx.addEventListener("statechange", () => {
+    if (out) toggle.dataset.audio = ctx.state;
+    settle();
+    if (ctx.state !== "running") tell(null);
+    wake();
+  });
+  for (const type of GESTURES) document.addEventListener(type, wake, true);
+}
+
+// first is the visitor's first click or key on the page while sound is remembered on, which turns
+// sound on in that gesture, before the page acts on it, so that its own sound is heard. A click or key
+// on the toggle is the toggle's. A modifier alone, such as the Command of Command+Tab, Escape, and Tab
+// are no gesture that lets a browser start audio, so sound waits on.
+function first(e) {
+  if (toggle.contains(e.target) || (e.type === "keydown" && NO_GESTURE.includes(e.key))) return;
+  for (const type of GESTURES) document.removeEventListener(type, first, true);
+  if (!waiting || ctx) return;
+  try {
+    open();
+    on = true;
+    toggle.dataset.audio = ctx.state;
+    ctx.resume().catch(() => {});
+    play("blip");
+    settle();
+  } catch {
+    broken();
+  }
+}
+
+// settle the toggle from waiting to on, once the context runs.
+function settle() {
+  if (waiting && on && ctx.state === "running") {
+    unwait();
+    toggle.setAttribute("aria-pressed", "true");
+  }
+}
+
+// unwait ends the wait of sound that is remembered on.
+function unwait() {
+  if (!waiting) return;
+  waiting = false;
+  for (const type of GESTURES) document.removeEventListener(type, first, true);
+  toggle.removeAttribute("title");
+}
+
 // wire the toggle Sound, a button with aria-pressed, which the HTML disables until this module has
 // loaded. Its data-audio says "none" until the first click that turns sound on creates the
 // AudioContext, then the state of the context, and "unavailable" if the browser has none or it
-// fails, which also disables the toggle.
+// fails, which also disables the toggle. While sound is on, a context that the browser suspends or
+// interrupts is resumed when its state changes, and at the next sound, click, or key: see wake.
+//
+// Sound that is remembered on waits: aria-pressed is "mixed", data-audio "waiting" until first makes
+// the context, and the title says what the toggle waits for. It is on once the context runs. A click
+// on the toggle while it waits turns sound on, as from off.
 export function wire(button) {
   if (!button) return;
   toggle = button;
@@ -374,18 +496,11 @@ export function wire(button) {
   button.disabled = false;
   button.addEventListener("click", () => {
     try {
-      if (!ctx) {
-        ctx = new AudioContext();
-        const master = ctx.createGain();
-        master.gain.value = MASTER;
-        master.connect(ctx.destination);
-        out = player(ctx, master);
-        ctx.addEventListener("statechange", () => {
-          if (out) button.dataset.audio = ctx.state;
-        });
-      }
+      if (!ctx) open();
       if (!out) return;
-      on = !on;
+      on = waiting || !on;
+      unwait();
+      remember(on);
       button.setAttribute("aria-pressed", String(on));
       button.dataset.audio = ctx.state;
       if (on) {
@@ -393,6 +508,7 @@ export function wire(button) {
         play("blip");
       } else {
         out.silence();
+        tell(null);
         // Suspend once the fades have ended, unless sound is on again by then.
         setTimeout(() => {
           if (!on && out) ctx.suspend().catch(() => {});
@@ -402,4 +518,10 @@ export function wire(button) {
       broken();
     }
   });
+  if (!remembered()) return;
+  waiting = true;
+  button.setAttribute("aria-pressed", "mixed");
+  button.dataset.audio = "waiting";
+  button.title = "Sound starts at your first click or key on the page.";
+  for (const type of GESTURES) document.addEventListener(type, first, true);
 }

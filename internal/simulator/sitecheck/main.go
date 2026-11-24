@@ -9,8 +9,12 @@
 //
 // The check passes if the engine becomes ready and the page waits at zero until Play; Play advances
 // fake time by the real time, turbo by five times it, and the log and the commit objects grow; Pause
-// holds fake time; the client calls a from the start, and b gets no call; each action on an instance
-// has its effect in the state, and an action switched off again takes it away; the client keeps
+// holds fake time; the stick figure on the frame of the log stood still while the page played with
+// sound off, and with sound on it stays still while paused, dances while the page plays, and stands
+// again after Pause; when the browser suspends the audio context while sound is on, the figure
+// stands, and the page asks to resume it when its state changes, at the next sound, key, and click;
+// the client calls a from the start, and b gets no call; each action on an instance has its effect
+// in the state, and an action switched off again takes it away; the client keeps
 // calling a while a is crashed and after its restart, and its switch moves its calls to b and back; a
 // crash of the instance that serves lets the other take over; fake time goes
 // past 10 minutes; and the page writes nothing into its address. The box for SQL, while paused,
@@ -22,7 +26,10 @@
 // is damaged or of another version is dropped; a write to sessionStorage that fails leaves nothing
 // half-written, and stops the page as S3 full; Reset empties the database and keeps its name; the page stops at the cap of commit
 // objects, and Reset starts over from there; a tab without storage runs in memory; and a tab with an
-// empty sessionStorage, as a new tab has, gets a database of its own. It also checks the words of run.js,
+// empty sessionStorage, as a new tab has, gets a database of its own. The page remembers Turbo and
+// Sound in localStorage across reloads, and Reset keeps them; Sound remembered on waits, without an
+// audio context, until the first click or key on the page; and storage that throws, or holds what
+// the page did not write, gives the toggles of a first visit. It also checks the words of run.js,
 // and that a fault at start-up ends in the page's failure box: the page without run.js, and the page
 // without its Play button, as a page.js of one deploy would find the HTML of another. It writes what
 // it saw, and exits with 0 if the check passed, 1 if it failed, and 2 if it could not run.
@@ -264,6 +271,9 @@ func startBrowser(chromium, page string) (*browser, error) {
 		// The page plays its run in animation frames, which Chromium does not run for a frame out of
 		// sight, so the window holds the frame of check.html whole.
 		"--window-size=1600,1200",
+		// The check turns the page's sound on with a click of a script, which is no gesture of a user,
+		// and the page's dancer moves only while its audio context runs.
+		"--autoplay-policy=no-user-gesture-required",
 	}
 	flags = append(flags, strings.Fields(os.Getenv("S4QL_CHROMIUM_FLAGS"))...)
 	flags = append(flags, page)
@@ -374,33 +384,37 @@ func checkRequests(requests []url.URL, version string) (bool, []string) {
 
 // broken serves the site under /__check/broken/<how>/, with a fault: with how "no-run", run.js is not
 // found, and with "no-play", the page's Play button has lost its ID, which make the page fail at
-// start-up; with "no-storage", the page's sessionStorage throws, as the browser blocks it.
+// start-up; with "no-storage", the page's sessionStorage and localStorage throw, as when the browser
+// blocks the site's data. With "audio", the page is whole, and counts the audio contexts that it
+// makes in window.s4qlContexts, from before its own scripts run.
 func broken(root string) http.Handler {
 	files := http.FileServer(http.Dir(root))
+	// heads are the scripts that a variant puts first in the page's head.
+	heads := map[string]string{
+		"no-storage": `<script>for (const name of ["sessionStorage", "localStorage"]) Object.defineProperty(window, name, { get() { throw new DOMException("The storage is blocked.", "SecurityError"); } });</script>`,
+		"audio":      `<script>window.s4qlContexts = 0; window.AudioContext = class extends window.AudioContext { constructor(...a) { super(...a); window.s4qlContexts++; } };</script>`,
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		how, p := r.PathValue("how"), "/"+r.PathValue("path")
 		w.Header().Set("Cache-Control", "no-store")
+		_, head := heads[how]
 		switch {
-		case how != "no-run" && how != "no-play" && how != "no-storage", how == "no-run" && p == "/simulator/run.js":
+		case how != "no-run" && how != "no-play" && !head, how == "no-run" && p == "/simulator/run.js":
 			http.NotFound(w, r)
 			return
-		case how == "no-play" && p == "/simulator/":
+		case (how == "no-play" || head) && p == "/simulator/":
 			b, err := os.ReadFile(filepath.Join(root, "simulator", "index.html"))
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write(bytes.Replace(b, []byte(`id="play"`), []byte(`id="no-play"`), 1))
-			return
-		case how == "no-storage" && p == "/simulator/":
-			b, err := os.ReadFile(filepath.Join(root, "simulator", "index.html"))
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+			if head {
+				b = bytes.Replace(b, []byte(`<head>`), []byte(`<head>`+heads[how]), 1)
+			} else {
+				b = bytes.Replace(b, []byte(`id="play"`), []byte(`id="no-play"`), 1)
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			_, _ = w.Write(bytes.Replace(b, []byte(`<head>`), []byte(`<head><script>Object.defineProperty(window, "sessionStorage", { get() { throw new DOMException("The storage is blocked.", "SecurityError"); } });</script>`), 1))
+			_, _ = w.Write(b)
 			return
 		}
 		r = r.Clone(r.Context())

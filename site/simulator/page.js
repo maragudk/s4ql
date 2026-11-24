@@ -332,9 +332,30 @@ function setTurbo(on) {
   $("turbo").setAttribute("aria-pressed", String(on));
 }
 
+// The browser remembers Turbo in localStorage, under TURBO_ITEM, as "on" or "off", across reloads,
+// tabs, and visits. Any other value, or storage that the browser refuses, is on, as on a first visit.
+const TURBO_ITEM = "s4ql:turbo";
+
+function turboRemembered() {
+  try {
+    return window.localStorage.getItem(TURBO_ITEM) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function rememberTurbo() {
+  try {
+    window.localStorage.setItem(TURBO_ITEM, turbo ? "on" : "off");
+  } catch {
+    // Storage is a convenience.
+  }
+}
+
 function frame(ts) {
   if (playing) debt += Math.min(FRAME, Math.max(0, ts - last));
   last = ts;
+  dance(ts);
   pump();
   requestAnimationFrame(frame);
 }
@@ -409,7 +430,10 @@ function wire() {
     }
   });
   $("reset").addEventListener("click", () => reset());
-  $("turbo").addEventListener("click", () => setTurbo(!turbo));
+  $("turbo").addEventListener("click", () => {
+    setTurbo(!turbo);
+    rememberTurbo();
+  });
   const text = $("sql-text");
   const kept = keeper.boxText();
   if (kept !== null) text.value = kept;
@@ -789,9 +813,14 @@ async function begin(e) {
   storageVersion = answer.version;
   base = 0;
   take(answer);
-  if (dropped) note(answer.t, { tier: "story", text: "What the browser held of S3 could not be read, so S3 starts empty." });
-  else if (stored) note(answer.t, { tier: "story", text: `S3 still holds ${keeper.name}: ${count(stored.objects.filter((o) => !o.key.endsWith("/manifest.json")).length)} commit objects.` });
   state = (await e.now(COMMITS)).state;
+  // The line of a stored database says who waits for the lease that its manifest names, from the
+  // state at the start.
+  if (dropped) note(answer.t, { tier: "story", text: "What the browser held of S3 could not be read, so S3 starts empty." });
+  else if (stored) {
+    const n = stored.objects.filter((o) => !o.key.endsWith("/manifest.json")).length;
+    note(answer.t, { tier: "story", text: R.storedLine(keeper.name, n, state.bucket.manifest, state.instances) });
+  }
 }
 
 // reset empties the tab's database and starts a new session at time 0, paused, with the page as at
@@ -844,17 +873,233 @@ async function reset() {
   draw();
 }
 
+// The dancer: a stick figure on the top line of the frame of the log and the commit objects, which
+// dances to the sounds. sound.js tells it, through watch, of each figure and tick that plays and
+// when it starts, and the figure takes the move of that kind of sound as it starts to sound. It
+// dances only while sound is on, the page plays, and the visitor allows motion, and stands still
+// otherwise.
+//
+// Turbo brings ticks every few tens of ms, so a pose holds at least HOLD: the figure follows the
+// sounds at most five poses a second. A sound that comes while a pose holds waits, unless one of a
+// higher rank comes, and is left out once it is STALE. A move is one pose or a few, by the kind of
+// its sound; a move of one pose takes turns with its mirror, so that a run of one sound is a dance
+// and not a pose that stays. A move cuts into another only from a higher rank; once its poses have
+// held, any move may follow, and after REST the figure stands again.
+//
+// The figure is drawn on a grid of DW by DH of its pixels from the joints of each pose, with lines a
+// pixel wide and a ring for a head, as crisp as the bars of the page. The SVG #dancer says its pose
+// in data-pose, and in data-moves how many times it has changed pose, for a check.
+const DW = 15, DH = 18; // the grid of the figure, in its pixels; the feet are on its last row
+const HOLD = 200; // ms, the least time that a pose holds
+const STALE = 300; // ms, how long after its sound a move may still start
+const REST = 450; // ms, how long the last pose of a move stays before the figure stands
+
+// POSES by name: the head's centre h, the neck n, the pelvis p, the elbow and hand of each arm, la
+// and ra, and the knee and foot of each leg, ll and rl, on the grid, with the line under row 17. l is
+// the viewer's left. up lifts the whole pose by that many rows, for a jump. Each pose has a mirror,
+// named "-" and its name.
+const POSES = {
+  // Standing, arms at its sides.
+  stand: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 8], [10, 11]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  // The disco point, for an insert's beep: a hand up to the corner, the other on the hip, the hip out.
+  point: { h: [7, 3], n: [7, 6], p: [8, 11], la: [[4, 9], [6, 11]], ra: [[10, 4], [13, 1]], ll: [[6, 14], [5, 17]], rl: [[9, 14], [10, 17]] },
+  // Brushing the item off the counter, for a void.
+  sweep: { h: [7, 4], n: [7, 7], p: [7, 12], la: [[4, 9], [1, 11]], ra: [[5, 10], [2, 13]], ll: [[5, 14], [5, 17]], rl: [[9, 14], [9, 17]] },
+  // A nod to the side, for a select.
+  nod: { h: [6, 4], n: [7, 7], p: [7, 11], la: [[5, 9], [4, 11]], ra: [[9, 9], [10, 11]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  // A hand to the brow, looking for the row, for a select that finds none.
+  look: { h: [8, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[12, 5], [11, 2]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  // A hand to the face, for the error tone.
+  facepalm: { h: [7, 4], n: [7, 7], p: [7, 11], la: [[5, 9], [5, 12]], ra: [[11, 7], [8, 4]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  // A wave to the visitor, for a statement of the box, in two poses.
+  wave: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[11, 5], [12, 1]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  wave2: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[11, 5], [10, 1]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  // Both arms up, for an instance that opens.
+  tada: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[4, 4], [2, 1]], ra: [[10, 4], [12, 1]], ll: [[5, 14], [4, 17]], rl: [[9, 14], [10, 17]] },
+  // A crash: the knees give, and it falls flat on the line.
+  slump: { h: [6, 7], n: [7, 10], p: [7, 14], la: [[5, 12], [4, 14]], ra: [[9, 12], [10, 14]], ll: [[3, 15], [4, 17]], rl: [[11, 15], [10, 17]] },
+  flat: { h: [2, 15], n: [5, 15], p: [10, 15], la: [[6, 13], [7, 11]], ra: [[6, 17], [8, 17]], ll: [[12, 14], [14, 13]], rl: [[12, 16], [14, 17]] },
+  // The raised hand of a stop, feet together.
+  halt: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [5, 11]], ra: [[12, 6], [12, 3]], ll: [[6, 14], [6, 17]], rl: [[8, 14], [8, 17]] },
+  // A takeover: a shove to the side, then both thumbs to its own chest.
+  shove: { h: [10, 4], n: [9, 7], p: [7, 11], la: [[11, 7], [14, 7]], ra: [[11, 8], [14, 9]], ll: [[5, 14], [3, 17]], rl: [[8, 14], [9, 17]] },
+  mine: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[4, 8], [6, 8]], ra: [[10, 8], [8, 8]], ll: [[5, 14], [4, 17]], rl: [[9, 14], [10, 17]] },
+  // The shrug, for requests that start to fail.
+  shrug: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[4, 8], [3, 5]], ra: [[10, 8], [11, 5]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  // A fist pump with a knee up, for requests that work again.
+  pump: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[10, 4], [10, 0]], ll: [[5, 13], [6, 15]], rl: [[8, 14], [9, 17]] },
+  pump2: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[11, 7], [11, 3]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  // A tap of the toe, for the blip of a control.
+  tap: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 8], [10, 11]], ll: [[6, 14], [5, 17]], rl: [[9, 14], [11, 16]] },
+  // Panic, for the alarm: arms flailing over its head, and jumps.
+  panic: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[3, 5], [4, 1]], ra: [[11, 4], [13, 2]], ll: [[5, 14], [4, 17]], rl: [[9, 14], [10, 17]] },
+  jump: { up: 1, h: [7, 3], n: [7, 6], p: [7, 11], la: [[3, 4], [1, 2]], ra: [[11, 5], [10, 1]], ll: [[6, 14], [6, 17]], rl: [[8, 14], [8, 17]] },
+};
+
+// MOVES by the kind of sound, of FIGURES and TICKS in sound.js: its rank, and its poses, each with
+// the least time in ms that it holds, at least HOLD.
+const MOVES = {
+  alarm: { rank: 5, poses: [["panic", 220], ["jump", 220], ["-panic", 220], ["-jump", 220]] },
+  down: { rank: 4, poses: [["slump", 220], ["flat", 900]] },
+  failing: { rank: 4, poses: [["shrug", 500]] },
+  up: { rank: 3, poses: [["tada", 400]] },
+  stop: { rank: 3, poses: [["halt", 400]] },
+  takeover: { rank: 3, poses: [["shove", 260], ["mine", 400]] },
+  recovered: { rank: 3, poses: [["pump", 200], ["pump2", 200], ["pump", 300]] },
+  blip: { rank: 2, poses: [["tap", HOLD]] },
+  error: { rank: 2, poses: [["facepalm", 400]] },
+  box: { rank: 1, poses: [["wave", HOLD], ["wave2", HOLD], ["wave", HOLD]] },
+  scan: { rank: 1, poses: [["point", HOLD]] },
+  void: { rank: 1, poses: [["sweep", HOLD]] },
+  select: { rank: 0, poses: [["nod", HOLD]] },
+  miss: { rank: 0, poses: [["look", HOLD]] },
+};
+
+// figurePath of a pose, as the d of a path of its pixels: lines between its joints by Bresenham's
+// algorithm, and the head.
+function figurePath(pose) {
+  const on = new Set();
+  const dot = (x, y) => {
+    y -= pose.up || 0;
+    if (x >= 0 && x < DW && y >= 0 && y < DH) on.add(y * DW + x);
+  };
+  const line = ([x0, y0], [x1, y1]) => {
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    for (let err = dx + dy; ;) {
+      dot(x0, y0);
+      if (x0 === x1 && y0 === y1) return;
+      const e2 = 2 * err;
+      if (e2 >= dy) {
+        err += dy;
+        x0 += sx;
+      }
+      if (e2 <= dx) {
+        err += dx;
+        y0 += sy;
+      }
+    }
+  };
+  const [hx, hy] = pose.h;
+  for (let d = -1; d <= 1; d++) {
+    dot(hx + d, hy - 2);
+    dot(hx + d, hy + 2);
+    dot(hx - 2, hy + d);
+    dot(hx + 2, hy + d);
+  }
+  line(pose.n, pose.p);
+  for (const [a, b] of [pose.la, pose.ra]) {
+    line(pose.n, a);
+    line(a, b);
+  }
+  for (const [a, b] of [pose.ll, pose.rl]) {
+    line(pose.p, a);
+    line(a, b);
+  }
+  let d = "";
+  for (const i of [...on].sort((a, b) => a - b)) d += `M${i % DW} ${Math.floor(i / DW)}h1v1h-1z`;
+  return d;
+}
+
+// mirror of a pose, across the middle of the grid.
+function mirror(pose) {
+  const m = ([x, y]) => [DW - 1 - x, y];
+  const limb = ([a, b]) => [m(a), m(b)];
+  return { up: pose.up, h: m(pose.h), n: m(pose.n), p: m(pose.p), la: limb(pose.ra), ra: limb(pose.la), ll: limb(pose.rl), rl: limb(pose.ll) };
+}
+
+const dancer = {
+  el: null, // the SVG #dancer
+  paths: new Map(), // the d of each pose, and of its mirror
+  pose: "", // the pose it shows
+  moves: 0, // the changes of pose so far
+  since: -Infinity, // the time of the last change of pose
+  move: null, // the move it dances: {rank, poses, i, until, rest}
+  next: null, // the move that waits for its turn: {kind, due}
+  turns: {}, // by kind: how many moves of the kind it has started, for the mirror
+  still: window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false },
+};
+
+// dancerPose shows the pose, by its name, at the time now.
+function dancerPose(name, now) {
+  if (!dancer.el) return;
+  dancer.since = now;
+  if (dancer.pose === name) return;
+  if (!dancer.paths.has(name)) {
+    const pose = name.startsWith("-") ? mirror(POSES[name.slice(1)]) : POSES[name];
+    dancer.paths.set(name, figurePath(pose));
+  }
+  dancer.el.firstElementChild.setAttribute("d", dancer.paths.get(name));
+  if (dancer.pose) dancer.moves++;
+  dancer.pose = name;
+  dancer.el.dataset.pose = name;
+  dancer.el.dataset.moves = String(dancer.moves);
+}
+
+// dancerStand makes the figure stand at once, and forgets its moves.
+function dancerStand() {
+  dancer.move = null;
+  dancer.next = null;
+  dancerPose("stand", performance.now());
+}
+
+// dancerHear is the watcher of sound.js: a sound of the kind starts in delay ms, or, with no kind,
+// sound is off.
+function dancerHear(kind, delay) {
+  if (!kind) return dancerStand();
+  const m = MOVES[kind];
+  if (!m || !playing || dancer.still.matches) return;
+  const due = performance.now() + delay;
+  if (!dancer.next || m.rank >= MOVES[dancer.next.kind].rank || due > dancer.next.due + STALE) dancer.next = { kind, due };
+}
+
+// dance on at the time now, from the animation frame of the page.
+function dance(now) {
+  if (!playing || dancer.still.matches) {
+    if (dancer.pose !== "stand" || dancer.move || dancer.next) dancerStand();
+    return;
+  }
+  if (now - dancer.since < HOLD) return;
+  const move = dancer.move, next = dancer.next;
+  // done is whether the move has held each of its poses.
+  const done = !move || (move.i === move.poses.length - 1 && now >= move.until);
+  if (next && now > next.due + STALE) dancer.next = null;
+  else if (next && now >= next.due && (done || MOVES[next.kind].rank > move.rank)) {
+    const m = MOVES[next.kind];
+    const turn = (dancer.turns[next.kind] = (dancer.turns[next.kind] || 0) + 1);
+    const flip = m.poses.length === 1 && turn % 2 === 0;
+    dancer.move = { rank: m.rank, poses: m.poses.map(([name, ms]) => [flip ? "-" + name : name, ms]), i: 0, until: now + m.poses[0][1] };
+    dancer.next = null;
+    dancerPose(dancer.move.poses[0][0], now);
+    return;
+  }
+  if (!move || now < move.until) return;
+  if (move.i + 1 < move.poses.length) {
+    move.i++;
+    move.until = now + move.poses[move.i][1];
+    dancerPose(move.poses[move.i][0], now);
+  } else if (now >= move.until + REST) {
+    dancer.move = null;
+    dancerPose("stand", now);
+  }
+}
+
 // start the page: load run.js, connect the page, and start the engine. An error on the way ends in
 // the failure box.
 async function start() {
   drawMark();
+  setTurbo(turboRemembered());
+  dancer.el = $("dancer");
+  dancerStand();
   const sound = import("./sound.js" + version).catch(() => null);
   R = await import("./run.js" + version);
   B = await import("./bucket.js" + version);
   keeper = new B.Keeper();
   tell = R.teller();
   S = await sound;
-  if (S) S.wire($("sound"));
+  if (S) {
+    S.wire($("sound"));
+    if (S.watch) S.watch(dancerHear);
+  }
   wire();
 
   fetch("engine/build.json" + version).then((r) => (r.ok ? r.json() : null)).then((b) => {
