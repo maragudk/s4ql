@@ -2955,6 +2955,154 @@ func TestCheck(t *testing.T) {
 		_, err = stmt.Check(where("v = 1 and v = 1 and v = -1", 997))
 		is.NotError(t, err)
 	})
+
+	t.Run("should take a subquery as deep as SQLite allows, and not one deeper", func(t *testing.T) {
+		// A subquery is one level more than its select, whose level is that of its WHERE, and the
+		// comparison one more than the subquery. When SQLite resolves the names, once it has found the
+		// tables, it counts the level of the WHERE of the statement and that of the WHERE of a subquery
+		// in it together. So the WHERE of a subquery in a comparison has at most 498 conditions, and 497
+		// when the comparison is in an AND. With one more, the error is at the subquery.
+		inner := func(n int) string {
+			return "(select k from u where a = 1" + strings.Repeat(" and a = 1", n-1) + ")"
+		}
+		// tables of the statements, on which SQLite resolves their names.
+		tables := func(t *testing.T) *db {
+			d := open(t)
+			d.must("create table t (k int primary key, v int) strict, without rowid")
+			d.must("create table u (k int primary key, a int) strict, without rowid")
+			return d
+		}
+		for _, c := range []struct {
+			name string
+			src  func(n int) string
+			most int
+		}{
+			{"on the right", func(n int) string { return "select * from t where k = " + inner(n) }, 498},
+			{"on the left", func(n int) string { return "delete from t where " + inner(n) + " < k" }, 498},
+			{"before an AND", func(n int) string { return "update t set v = 1 where k = " + inner(n) + " and v = 1" }, 497},
+			{"after an AND", func(n int) string { return "select * from t where v = -1 and k = " + inner(n) }, 497},
+		} {
+			src := c.src(c.most)
+			_, err := stmt.Check(src)
+			is.NotError(t, err, c.name)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind, c.name)
+			is.NotError(t, tables(t).exec(src), c.name)
+			o, _ := verify(t, src)
+			is.Equal(t, supported, o, c.name)
+
+			src = c.src(c.most + 1)
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", strings.Index(src, "(select")), err.Error(), c.name)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind, c.name)
+			sqliteError(t, src, tables(t).exec(src), 1, "Expression tree is too large (maximum depth 1000)")
+			verify(t, src)
+		}
+		// SQLite counts the level of a subquery while it parses too: with 998 conditions, the comparison
+		// is too deep, at the token after it, with 999 the subquery, at its closing parenthesis, and with
+		// 1000 its WHERE, at the AND that makes it too deep.
+		src := "select * from t where k = " + inner(998)
+		_, err := stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
+		src = "select * from t where k = " + inner(999)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-1), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
+		src = "select * from t where k = " + inner(1000)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len("and a = 1)")), err.Error())
+		verify(t, src)
+	})
+
+	t.Run("should answer for a subquery what SQLite does with its errors, its value, and its LIMIT", func(t *testing.T) {
+		// What SQLite does with a statement with a subquery, for the engine. In a select, SQLite finds
+		// every table first, that of the statement and then those of its subqueries in the order of the
+		// text; in an update and a delete it finds the table of a subquery when its walk over WHERE
+		// reaches it. A subquery of * of a table of two columns is `row value misused` in a select, and
+		// `sub-select returns 2 columns - expected 1` in an update and a delete, but for != with the
+		// subquery on the left, after the names of WHERE and before those of RETURNING. A name of a
+		// subquery that its table does not have is that of the table of the statement, where that has
+		// it. The value of a subquery is computed once, from the rows before the statement, and only when
+		// SQLite needs it. Its LIMIT X is LIMIT (X <> 0), so it gives one row for any value that is not
+		// 0 and not NULL, and `datatype mismatch` for NULL.
+		for _, c := range []struct {
+			src  string
+			args []stmt.Value
+			// want is SQLite's error, or "".
+			want string
+			// rows that src gives, as [showRows] shows them, and left in t after it.
+			rows, left string
+			// empty runs src on a table t without rows.
+			empty bool
+		}{
+			{src: "select * from t where nope = (select k from nope2)", want: "no such table: nope2"},
+			{src: "select nope from t where k = (select k from nope2)", want: "no such table: nope2"},
+			{src: "select * from nope where k = (select k from nope2)", want: "no such table: nope"},
+			{src: "select * from t where k = (select k from u) and v = (select k from nope2)", want: "no such table: nope2"},
+			{src: "select * from t where k = (select nope from u) and nope2 = 1", want: "no such column: nope"},
+			{src: "select * from t where nope2 = 1 and k = (select nope from u)", want: "no such column: nope2"},
+			{src: "select * from t where k = (select k from u order by nope)", want: "no such column: nope"},
+			{src: "update t set v = 1 where nope = 1 and k = (select k from nope2)", want: "no such column: nope"},
+			{src: "update t set v = 1 where k = (select k from nope2) returning nope", want: "no such table: nope2"},
+			{src: "update t set nope = 1 where k = (select nope2 from u)", want: "no such column: nope"},
+			{src: "delete from t where k = (select nope from u) returning nope2", want: "no such column: nope"},
+			{src: "delete from t where k = (select k from nope)", want: "no such table: nope"},
+			{src: "select * from t where k = (select * from u)", want: "row value misused"},
+			{src: "select * from t where (select * from u) != k", want: "row value misused"},
+			{src: "update t set v = 1 where k = (select * from u)", want: "sub-select returns 2 columns - expected 1"},
+			{src: "update t set v = 1 where (select * from u) < k", want: "sub-select returns 2 columns - expected 1"},
+			{src: "update t set v = 1 where (select * from u) != k", want: "row value misused"},
+			{src: "delete from t where k = (select * from u) and nope = 1", want: "no such column: nope"},
+			{src: "update t set v = 1 where k = (select * from u) returning nope", want: "sub-select returns 2 columns - expected 1"},
+			{src: "select * from t where k = (select * from one)", rows: "integer 2; integer 0; \n"},
+			// v is a column of t and not of u, so the subquery gives the v of each row of t.
+			{src: "select * from t where v = (select v from u)", rows: "integer 1; integer 0; \ninteger 2; integer 0; \ninteger 3; integer 0; \n"},
+			{src: "select * from t where k = (select k from u order by v)", rows: "integer 1; integer 0; \n"},
+			{src: "select * from t where k = (select x from u)", rows: "integer 2; integer 0; \n"},
+			{src: "select * from t where k = (select x from u order by x desc)", rows: "integer 3; integer 0; \n"},
+			{src: "select * from t where k = (select x from u where x = 9)", rows: ""},
+			{src: "select * from t where k = (select x from u limit 0)", rows: ""},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Text("x")}, rows: "integer 2; integer 0; \n"},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Integer(-1)}, rows: "integer 2; integer 0; \n"},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Real(1.5)}, rows: "integer 2; integer 0; \n"},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Real(0)}, rows: ""},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Null{}}, want: "datatype mismatch"},
+			{src: "select * from t where v = (select k from u limit ?)", args: []stmt.Value{stmt.Null{}}, empty: true, rows: ""},
+			{src: "select * from t where k = (select k from u limit ?)", args: []stmt.Value{stmt.Null{}}, empty: true, want: "datatype mismatch"},
+			{src: "update t set v = 9 where v = (select v from t order by k limit 1) returning k", rows: "integer 1; \ninteger 2; \ninteger 3; \n",
+				left: "integer 1; integer 9; \ninteger 2; integer 9; \ninteger 3; integer 9; \n"},
+			{src: "delete from t where k = (select k from t order by k desc limit 1) returning *", rows: "integer 3; integer 0; \n",
+				left: "integer 1; integer 0; \ninteger 2; integer 0; \n"},
+		} {
+			o, _ := verify(t, c.src)
+			is.Equal(t, supported, o, c.src)
+			d := open(t)
+			d.must("create table t (k int primary key, v int) strict, without rowid")
+			d.must("create table u (k int primary key, x int) strict, without rowid")
+			d.must("create table one (k int primary key) strict, without rowid")
+			d.must("insert into u values (1, 2), (2, 3)")
+			d.must("insert into one values (2)")
+			if !c.empty {
+				d.must("insert into t values (1, 0), (2, 0), (3, 0)")
+			}
+			_, rows, err := d.run(c.src, c.args)
+			if c.want != "" {
+				var e *sqlite.Error
+				is.True(t, errors.As(err, &e), c.src)
+				is.Equal(t, c.want, e.Message, c.src)
+				continue
+			}
+			is.NotError(t, err, c.src)
+			is.Equal(t, c.rows, showRows(rows), c.src)
+			if c.left != "" {
+				_, left, err := d.run("select * from t", nil)
+				is.NotError(t, err)
+				is.Equal(t, c.left, showRows(left), c.src)
+			}
+		}
+	})
 }
 
 // BenchmarkCheck checks every statement of the corpus once per iteration.

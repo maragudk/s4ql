@@ -39,8 +39,9 @@ type recognizer struct {
 	// subquery too.
 	parameters int
 	// subqueries of the WHERE of the statement that the recognizer has read so far, in the order of
-	// the text.
+	// the text, and the height of the select of each, as [recognizer.selectOf] gives it.
 	subqueries []Select
+	heights    []int
 	// inner is the closing parenthesis of the subquery whose select the recognizer reads, or the
 	// absent token outside a subquery.
 	inner ast.Token
@@ -644,9 +645,10 @@ func (r *recognizer) selectOf(sel *ast.Select) (*Select, int) {
 	s := &Select{Table: r.tableName(source.Name), Columns: columns}
 	height := 1
 	if core.Where != nil {
-		s.Where, height = r.where(core.Where)
-		if !r.inner.Present() {
-			s.Subqueries = r.subqueries
+		if r.inner.Present() {
+			s.Where, height = r.where(core.Where)
+		} else {
+			s.Where, s.Subqueries = r.statementWhere(core.Where)
 		}
 	}
 	if core.OrderBy != nil {
@@ -680,6 +682,7 @@ func (r *recognizer) subquery(sq *ast.Subquery) (Term, int) {
 	}
 	r.take(sq.RParen)
 	r.subqueries = append(r.subqueries, *s)
+	r.heights = append(r.heights, height)
 	return Term{Subquery: len(r.subqueries), Span: Span{Start: start, End: sq.RParen.End()}}, height + 1
 }
 
@@ -798,6 +801,21 @@ func (r *recognizer) limitCount(x ast.Expr) Term {
 	return Term{}
 }
 
+// statementWhere w of a select, an update, or a delete, and not of a subquery: WHERE and its
+// conditions, and its subqueries. When SQLite resolves the names of the WHERE, once it has found the
+// tables, it counts the height of the WHERE and that of the select of each subquery in it together,
+// and refuses more than [maxDepth] with `Expression tree is too large (maximum depth 1000)`. The
+// pass refuses it at the first subquery that makes it too deep, once it has read the WHERE.
+func (r *recognizer) statementWhere(w *ast.Where) ([]Condition, []Select) {
+	where, height := r.where(w)
+	for _, c := range where {
+		if k := c.Value.Subquery; k > 0 && height+r.heights[k-1] > maxDepth {
+			panic(stop{&NotSupportedError{What: "WHERE deeper than SQLite's limit", Offset: c.Value.Span.Start}})
+		}
+	}
+	return where, r.subqueries
+}
+
 // where: WHERE and its conditions, and their height as SQLite counts it.
 func (r *recognizer) where(w *ast.Where) ([]Condition, int) {
 	r.accept(w)
@@ -837,8 +855,7 @@ func (r *recognizer) update(c *ast.Update) *Update {
 		s.Set = append(s.Set, Assignment{Column: n, Value: r.term(a.X)})
 	}
 	if c.Where != nil {
-		s.Where, _ = r.where(c.Where)
-		s.Subqueries = r.subqueries
+		s.Where, s.Subqueries = r.statementWhere(c.Where)
 	}
 	s.Returning = r.returning(c.Returning)
 	return s
@@ -852,8 +869,7 @@ func (r *recognizer) delete(c *ast.Delete) *Delete {
 	r.accept(c.Table)
 	s := &Delete{Table: r.tableName(c.Table.Name)}
 	if c.Where != nil {
-		s.Where, _ = r.where(c.Where)
-		s.Subqueries = r.subqueries
+		s.Where, s.Subqueries = r.statementWhere(c.Where)
 	}
 	s.Returning = r.returning(c.Returning)
 	return s
