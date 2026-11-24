@@ -60,3 +60,61 @@ Nothing yet.
 ### Future work
 
 None yet.
+
+## Step 2: The figure, its hook, and its check
+
+**Author:** builder (simulator dancer)
+
+### Prompt Context
+
+**Verbatim prompt:** (as in step 1)
+
+**Interpretation:** build what step 1 planned, look at it in a browser, and extend the site check.
+
+**Inferred intent:** as in step 1.
+
+### What I did
+
+- `/site/simulator/sound.js`: `player(ctx, dest, played)` calls `played(kind, at)` when `play` or `tick` says yes, after all its limits; the page's player gets `tell`, which passes the kind and the delay in ms until the sound starts to the function that `watch(fn)` was given, only while the context runs, and `fn(null)` when sound goes off, by the toggle or by a fault. A fault in the watcher is caught there and never reaches the sound. What sounds did not change; the check's offline renders call `player` without the third argument.
+- `/site/simulator/page.js`: a section "The dancer". Poses are joints on a grid of 15 by 18 pixels, drawn as one-pixel lines by Bresenham's algorithm and a ring for the head, into one path of 1 by 1 squares, so the figure is as crisp as the bar codes. Each kind of sound has a move of one or more poses with a rank; a move of one pose alternates with its mirror. `dancerHear` keeps the one move that waits; `dance`, from the page's animation frame, starts it once the pose has held `HOLD` (200 ms), drops it after `STALE` (300 ms) late, lets a move cut into another only from as high a rank, and goes back to standing after `REST` (450 ms). It stands at once while the page is paused or halted, under `prefers-reduced-motion: reduce`, and when sound goes off.
+- `/site/simulator/index.html`: the SVG `#dancer` (30 by 36 px, `aria-hidden`, `focusable="false"`, `pointer-events: none`) is absolutely placed in `.logs`, now `position: relative`, 40 px from the right, with its bottom on the outer edge of the frame's top border, in the 48 px margin above the frame. It takes no grid cell and moves nothing.
+- `/internal/simulator/sitecheck/check.html`: `dancer(p)`, after "Pause holds fake time": the figure is decoration and stands with its feet on the line; it stood still while the page played with sound off; with sound on and paused, still for 30 frames; Play, then wait until it has changed pose twice; Pause, wait until it stands, and still for 30 frames; sound off again. `/internal/simulator/sitecheck/main.go`: Chromium starts with `--autoplay-policy=no-user-gesture-required`, and the package comment says what the check now covers.
+
+The moves, by sound: an insert's beep is the disco point; a delete's void brushes the item off the counter; a select nods; a select that finds nothing puts a hand to the brow and looks for the row; the error tone is a facepalm; the box's statement waves at the visitor; an instance that opens is a ta-da with both arms up; a crash buckles the knees and falls flat on the line; a stop is the raised hand of a traffic stop; a takeover shoves sideways and then points both thumbs at its own chest; requests that start to fail get a shrug; requests that work again get a fist pump with a knee up; a blip is a toe tap; the alarm is panic, arms flailing and jumping.
+
+### Why
+
+- **The hook after the player's limits.** The figure must move with what is heard, and the player is what decides that. A hook on `hear` would have had to copy the spacing, the voices, and the budget of the ticks.
+- **The gate on playing in `page.js`.** `sound.js` plays the visitor's own actions also while paused; the brief wants the figure still then, and only the page knows whether it plays.
+- **Only while the context runs.** A context that the browser holds suspended plays nothing, so nothing is heard to dance to.
+- **A least hold of 200 ms, one waiting move, and ranks.** Under turbo the ticks come every 40 ms or so. With one waiting slot that the higher rank, or the newer of one rank, takes, a burst of scans becomes a point to the left, a point to the right, at most five poses a second, and a crash still gets its fall.
+- **In `page.js`, not a module of its own.** A new file would be a new request, which the brief rules out.
+
+### What worked
+
+The pose preview in a scratch page (`preview.html`, served with `python3 -m http.server`) made the poses quick to tune before they went into the page. `make site-check` passed with the new lines, and six runs of the check at once, under that load, all passed. In playwright, under emulated reduced motion, the count of moves stayed the same for 3 s while the page played with sound on, and went on once motion was allowed again.
+
+### What didn't work
+
+- `playwright-cli open file:///…/preview.html` failed: `Error: Access to "file:" URL is blocked. Allowed protocols: http:, https:, about:, data:.` The preview went through a local server instead.
+- The worktree's guard refused a shell command that wrote into the scratchpad with heredocs and `cd`: "this command is too complex to verify that it stays inside the worktree". The files went through the Write tool.
+- The first crops of the figure at desktop width came out cut off: Playwright scrolled the page to click the buttons of a, and the crop's coordinates were from before. A viewport 2600 px tall, so that nothing scrolls, fixed it.
+- One crop is labelled with a pose and shows the next one: the screenshot came after the pose had changed. It is a race of the capture, not of the page.
+
+### What I learned
+
+A script's `click()` on the Sound button creates an `AudioContext` that headless Chromium holds suspended without the autoplay flag; with it the context runs, and the player plays as it does for a visitor.
+
+### What was tricky
+
+The rank of a move that is resting in its last pose: if a resting move blocked lower ranks, a stream of scans after a ta-da went stale and the figure stood about; if every sound could cut in at once, turbo's ticks cut the fall of a crash short. Each pose now has a least time; after the last pose's least time any move may follow, and only `REST` later does it stand.
+
+### What warrants review
+
+- `/site/simulator/sound.js`: that `tell` adds no path by which the sound can change or fail.
+- `/site/simulator/page.js`, `dance`: the order of the checks (hold, stale, start, next pose, rest).
+- The check needs a running audio context in headless Chromium on CI's Linux; on this Mac it runs. If CI's Chromium cannot run audio, the line "sound is on, and its audio context runs" fails with the state it saw.
+
+### Future work
+
+None.
