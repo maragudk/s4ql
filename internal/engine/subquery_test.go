@@ -75,6 +75,14 @@ var subqueryReads = func() []subqueryTestCall {
 		{src: "select k from t where r != (select r from t where k = 3)"},
 		{src: "select k from t where b = (select b from t where k = 2)"},
 		{src: "select k from t where r < (select r from t where k = 2)"},
+		// NULL from the first row under the ORDER BY, where later rows hold values: NULL comes first in
+		// an ascending order, and a row with NULL in the column comes first by another column.
+		{src: "select k from t where v = (select x from u order by x limit 1)"},
+		{src: "select k from t where (select x from u order by x) <= v"},
+		{src: "select k from t where v = (select x from u order by y desc limit 1)"},
+		{src: "select k from t where v != (select x from u where y >= ? order by y desc, k)", args: []any{int64(7)}},
+		{src: "select k from t where r = (select r from t order by r limit 1)"},
+		{src: "select k from t where b <= (select b from t order by w desc, k limit 1)"},
 		// Parameters before, inside, and after the subquery, in the order of the text.
 		{src: "select k from t where w = ? and k = (select k from u where y = ? and x = ?) and v = ?", args: []any{int64(0), int64(7), "b", "a"}},
 		{src: "select k from t where (select k from u where x > ? limit ?) <= k limit ?", args: []any{"a", int64(1), int64(2)}},
@@ -143,6 +151,11 @@ var subqueryReads = func() []subqueryTestCall {
 // subqueryWrites are updates and deletes with a subquery, in an order in which each changes what it
 // is meant to.
 var subqueryWrites = []subqueryTestCall{
+	// NULL from the first row under the ORDER BY, where later rows hold values, which changes no row.
+	{src: "update t set w = 7 where v = (select x from u order by x limit 1) returning k"},
+	{src: "update t set w = 7 where v >= (select x from u order by y desc)", exec: true},
+	{src: "delete from t where r = (select r from t order by r limit 1) returning k"},
+	{src: "delete from t where (select b from t order by w desc, k limit 1) = b"},
 	// The table that the subquery reads, as it is before the statement.
 	{src: "update t set w = 9 where k = (select k from t where w = 0 order by k limit 1) returning *"},
 	{src: "update t set w = 5 where w = (select w from t order by k limit 1)", exec: true},
