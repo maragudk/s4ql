@@ -2665,6 +2665,115 @@ func TestReturning(t *testing.T) {
 	})
 }
 
+func TestSubquery(t *testing.T) {
+	const (
+		table = "create table goqite (id text primary key, created text not null, updated text not null, queue text not null, " +
+			"body blob not null, timeout text not null, received integer not null, priority integer not null) strict, without rowid"
+		index   = "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"
+		send    = "insert into goqite (id, created, updated, queue, body, timeout, received, priority) values (?, ?, ?, ?, ?, ?, 0, ?) returning id"
+		receive = "update goqite set timeout = ?, received = ? where queue = ? and id = (select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1) returning id, body, received"
+		now     = "2026-11-24T12:00:00.000Z"
+		later   = "2026-11-24T12:01:00.000Z"
+	)
+	// sendAll sends the messages m_1, of priority 0, m_2 and m_3, of priority 1, the earlier of which is
+	// m_3, and o_1 to another queue.
+	sendAll := func(t *testing.T, db querier) {
+		t.Helper()
+		for _, m := range []struct {
+			id, queue, created string
+			priority           int
+		}{{"m_1", "default", "2026-11-24T11:50:00.000Z", 0}, {"m_2", "default", "2026-11-24T11:52:00.000Z", 1}, {"m_3", "default", "2026-11-24T11:51:00.000Z", 1}, {"o_1", "other", "2026-11-24T11:40:00.000Z", 5}} {
+			is.Equal(t, "id TEXT: "+m.id, rowsText(t, db, send, m.id, m.created, m.created, m.queue, []byte("body "+m.id), now, m.priority))
+		}
+	}
+
+	t.Run("should run goqite's receive without its arithmetic, each receive picking the next message, and none on an empty queue, directly, prepared, and in a transaction", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table, index)
+		is.Equal(t, "id TEXT, body BLOB, received INTEGER: ", rowsText(t, db, receive, later, 1, "default", "default", now, 3))
+		sendAll(t, db)
+		is.Equal(t, "id TEXT, body BLOB, received INTEGER: m_3 [98 111 100 121 32 109 95 51] 1", rowsText(t, db, receive, later, 1, "default", "default", now, 3))
+
+		p, err := db.PrepareContext(t.Context(), receive)
+		is.NotError(t, err)
+		var id string
+		var body []byte
+		var received int64
+		is.NotError(t, p.QueryRowContext(t.Context(), later, 1, "default", "default", now, 3).Scan(&id, &body, &received))
+		is.Equal(t, "m_2 body m_2 1", fmt.Sprint(id, " ", string(body), " ", received))
+
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		is.NotError(t, tx.StmtContext(t.Context(), p).QueryRowContext(t.Context(), later, 1, "default", "default", now, 3).Scan(&id, &body, &received))
+		is.Equal(t, "m_1", id)
+		// The queue is empty in the transaction, and the message is back after its roll back.
+		err = tx.StmtContext(t.Context(), p).QueryRowContext(t.Context(), later, 1, "default", "default", now, 3).Scan(&id, &body, &received)
+		is.Error(t, sql.ErrNoRows, err)
+		is.NotError(t, tx.Rollback())
+		res, err := p.ExecContext(t.Context(), later, 1, "default", "default", now, 3)
+		is.Equal(t, int64(1), affected(t, res, err))
+		res, err = p.ExecContext(t.Context(), later, 1, "default", "default", now, 3)
+		is.Equal(t, int64(0), affected(t, res, err))
+		is.NotError(t, p.Close())
+		// The other queue has its message, and a message whose timeout has passed is received again.
+		is.Equal(t, "id TEXT, body BLOB, received INTEGER: o_1 [98 111 100 121 32 111 95 49] 1", rowsText(t, db, receive, later, 1, "other", "other", now, 3))
+		is.Equal(t, "id TEXT: m_3", rowsText(t, db, "update goqite set timeout = ?, received = ? where queue = ? and id = (select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1) returning id",
+			"2026-11-24T12:02:00.000Z", 2, "default", "default", later, 3))
+
+		// Another instance, with an empty cache, replays the receives, and runs a receive on them.
+		is.NotError(t, db.Close())
+		other := w.serve(t, "b")
+		is.Equal(t, "id TEXT, received INTEGER, timeout TEXT: m_1 1 2026-11-24T12:01:00.000Z; m_2 1 2026-11-24T12:01:00.000Z; m_3 2 2026-11-24T12:02:00.000Z; o_1 1 2026-11-24T12:01:00.000Z",
+			rowsText(t, other, "select id, received, timeout from goqite"))
+		is.Equal(t, "id TEXT, body BLOB, received INTEGER: m_2 [98 111 100 121 32 109 95 50] 2", rowsText(t, other, receive, "2026-11-24T12:03:00.000Z", 2, "default", "default", "2026-11-24T12:01:30.000Z", 3))
+	})
+
+	t.Run("should run a select and a delete with a subquery, with arguments before, inside, and after it", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table, index)
+		sendAll(t, db)
+		is.Equal(t, "id TEXT: m_2; m_3", rowsText(t, db, "select id from goqite where priority = (select priority from goqite where queue = ? order by priority desc limit 1) and queue = ?", "default", "default"))
+		is.Equal(t, "id TEXT: ", rowsText(t, db, "select id from goqite where priority = (select priority from goqite where queue = ?)", "nope"))
+		res, err := db.ExecContext(t.Context(), "delete from goqite where queue = ? and id = (select id from goqite where queue = ? order by created limit 1)", "default", "default")
+		is.Equal(t, int64(1), affected(t, res, err))
+		is.Equal(t, "id TEXT: m_2; m_3; o_1", rowsText(t, db, "select id from goqite"))
+	})
+
+	t.Run("should give SQLite's errors and s4ql's refusals of a statement with a subquery", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table, index)
+		_, err := db.ExecContext(t.Context(), "delete from goqite where id = (select id from nope)")
+		is.Equal(t, "no such table: nope", sqliteMessage(t, err))
+		_, err = db.ExecContext(t.Context(), "delete from goqite where id = (select * from goqite)")
+		is.Equal(t, "sub-select returns 8 columns - expected 1", sqliteMessage(t, err))
+		_, err = db.QueryContext(t.Context(), "select id from goqite where id = (select * from goqite)")
+		is.Equal(t, "row value misused", sqliteMessage(t, err))
+		_, err = db.QueryContext(t.Context(), "select id from goqite where priority = (select received from goqite where id = ?)", 1)
+		is.Equal(t, "argument 1, which is an integer, compared with the column goqite.id of type TEXT", typeRefused(t, err))
+		_, err = db.QueryContext(t.Context(), "select id from goqite where queue = (select priority from goqite)")
+		is.Equal(t, "subquery 1, of the column goqite.priority of type INTEGER, compared with the column goqite.queue of type TEXT", typeRefused(t, err))
+	})
+}
+
+// sqliteMessage of err, which must be SQLite's error: its message.
+func sqliteMessage(t *testing.T, err error) string {
+	t.Helper()
+	se, ok := errors.AsType[*s4ql.Error](err)
+	is.True(t, ok, fmt.Sprint(err))
+	return se.Message
+}
+
+// typeRefused of err, which must be s4ql's "not supported" of a value of another type than its
+// column: its message without the prefix.
+func typeRefused(t *testing.T, err error) string {
+	t.Helper()
+	is.Error(t, s4ql.ErrNotSupported, err)
+	return strings.TrimPrefix(err.Error(), "s4ql: not supported: ")
+}
+
 func TestConn_Raw(t *testing.T) {
 	t.Run("should run the calls of the driver's interfaces that database/sql makes no more, as it runs those with a context", func(t *testing.T) {
 		w := newWorld(t)
