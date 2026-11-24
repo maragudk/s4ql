@@ -464,7 +464,7 @@ function first(e) {
   }
 }
 
-// settle the toggle from waiting to on, once the context runs.
+// settle ends the wait, and with it the title, once the context runs. The toggle shows on already.
 function settle() {
   if (waiting && on && ctx.state === "running") unwait();
 }

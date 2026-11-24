@@ -785,10 +785,10 @@ function forget() {
 // kept checks that the page remembers Turbo and Sound in localStorage across reloads, and that
 // Reset keeps them. Sound remembered on looks on, and waits, without an audio context, until the
 // first click or key on the page, which makes the context in that gesture; a click on Sound itself
-// turns it off, without a context. A value that the page did not write, and storage that throws, give the toggles of a first
-// visit. The page at /__check/broken/audio/ counts its audio contexts from before its scripts run, in
-// s4qlContexts. sitecheck's Chromium does not refuse a context outside a gesture, so the check counts
-// them where a browser would refuse.
+// turns it off, without a context. A value that the page did not write, and storage that throws,
+// give the toggles of a first visit. The page at /__check/broken/audio/ counts its audio contexts
+// from before its scripts run, in s4qlContexts. sitecheck's Chromium does not refuse a context outside
+// a gesture, so the check counts them where a browser would refuse.
 async function kept() {
   const address = "/__check/broken/audio/simulator/";
   const stored = () => TOGGLES.map((k) => String(localStorage.getItem(k))).join(", ");
