@@ -1139,7 +1139,7 @@ var checkCases = []checkCase{
 	{name: "a column in brackets in where", src: "select * from t where [v] = 1", err: "s4ql: not supported: name in brackets (at offset 22)"},
 	{name: "a column in backticks in where", src: "select * from t where `v` = 1", err: "s4ql: not supported: name in backticks (at offset 22)"},
 	{name: "an empty name in where", src: `select * from t where "" = 1`, err: "s4ql: not supported: empty name (at offset 22)"},
-	{name: "a subquery in where", src: "select * from t where v = (select 1)", err: "s4ql: not supported: subquery (at offset 26)"},
+	{name: "a subquery of a literal in where", src: "select * from t where v = (select 1)", err: "s4ql: not supported: result column other than a column or * (at offset 34)"},
 	{name: "exists", src: "select * from t where exists (select 1)", err: "s4ql: not supported: EXISTS (at offset 22)"},
 	{name: "case in where", src: "select * from t where v = case when 1 then 1 end", err: "s4ql: not supported: CASE (at offset 26)"},
 	{name: "a cast in where", src: "select * from t where v = cast(1 as int)", err: "s4ql: not supported: CAST (at offset 26)"},
@@ -1837,6 +1837,134 @@ var checkCases = []checkCase{
 	{name: "returning after a create index", src: "create index i on t (v) returning *", err: `near "returning": syntax error`},
 	{name: "returning after a drop index", src: "drop index i returning *", err: `near "returning": syntax error`},
 	{name: "returning in a trigger", src: "create trigger r after insert on t begin delete from t returning *; end", err: `near "returning": syntax error`},
+
+	// Slice 15: a scalar subquery as the value of a comparison in a WHERE.
+	{name: "the receive of goqite's queue without the arithmetic in set", src: "update goqite set timeout = ? where queue = ? and id = (select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1) returning id, body, received",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 197}, Table: name("goqite", "goqite", 7), Set: []stmt.Assignment{set(name("timeout", "timeout", 18), param(1, 28))},
+			Where:     []stmt.Condition{cond(name("queue", "queue", 36), stmt.OpEqual, param(2, 44)), cond(name("id", "id", 50), stmt.OpEqual, sub(1, 55, 168))},
+			Returning: ret(169, 197, name("id", "id", 179), name("body", "body", 183), name("received", "received", 189)),
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 56, End: 167}, Table: name("goqite", "goqite", 71), Columns: []stmt.Name{name("id", "id", 63)}, Where: []stmt.Condition{
+				cond(name("queue", "queue", 84), stmt.OpEqual, param(3, 92)), condFirst(name("timeout", "timeout", 103), stmt.OpLessOrEqual, param(4, 98)),
+				cond(name("received", "received", 115), stmt.OpLess, param(5, 126))},
+				OrderBy: []stmt.OrderColumn{oc(name("priority", "priority", 137), true), oc(name("created", "created", 152), false)}, Limit: lit(stmt.Integer(1), 166, 167)}}}},
+	{name: "a subquery on the right of a column", src: "select * from t where k = (select k from u)",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 43}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("k", "k", 22), stmt.OpEqual, sub(1, 26, 43))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 27, End: 42}, Table: name("u", "u", 41), Columns: []stmt.Name{name("k", "k", 34)}}}}},
+	{name: "a subquery on the left of a column, with a parameter", src: "select v from t where (select k from u where x = ?) < k",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 55}, Table: name("t", "t", 14), Columns: []stmt.Name{name("v", "v", 7)}, Where: []stmt.Condition{condFirst(name("k", "k", 54), stmt.OpGreater, sub(1, 22, 51))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 23, End: 50}, Table: name("u", "u", 37), Columns: []stmt.Name{name("k", "k", 30)}, Where: []stmt.Condition{cond(name("x", "x", 45), stmt.OpEqual, param(1, 49))}}}}},
+	{name: "a subquery with every spelling of = and !=", src: "select * from t where a = (select a from u) and b == (select b from u) and c != (select c from u) and d <> (select d from u)",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 124}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("a", "a", 22), stmt.OpEqual, sub(1, 26, 43)), cond(name("b", "b", 48), stmt.OpEqual, sub(2, 53, 70)),
+			cond(name("c", "c", 75), stmt.OpNotEqual, sub(3, 80, 97)), cond(name("d", "d", 102), stmt.OpNotEqual, sub(4, 107, 124))},
+			Subqueries: []stmt.Select{
+				{Span: stmt.Span{Start: 27, End: 42}, Table: name("u", "u", 41), Columns: []stmt.Name{name("a", "a", 34)}},
+				{Span: stmt.Span{Start: 54, End: 69}, Table: name("u", "u", 68), Columns: []stmt.Name{name("b", "b", 61)}},
+				{Span: stmt.Span{Start: 81, End: 96}, Table: name("u", "u", 95), Columns: []stmt.Name{name("c", "c", 88)}},
+				{Span: stmt.Span{Start: 108, End: 123}, Table: name("u", "u", 122), Columns: []stmt.Name{name("d", "d", 115)}}}}},
+	{name: "a subquery with every operator of an order in a delete", src: "delete from t where e < (select e from u) and f <= (select f from u) and g > (select g from u) and h >= (select h from u)",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 121}, Table: name("t", "t", 12), Where: []stmt.Condition{
+			cond(name("e", "e", 20), stmt.OpLess, sub(1, 24, 41)), cond(name("f", "f", 46), stmt.OpLessOrEqual, sub(2, 51, 68)),
+			cond(name("g", "g", 73), stmt.OpGreater, sub(3, 77, 94)), cond(name("h", "h", 99), stmt.OpGreaterOrEqual, sub(4, 104, 121))},
+			Subqueries: []stmt.Select{
+				{Span: stmt.Span{Start: 25, End: 40}, Table: name("u", "u", 39), Columns: []stmt.Name{name("e", "e", 32)}},
+				{Span: stmt.Span{Start: 52, End: 67}, Table: name("u", "u", 66), Columns: []stmt.Name{name("f", "f", 59)}},
+				{Span: stmt.Span{Start: 78, End: 93}, Table: name("u", "u", 92), Columns: []stmt.Name{name("g", "g", 85)}},
+				{Span: stmt.Span{Start: 105, End: 120}, Table: name("u", "u", 119), Columns: []stmt.Name{name("h", "h", 112)}}}}},
+	{name: "the parameters of a subquery numbered with those before and after it, in the order of the text",
+		src: "select * from t where a = ? and b = (select b from u where c = ? and ? < d order by e limit ?) and f = ? order by g limit ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 123}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("a", "a", 22), stmt.OpEqual, param(1, 26)), cond(name("b", "b", 32), stmt.OpEqual, sub(1, 36, 94)), cond(name("f", "f", 99), stmt.OpEqual, param(5, 103))},
+			OrderBy: []stmt.OrderColumn{oc(name("g", "g", 114), false)}, Limit: param(6, 122),
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 37, End: 93}, Table: name("u", "u", 51), Columns: []stmt.Name{name("b", "b", 44)}, Where: []stmt.Condition{
+				cond(name("c", "c", 59), stmt.OpEqual, param(2, 63)), condFirst(name("d", "d", 73), stmt.OpGreater, param(3, 69))},
+				OrderBy: []stmt.OrderColumn{oc(name("e", "e", 84), false)}, Limit: param(4, 92)}}}},
+	{name: "a parameter after a subquery without one", src: "select * from t where k = (select k from u) and v = ?",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 53}, Table: name("t", "t", 14), Where: []stmt.Condition{
+			cond(name("k", "k", 22), stmt.OpEqual, sub(1, 26, 43)), cond(name("v", "v", 48), stmt.OpEqual, param(1, 52))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 27, End: 42}, Table: name("u", "u", 41), Columns: []stmt.Name{name("k", "k", 34)}}}}},
+	{name: "a subquery of *", src: "select * from t where k = (select * from u)",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 43}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("k", "k", 22), stmt.OpEqual, sub(1, 26, 43))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 27, End: 42}, Table: name("u", "u", 41)}}}},
+	{name: "a subquery in upper case, with names in double quotes, comments in every gap, and a semicolon",
+		src: `SELECT * FROM t WHERE "a b" = /*x*/(/*y*/SELECT/*z*/"c d"/**/FROM/**/"U"/*w*/)/*v*/;`,
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 84}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name(`"a b"`, "a b", 22), stmt.OpEqual, sub(1, 35, 78))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 41, End: 72}, Table: name(`"U"`, "U", 69), Columns: []stmt.Name{name(`"c d"`, "c d", 52)}}}}},
+	{name: "a subquery of the table of a delete", src: "delete from t where k = (select k from t order by k desc limit 1)",
+		want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 65}, Table: name("t", "t", 12), Where: []stmt.Condition{cond(name("k", "k", 20), stmt.OpEqual, sub(1, 24, 65))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 25, End: 64}, Table: name("t", "t", 39), Columns: []stmt.Name{name("k", "k", 32)},
+				OrderBy: []stmt.OrderColumn{oc(name("k", "k", 50), true)}, Limit: lit(stmt.Integer(1), 63, 64)}}}},
+	{name: "a subquery with tests for NULL in an update", src: "update t set v = 1 where w is null and k = (select k from u where x is not null)",
+		want: &stmt.Update{Span: stmt.Span{Start: 0, End: 80}, Table: name("t", "t", 7), Set: []stmt.Assignment{set(name("v", "v", 13), lit(stmt.Integer(1), 17, 18))},
+			Where: []stmt.Condition{cond(name("w", "w", 25), stmt.OpIsNull, stmt.Term{}), cond(name("k", "k", 39), stmt.OpEqual, sub(1, 43, 80))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 44, End: 79}, Table: name("u", "u", 58), Columns: []stmt.Name{name("k", "k", 51)},
+				Where: []stmt.Condition{cond(name("x", "x", 66), stmt.OpIsNotNull, stmt.Term{})}}}}},
+	{name: "a subquery with limit 0, which gives NULL", src: "select * from t where k = (select k from u limit 0)",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 51}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("k", "k", 22), stmt.OpEqual, sub(1, 26, 51))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 27, End: 50}, Table: name("u", "u", 41), Columns: []stmt.Name{name("k", "k", 34)}, Limit: lit(stmt.Integer(0), 49, 50)}}}},
+	{name: "a subquery of names that are keywords, with a negative literal", src: "select * from t where abort = (select key from abort where x = -1)",
+		want: &stmt.Select{Span: stmt.Span{Start: 0, End: 66}, Table: name("t", "t", 14), Where: []stmt.Condition{cond(name("abort", "abort", 22), stmt.OpEqual, sub(1, 30, 66))},
+			Subqueries: []stmt.Select{{Span: stmt.Span{Start: 31, End: 65}, Table: name("abort", "abort", 47), Columns: []stmt.Name{name("key", "key", 38)},
+				Where: []stmt.Condition{cond(name("x", "x", 59), stmt.OpEqual, lit(stmt.Integer(-1), 63, 65))}}}}},
+	{name: "a subquery in the where of a subquery", src: "select * from t where k = (select k from u where x = (select x from w))", err: "s4ql: not supported: subquery in a subquery (at offset 53)"},
+	{name: "a subquery on the left in the where of a subquery", src: "select * from t where k = (select k from u where (select x from w) < x)", err: "s4ql: not supported: subquery in a subquery (at offset 49)"},
+	{name: "a subquery after a sign in the where of a subquery", src: "select * from t where k = (select k from u where x = -(select x from w))", err: "s4ql: not supported: subquery after a sign (at offset 54)"},
+	{name: "a subquery after is in the where of a subquery", src: "select * from t where k = (select k from u where x is (select x from w))", err: "s4ql: not supported: IS with a value other than NULL (at offset 54)"},
+	{name: "a subquery in from in a subquery", src: "select * from t where k = (select k from (select k from u))", err: "s4ql: not supported: subquery in FROM (at offset 41)"},
+	{name: "in with a subquery", src: "select * from t where k in (select k from u)", err: "s4ql: not supported: IN (at offset 22)"},
+	{name: "not in with a subquery", src: "select * from t where k not in (select k from u)", err: "s4ql: not supported: IN (at offset 22)"},
+	{name: "not exists", src: "select * from t where not exists (select k from u)", err: "s4ql: not supported: NOT operator (at offset 22)"},
+	{name: "a subquery in the select list", src: "select (select k from u) from t", err: "s4ql: not supported: result column other than a column or * (at offset 7)"},
+	{name: "a subquery of a column in set", src: "update t set v = (select k from u)", err: "s4ql: not supported: subquery (at offset 17)"},
+	{name: "a subquery in values", src: "insert into t (v) values ((select k from u))", err: "s4ql: not supported: subquery (at offset 26)"},
+	{name: "a subquery of a column in order by", src: "select * from t order by (select k from u)", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "a subquery in limit", src: "select * from t limit (select 1)", err: "s4ql: not supported: LIMIT of an expression (at offset 22)"},
+	{name: "a subquery in returning", src: "delete from t returning (select k from u)", err: "s4ql: not supported: result column other than a column or * (at offset 24)"},
+	{name: "a subquery in a default", src: "create table t (v int primary key default ((select 1))) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 42)"},
+	{name: "a select in the parentheses of a default", src: "create table t (v int primary key default (select 1)) strict, without rowid", err: `near "select": syntax error`},
+	{name: "a subquery in the limit of a subquery", src: "select * from t where k = (select k from u limit (select 1))", err: "s4ql: not supported: LIMIT of an expression (at offset 49)"},
+	{name: "a subquery in the order by of a subquery", src: "select * from t where k = (select k from u order by (select 1))", err: "s4ql: not supported: ordering term other than a column (at offset 52)"},
+	{name: "a union in a subquery", src: "select * from t where k = (select k from u union select k from w)", err: "s4ql: not supported: compound SELECT (at offset 43)"},
+	{name: "a union all in a subquery", src: "select * from t where k = (select k from u union all select k from w)", err: "s4ql: not supported: compound SELECT (at offset 43)"},
+	{name: "an except in a subquery", src: "select * from t where k = (select k from u except select k from w)", err: "s4ql: not supported: compound SELECT (at offset 43)"},
+	{name: "an intersect in a subquery", src: "select * from t where k = (select k from u intersect select k from w)", err: "s4ql: not supported: compound SELECT (at offset 43)"},
+	{name: "a subquery of two columns", src: "select * from t where k = (select k, x from u)", err: "s4ql: not supported: subquery of more than one column (at offset 37)"},
+	{name: "a subquery of * and a column", src: "select * from t where k = (select *, k from u)", err: "s4ql: not supported: * and another result column (at offset 34)"},
+	{name: "a subquery of a column and *", src: "select * from t where k = (select k, * from u)", err: "s4ql: not supported: subquery of more than one column (at offset 37)"},
+	{name: "a subquery of a function", src: "select * from t where k = (select max(k) from u)", err: "s4ql: not supported: result column other than a column or * (at offset 34)"},
+	{name: "a subquery after a minus sign", src: "select * from t where k = -(select k from u)", err: "s4ql: not supported: subquery after a sign (at offset 27)"},
+	{name: "a subquery after a plus sign", src: "select * from t where k = +(select k from u)", err: "s4ql: not supported: + sign (at offset 26)"},
+	{name: "a subquery before is null", src: "select * from t where (select k from u) is null", err: "s4ql: not supported: value before IS (at offset 22)"},
+	{name: "a subquery alone as a condition", src: "select * from t where (select k from u)", err: "s4ql: not supported: subquery (at offset 22)"},
+	{name: "a comparison of a comparison with a subquery", src: "select * from t where k = (select k from u) = 1", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "a parameter compared with a subquery", src: "select * from t where ? = (select k from u)", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "a subquery compared with a literal", src: "select * from t where (select k from u) = 1", err: "s4ql: not supported: value compared with a value (at offset 42)"},
+	{name: "a subquery compared with a subquery", src: "select * from t where (select k from u) = (select k from u)", err: "s4ql: not supported: value compared with a value (at offset 42)"},
+	{name: "a subquery in parentheses", src: "select * from t where k = ((select k from u))", err: "s4ql: not supported: parentheses (at offset 26)"},
+	{name: "a subquery with collate", src: "select * from t where k = (select k from u) collate nocase", err: "s4ql: not supported: COLLATE (at offset 26)"},
+	{name: "a subquery with OR after it", src: "select * from t where k = (select k from u) or v = 1", err: "s4ql: not supported: OR (at offset 44)"},
+	{name: "a subquery with with", src: "select * from t where k = (with x as (select 1) select k from u)", err: "s4ql: not supported: WITH clause (at offset 27)"},
+	{name: "a subquery with distinct", src: "select * from t where k = (select distinct k from u)", err: "s4ql: not supported: DISTINCT or ALL (at offset 34)"},
+	{name: "a subquery with group by", src: "select * from t where k = (select k from u group by k)", err: "s4ql: not supported: GROUP BY clause (at offset 43)"},
+	{name: "a subquery without from", src: "select * from t where k = (select k)", err: "s4ql: not supported: SELECT without FROM (at offset 35)"},
+	{name: "a subquery of values", src: "select * from t where k = (values (1))", err: "s4ql: not supported: VALUES (at offset 27)"},
+	{name: "a subquery with an alias", src: "select * from t where k = (select k as x from u)", err: "s4ql: not supported: alias (at offset 36)"},
+	{name: "a subquery of a table with a schema", src: "select * from t where k = (select k from main.u)", err: "s4ql: not supported: schema name (at offset 41)"},
+	{name: "a subquery of two tables", src: "select * from t where k = (select k from u, w)", err: "s4ql: not supported: join (at offset 42)"},
+	{name: "a subquery with offset", src: "select * from t where k = (select k from u limit 1 offset 1)", err: "s4ql: not supported: OFFSET (at offset 51)"},
+	{name: "a subquery with a column of the table of the statement", src: "select * from t where k = (select k from u where t.v = x)", err: "s4ql: not supported: column with the name of a table (at offset 49)"},
+	{name: "a subquery with or", src: "select * from t where k = (select k from u where x = 1 or x = 2)", err: "s4ql: not supported: OR (at offset 55)"},
+	{name: "a subquery with a numbered parameter", src: "select * from t where k = (select k from u where x = ?1)", err: "s4ql: not supported: numbered parameter (at offset 53)"},
+	{name: "a subquery without its closing parenthesis", src: "select * from t where k = (select k from u", err: "incomplete input"},
+	{name: "a subquery with a closing parenthesis too many", src: "select * from t where k = (select k from u))", err: `near ")": syntax error`},
+	{name: "empty parentheses as a value", src: "select * from t where k = ()", err: `near ")": syntax error`},
+	{name: "a subquery of select alone", src: "select * from t where k = (select)", err: `near ")": syntax error`},
+}
+
+// sub is the value of a condition that is the subquery k of its statement, in parentheses at
+// [start, end).
+func sub(k, start, end int) stmt.Term {
+	return stmt.Term{Subquery: k, Span: stmt.Span{Start: start, End: end}}
 }
 
 // ret is the RETURNING clause at [start, end) of the columns, or of * without columns.
@@ -2826,6 +2954,163 @@ func TestCheck(t *testing.T) {
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		_, err = stmt.Check(where("v = 1 and v = 1 and v = -1", 997))
 		is.NotError(t, err)
+	})
+
+	t.Run("should take a subquery as deep as SQLite allows, and not one deeper", func(t *testing.T) {
+		// A subquery is one level more than its select, whose level is that of its WHERE, and the
+		// comparison one more than the subquery. When SQLite resolves the names, once it has found the
+		// tables, it counts the level of the WHERE of the statement and that of the WHERE of a subquery
+		// in it together. So the WHERE of a subquery in a comparison has at most 498 conditions, and 497
+		// when the comparison is in an AND. With one more, the error is at the subquery.
+		inner := func(n int) string {
+			return "(select k from u where a = 1" + strings.Repeat(" and a = 1", n-1) + ")"
+		}
+		// tables of the statements, on which SQLite resolves their names.
+		tables := func(t *testing.T) *db {
+			d := open(t)
+			d.must("create table t (k int primary key, v int) strict, without rowid")
+			d.must("create table u (k int primary key, a int) strict, without rowid")
+			return d
+		}
+		for _, c := range []struct {
+			name string
+			src  func(n int) string
+			most int
+		}{
+			{"on the right", func(n int) string { return "select * from t where k = " + inner(n) }, 498},
+			{"on the left", func(n int) string { return "delete from t where " + inner(n) + " < k" }, 498},
+			{"before an AND", func(n int) string { return "update t set v = 1 where k = " + inner(n) + " and v = 1" }, 497},
+			{"after an AND", func(n int) string { return "select * from t where v = -1 and k = " + inner(n) }, 497},
+		} {
+			src := c.src(c.most)
+			_, err := stmt.Check(src)
+			is.NotError(t, err, c.name)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind, c.name)
+			is.NotError(t, tables(t).exec(src), c.name)
+			o, _ := verify(t, src)
+			is.Equal(t, supported, o, c.name)
+
+			src = c.src(c.most + 1)
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", strings.Index(src, "(select")), err.Error(), c.name)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind, c.name)
+			sqliteError(t, src, tables(t).exec(src), 1, "Expression tree is too large (maximum depth 1000)")
+			verify(t, src)
+		}
+		// SQLite counts the level of a subquery while it parses too: with 998 conditions, the comparison
+		// is too deep, at the token after it, with 999 the subquery, at its closing parenthesis, and with
+		// 1000 its WHERE, at the AND that makes it too deep.
+		src := "select * from t where k = " + inner(998)
+		_, err := stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
+		src = "select * from t where k = " + inner(999)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-1), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
+		src = "select * from t where k = " + inner(1000)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len("and a = 1)")), err.Error())
+		verify(t, src)
+		// A comparison of 1,000 levels on the right of an AND makes the AND too deep while SQLite parses,
+		// at the token after the comparison, also before an OR.
+		for _, after := range []string{"", " or v = 2"} {
+			src = "select * from t where v = 1 and k = " + inner(997) + after
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len(strings.TrimPrefix(after, " "))), err.Error())
+			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+			verify(t, src)
+		}
+	})
+
+	t.Run("should answer for a subquery what SQLite does with its errors, its value, and its LIMIT", func(t *testing.T) {
+		// What SQLite does with a statement with a subquery, for the engine. In a select, SQLite finds
+		// every table first, that of the statement and then those of its subqueries in the order of the
+		// text; in an update and a delete it finds the table of a subquery when its walk over WHERE
+		// reaches it. A subquery of * of a table of two columns is `row value misused` in a select, and
+		// `sub-select returns 2 columns - expected 1` in an update and a delete, but for != with the
+		// subquery on the left, after the names of WHERE and before those of RETURNING. A name of a
+		// subquery that its table does not have is that of the table of the statement, where that has
+		// it. The value of a subquery is computed once, from the rows before the statement, and only when
+		// SQLite needs it. Its LIMIT X is LIMIT (X <> 0), so it gives one row for any value that is not
+		// 0 and not NULL, and `datatype mismatch` for NULL.
+		for _, c := range []struct {
+			src  string
+			args []stmt.Value
+			// want is SQLite's error, or "".
+			want string
+			// rows that src gives, as [showRows] shows them, and left in t after it.
+			rows, left string
+			// empty runs src on a table t without rows.
+			empty bool
+		}{
+			{src: "select * from t where nope = (select k from nope2)", want: "no such table: nope2"},
+			{src: "select nope from t where k = (select k from nope2)", want: "no such table: nope2"},
+			{src: "select * from nope where k = (select k from nope2)", want: "no such table: nope"},
+			{src: "select * from t where k = (select k from u) and v = (select k from nope2)", want: "no such table: nope2"},
+			{src: "select * from t where k = (select nope from u) and nope2 = 1", want: "no such column: nope"},
+			{src: "select * from t where nope2 = 1 and k = (select nope from u)", want: "no such column: nope2"},
+			{src: "select * from t where k = (select k from u order by nope)", want: "no such column: nope"},
+			{src: "update t set v = 1 where nope = 1 and k = (select k from nope2)", want: "no such column: nope"},
+			{src: "update t set v = 1 where k = (select k from nope2) returning nope", want: "no such table: nope2"},
+			{src: "update t set nope = 1 where k = (select nope2 from u)", want: "no such column: nope"},
+			{src: "delete from t where k = (select nope from u) returning nope2", want: "no such column: nope"},
+			{src: "delete from t where k = (select k from nope)", want: "no such table: nope"},
+			{src: "select * from t where k = (select * from u)", want: "row value misused"},
+			{src: "select * from t where (select * from u) != k", want: "row value misused"},
+			{src: "update t set v = 1 where k = (select * from u)", want: "sub-select returns 2 columns - expected 1"},
+			{src: "update t set v = 1 where (select * from u) < k", want: "sub-select returns 2 columns - expected 1"},
+			{src: "update t set v = 1 where (select * from u) != k", want: "row value misused"},
+			{src: "delete from t where k = (select * from u) and nope = 1", want: "no such column: nope"},
+			{src: "update t set v = 1 where k = (select * from u) returning nope", want: "sub-select returns 2 columns - expected 1"},
+			{src: "select * from t where k = (select * from one)", rows: "integer 2; integer 0; \n"},
+			// v is a column of t and not of u, so the subquery gives the v of each row of t.
+			{src: "select * from t where v = (select v from u)", rows: "integer 1; integer 0; \ninteger 2; integer 0; \ninteger 3; integer 0; \n"},
+			{src: "select * from t where k = (select k from u order by v)", rows: "integer 1; integer 0; \n"},
+			{src: "select * from t where k = (select x from u)", rows: "integer 2; integer 0; \n"},
+			{src: "select * from t where k = (select x from u order by x desc)", rows: "integer 3; integer 0; \n"},
+			{src: "select * from t where k = (select x from u where x = 9)", rows: ""},
+			{src: "select * from t where k = (select x from u limit 0)", rows: ""},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Text("x")}, rows: "integer 2; integer 0; \n"},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Integer(-1)}, rows: "integer 2; integer 0; \n"},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Real(1.5)}, rows: "integer 2; integer 0; \n"},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Real(0)}, rows: ""},
+			{src: "select * from t where k = (select k from u order by k desc limit ?)", args: []stmt.Value{stmt.Null{}}, want: "datatype mismatch"},
+			{src: "select * from t where v = (select k from u limit ?)", args: []stmt.Value{stmt.Null{}}, empty: true, rows: ""},
+			{src: "select * from t where k = (select k from u limit ?)", args: []stmt.Value{stmt.Null{}}, empty: true, want: "datatype mismatch"},
+			{src: "update t set v = 9 where v = (select v from t order by k limit 1) returning k", rows: "integer 1; \ninteger 2; \ninteger 3; \n",
+				left: "integer 1; integer 9; \ninteger 2; integer 9; \ninteger 3; integer 9; \n"},
+			{src: "delete from t where k = (select k from t order by k desc limit 1) returning *", rows: "integer 3; integer 0; \n",
+				left: "integer 1; integer 0; \ninteger 2; integer 0; \n"},
+		} {
+			o, _ := verify(t, c.src)
+			is.Equal(t, supported, o, c.src)
+			d := open(t)
+			d.must("create table t (k int primary key, v int) strict, without rowid")
+			d.must("create table u (k int primary key, x int) strict, without rowid")
+			d.must("create table one (k int primary key) strict, without rowid")
+			d.must("insert into u values (1, 2), (2, 3)")
+			d.must("insert into one values (2)")
+			if !c.empty {
+				d.must("insert into t values (1, 0), (2, 0), (3, 0)")
+			}
+			_, rows, err := d.run(c.src, c.args)
+			if c.want != "" {
+				var e *sqlite.Error
+				is.True(t, errors.As(err, &e), c.src)
+				is.Equal(t, c.want, e.Message, c.src)
+				continue
+			}
+			is.NotError(t, err, c.src)
+			is.Equal(t, c.rows, showRows(rows), c.src)
+			if c.left != "" {
+				_, left, err := d.run("select * from t", nil)
+				is.NotError(t, err)
+				is.Equal(t, c.left, showRows(left), c.src)
+			}
+		}
 	})
 }
 

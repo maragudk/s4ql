@@ -44,7 +44,8 @@ var positionTexts = stmttest.PositionTexts
 // 10, IF NOT EXISTS or IF EXISTS in one create or drop in three, those of slice 11, a DEFAULT on
 // one column in three of a create table, those of slice 12, the value on the left of one
 // comparison in three, those of slice 13, an ORDER BY on one select in three and a LIMIT on one in
-// three, and those of slice 14, a RETURNING on one insert, update, or delete in three.
+// three, those of slice 14, a RETURNING on one insert, update, or delete in three, and those of
+// slice 15, a subquery as the value of one comparison in four.
 func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g := stmttest.NewGenerator(rand.New(rand.NewPCG(seed, 0x511ce1)), namePools(t))
 	g.Parameters = 4
@@ -58,6 +59,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.ValueFirst = 3
 	g.OrderBy = 3
 	g.Returning = 3
+	g.Subquery = 4
 	return g
 }
 
@@ -76,6 +78,10 @@ func TestGenerate(t *testing.T) {
 		before[i] = whereReads[i].Load()
 		beforeChanges[i] = changeReads[i].Load()
 		beforeReturning[i] = returningReads[i].Load()
+	}
+	var beforeSubqueries [2]int64
+	for i := range subqueryReads {
+		beforeSubqueries[i] = subqueryReads[i].Load()
 	}
 	kinds := map[string]int{}
 	for range n {
@@ -108,6 +114,12 @@ func TestGenerate(t *testing.T) {
 			is.True(t, reads[1] > (reads[0]+reads[2])/2, "too few "+c.what+" with WHERE read or changed some rows of the table and not others")
 		}
 	}
+	// The check of a subquery tells its value apart from NULL only where the subquery gives a row.
+	none, some := subqueryReads[0].Load()-beforeSubqueries[0], subqueryReads[1].Load()-beforeSubqueries[1]
+	t.Logf("subqueries that gave no row: %v, a row: %v", none, some)
+	if none+some >= 100 {
+		is.True(t, none > 0 && some > none, "too few subqueries gave a row, or none gave none")
+	}
 }
 
 var mutantsEach = flag.Int("mutants", 5, "mutants of each statement in TestGenerate_mutants")
@@ -136,7 +148,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 45, 167)
+	excused(t, c, 35, 139)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -177,6 +189,8 @@ func difference(a, b stmt.Statement) string {
 		for i := range a {
 			a, b := a[i], b[i]
 			switch {
+			case (a.Subquery == 0) != (b.Subquery == 0):
+				diffs = append(diffs, "subquery or none")
 			case a.Parameter != b.Parameter:
 				diffs = append(diffs, "parameter")
 			case fmt.Sprintf("%T", a.Value) != fmt.Sprintf("%T", b.Value):
@@ -207,6 +221,17 @@ func difference(a, b stmt.Statement) string {
 				diffs = append(diffs, "side of a column")
 			}
 			values([]stmt.Term{a[i].Value}, []stmt.Term{b[i].Value})
+		}
+	}
+	subqueries := func(a, b []stmt.Select) {
+		if len(a) != len(b) {
+			diffs = append(diffs, "number of subqueries")
+			return
+		}
+		for i := range a {
+			if d := difference(&a[i], &b[i]); d != "the same *stmt.Select" {
+				diffs = append(diffs, "subquery")
+			}
 		}
 	}
 	returning := func(a, b stmt.Returning) {
@@ -283,6 +308,7 @@ func difference(a, b stmt.Statement) string {
 		} else if a.Limited() {
 			values([]stmt.Term{a.Limit}, []stmt.Term{b.Limit})
 		}
+		subqueries(a.Subqueries, b.Subqueries)
 	case *stmt.Update:
 		b := b.(*stmt.Update)
 		if a.Table.Value != b.Table.Value {
@@ -301,6 +327,7 @@ func difference(a, b stmt.Statement) string {
 			values(av, bv)
 		}
 		conditions(a.Where, b.Where)
+		subqueries(a.Subqueries, b.Subqueries)
 		returning(a.Returning, b.Returning)
 	case *stmt.Delete:
 		b := b.(*stmt.Delete)
@@ -308,6 +335,7 @@ func difference(a, b stmt.Statement) string {
 			diffs = append(diffs, "table name")
 		}
 		conditions(a.Where, b.Where)
+		subqueries(a.Subqueries, b.Subqueries)
 		returning(a.Returning, b.Returning)
 	case *stmt.DropTable:
 		if a.Table.Value != b.(*stmt.DropTable).Table.Value {
@@ -404,6 +432,7 @@ var nearMisses = map[string][]string{
 		"create table %[1]v (%[2]v %[4]v primary key unique) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key check (%[2]v > 0)) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key default (1)) strict, without rowid",
+		"create table %[1]v (%[2]v %[4]v primary key default ((select 1))) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key default +1) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key default +null) strict, without rowid",
 		"create table %[1]v (%[2]v %[4]v primary key default -null) strict, without rowid",
@@ -586,6 +615,8 @@ var nearMisses = map[string][]string{
 		"insert into %[1]v (%[2]v) values (- false)",
 		`insert into %[1]v (%[2]v) values ("a")`,
 		"insert into %[1]v (%[2]v) values (cast('a' as text))",
+		"insert into %[1]v (%[2]v) values ((select %[2]v from %[1]v))",
+		"insert into %[1]v (%[2]v) values (%[3]v) returning (select %[2]v from %[1]v)",
 	},
 	"*stmt.Select": {
 		"explain select * from %[1]v",
@@ -747,6 +778,49 @@ var nearMisses = map[string][]string{
 		"select %[2]v from %[1]v where %[2]v = 1 order by %[2]v nulls first limit 1",
 		"select %[2]v from %[1]v order by %[2]v limit 1 offset 0",
 		"select * from %[1]v order by %[2]v limit 1; select 1",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v where %[2]v = (select %[2]v from %[1]v))",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v where (select %[2]v from %[1]v) < %[2]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v, %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v, * from %[1]v)",
+		"select * from %[1]v where %[2]v = (select *, %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v + 1 from %[1]v)",
+		"select * from %[1]v where %[2]v = (select count(*) from %[1]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v as x from %[1]v)",
+		"select * from %[1]v where %[2]v = (select distinct %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v union select %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v union all select 1)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v group by %[2]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v limit 1 offset 1)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v where %[1]v.%[2]v = 1)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v where %[2]v = 1 or %[2]v = 2)",
+		"select * from %[1]v where %[2]v = (select %[2]v from (select %[2]v from %[1]v))",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v, u)",
+		"select * from %[1]v where %[2]v = (select %[2]v from main.%[1]v)",
+		"select * from %[1]v where %[2]v = (with x as (select 1) select %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v = (values (1))",
+		"select * from %[1]v where %[2]v = (select %[2]v)",
+		"select * from %[1]v where %[2]v = (select 1)",
+		"select * from %[1]v where %[2]v = ((select %[2]v from %[1]v))",
+		"select * from %[1]v where %[2]v = -(select %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v = +(select %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v) collate nocase",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v) = 1",
+		"select * from %[1]v where %[2]v in (select %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v not in (select %[2]v from %[1]v)",
+		"select * from %[1]v where exists (select %[2]v from %[1]v)",
+		"select * from %[1]v where (select %[2]v from %[1]v)",
+		"select * from %[1]v where (select %[2]v from %[1]v) is null",
+		"select * from %[1]v where ? = (select %[2]v from %[1]v)",
+		"select * from %[1]v where (select %[2]v from %[1]v) = (select %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v is (select %[2]v from %[1]v)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v))",
+		"select * from %[1]v where %[2]v = ()",
+		"select (select %[2]v from %[1]v) from %[1]v",
+		"select * from %[1]v order by (select %[2]v from %[1]v)",
+		"select * from %[1]v limit (select 1)",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v) or %[2]v = 1",
+		"select * from %[1]v where %[2]v = (select %[2]v from %[1]v where %[2]v = ?1)",
 	},
 	"*stmt.Update": {
 		"explain update %[1]v set %[2]v = %[3]v",
@@ -796,6 +870,11 @@ var nearMisses = map[string][]string{
 		"update %[1]v set %[2]v = %[3]v is null",
 		"update %[1]v set %[2]v = coalesce(%[3]v, 1)",
 		"update %[1]v set %[2]v = (select 1)",
+		"update %[1]v set %[2]v = (select %[2]v from %[1]v)",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = (select %[2]v from %[1]v where %[2]v = (select 1))",
+		"update %[1]v set %[2]v = %[3]v where %[2]v = (select %[2]v, %[2]v from %[1]v)",
+		"update %[1]v set %[2]v = %[3]v where %[2]v in (select %[2]v from %[1]v)",
+		"update %[1]v set %[2]v = %[3]v returning (select %[2]v from %[1]v)",
 		"update %[1]v set %[2]v = default",
 		"update %[1]v set %[2]v <> %[3]v",
 		"update %[1]v set %[1]v.%[2]v = %[3]v",
@@ -872,6 +951,11 @@ var nearMisses = map[string][]string{
 		"delete from %[1]v where %[2]v = %[3]v collate binary",
 		"delete from %[1]v where %[2]v = %[3]v and",
 		"delete from %[1]v where %[2]v = %[3]v, %[2]v = %[3]v",
+		"delete from %[1]v where %[2]v = (select %[2]v from %[1]v where (select 1) = %[2]v)",
+		"delete from %[1]v where %[2]v = (select * from %[1]v union select 1)",
+		"delete from %[1]v where %[2]v = -(select %[2]v from %[1]v)",
+		"delete from %[1]v where exists (select %[2]v from %[1]v)",
+		"delete from %[1]v returning (select %[2]v from %[1]v)",
 		"delete from %[1]v; select 1",
 	},
 	"*stmt.DropTable": {
@@ -1012,5 +1096,5 @@ func TestGenerate_nearMisses(t *testing.T) {
 		}
 	}
 	t.Logf("%v near misses: %v", c[syntaxError]+c[notSupported]+c[syntaxNotSaid]+c[notSupportedNotSaid], c)
-	excused(t, c, 0, 1983)
+	excused(t, c, 0, 2275)
 }

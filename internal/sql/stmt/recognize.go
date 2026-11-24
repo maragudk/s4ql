@@ -34,6 +34,17 @@ type recognizer struct {
 	// accepted nodes, which the recognizer has read as part of a supported form, besides the root.
 	// The name of a token that stops it comes from them; see [recognizer.describe].
 	accepted map[ast.Node]bool
+	// parameters that the recognizer has taken so far. SQLite numbers a plain ? one more than the one
+	// before it in the text, and the recognizer takes the tokens in the order of the text, inside a
+	// subquery too.
+	parameters int
+	// subqueries of the WHERE of the statement that the recognizer has read so far, in the order of
+	// the text, and the height of the select of each, as [recognizer.selectOf] gives it.
+	subqueries []Select
+	heights    []int
+	// inner is the closing parenthesis of the subquery whose select the recognizer reads, or the
+	// absent token outside a subquery.
+	inner ast.Token
 }
 
 // stop is the panic with which the recognizer unwinds when the statement is not supported.
@@ -383,16 +394,11 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 	row := values.Rows[0]
 	r.accept(row)
 	r.take(row.LParen)
-	parameters := 0
 	for i, e := range row.Exprs {
 		if i > 0 {
 			r.take(row.Commas[i-1])
 		}
-		v := r.term(e, parameters)
-		if v.Parameter > 0 {
-			parameters = v.Parameter
-		}
-		s.Values = append(s.Values, v)
+		s.Values = append(s.Values, r.term(e))
 	}
 	r.take(row.RParen)
 	s.Returning = r.returning(c.Returning)
@@ -421,11 +427,11 @@ func (r *recognizer) returning(ret *ast.Returning) Returning {
 	return Returning{Span: Span{Start: start, End: r.tokens[r.next-1].End()}, Columns: columns}
 }
 
-// term e, after before parameters of the statement: a parameter, or a literal.
-func (r *recognizer) term(e ast.Expr, before int) Term {
+// term e: a parameter, or a literal.
+func (r *recognizer) term(e ast.Expr) Term {
 	var v Term
 	if p, ok := e.(*ast.Variable); ok {
-		v.Parameter, v.Span = r.parameter(p, before)
+		v.Parameter, v.Span = r.parameter(p)
 	} else {
 		v.Value, v.Span = r.literal(e)
 	}
@@ -436,23 +442,25 @@ func (r *recognizer) term(e ast.Expr, before int) Term {
 // internal/sqlite keeps at its default.
 const maxParameters = 32766
 
-// parameter v: a plain ?, after before parameters of the statement. SQLite numbers a ? one more than
-// the largest number before it, and each parameter before it is a plain ? too, so its number is
-// before+1. After [maxParameters] parameters, it is `parameter beyond SQLite's limit`.
-func (r *recognizer) parameter(v *ast.Variable, before int) (int, Span) {
+// parameter v: a plain ?, after the parameters that the recognizer has taken. SQLite numbers a ? one
+// more than the largest number before it, and each parameter before it is a plain ? too, so its
+// number is one more than theirs. After [maxParameters] parameters, it is `parameter beyond SQLite's
+// limit`.
+func (r *recognizer) parameter(v *ast.Variable) (int, Span) {
 	if r.isNext(v.Name) && v.Name.Text != "?" {
 		if v.Name.Text[0] == '?' {
 			r.reject("numbered parameter")
 		}
 		r.reject("named parameter")
 	}
-	if before == maxParameters && r.isNext(v.Name) {
+	if r.parameters == maxParameters && r.isNext(v.Name) {
 		// SQLite gives `too many SQL variables` while it parses, whatever the database holds.
 		r.reject("parameter beyond SQLite's limit")
 	}
 	r.accept(v)
 	r.take(v.Name)
-	return before + 1, Span{Start: v.Name.Offset, End: v.Name.End()}
+	r.parameters++
+	return r.parameters, Span{Start: v.Name.Offset, End: v.Name.End()}
 }
 
 // literal value: a decimal integer literal that fits in 64 bits or a real literal, with at most one
@@ -591,22 +599,36 @@ func unaryName(op ast.Token) string {
 // BY, and LIMIT, in that order.
 func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	r.accept(c)
-	r.accept(c.Select)
-	core, ok := c.Select.First.(*ast.SimpleSelect)
+	s, _ := r.selectOf(c.Select)
+	return s
+}
+
+// selectOf sel: a select as [recognizer.selectCmd] reads it, or the select of a subquery, which has
+// one result column. It gives the select with its span from its SELECT to the end of its last
+// token, and its height as SQLite counts it for a subquery: that of its deepest expression, a WHERE,
+// a LIMIT, which is 2, or a column, which is 1.
+func (r *recognizer) selectOf(sel *ast.Select) (*Select, int) {
+	r.accept(sel)
+	core, ok := sel.First.(*ast.SimpleSelect)
 	if !ok {
 		r.unexpected()
 	}
 	r.accept(core)
-	r.take(core.Select)
+	start := r.take(core.Select).Offset
 	var columns []Name
 	for i, rc := range core.Columns {
 		if i > 0 {
 			r.take(core.Commas[i-1])
 		}
+		if i == 1 && r.inner.Present() && r.at() == rc.Bounds().Start {
+			// SQLite gives `row value misused` when it prepares the statement, once it has found the
+			// tables.
+			r.reject("subquery of more than one column")
+		}
 		columns = r.resultColumn(rc, len(core.Columns), columns)
 	}
 	if core.From == nil {
-		if r.next == len(r.tokens) || r.isNext(r.tree.Semi) {
+		if r.next == len(r.tokens) || r.isNext(r.tree.Semi) || r.isNext(r.inner) {
 			r.reject("SELECT without FROM")
 		}
 		r.unexpected()
@@ -621,17 +643,47 @@ func (r *recognizer) selectCmd(c *ast.SelectCmd) *Select {
 	}
 	r.accept(source)
 	s := &Select{Table: r.tableName(source.Name), Columns: columns}
+	height := 1
 	if core.Where != nil {
-		s.Where = r.where(core.Where, 0)
+		if r.inner.Present() {
+			s.Where, height = r.where(core.Where)
+		} else {
+			s.Where, s.Subqueries = r.statementWhere(core.Where)
+		}
 	}
 	if core.OrderBy != nil {
 		s.OrderBy = r.orderBy(core.OrderBy)
 	}
 	if core.Limit != nil {
-		// The ? of the LIMIT comes after those of the conditions in the text.
-		s.Limit = r.limit(core.Limit, conditionParameters(s.Where))
+		// SQLite's LIMIT is an expression of its own, one deeper than its count.
+		s.Limit = r.limit(core.Limit)
+		height = max(height, 2)
 	}
-	return s
+	s.Span = Span{Start: start, End: r.tokens[r.next-1].End()}
+	return s, height
+}
+
+// subquery sq, the value of a comparison: SELECT and its clauses in parentheses, as
+// [recognizer.selectOf] reads them, in the WHERE of a statement and not in that of a subquery. It
+// adds the select to the subqueries of the statement, and gives the term that names it, and its
+// height as SQLite counts it, one more than that of its select.
+func (r *recognizer) subquery(sq *ast.Subquery) (Term, int) {
+	if r.inner.Present() && r.isNext(sq.LParen) {
+		r.reject("subquery in a subquery")
+	}
+	r.accept(sq)
+	start := r.take(sq.LParen).Offset
+	r.inner = sq.RParen
+	s, height := r.selectOf(sq.Select)
+	r.inner = ast.Token{}
+	if height+1 > maxDepth && r.isNext(sq.RParen) {
+		// SQLite gives `Expression tree is too large (maximum depth 1000)` while it parses.
+		r.reject("WHERE deeper than SQLite's limit")
+	}
+	r.take(sq.RParen)
+	r.subqueries = append(r.subqueries, *s)
+	r.heights = append(r.heights, height)
+	return Term{Subquery: len(r.subqueries), Span: Span{Start: start, End: sq.RParen.End()}}, height + 1
 }
 
 // orderBy: ORDER BY and one or more columns, separated by commas, of which no two are one name.
@@ -686,16 +738,16 @@ func (r *recognizer) orderColumn(o *ast.OrderingTerm, seen map[string]bool) Orde
 	return c
 }
 
-// limit: LIMIT and the number of rows, after before parameters of the statement: a decimal integer
+// limit: LIMIT and the number of rows: a decimal integer
 // literal without a sign that fits in 64 bits, or a plain ?. SQLite takes any expression there,
 // which it converts to an integer when the select runs: a real or a text that holds an integer is
 // that integer, and any other value is `datatype mismatch`; a negative number is no limit. By the
 // exact types of s4ql, only an integer that is a limit is supported. LIMIT with OFFSET, also as
 // LIMIT and two numbers, is not supported.
-func (r *recognizer) limit(l *ast.Limit, before int) Term {
+func (r *recognizer) limit(l *ast.Limit) Term {
 	r.accept(l)
 	r.take(l.Limit)
-	v := r.limitCount(l.X, before)
+	v := r.limitCount(l.X)
 	if l.Sep.Present() {
 		// The next token is OFFSET, or the comma of `LIMIT a, b`, whose first number is the offset and
 		// the second the count.
@@ -704,13 +756,12 @@ func (r *recognizer) limit(l *ast.Limit, before int) Term {
 	return v
 }
 
-// limitCount: the number of rows of a LIMIT, the expression x, which starts at the next token, after
-// before parameters of the statement.
-func (r *recognizer) limitCount(x ast.Expr, before int) Term {
+// limitCount: the number of rows of a LIMIT, the expression x, which starts at the next token.
+func (r *recognizer) limitCount(x ast.Expr) Term {
 	switch x := x.(type) {
 	case *ast.Variable:
 		var v Term
-		v.Parameter, v.Span = r.parameter(x, before)
+		v.Parameter, v.Span = r.parameter(x)
 		return v
 	case *ast.Literal:
 		t := x.Value
@@ -750,11 +801,26 @@ func (r *recognizer) limitCount(x ast.Expr, before int) Term {
 	return Term{}
 }
 
-// where: WHERE and its conditions, after before parameters of the statement.
-func (r *recognizer) where(w *ast.Where, before int) []Condition {
+// statementWhere w of a select, an update, or a delete, and not of a subquery: WHERE and its
+// conditions, and its subqueries. When SQLite resolves the names of the WHERE, once it has found the
+// tables, it counts the height of the WHERE and that of the select of each subquery in it together,
+// and refuses more than [maxDepth] with `Expression tree is too large (maximum depth 1000)`. The
+// pass refuses it at the first subquery that makes it too deep, once it has read the WHERE.
+func (r *recognizer) statementWhere(w *ast.Where) ([]Condition, []Select) {
+	where, height := r.where(w)
+	for _, c := range where {
+		if k := c.Value.Subquery; k > 0 && height+r.heights[k-1] > maxDepth {
+			panic(stop{&NotSupportedError{What: "WHERE deeper than SQLite's limit", Offset: c.Value.Span.Start}})
+		}
+	}
+	return where, r.subqueries
+}
+
+// where: WHERE and its conditions, and their height as SQLite counts it.
+func (r *recognizer) where(w *ast.Where) ([]Condition, int) {
 	r.accept(w)
 	r.take(w.Where)
-	return r.conditions(w.X, before)
+	return r.conditions(w.X)
 }
 
 // update: UPDATE table SET and one or more assignments, separated by commas, each a column = a value,
@@ -766,7 +832,6 @@ func (r *recognizer) update(c *ast.Update) *Update {
 	s := &Update{Table: r.tableName(c.Table.Name)}
 	r.take(c.Set)
 	seen := map[string]bool{}
-	parameters := 0
 	for i, a := range c.Assignments {
 		if i > 0 {
 			r.take(c.Commas[i-1])
@@ -787,14 +852,10 @@ func (r *recognizer) update(c *ast.Update) *Update {
 		n := r.name(a.Column)
 		seen[n.Fold()] = true
 		r.take(a.Eq)
-		v := r.term(a.X, parameters)
-		if v.Parameter > 0 {
-			parameters = v.Parameter
-		}
-		s.Set = append(s.Set, Assignment{Column: n, Value: v})
+		s.Set = append(s.Set, Assignment{Column: n, Value: r.term(a.X)})
 	}
 	if c.Where != nil {
-		s.Where = r.where(c.Where, parameters)
+		s.Where, s.Subqueries = r.statementWhere(c.Where)
 	}
 	s.Returning = r.returning(c.Returning)
 	return s
@@ -808,16 +869,15 @@ func (r *recognizer) delete(c *ast.Delete) *Delete {
 	r.accept(c.Table)
 	s := &Delete{Table: r.tableName(c.Table.Name)}
 	if c.Where != nil {
-		s.Where = r.where(c.Where, 0)
+		s.Where, s.Subqueries = r.statementWhere(c.Where)
 	}
 	s.Returning = r.returning(c.Returning)
 	return s
 }
 
-// conditions of a WHERE clause, the expression e, after before parameters of the statement: one
-// condition, or conditions joined by AND, in the order of the text. A ? among them has the number
-// after that of the ? before it.
-func (r *recognizer) conditions(e ast.Expr, before int) []Condition {
+// conditions of a WHERE clause, the expression e: one condition, or conditions joined by AND, in the
+// order of the text, and their height as SQLite counts it.
+func (r *recognizer) conditions(e ast.Expr) ([]Condition, int) {
 	// OR binds less tightly than AND, so the conditions before the first OR are the leftmost operand of
 	// the ORs; that OR comes after them. The ORs are accepted, as the ANDs are below, so that a token
 	// of those conditions that stops the recognizer is named for what holds it.
@@ -837,31 +897,31 @@ func (r *recognizer) conditions(e ast.Expr, before int) []Condition {
 		ands = append(ands, b)
 		e = b.X
 	}
-	parameters := before
-	condition := func(e ast.Expr) Condition {
-		c := r.condition(e, parameters)
-		if c.Value.Parameter > 0 {
-			parameters = c.Value.Parameter
-		}
-		return c
-	}
-	conditions := []Condition{condition(e)}
-	height := depth(e)
+	c, height := r.condition(e)
+	conditions := []Condition{c}
 	for i := len(ands) - 1; i >= 0; i-- {
 		// SQLite gives an AND the depth of its deeper operand and one more, and refuses an expression
-		// deeper than maxDepth while it parses, whatever the database holds. A condition is at most 3
-		// deep, so the depth of the AND is height+1 when that can be too much.
+		// deeper than maxDepth while it parses, whatever the database holds. A condition without a
+		// subquery is at most 3 deep, so the depth of the AND is height+1 when that can be too much,
+		// and the error is at the AND. A condition with a subquery can be deeper, and the AND is
+		// checked again after it.
 		if height+1 > maxDepth {
 			r.reject("WHERE deeper than SQLite's limit")
 		}
 		r.take(ands[i].Op)
-		conditions = append(conditions, condition(ands[i].Y))
-		height = max(height, depth(ands[i].Y)) + 1
+		c, h := r.condition(ands[i].Y)
+		conditions = append(conditions, c)
+		height = max(height, h) + 1
+		if height > maxDepth {
+			// The condition after the AND has a subquery that makes the AND too deep, which SQLite
+			// refuses once it has read the condition, at the token after it.
+			r.reject("WHERE deeper than SQLite's limit")
+		}
 	}
 	if or {
 		r.reject("OR")
 	}
-	return conditions
+	return conditions, height
 }
 
 // maxDepth of an expression in SQLite, SQLITE_MAX_EXPR_DEPTH, which the binding in internal/sqlite
@@ -894,21 +954,22 @@ var comparisons = map[token.Kind]Operator{
 	token.GE: OpGreaterOrEqual,
 }
 
-// condition e of a WHERE clause, after before parameters of the statement: a column compared with a
-// literal or a parameter, with one of the operators of [comparisons], on either side of the
-// operator, or a column IS NULL or IS NOT NULL.
+// condition e of a WHERE clause: a column compared with a literal, a parameter, or a scalar subquery,
+// with one of the operators of [comparisons], on either side of the operator, or a column IS NULL or
+// IS NOT NULL. It gives the condition and its height as SQLite counts it.
 //
 // A comparison with the value on the left, as `5 < a`, is read as the column compared with the value
 // by the operator swapped, `a > 5`, with [Condition.ValueFirst] set; see [Condition] for why. The
 // value is read as a value on the right is, with the same names for what is not supported, and its
-// ? has its number in the order of the text.
+// ? has its number in the order of the text. A value on either side is read as
+// [recognizer.conditionValue] reads it.
 //
 // The next token is the first of e when it is called, since e follows WHERE or AND, and the first
 // token of the left operand of a condition is the first of the condition.
-func (r *recognizer) condition(e ast.Expr, before int) Condition {
+func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	switch e := e.(type) {
 	case *ast.Is:
-		return r.isCondition(e)
+		return r.isCondition(e), depth(e)
 	case *ast.Unary:
 		if e.Op.Kind == token.Not {
 			r.reject("NOT operator")
@@ -928,19 +989,48 @@ func (r *recognizer) condition(e ast.Expr, before int) Condition {
 		r.unexpected()
 	}
 	r.accept(b)
+	var c Condition
+	var height int
 	if isValue(b.X) {
-		c := Condition{Value: r.term(b.X, before), Operator: op.Swapped(), ValueFirst: true}
+		c = Condition{Operator: op.Swapped(), ValueFirst: true}
+		c.Value, height = r.conditionValue(b.X)
 		r.take(b.Op)
 		c.Column = r.conditionColumn(b.Y, "value compared with a value")
-		return c
+	} else {
+		c = Condition{Column: r.conditionColumn(b.X, ""), Operator: op}
+		r.take(b.Op)
+		if ref, ok := b.Y.(*ast.ColumnRef); ok && !isTrueOrFalse(ref) {
+			r.reject("column compared with a column")
+		}
+		c.Value, height = r.conditionValue(b.Y)
 	}
-	c := Condition{Column: r.conditionColumn(b.X, ""), Operator: op}
-	r.take(b.Op)
-	if ref, ok := b.Y.(*ast.ColumnRef); ok && !isTrueOrFalse(ref) {
-		r.reject("column compared with a column")
+	if c.Value.Subquery == 0 {
+		return c, depth(e)
 	}
-	c.Value = r.term(b.Y, before)
-	return c
+	// The column on the other side is 1 deep, and the subquery deeper.
+	if height+1 > maxDepth {
+		// SQLite refuses the comparison once it has read it, at the token after it.
+		r.reject("WHERE deeper than SQLite's limit")
+	}
+	return c, height + 1
+}
+
+// conditionValue e of a comparison: a scalar subquery, as [recognizer.subquery] reads it, with its
+// height, or a literal or a parameter, as [recognizer.term] reads it, with the height 0, which the
+// caller does not use. A subquery after a - is not supported, at the subquery; one after a + is `+
+// sign`, as for a parameter.
+func (r *recognizer) conditionValue(e ast.Expr) (Term, int) {
+	switch x := e.(type) {
+	case *ast.Subquery:
+		return r.subquery(x)
+	case *ast.Unary:
+		if _, ok := x.X.(*ast.Subquery); ok && x.Op.Kind == token.Minus && r.isNext(x.Op) {
+			r.accept(x)
+			r.take(x.Op)
+			r.reject("subquery after a sign")
+		}
+	}
+	return r.term(e), 0
 }
 
 // isCondition: a column IS NULL or IS NOT NULL.
@@ -957,7 +1047,7 @@ func (r *recognizer) isCondition(e *ast.Is) Condition {
 	}
 	if !isNull(e.Y) {
 		switch e.Y.(type) {
-		case *ast.Literal, *ast.Variable, *ast.ColumnRef, *ast.Unary:
+		case *ast.Literal, *ast.Variable, *ast.ColumnRef, *ast.Unary, *ast.Subquery:
 			r.reject("IS with a value other than NULL")
 		}
 		r.unexpected()
@@ -987,13 +1077,13 @@ func (r *recognizer) conditionColumn(x ast.Expr, value string) Name {
 	return r.name(ref.Column)
 }
 
-// isValue reports whether x is a literal or a parameter, with a sign or without one.
+// isValue reports whether x is a literal, a parameter, or a subquery, with a sign or without one.
 func isValue(x ast.Expr) bool {
 	if u, ok := x.(*ast.Unary); ok && (u.Op.Kind == token.Minus || u.Op.Kind == token.Plus) {
 		x = u.X
 	}
 	switch x.(type) {
-	case *ast.Literal, *ast.Variable:
+	case *ast.Literal, *ast.Variable, *ast.Subquery:
 		return true
 	}
 	return false

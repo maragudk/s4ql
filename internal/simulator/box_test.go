@@ -117,6 +117,11 @@ func TestEngine_box(t *testing.T) {
 		e, _ = k.sql("selec 1")
 		is.Equal(t, "failed", e.What)
 		is.Equal(t, `near "selec": syntax error`, e.Error)
+		// A statement that the pass reads and the engine does not run yet is refused before a write
+		// transaction, as a text that the pass refuses is.
+		e, _ = k.sql("update t set v = 'x' where k = (select k from t)")
+		is.Equal(t, "failed", e.What)
+		is.Equal(t, "s4ql: not supported: subquery (at offset 31)", e.Error)
 
 		// The commit objects of the box are in the log, each with its statement.
 		state := k.do("now", "{}").State

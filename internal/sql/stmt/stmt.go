@@ -19,9 +19,9 @@
 // the literals of slice 4, the columns of slice 5, the NULL of slice 6, the WHERE of slice 7, the
 // UPDATE and DELETE of slice 8, the CREATE INDEX and DROP INDEX of slice 9, the IF NOT EXISTS and
 // IF EXISTS of slice 10, the DEFAULT of slice 11, the value on the left of a comparison of slice 12,
-// the ORDER BY and LIMIT of a select of slice 13, and the RETURNING of an insert, an update, and a
-// delete of slice 14. The README next to this file defines them token for token, and lists the names
-// that a "not supported" error gives.
+// the ORDER BY and LIMIT of a select of slice 13, the RETURNING of an insert, an update, and a
+// delete of slice 14, and the scalar subquery in a WHERE of slice 15. The README next to this file
+// defines them token for token, and lists the names that a "not supported" error gives.
 //
 // Names compare as SQLite compares them, by [Name.Fold]. What a statement means for a table, such as
 // whether its columns exist, its values are as many as the columns, or a value has the type of its
@@ -306,17 +306,36 @@ func (r Returning) Present() bool {
 	return r.Span != Span{}
 }
 
-// Term of a row, of an [Assignment], or of a [Condition]: the literal Value, or the argument of a parameter if Parameter
-// is not 0.
+// Term of a row, of an [Assignment], or of a [Condition]: the literal Value, the argument of a
+// parameter if Parameter is not 0, or the value of a scalar subquery if Subquery is not 0.
 type Term struct {
-	// Value of the literal, and nil for a parameter. The literal NULL has the value [Null], never nil.
+	// Value of the literal, and nil for a parameter or a subquery. The literal NULL has the value
+	// [Null], never nil.
 	Value Value
 	// Parameter is the number of the parameter that gives the value, from 1 as SQLite counts them, or
-	// 0 if the value is a literal. Every parameter is a plain ?, which SQLite numbers one more than
-	// the one before it.
+	// 0 if the value is a literal or a subquery. Every parameter is a plain ?, which SQLite numbers
+	// one more than the one before it, in the order of the text, also inside a subquery.
 	Parameter int
-	// Span of the value in the text, its sign included, or of the parameter.
+	// Subquery is the number of the scalar subquery that gives the value, from 1, in the Subqueries
+	// of the statement, or 0 if the value is a literal or a parameter. Only the value of a condition
+	// of the WHERE of a [Select], an [Update], or a [Delete] is one, never the value of a condition
+	// of a subquery itself.
+	Subquery int
+	// Span of the value in the text, its sign included, or of the parameter, or of the subquery from
+	// its opening parenthesis to the end of its closing one.
 	Span Span
+}
+
+// parametersOf the term t of a statement whose subqueries are subqueries: 1 for a parameter, those of
+// its select for a subquery, and 0 for a literal and for the zero Term.
+func parametersOf(t Term, subqueries []Select) int {
+	switch {
+	case t.Parameter > 0:
+		return 1
+	case t.Subquery > 0:
+		return subqueries[t.Subquery-1].Parameters()
+	}
+	return 0
 }
 
 // Select of the rows of one table that meet the conditions of its WHERE clause, or of every row, with
@@ -345,6 +364,25 @@ type Select struct {
 	// conditions. It is the zero Term, which is neither, if the statement has no LIMIT; see
 	// [Select.Limited].
 	Limit Term
+	// Subqueries holds the scalar subqueries of the WHERE clause, in the order of the text, which the
+	// values of its conditions name by their [Term.Subquery], or nil if it has none.
+	//
+	// The value of a condition whose Term.Subquery is k is the value that the k-th subquery gives:
+	// the value of its one column in the first row that it gives, or NULL if it gives no row. SQLite
+	// computes it once, from the rows as they are before the statement changes any, also when the
+	// subquery reads the table that an update or a delete changes.
+	//
+	// A subquery is a Select of one table, with the WHERE, ORDER BY, and LIMIT of a select, and with
+	// one result column: the name of a column, or *, which SQLite takes only for a table of one
+	// column. Its conditions hold no subquery of their own, so its Subqueries is nil. Its parameters
+	// are numbered with those of the statement, in the order of the text: those before the subquery
+	// come before its own, and those after it after them. Its Span is the bytes from its SELECT to the
+	// end of its last token, without the parentheses, which the Span of the Term holds.
+	//
+	// Whether a name of a subquery is one of its own table, or one of the table of the statement,
+	// which SQLite takes it for when its own table does not have it, depends on the tables, so it is
+	// not decided here.
+	Subqueries []Select
 }
 
 // Limited reports whether the statement has a LIMIT clause.
@@ -362,7 +400,7 @@ type OrderColumn struct {
 }
 
 // Condition of a WHERE clause of a select, an update, or a delete: a column compared with a value,
-// or tested for NULL.
+// which may be a scalar subquery, or tested for NULL.
 //
 // A condition always reads as Column, Operator, Value, whichever side of the operator the text
 // writes the column on: `5 < a` is the condition `a > 5`, with ValueFirst set. SQLite gives the two
@@ -375,8 +413,9 @@ type Condition struct {
 	// Operator of the condition, as it compares Column with Value. When ValueFirst is set, the text
 	// writes [Operator.Swapped] of it.
 	Operator Operator
-	// Value that the column is compared with, a literal or a parameter, as a value of an insert is.
-	// For [OpIsNull] and [OpIsNotNull] it is the zero Term, which is neither.
+	// Value that the column is compared with, a literal or a parameter, as a value of an insert is,
+	// or a scalar subquery, on either side of the column. For [OpIsNull] and [OpIsNotNull] it is the
+	// zero Term, which is neither.
 	Value Term
 	// ValueFirst reports whether the text writes the value on the left of the operator and the column
 	// on the right, as in `5 < a`. It is never set for [OpIsNull] and [OpIsNotNull], whose column is
@@ -457,6 +496,9 @@ type Update struct {
 	// updates, with the values of the row after the update, or the zero Returning if the statement has
 	// none.
 	Returning Returning
+	// Subqueries holds the scalar subqueries of the WHERE clause, as for a [Select], or nil if it has
+	// none. Their parameters come after those of the assignments.
+	Subqueries []Select
 }
 
 // Assignment of a SET clause: a column and the value that it gets.
@@ -477,6 +519,9 @@ type Delete struct {
 	// Returning of the RETURNING clause, after the WHERE, which gives each row that the statement
 	// deletes, with the values that the row had, or the zero Returning if the statement has none.
 	Returning Returning
+	// Subqueries holds the scalar subqueries of the WHERE clause, as for a [Select], or nil if it has
+	// none.
+	Subqueries []Select
 }
 
 // DropTable of one table.
@@ -567,10 +612,11 @@ func (s *Insert) Parameters() int {
 	return n
 }
 
-// Parameters of the statement: the number of the values of its conditions that are a parameter, and
-// one more if its LIMIT is a parameter, which comes after them in the text.
+// Parameters of the statement: the number of the values of its conditions that are a parameter, with
+// those of its subqueries, and one more if its LIMIT is a parameter, which comes after them in the
+// text.
 func (s *Select) Parameters() int {
-	n := conditionParameters(s.Where)
+	n := conditionParameters(s.Where, s.Subqueries)
 	if s.Limit.Parameter > 0 {
 		n++
 	}
@@ -578,8 +624,8 @@ func (s *Select) Parameters() int {
 }
 
 // Parameters of the statement: the number of the values of its assignments and of its conditions
-// that are a parameter. Those of the assignments come first, as SQLite numbers them in the order of
-// the text.
+// that are a parameter, with those of its subqueries. Those of the assignments come first, as SQLite
+// numbers them in the order of the text.
 func (s *Update) Parameters() int {
 	n := 0
 	for _, a := range s.Set {
@@ -587,21 +633,21 @@ func (s *Update) Parameters() int {
 			n++
 		}
 	}
-	return n + conditionParameters(s.Where)
+	return n + conditionParameters(s.Where, s.Subqueries)
 }
 
-// Parameters of the statement: the number of the values of its conditions that are a parameter.
+// Parameters of the statement: the number of the values of its conditions that are a parameter, with
+// those of its subqueries.
 func (s *Delete) Parameters() int {
-	return conditionParameters(s.Where)
+	return conditionParameters(s.Where, s.Subqueries)
 }
 
-// conditionParameters of the conditions where: the number of their values that are a parameter.
-func conditionParameters(where []Condition) int {
+// conditionParameters of the conditions where, whose subqueries are subqueries: the number of their
+// values that are a parameter, and of the parameters of the subqueries that they name.
+func conditionParameters(where []Condition, subqueries []Select) int {
 	n := 0
 	for _, c := range where {
-		if c.Value.Parameter > 0 {
-			n++
-		}
+		n += parametersOf(c.Value, subqueries)
 	}
 	return n
 }
