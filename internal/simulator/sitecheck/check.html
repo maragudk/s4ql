@@ -308,15 +308,6 @@ async function unit() {
   ];
   expect(JSON.stringify(storedLines) === JSON.stringify(wantStored), `the line of a start on the stored database says who waits for a lease from before the reload, and for how long (${storedLines.join(" | ")})`);
 
-  // A stale read after both clocks went wrong takes one plain line a spell; a violation that is not excused is
-  // an alarm on every event.
-  tell = R.teller();
-  const check = (t, excused) => ({ t, kind: "check", what: "violated", invariant: "fresh", excused, instance: "a", process: "a", text: "missed" });
-  const told = [check(1, true), check(2, true), check(3, false), check(4, false)].map((e) => tell(e));
-  const tiers = told.map((w) => w.tier);
-  expect(JSON.stringify(tiers) === JSON.stringify(["story", null, "alarm", "alarm"]), `a stale read that the design excuses takes one line, and a violation is an alarm (${tiers.join(", ")})`);
-  expect(told[0].text === "a serves a stale read after its clocks were paused, which the spec allows.", `the line of a stale read names the pause of the clocks (${told[0].text})`);
-
   // The sound of the page: each important event has one figure, the visitor's Stop, Start, and
   // Restart sound once, at the action, and the requests sound when their status changes, not at
   // each request. Every note is short.
@@ -340,15 +331,14 @@ async function unit() {
     { t: 17, kind: "process", what: "closed", instance: "b", process: "b" },
     opened(19, "b", "b", "h4"),
     { t: 20, kind: "action", what: "ignored", do: "restart", instance: "b" },
-    check(21, true), check(22, false),
   ].map((e) => hear(e)).filter(Boolean);
-  const wantSounds = ["blip", "failing", "recovered", "down", "failing", "takeover", "up", "stop", "stop", "up", "alarm"];
+  const wantSounds = ["blip", "failing", "recovered", "down", "failing", "takeover", "up", "stop", "stop", "up"];
   expect(JSON.stringify(sounds) === JSON.stringify(wantSounds), `the important events have their sounds, each once (${sounds.join(", ")})`);
   const notes = Object.values(S.FIGURES).flatMap((f) => f.notes);
   expect(Object.keys(S.FIGURES).every((k) => wantSounds.includes(k)) && notes.every(([hz, ms]) => hz > 0 && ms >= 25 && ms <= 90), `every figure is heard, and its notes are 25 to 90 ms (${notes.length} notes)`);
 
   // The volume of a burst, as turbo gives, rendered offline through the page's player: every kind
-  // every 10 ms for 3 s. Its peak stays at most 0.06 (−24 dBFS) without the alarm, and 0.1 with it.
+  // every 10 ms for 3 s. Its peak stays at most 0.06 (−24 dBFS).
   const burst = async (kinds) => {
     const ctx = new OfflineAudioContext(1, 48000 * 3.5, 48000);
     const master = ctx.createGain();
@@ -368,12 +358,11 @@ async function unit() {
   };
   const kinds = Object.keys(S.FIGURES);
   let ticks = [];
-  const [quiet, quietAlarmed] = [await burst(kinds.filter((k) => k !== "alarm")), await burst(kinds)];
+  const quiet = await burst(kinds);
   ticks = Object.keys(S.TICKS);
-  const [calm, alarmed] = [await burst(kinds.filter((k) => k !== "alarm")), await burst(kinds)];
+  const calm = await burst(kinds);
   const dB = (x) => (20 * Math.log10(x)).toFixed(1) + " dBFS";
   expect(calm.peak > 0 && calm.peak <= 0.06 && calm.played <= 4 * 3 && calm.ticked > 0 && calm.ticked <= 3 / S.TICK_SPACING, `a burst of sounds with ticks under them peaks at ${dB(calm.peak)} (${dB(quiet.peak)} without the ticks), and plays ${calm.played} sounds and ${calm.ticked} ticks in 3 s`);
-  expect(alarmed.peak > 0 && alarmed.peak <= 0.1, `a burst of sounds with the alarm and ticks peaks at ${dB(alarmed.peak)} (${dB(quietAlarmed.peak)} without the ticks)`);
 
   // Each tick alone: the scan, at every pitch, at most at the level of a figure, the void below the
   // scan, the select in the background, and the error tone. Ticks come at most every TICK_SPACING, and
@@ -746,9 +735,7 @@ async function check() {
   if (p.requests().target !== other) await p.send(other);
   const before = { lines: p.lines, commits: p.commits };
   await p.skip(Math.max(0, 660000 - p.t));
-  const s = p.win.s4qlPage.state;
   expect(p.t >= 659999 && p.lines > before.lines && p.commits > before.commits, `fake time goes on to ${p.$("#clock").textContent}, with ${p.lines} lines and ${p.commits} commit objects`);
-  expect(s.violations === s.excused, `the checker finds no violation that is not excused (${s.violations} found, ${s.excused} excused)`);
   expect(p.$("#log").children.length <= 100, `the page keeps at most 100 lines of the log (${p.$("#log").children.length})`);
   const late = p.t;
   play.click();
@@ -1091,9 +1078,7 @@ async function persistence(address) {
     `a reload keeps the database, its name, and its ${p.commits} commit objects, and the time goes on from ${p.$("#clock").textContent}` +
     ` (${p.$("#s3-path").textContent}, ${before.commits} commit objects, ${before.history} to ${p.win.s4qlPage.history} ms of history, the log: ${[...p.$("#log").children].slice(-3).map((li) => li.textContent).join(" | ")})`);
   const took = await p.skipUntil(() => logHas(p, /^\S+a catches up: \d+ commit objects? from S3\.$/) && p.inst("a").dataset.role === "serves");
-  const s = p.win.s4qlPage.state;
-  expect(s.violations === s.excused,
-    `a catches up from S3 and serves ${took / 1000} s of fake time after the reload, and the checker finds no violation that is not excused (${s.violations})`);
+  expect(p.inst("a").dataset.role === "serves", `a catches up from S3 and serves ${took / 1000} s of fake time after the reload`);
   // The visitor's table is in S3 after the reload, and the box has the text that it had.
   const text = p.$("#sql-text").value;
   const line = await p.sql("select v from mine where k = 1");

@@ -20,7 +20,6 @@
 //	recovered  the requests go from failing to working again
 //	blip       the visitor switches a fault, moves the clocks, sends the requests elsewhere, or turns
 //	           sound on
-//	alarm      the checker finds a violation that the design does not excuse
 //
 // Each request makes a tick besides, so that the page sounds alive between the figures. An insert
 // that commits is a barcode being scanned, with the beep of a checkout scanner: one short hard note
@@ -36,10 +35,9 @@
 //
 // Every figure goes through one master gain. One figure is one voice, and at most VOICES sound at
 // once. The site check renders a burst through player offline and holds its peak to at most 0.06,
-// or −24 dBFS, and with the alarm, which is louder, to at most 0.1, or −20 dBFS. A figure of a kind
-// is dropped within SPACING of the start of the one before it, or while that one still sounds, so
-// that a kind never sounds over itself, and every figure but the alarm beyond PER_SECOND a second,
-// so that turbo and a burst of events do not become a buzz. Figures that fall together start
+// or −24 dBFS. A figure of a kind is dropped within SPACING of the start of the one before it, or
+// while that one still sounds, so that a kind never sounds over itself, and every figure beyond
+// PER_SECOND a second, so that turbo and a burst of events do not become a buzz. Figures that fall together start
 // STAGGER apart instead of as a chord.
 //
 // The page calls hear with each event of the engine, and whether the event is live: while playback
@@ -64,7 +62,7 @@
 export const MASTER = 0.018; // the gain of the master, the peak of one ordinary figure
 export const VOICES = 3; // the figures that sound at once
 export const SPACING = 0.12; // s, the least time between two figures of one kind
-export const PER_SECOND = 4; // the figures in any second, but the alarm
+export const PER_SECOND = 4; // the figures in any second
 export const STAGGER = 0.05; // s, the least time between the starts of two figures
 const LEAD = 0.01; // s, how far ahead of the context's time a figure starts, so that its attack is heard whole
 const ATTACK = 0.003; // s
@@ -77,7 +75,7 @@ export const ERROR_SPACING = 1.5; // s, the least time between two error tones
 export const TICK_ROOM = 2; // the figures that sounding together drop and fade the ticks
 
 const A4 = 440, C5 = 523.25, E5 = 659.26;
-const A5 = 880, C6 = 1046.5, D6 = 1174.66, E6 = 1318.51, G6 = 1567.98, A6 = 1760;
+const A5 = 880, C6 = 1046.5, D6 = 1174.66, E6 = 1318.51, A6 = 1760;
 
 // FIGURES by kind: the level relative to MASTER, and the notes, each a pitch in Hz and a length in ms.
 export const FIGURES = {
@@ -88,7 +86,6 @@ export const FIGURES = {
   failing: { level: 1, notes: [[C5, 70], [A4, 80]] },
   recovered: { level: 1, notes: [[A4, 60], [E5, 70]] },
   blip: { level: 1, notes: [[D6, 30]] },
-  alarm: { level: 2.75, notes: [[G6, 90], [D6, 90], [G6, 90]] },
 };
 
 // SCANS are the notes of the keys: the scale of the figures, A minor pentatonic, from E6 to E7, in
@@ -177,7 +174,7 @@ function fade(v, at) {
 export function player(ctx, dest, played = null) {
   const voices = [];
   const last = new Map(); // the start of the last figure of each kind
-  const starts = []; // the starts of the figures in the last second, but the alarm
+  const starts = []; // the starts of the figures in the last second
   let latest = -Infinity; // the start of the last figure
   const ticks = []; // the ticks that sound
   let lastTick = -Infinity, lastError = -Infinity; // the starts of the last tick and error tone
@@ -201,17 +198,14 @@ export function player(ctx, dest, played = null) {
       for (let i = voices.length - 1; i >= 0; i--) if (voices[i].end <= at) voices.splice(i, 1);
       while (starts.length && starts[0] <= at - 1) starts.shift();
       if (at - (last.has(kind) ? last.get(kind) : -Infinity) < Math.max(SPACING, length(kind))) return false;
-      const alarm = kind === "alarm";
-      if (!alarm && (voices.length >= VOICES || starts.length >= PER_SECOND)) return false;
-      // The alarm takes the place of the oldest voice.
-      while (voices.length >= VOICES) fade(voices.shift(), at);
+      if (voices.length >= VOICES || starts.length >= PER_SECOND) return false;
       voices.push(figure(ctx, dest, kind, at));
       if (voices.length >= TICK_ROOM) {
         for (const v of ticks) fade(v, at);
         ticks.length = 0;
       }
       last.set(kind, at);
-      if (!alarm) starts.push(at);
+      starts.push(at);
       latest = at;
       if (played) played(kind, at);
       return true;
@@ -291,8 +285,6 @@ export function listener() {
         failing = now;
         return now ? "failing" : "recovered";
       }
-      case "check":
-        return e.excused ? null : "alarm";
     }
     return null;
   };

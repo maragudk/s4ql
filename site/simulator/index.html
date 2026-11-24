@@ -82,7 +82,7 @@ body {
 }
 
 ::selection { background: var(--lumin); color: var(--void); }
-.alarm ::selection, .commit.head ::selection, .btn[aria-pressed="true"] ::selection, li.you ::selection, li.alarm ::selection { background: var(--void); color: var(--lumin); }
+.alarm ::selection, .commit.head ::selection, .btn[aria-pressed="true"] ::selection, li.you ::selection { background: var(--void); color: var(--lumin); }
 
 a {
   color: inherit;
@@ -614,8 +614,7 @@ h2 {
 }
 .entries .text { overflow-wrap: anywhere; }
 .entries li.story .text { font-weight: 700; }
-.entries li.you, .entries li.alarm { background: var(--lumin); color: var(--void); }
-.entries li.alarm { font-weight: 700; }
+.entries li.you { background: var(--lumin); color: var(--void); }
 .entries li.empty, .commits li.empty { display: block; padding: 12px 20px; font-size: 13px; }
 .commits { list-style: none; margin: 0; padding: 0; }
 .commit { padding: 10px 20px; border-bottom: var(--rule); display: grid; gap: 6px; }
