@@ -451,6 +451,7 @@ func TestSequence_subqueries(t *testing.T) {
 		for k := range uint64(10) {
 			q, err := NewSequence(Subquery.Seed(k))
 			is.NotError(t, err)
+			seen := map[string]bool{}
 			for range 300 {
 				c := q.Next()
 				s, err := stmt.Check(c.Src)
@@ -461,6 +462,10 @@ func TestSequence_subqueries(t *testing.T) {
 				if subs == nil {
 					continue
 				}
+				if seen[c.Src] {
+					counts["a text again"]++
+				}
+				seen[c.Src] = true
 				var table stmt.Name
 				var where []stmt.Condition
 				switch s := s.(type) {
@@ -523,7 +528,7 @@ func TestSequence_subqueries(t *testing.T) {
 		t.Log(counts)
 		for _, kind := range []string{"select", "update", "delete", "update with RETURNING", "select with LIMIT 0", "1 subqueries", "2 subqueries", "value first", "column first",
 			"a condition that may be never true", "operator =", "operator !=", "operator <", "operator <=", "operator >", "operator >=", "of the table of the statement",
-			"of another table", "*", "no ORDER BY", "ORDER BY", "LIMIT ?", "LIMIT 0", "LIMIT", "no LIMIT", "a parameter in the subquery"} {
+			"of another table", "*", "no ORDER BY", "ORDER BY", "LIMIT ?", "LIMIT 0", "LIMIT", "no LIMIT", "a parameter in the subquery", "a text again"} {
 			is.True(t, counts[kind] >= 10, kind)
 		}
 	})

@@ -82,6 +82,9 @@ type Sequence struct {
 	inner []stmt.Select
 	// decided is set by [Sequence.Decide].
 	decided bool
+	// again is the last call of a select, an update, or a delete with a subquery, for
+	// [Profile.Again], or nil.
+	again *Call
 	// selected are the conditions of the WHERE of the select that the sequence writes, as
 	// [Sequence.where] gave them, for its ORDER BY.
 	selected []stmt.Condition
@@ -1903,10 +1906,14 @@ func (q *Sequence) anyValue(r Rand) any {
 // column holds of type int64, float64, string, or []byte, and otherwise a, so that an argument that
 // no column holds stays one.
 func (q *Sequence) Like(a any) any {
+	return q.like(q.rArguments, a)
+}
+
+// like a, an argument, as [Sequence.Like] says, with the random numbers of r.
+func (q *Sequence) like(r Rand, a any) any {
 	if s, ok := a.(string); ok && (!utf8.ValidString(s) || strings.ContainsRune(s, 0)) {
 		return a
 	}
-	r := q.rArguments
 	switch v := a.(type) {
 	case int64:
 		return Argument(q.valueOf(r, stmt.TypeInt))
@@ -2182,6 +2189,19 @@ func returns(s stmt.Statement) bool {
 // slices that a sequence writes, and for each ? of a text that is not.
 func (q *Sequence) next() Call {
 	p := q.profile
+	if p.on(areaSubquery) && p.Again > 0 && q.again != nil && q.rSubquery.IntN(p.Again) == 0 {
+		// The text of an earlier statement with a subquery again, as a prepared statement runs, with
+		// each argument the same one time in two and otherwise another of its Go type.
+		r := q.rSubquery
+		c := *q.again
+		c.Args = slices.Clone(c.Args)
+		for i, a := range c.Args {
+			if r.IntN(2) == 0 {
+				c.Args[i] = q.like(r, a)
+			}
+		}
+		return c
+	}
 	if p.Others > 0 && q.rOthers.IntN(p.Others) == 0 {
 		r := q.rOthers
 		form := Others[r.IntN(len(Others))]
@@ -2237,5 +2257,9 @@ func (q *Sequence) next() Call {
 	}
 	// A query, and an insert, an update, or a delete with RETURNING, of slice 14, runs through Exec
 	// one time in eight, and every other statement through Query one time in eight.
-	return Call{Src: src, Args: args, Query: (k == KindSelect || returns(s)) != (r.IntN(8) == 0), Supported: true}
+	c := Call{Src: src, Args: args, Query: (k == KindSelect || returns(s)) != (r.IntN(8) == 0), Supported: true}
+	if subqueriesOf(s) != nil {
+		q.again = &c
+	}
+	return c
 }

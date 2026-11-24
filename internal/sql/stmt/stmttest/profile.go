@@ -116,6 +116,10 @@ type Profile struct {
 	// of slice 15 in its WHERE, as [Sequence.subqueries] draws them; the area of the subqueries is off
 	// with 0.
 	Subquery int
+	// Again, if not 0 and with Subquery, makes one call in Again the text of the last select, update,
+	// or delete with a subquery again, as a prepared statement runs it, with each argument the same one
+	// time in two and otherwise another value of its Go type, as [Sequence.Like] gives it.
+	Again int
 	// TableNames is the least number of names of tables of the sequence, or 0 for one or two, so that
 	// a subquery reads another table than its statement as often as its own.
 	TableNames int
@@ -179,7 +183,7 @@ var (
 	// an argument of its LIMIT that is not an integer from 0. Also goqite's receive: an update of the
 	// row whose key a subquery of its own table gives, by goqite's index and with RETURNING.
 	Subquery = &Profile{Name: "subquery", Faults: []string{areaSubquery}, Aim: 3, Weights: weights(2, 14, 8, 1, 8, 4, 3, 1), Where: 2, Indexes: 2, Columns: 3,
-		Parameters: 3, Transactions: 3, Limit: 6, Keys: 2, Shared: 2, Ties: 2, Returning: 3, ByKey: 3, Subquery: 1, TableNames: 2}
+		Parameters: 3, Transactions: 3, Limit: 6, Keys: 2, Shared: 2, Ties: 2, Returning: 3, ByKey: 3, Subquery: 1, Again: 8, TableNames: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].
