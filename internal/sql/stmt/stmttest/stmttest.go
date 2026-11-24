@@ -156,7 +156,7 @@ const (
 	KindDropIndex
 )
 
-// Generator of random statements of slices 1, 2, and 4 to 14.
+// Generator of random statements of slices 1, 2, and 4 to 15.
 type Generator struct {
 	r Rand
 	// plan draws the name of the table or the index of a statement, clause whether a create or a drop
@@ -294,7 +294,20 @@ type Generator struct {
 	// place of one at random: whether the statement has one, and the raw text of the name of each of
 	// its columns, in their order and each as often as the clause names it, or nil for *.
 	Return func(table stmt.Name) (present bool, columns []string)
-	b      strings.Builder
+	// Subquery, if not 0, makes the generator write the scalar subquery of slice 15: the value of one
+	// comparison in Subquery of a WHERE at random, of a select, an update, or a delete, on either side
+	// of its column, is a subquery in its place, with its parameters numbered in the order of the
+	// text. Its select is of a table that is one time in two that of the statement, where the pool of
+	// [SelectTable] has its name, and otherwise from that pool, of a column from the pool of
+	// [SelectColumn], or one time in eight *, with a WHERE, an ORDER BY, and a LIMIT as a select at
+	// random has them, and no subquery of its own. With 0 the generator draws as it did before slice
+	// 15.
+	Subquery int
+	// subqueries of the statement that the generator writes, in the order of the text, and inner
+	// reports whether it writes the select of one.
+	subqueries []stmt.Select
+	inner      bool
+	b          strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -657,9 +670,9 @@ func (g *Generator) spelling(op stmt.Operator) string {
 // two conditions at random, or none.
 func (g *Generator) where(s *stmt.Select) ([]stmt.Condition, []any) {
 	if g.Where != nil {
-		return g.conditions(g.Where(s.Table), false, s.Columns, nil)
+		return g.conditions(g.Where(s.Table), false, s.Table, s.Columns, nil)
 	}
-	return g.conditions(g.randomConditions(), true, s.Columns, nil)
+	return g.conditions(g.randomConditions(), true, s.Table, s.Columns, nil)
 }
 
 // randomConditions of a WHERE: with [Generator.Conditions] one time in two from 1 to Conditions of
@@ -671,10 +684,12 @@ func (g *Generator) randomConditions() []stmt.Condition {
 	return nil
 }
 
-// conditions of a WHERE, written with WHERE before them if there are any, after the arguments args of
-// the parameters before them, and the arguments with those of theirs. The conditions are given, or,
-// if random, drawn at random, as many as given has, with the columns of the statement before the WHERE.
-func (g *Generator) conditions(given []stmt.Condition, random bool, columns []stmt.Name, args []any) ([]stmt.Condition, []any) {
+// conditions of a WHERE of the table, written with WHERE before them if there are any, after the
+// arguments args of the parameters before them, and the arguments with those of theirs. The
+// conditions are given, or, if random, drawn at random, as many as given has, with the columns of
+// the statement before the WHERE, and with [Generator.Subquery] a subquery now and then as the value
+// of a comparison, which the generator adds to its subqueries.
+func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.Name, columns []stmt.Name, args []any) ([]stmt.Condition, []any) {
 	if len(given) == 0 {
 		return nil, args
 	}
@@ -695,7 +710,7 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, columns []st
 			// The value on the left, the operator swapped, and the column on the right, which reads as
 			// the condition c.
 			w := stmt.Condition{Operator: c.Operator, ValueFirst: true}
-			w.Value, args = g.term(c.Value.Value, args)
+			w.Value, args = g.conditionValue(random, table, c.Value.Value, args)
 			g.gap(false)
 			g.punct(g.spelling(c.Operator.Swapped()))
 			g.gap(false)
@@ -726,11 +741,58 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, columns []st
 			g.gap(false)
 			g.punct(spellings[g.r.IntN(len(spellings))])
 			g.gap(false)
-			w.Value, args = g.term(c.Value.Value, args)
+			w.Value, args = g.conditionValue(random, table, c.Value.Value, args)
 		}
 		conditions = append(conditions, w)
 	}
 	return conditions, args
+}
+
+// conditionValue of a comparison of a WHERE of the table, after the arguments args of the
+// parameters before it: if random, one time in [Generator.Subquery] a subquery, as
+// [Generator.subquery] writes it, outside the select of a subquery; and otherwise the term of v, as
+// [Generator.term] writes it. It gives the arguments with those of the value.
+func (g *Generator) conditionValue(random bool, table stmt.Name, v stmt.Value, args []any) (stmt.Term, []any) {
+	if random && g.Subquery > 0 && !g.inner && g.r.IntN(g.Subquery) == 0 {
+		return g.subquery(table, args)
+	}
+	return g.term(v, args)
+}
+
+// subquery of slice 15 in the WHERE of the table, after the arguments args of the parameters before
+// it, as [Generator.Subquery] says: its select in parentheses, which it adds to the subqueries of
+// the statement. It gives the term that names it, and the arguments with those of its select.
+func (g *Generator) subquery(table stmt.Name, args []any) (stmt.Term, []any) {
+	start := g.b.Len()
+	g.punct("(")
+	g.gap(false)
+	q := stmt.Select{Span: stmt.Span{Start: g.b.Len()}}
+	g.keyword("select")
+	if g.r.IntN(8) == 0 {
+		g.gap(false)
+		g.punct("*")
+		g.gap(false)
+	} else {
+		g.gap(true)
+		q.Columns = []stmt.Name{g.name(SelectColumn)}
+		g.gap(true)
+	}
+	g.keyword("from")
+	g.gap(true)
+	if g.r.IntN(2) == 0 && (slices.Contains(g.pools[SelectTable], table.Raw) || slices.Contains(g.pools[SelectTable], strings.ToLower(table.Raw))) {
+		q.Table = g.write(table.Raw)
+	} else {
+		q.Table = g.name(SelectTable)
+	}
+	g.inner = true
+	q.Where, args = g.conditions(g.randomConditions(), true, q.Table, q.Columns, args)
+	q.OrderBy, q.Limit, args = g.order(&q, args)
+	g.inner = false
+	q.Span.End = g.b.Len()
+	g.gap(false)
+	g.punct(")")
+	g.subqueries = append(g.subqueries, q)
+	return stmt.Term{Subquery: len(g.subqueries), Span: stmt.Span{Start: start, End: g.b.Len()}}, args
 }
 
 // condition at random of a select with the select list columns, after the conditions before: a
@@ -813,10 +875,11 @@ func (g *Generator) update(c *stmt.Update) []any {
 		}
 	}
 	if g.Update != nil {
-		c.Where, args = g.conditions(where, false, columns, args)
+		c.Where, args = g.conditions(where, false, c.Table, columns, args)
 	} else {
-		c.Where, args = g.conditions(g.randomConditions(), true, columns, args)
+		c.Where, args = g.conditions(g.randomConditions(), true, c.Table, columns, args)
 	}
+	c.Subqueries = g.subqueries
 	return args
 }
 
@@ -1070,6 +1133,7 @@ func (g *Generator) CallOf(k Kind) (string, stmt.Statement, []any) {
 // parameters.
 func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 	g.b.Reset()
+	g.subqueries = nil
 	switch g.r.IntN(4) {
 	case 1:
 		g.b.WriteString(";")
@@ -1220,6 +1284,7 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 			c.Table = g.name(SelectTable)
 		}
 		c.Where, args = g.where(c)
+		c.Subqueries = g.subqueries
 		c.OrderBy, c.Limit, args = g.order(c, args)
 		s, span = c, &c.Span
 	case KindUpdate:
@@ -1247,10 +1312,11 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		g.gap(true)
 		c.Table = g.name(DeleteTable)
 		if g.Delete != nil {
-			c.Where, args = g.conditions(g.Delete(c.Table), false, nil, nil)
+			c.Where, args = g.conditions(g.Delete(c.Table), false, c.Table, nil, nil)
 		} else {
-			c.Where, args = g.conditions(g.randomConditions(), true, nil, nil)
+			c.Where, args = g.conditions(g.randomConditions(), true, c.Table, nil, nil)
 		}
+		c.Subqueries = g.subqueries
 		var named []stmt.Name
 		for _, w := range c.Where {
 			named = append(named, w.Column)

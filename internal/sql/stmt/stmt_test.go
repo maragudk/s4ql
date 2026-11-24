@@ -1850,7 +1850,9 @@ var subqueryReads [2]atomic.Int64
 // changes, the same rows of RETURNING, and the same rows left in its table. SQLite gives `no such
 // table` for src without any table, and for the table of a subquery that is not the table of the
 // statement without that table. A subquery of * of a table of more than one column gives `row value
-// misused`, and the check ends there.
+// misused` in a select, and `sub-select returns 3 columns - expected 1`, with the number of the
+// columns, in an update and a delete, but for != with the subquery on the left of its column, which
+// gives `row value misused` there too; and the check ends there.
 func checkSubqueries(t testing.TB, open func(testing.TB) *db, src string, s stmt.Statement) bool {
 	t.Helper()
 	var table stmt.Name
@@ -1967,10 +1969,21 @@ func checkSubqueries(t testing.TB, open func(testing.TB) *db, src string, s stmt
 		}
 		return d
 	}
-	for _, q := range subqueries {
+	_, isSelect := s.(*stmt.Select)
+	for _, c := range where {
+		if c.Value.Subquery == 0 {
+			continue
+		}
+		q := subqueries[c.Value.Subquery-1]
 		if n := len(all[q.Table.Fold()].a.names); q.Columns == nil && n > 1 {
+			// SQLite names the fault in a select, and the number of the columns in an update and a
+			// delete, but for != with the subquery on the left, where it names the fault too.
+			want := "row value misused"
+			if !isSelect && !(c.ValueFirst && c.Operator == stmt.OpNotEqual) {
+				want = fmt.Sprintf("sub-select returns %v columns - expected 1", n)
+			}
 			_, _, err := build("").run(src, args)
-			sqliteError(t, src, err, 1, "row value misused")
+			sqliteError(t, src, err, 1, want)
 			return true
 		}
 	}
@@ -2014,7 +2027,6 @@ func checkSubqueries(t testing.TB, open func(testing.TB) *db, src string, s stmt
 		textArgs = slices.Concat(textArgs[:before], []stmt.Value{v}, textArgs[before+own:])
 	}
 
-	_, isSelect := s.(*stmt.Select)
 	outer := all[table.Fold()].a
 	run := func(sql string, args []stmt.Value) string {
 		d := build("")

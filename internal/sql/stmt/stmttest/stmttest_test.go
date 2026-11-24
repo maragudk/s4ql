@@ -663,3 +663,70 @@ func TestGenerator_Returning(t *testing.T) {
 		is.Equal(t, 900, kinds["*"]+kinds["1 columns"], fmt.Sprint(kinds))
 	})
 }
+
+func TestGenerator_Subquery(t *testing.T) {
+	pools, err := stmttest.NamePools()
+	is.NotError(t, err)
+	// count the selects, updates, and deletes of g, which must each be the statement that the pass
+	// gives for its text, by what their subqueries have.
+	count := func(g *stmttest.Generator) map[string]int {
+		kinds := map[string]int{}
+		for _, k := range []stmttest.Kind{stmttest.KindSelect, stmttest.KindUpdate, stmttest.KindDelete} {
+			for range 300 {
+				src, s, args := g.CallOf(k)
+				got, err := stmt.Check(src)
+				is.NotError(t, err, src)
+				is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+				is.Equal(t, len(args), s.Parameters(), src)
+				var table stmt.Name
+				var where []stmt.Condition
+				var subqueries []stmt.Select
+				switch s := s.(type) {
+				case *stmt.Select:
+					table, where, subqueries = s.Table, s.Where, s.Subqueries
+				case *stmt.Update:
+					table, where, subqueries = s.Table, s.Where, s.Subqueries
+				case *stmt.Delete:
+					table, where, subqueries = s.Table, s.Where, s.Subqueries
+				}
+				if subqueries == nil {
+					kinds["none"]++
+					continue
+				}
+				kinds[fmt.Sprint(len(subqueries), " subqueries")]++
+				for _, c := range where {
+					if c.Value.Subquery > 0 {
+						kinds[fmt.Sprint("value first ", c.ValueFirst)]++
+					}
+				}
+				for _, q := range subqueries {
+					kinds[fmt.Sprint("table of the statement ", q.Table.Fold() == table.Fold())]++
+					kinds[fmt.Sprint("* ", q.Columns == nil)]++
+					kinds[fmt.Sprint("where ", q.Where != nil)]++
+					kinds[fmt.Sprint("order by ", q.OrderBy != nil)]++
+					kinds[fmt.Sprint("limit ", q.Limited())]++
+					kinds[fmt.Sprint("parameters ", q.Parameters() > 0)]++
+					is.True(t, q.Subqueries == nil, src)
+				}
+			}
+		}
+		return kinds
+	}
+
+	t.Run("should write a subquery only with Subquery", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(23, 24)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.ValueFirst, g.OrderBy = 3, 3, 3, 4, 3, 2
+		kinds := count(g)
+		is.Equal(t, 900, kinds["none"], fmt.Sprint(kinds))
+	})
+
+	t.Run("should write subqueries on either side of a column, of the table of the statement or another, with the clauses of a select, with Subquery", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(23, 24)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.ValueFirst, g.OrderBy, g.Subquery = 3, 3, 3, 4, 3, 2, 2
+		kinds := count(g)
+		for _, k := range []string{"none", "1 subqueries", "2 subqueries", "value first true", "value first false", "table of the statement true",
+			"table of the statement false", "* true", "* false", "where true", "where false", "order by true", "limit true", "parameters true"} {
+			is.True(t, kinds[k] > 5, fmt.Sprint(k, " ", kinds))
+		}
+	})
+}
