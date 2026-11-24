@@ -3414,7 +3414,7 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 		}
 		return excusedType, ""
 	}
-	want := typeRule(t, p.o, c.Src, args)
+	want := typeRule(t, p.o, c.Src, args, p.computed...)
 	if p.readOnly {
 		want = readOnlyRule(t, p.o, c.Src, args)
 	}
@@ -3599,14 +3599,16 @@ func byteLength(v any) int {
 // statement that SQLite does not prepare, which gets SQLite's error, one with another number of
 // arguments than parameters, an insert that leaves a column without a value, which gets SQLite's
 // `NOT NULL constraint failed` first, and a statement whose every value has the type of its column.
-func typeRule(t testing.TB, o *oracle, src string, args []any) string {
+// For a statement with subqueries, values are those that the engine computed for them, or nil, as
+// [subqueryRule] says.
+func typeRule(t testing.TB, o *oracle, src string, args []any, values ...*s4qlpb.Value) string {
 	t.Helper()
 	s, _ := stmt.Check(src)
 	if s == nil || len(args) != s.Parameters() {
 		return ""
 	}
 	if subqueried(s) {
-		return subqueryRule(t, o, src, s, args, false)
+		return subqueryRule(t, o, src, s, args, false, values)
 	}
 	switch s := s.(type) {
 	case *stmt.Insert:
@@ -3693,7 +3695,7 @@ func readOnlyRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
 	s, _ := stmt.Check(src)
 	if s != nil && subqueried(s) {
-		return subqueryRule(t, o, src, s, args, true)
+		return subqueryRule(t, o, src, s, args, true, nil)
 	}
 	switch s := s.(type) {
 	case *stmt.Insert:
@@ -4232,8 +4234,9 @@ func TestPair_sortTooBig(t *testing.T) {
 
 // TestPair_subqueryTooLong pins the rule of a literal longer than the length limit in a scalar
 // subquery of slice 15, under a limit of 1,000 bytes: an update or a delete is refused with SQLite's
-// error and excused, a select is compared with SQLite, which turns a blob literal into NULL and gives
-// rows, and a correlated subquery is refused for its name first.
+// error and excused; a select with a blob literal, which SQLite turns into NULL and gives rows for,
+// is refused with SQLite's error too and excused as such; and a correlated subquery is refused for
+// its name first.
 func TestPair_subqueryTooLong(t *testing.T) {
 	long := strings.Repeat("x", 1001)
 	setup := []string{

@@ -1196,7 +1196,7 @@ func (q *Sequence) receive(r Rand, table stmt.Name) []stmt.Condition {
 		if len(order) < 2 || r.IntN(4) == 0 {
 			order = append(order[:min(1, len(order))], key)
 		}
-		for _, c := range order[:2] {
+		for _, c := range order[:min(2, len(order))] {
 			by = append(by, orderColumn{c.Name.Value, r.IntN(2) == 0})
 		}
 	}

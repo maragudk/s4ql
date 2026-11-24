@@ -2401,7 +2401,7 @@ order	250	83	reached: literal real
 order	8	2	reached: literal real -0.0
 order	211	70	reached: literal text
 order	226	75	reached: select * of 3 columns ok
-order	56	18	reached: select * with NULL ok
+order	55	18	reached: select * with NULL ok
 order	13	4	reached: select of a name that the table does not have no such column
 order	237	79	reached: select of names ok
 order	34	11	reached: select of names with NULL ok

@@ -1057,10 +1057,16 @@ func (p *pair) reachSubquery(src string, s stmt.Statement, runs [][]any, got out
 		if len(sub.OrderBy) < 2 {
 			continue
 		}
-		// The columns of the ORDER BY but the last, the key, of the first two rows.
+		// The columns of the ORDER BY but the key, which [stmttest.Sequence.Decide] puts in each, of the
+		// first two rows.
 		var leading []stmt.Name
-		for _, c := range sub.OrderBy[:len(sub.OrderBy)-1] {
-			leading = append(leading, c.Name)
+		for _, c := range sub.OrderBy {
+			if !inner[stmttest.ColumnOf(inner, c.Name)].PrimaryKey {
+				leading = append(leading, c.Name)
+			}
+		}
+		if leading == nil {
+			continue
 		}
 		text, args = stmttest.SelectText(&stmt.Select{Table: sub.Table, Columns: leading, Where: sub.Where}, bound, orderBy+" limit 2")
 		if first := run(tb, o, callQuery, text, [][]any{args}, mattnText); first.failed == "" && len(first.rows) == 2 && first.rows[0] == first.rows[1] {
@@ -2481,7 +2487,10 @@ func (p *pair) checkRefused(src string, s stmt.Statement, runs [][]any, got outc
 			kind = excusedArgument
 		} else if len(args) == s.Parameters() {
 			want = p.typeRefusal(src, s, args, o)
-			kind = refusalKind(s, want)
+			if kind == excusedType {
+				// A refusal of an argument of an earlier run keeps its excuse.
+				kind = refusalKind(s, want)
+			}
 		}
 		if len(args) != s.Parameters() || want == "" || r.failed == "prepare" || r.failed == "" || r.err != want {
 			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, where the rule gives %q", src, args, got, want)

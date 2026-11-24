@@ -431,6 +431,7 @@ mixed	3	1	reached: subquery that finds several rows that tie for the first, of w
 mixed	4	1	reached: subquery that the engine did not compute, of a select that gave no row
 mixed	8	2	reached: subquery that the engine did not compute, of an update or a delete
 mixed	10	3	reached: subquery whose ORDER BY decides the first of several rows in a select
+mixed	3	1	reached: subquery whose order an index delivers
 mixed	57	19	reached: subquery whose value was NULL
 mixed	28	9	reached: subquery whose value was that of its one first row
 mixed	5	1	reached: subquery whose value was the NULL of a row
@@ -3475,7 +3476,7 @@ subquery	14	4	reached: subquery on the right of > in a update
 subquery	23	7	reached: subquery on the right of >= in a delete
 subquery	36	12	reached: subquery on the right of >= in a select
 subquery	7	2	reached: subquery on the right of >= in a update
-subquery	10	3	reached: subquery that an index serves
+subquery	23	7	reached: subquery that an index serves
 subquery	126	42	reached: subquery that finds no row in a delete
 subquery	204	68	reached: subquery that finds no row in a select
 subquery	297	99	reached: subquery that finds no row in a update
@@ -3494,7 +3495,7 @@ subquery	56	18	reached: subquery whose ORDER BY decides the first of several row
 subquery	142	47	reached: subquery whose ORDER BY decides the first of several rows in a select
 subquery	81	27	reached: subquery whose ORDER BY decides the first of several rows in a update
 subquery	65	21	reached: subquery whose ORDER BY puts NULL first of several rows
-subquery	84	28	reached: subquery whose order an index delivers
+subquery	230	76	reached: subquery whose order an index delivers
 subquery	864	288	reached: subquery whose value was NULL
 subquery	432	144	reached: subquery whose value was that of its one first row
 subquery	104	34	reached: subquery whose value was the NULL of a row

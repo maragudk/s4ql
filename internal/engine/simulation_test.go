@@ -1818,7 +1818,7 @@ func (r *run) verify(ctx context.Context) {
 			r.countWhere(a, "of their own")
 		}
 		for _, a := range refused[k] {
-			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.answer.message != want {
+			if want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...); a.answer.message != want {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %q, and the rule for the type of a value %q", a.id, a.src, k, a.answer.message, want)
 			}
 		}
@@ -1971,7 +1971,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if a.typeRefused {
 				// A read-only transaction refuses an insert before it looks at its value, and runs a
 				// select.
-				want := typeRule(r.t, o, a.src, oracleValues(a.args))
+				want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...)
 				if tx.readOnly {
 					want = readOnlyRule(r.t, o, a.src, oracleValues(a.args))
 				}
@@ -1983,7 +1983,7 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if a.position == "" || (a.state != succeeded && a.state != sqliteFailed) {
 				continue
 			}
-			if want := typeRule(r.t, o, a.src, oracleValues(a.args)); a.state == succeeded && want != "" {
+			if want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...); a.state == succeeded && want != "" {
 				// The check of the log does not see an insert of a transaction that did not commit.
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v) succeeded, and stores a value of another type than its column: %v", a.id, a.src, tx.id, kind, want)
 			}
@@ -2056,6 +2056,14 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		}
 	}
 	return nothing
+}
+
+// computed are the values that the engine computed for the subqueries of the attempt a, as its hook
+// recorded them, or nil.
+func (r *run) computed(a *attempt) []*s4qlpb.Value {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return a.subqueries
 }
 
 // flattened gives the text and the arguments that SQLite runs on the database of o in place of the
@@ -3038,40 +3046,38 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// oldValues is, in a transaction more often than of its own: 143 of 200 seeds find the bug, 125
 		// of them by its own violation.
 		{"dropLast", hammerWorkload, "hammer", stmttest.Returning, []string{", and in SQLite", "gives the rows of RETURNING"}},
-		// The bugs of the scalar subqueries of slice 15, on 2026-11-24. A value that is not among SQLite's
-		// candidates is found by [run.flattened], whose violation says that the statement "gives the
-		// subquery" a value, and SQLite one of others. The hammer environment has no crashes, so the
-		// first 100 of the 200 seeds are those of the sanitizer's setting.
+		// The bugs of the scalar subqueries of slice 15, of 200 seeds on 2026-11-24, after the last aims
+		// of the profile. A value that is not among SQLite's candidates is found by [run.flattened], whose
+		// violation says that the statement "gives the subquery" a value, and SQLite one of others. The
+		// hammer environment has no crashes, so the first 100 of the seeds are those of the sanitizer's
+		// setting; on the profile before its last aims they found each bug 14 to 87 times.
 		//
-		// The value of the last row of several: 153 of 200 seeds, all by their own violation, and 75 of
-		// the first 100.
+		// The value of the last row of several: 184 seeds, all by their own violation.
 		{"lastRow", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
 		// The first row whose value is not NULL, which needs NULL first under an ORDER BY that decides
-		// it: 31 of 200 seeds, all by their own violation, and 14 of the first 100.
+		// it: 104 seeds, all by their own violation.
 		{"firstNotNull", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
 		// An update or a delete that sees its own changes, found by the count of its changes in SQLite's
-		// run of the log or of its transaction: 51 of 200 seeds, 26 of them by their own violation, and
-		// 28 and 14 of the first 100.
+		// run of the log or of its transaction: 138 seeds, 77 of them by their own violation.
 		{"ownChanges", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("rows in SQLite, and its caller was told")},
 		// A value kept from the last run of a statement of the same plan, which the profile's texts run
-		// again: 50 of 200 seeds, all by their own violation, and 31 of the first 100.
+		// again: 106 seeds, all by their own violation.
 		{"keepValue", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
-		// No row taken for a value that every row matches, found by the rows of a select: 176 of 200
-		// seeds, 149 of them by their own violation, and 87 and 74 of the first 100.
+		// No row taken for a value that every row matches, found by the rows of a select: 192 seeds, 186
+		// of them by their own violation.
 		{"noRowMatches", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds(", and in SQLite")},
-		// A subquery of a write in a transaction that reads the newest committed state: 59 of 200 seeds,
-		// 35 of them by a value that is not a candidate on the state of the transaction, and 29 and 16
-		// of the first 100. The others find that the committed state lacks a table that the transaction
-		// created, which the storage refuses.
+		// A subquery of a write in a transaction that reads the newest committed state: 106 seeds, 60 of
+		// them by a value that is not a candidate on the state of the transaction. The others find that
+		// the committed state lacks a table that the transaction created, which the storage refuses.
 		{"outsideTx", hammerWorkload, "hammer", stmttest.Subquery, append(subqueryFinds("gives the subquery"), "the storage core refused a call that the engine had checked")},
-		// The values of two subqueries swapped: 72 of 200 seeds, all by their own violation, and 37 of
-		// the first 100.
-		{"swapSubqueries", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
-		// The first row of a subquery with LIMIT 0: 63 of 200 seeds, all by their own violation, and 34
-		// of the first 100.
+		// The values of two subqueries swapped: 150 seeds, 147 of them by their own violation. The others
+		// find that a value of another type than its column, which the swap gave a condition after the
+		// check of the types, reaches the storage, which refuses it.
+		{"swapSubqueries", hammerWorkload, "hammer", stmttest.Subquery, append(subqueryFinds("gives the subquery"), "the storage core refused a call that the engine had checked")},
+		// The first row of a subquery with LIMIT 0: 138 seeds, all by their own violation.
 		{"limitZeroRow", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
-		// The first row of the access of the conditions alone, and not of the ORDER BY: 136 of 200
-		// seeds, all by their own violation, and 67 of the first 100.
+		// The first row of the access of the conditions alone, and not of the ORDER BY: 174 seeds, all by
+		// their own violation.
 		{"orderIgnored", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
 	}
 	shard := testshard.Get(t)

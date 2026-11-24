@@ -788,8 +788,10 @@ func goValue(v *s4qlpb.Value) any {
 // [limitRule] gives it, and of the type of its column, which must be the type of the column that it
 // is compared with, INT and INTEGER being one; and then for a select the rule of its LIMIT and for an
 // update the rule of its SET, as [stmttest.UpdateRule] gives them, but in a read-only transaction,
-// where SQLite refuses the write first.
-func subqueryRule(t testing.TB, o *oracle, src string, s stmt.Statement, args []any, readOnly bool) string {
+// where SQLite refuses the write first. Whether the WHERE of an update finds a row, which decides
+// whether SQLite's `NOT NULL constraint failed` comes before the types of SET, depends on the values
+// of its subqueries: those that the engine computed, values, if not nil, and otherwise SQLite's.
+func subqueryRule(t testing.TB, o *oracle, src string, s stmt.Statement, args []any, readOnly bool, values []*s4qlpb.Value) string {
 	t.Helper()
 	if len(args) != s.Parameters() {
 		return ""
@@ -851,7 +853,7 @@ func subqueryRule(t testing.TB, o *oracle, src string, s stmt.Statement, args []
 		}
 		set := &stmt.Update{Table: s.Table, Set: s.Set}
 		return stmttest.UpdateRule(name, columns, set, args[:set.Parameters()], func() bool {
-			found, bound := foundQuery(src, table, where, args[set.Parameters():])
+			found, bound := foundQuery(src, table, where, subs, args[set.Parameters():], values)
 			return len(o.run(t, found, bound...).rows) > 0
 		})
 	}
@@ -900,13 +902,27 @@ func subqueryTerms(s stmt.Statement) []stmt.Term {
 	return terms
 }
 
-// foundQuery of the conditions where of a statement of the text src on the table, with the arguments
-// args of their parameters: a select that gives a row if the conditions hold for a row of the table,
-// with each value as the text writes it, a subquery among them, and the arguments of its parameters.
-func foundQuery(src string, table stmt.Name, where []stmt.Condition, args []any) (string, []any) {
+// foundQuery of the conditions where of a statement of the text src on the table, whose subqueries
+// are subs, with the arguments args of their parameters: a select that gives a row if the conditions
+// hold for a row of the table, with each value as the text writes it, a subquery among them, and the
+// arguments of its parameters; or with each subquery as a ? bound to its value of values, if values
+// is not nil.
+func foundQuery(src string, table stmt.Name, where []stmt.Condition, subs []stmt.Select, args []any, values []*s4qlpb.Value) (string, []any) {
 	var conditions []string
+	var bound []any
 	for _, c := range where {
 		value := src[c.Value.Span.Start:c.Value.Span.End]
+		// The arguments are those of the conditions in the order of the text.
+		switch {
+		case c.Value.Parameter > 0:
+			bound, args = append(bound, args[0]), args[1:]
+		case c.Value.Subquery > 0 && values != nil:
+			value = "?"
+			bound, args = append(bound, goValue(values[c.Value.Subquery-1])), args[len(parametersIn(subs[c.Value.Subquery-1])):]
+		case c.Value.Subquery > 0:
+			n := len(parametersIn(subs[c.Value.Subquery-1]))
+			bound, args = append(bound, args[:n]...), args[n:]
+		}
 		switch {
 		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
 			conditions = append(conditions, stmttest.Quote(c.Column.Value)+" "+c.Operator.String())
@@ -916,7 +932,7 @@ func foundQuery(src string, table stmt.Name, where []stmt.Condition, args []any)
 			conditions = append(conditions, stmttest.Quote(c.Column.Value)+" "+c.Operator.String()+" "+value)
 		}
 	}
-	return "select 1 from " + stmttest.Quote(table.Value) + " where " + strings.Join(conditions, " and ") + " limit 1", args
+	return "select 1 from " + stmttest.Quote(table.Value) + " where " + strings.Join(conditions, " and ") + " limit 1", bound
 }
 
 // storageClass of the declared type of a column of a STRICT table: the kind of its values, which is
@@ -1037,9 +1053,18 @@ func (p *pair) reachSubquery(c stmttest.Call, got answer) {
 		}
 		name, columns := o.columns(t, q.Table.Value)
 		_, indexes := o.tableIndexes(t, name, columns)
+		// The subquery as a select of its own with LIMIT 1, whose parameters are numbered from 1.
 		inner := q
 		inner.Limit = stmt.Term{Value: stmt.Integer(1)}
-		if a, ok := stmttest.ChosenAccess(columns, indexes, &inner, sc.args); ok && a.Index != "" {
+		inner.Where = slices.Clone(q.Where)
+		var innerArgs []any
+		for i, c := range inner.Where {
+			if c.Value.Parameter > 0 {
+				innerArgs = append(innerArgs, sc.args[c.Value.Parameter-1])
+				inner.Where[i].Value.Parameter = len(innerArgs)
+			}
+		}
+		if a, ok := stmttest.ChosenAccess(columns, indexes, &inner, innerArgs); ok && a.Index != "" {
 			count(map[bool]string{true: "subquery whose order an index delivers", false: "subquery that an index serves"}[a.Delivered])
 		}
 		// The rows that the WHERE of the subquery finds, and how its ORDER BY decides the first.

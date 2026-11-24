@@ -613,7 +613,7 @@
 7	reached: subquery on the right of >= in a delete
 12	reached: subquery on the right of >= in a select
 2	reached: subquery on the right of >= in a update
-3	reached: subquery that an index serves
+7	reached: subquery that an index serves
 44	reached: subquery that finds no row in a delete
 75	reached: subquery that finds no row in a select
 103	reached: subquery that finds no row in a update
@@ -632,7 +632,7 @@
 50	reached: subquery whose ORDER BY decides the first of several rows in a select
 27	reached: subquery whose ORDER BY decides the first of several rows in a update
 22	reached: subquery whose ORDER BY puts NULL first of several rows
-28	reached: subquery whose order an index delivers
+77	reached: subquery whose order an index delivers
 307	reached: subquery whose value was NULL
 153	reached: subquery whose value was that of its one first row
 36	reached: subquery whose value was the NULL of a row
