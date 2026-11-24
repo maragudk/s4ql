@@ -135,3 +135,49 @@ Every observation of Markus's arrived while I worked, and each one moved the sus
 - Ask Markus, in a silent tab, to run in the console: `const c = new AudioContext(); await c.resume(); const o = c.createOscillator(); o.connect(c.destination); o.start(); setTimeout(() => { console.log(c.state, c.currentTime, c.getOutputTimestamp(), c.outputLatency); o.stop(); }, 1000)`. If that is silent too, nothing in `sound.js` is in the path. If `getOutputTimestamp().performanceTime` stands still there, the page can detect the condition and stop claiming that sound is on.
 - With this branch deployed, ask whether Sound off and on brings his silent tab back. If it does, the fault was in the context; if not, it is in Safari's process, which only a new tab escapes.
 - The wait after a reload on a stored database, from step 1, is parked.
+
+## Step 3: The fault is outside the page; keep only the small hardening, and self-review
+
+**Author:** sound-bug builder
+
+### Prompt Context
+
+**Verbatim prompt:** the lead: "Decisive result from Markus's silent Safari tab: a brand-new `AudioContext` made in a real click, with one oscillator through a gain of 0.2 straight to `destination`, reports `running` and makes no sound. [...] say plainly that the reported bug is not caused by `sound.js` and that nothing you changed fixes it. Keep only hardening that is worth having for its own sake and is small; drop anything you added solely to chase this. [...] Wrap up and report."
+
+**Interpretation:** the silence is in that tab's Safari process, for any context. Remove what was added only for it, keep the resume on a suspended or interrupted context, and finish.
+
+**Inferred intent:** a branch that is honest about what it does, with nothing in it that was built for a cause that turned out false.
+
+### What I did
+
+I dropped the close of the context at Sound off and the new context at the next Sound on, with their check. It was a second line against a context gone silent, and a bare oscillator in a new context in that tab is silent too, so it could not have helped. Sound off suspends the context again, as before. What stays in `/site/simulator/sound.js`: `wake` (called in `hear` for live events, in `blip`, at each `statechange`, and at each click or key on the page), and `tell(null)` at a `statechange` away from `running`, so the dancer stands while the context cannot sound.
+
+The code-review skill (medium) over `git diff main...HEAD` found four issues. Two were about the rebuild of the context (a check that read `old.state` before the close had finished, and a new context that could throw at a browser's limit while old ones were still closing). Both went with that code. One was right about the check: "the next sound asks to resume" was satisfied by the click of `press`, whose capture listener calls `wake` first, so removing `wake` from `hear` would not have been caught. The check now waits, while the page plays, until a request ends, which is a sound and no click, and counts resumes over that. The fourth, that every live event calls `resume` again while a context is suspended, I left: a guard on a resume that is pending would also block the resume of the next click, if Safari keeps one pending outside a gesture.
+
+### Why
+
+The lead asked to keep only small hardening worth having on its own. Resuming a context that a browser suspends or interrupts is that, whatever caused Markus's tab.
+
+### What worked
+
+Merging the dancer's branch, and later `main` with pull request #134, went without conflicts. The dancer's `tell` already drops sounds while the context does not run, so only the `null` at a state change was missing.
+
+### What didn't work
+
+Nothing new failed. Before the trim, `make site-check` passed, and so did six runs of the sitecheck in a row and `go test -tags s4ql_browser ./internal/simulator/...`.
+
+### What I learned
+
+The page cannot tell from the graph that a tab's output is dead: in Playwright, a tap in front of the destination shows the signal whether anyone hears it or not. Only the output side (`getOutputTimestamp()`, `outputLatency`) could show it, and only a silent Safari tab can say whether it does.
+
+### What was tricky
+
+Keeping the diff of `sound.js` tight while the dancer's branch changed the same function: the change was kept to a few lines in `hear`, `blip`, and the `statechange` handler of `wire`.
+
+### What warrants review
+
+`wake` in `/site/simulator/sound.js` and `soundWakes` in `/internal/simulator/sitecheck/check.html`. Without `wake`, the check gives six FAIL lines (step 2).
+
+### Future work
+
+As in step 2: the console test of `getOutputTimestamp()` in a silent tab, and the parked wait after a reload.

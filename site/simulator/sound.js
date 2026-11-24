@@ -320,7 +320,6 @@ let out = null; // the player of the page
 let on = false;
 let toggle = null; // the button Sound
 let watcher = null; // the function that watch was given
-let woken = false; // whether a click or key anywhere on the page calls wake
 const classify = listener();
 
 // watch calls fn(kind, delay) for each figure and tick that sounds, with its kind, of FIGURES or
@@ -399,9 +398,8 @@ function broken() {
 
 // wire the toggle Sound, a button with aria-pressed, which the HTML disables until this module has
 // loaded. Its data-audio says "none" until the first click that turns sound on creates the
-// AudioContext, then the state of the context, "closed" once sound is off, and "unavailable" if the
-// browser has none or it fails, which also disables the toggle. Each Sound that turns sound on after
-// it was off makes a new context. While sound is on, a context that the browser suspends or
+// AudioContext, then the state of the context, and "unavailable" if the browser has none or it
+// fails, which also disables the toggle. While sound is on, a context that the browser suspends or
 // interrupts is resumed when its state changes, and at the next sound, click, or key: see wake.
 export function wire(button) {
   if (!button) return;
@@ -417,34 +415,26 @@ export function wire(button) {
         master.gain.value = MASTER;
         master.connect(ctx.destination);
         out = player(ctx, master, tell);
-        ctx.addEventListener("statechange", (e) => {
-          if (e.target !== ctx) return; // a context that sound off closed
+        ctx.addEventListener("statechange", () => {
           if (out) button.dataset.audio = ctx.state;
           if (ctx.state !== "running") tell(null);
           wake();
         });
-        if (!woken) for (const type of ["click", "keydown"]) document.addEventListener(type, wake, true);
-        woken = true;
+        for (const type of ["click", "keydown"]) document.addEventListener(type, wake, true);
       }
       if (!out) return;
       on = !on;
       button.setAttribute("aria-pressed", String(on));
       button.dataset.audio = ctx.state;
-      const c = ctx;
       if (on) {
-        c.resume().catch(() => c === ctx && broken());
+        ctx.resume().catch(broken);
         play("blip");
       } else {
         out.silence();
         tell(null);
-        // Close the context once the fades have ended, unless sound is on again by then, so that the
-        // next Sound starts from a new context, player, and graph: whatever a browser left wrong in
-        // this one, such as an output that went silent while the context runs, goes with it.
+        // Suspend once the fades have ended, unless sound is on again by then.
         setTimeout(() => {
-          if (on || c !== ctx) return;
-          ctx = out = null;
-          button.dataset.audio = "closed";
-          c.close().catch(() => {});
+          if (!on && out) ctx.suspend().catch(() => {});
         }, 50);
       }
     } catch {

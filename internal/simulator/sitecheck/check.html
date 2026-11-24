@@ -785,9 +785,9 @@ async function dancer(p) {
 
 // soundWakes checks that sound which is on comes back when the browser suspends the audio context
 // by itself, as Safari can: the figure stands at once, and the page resumes the context when its state
-// changes, at the next sound, and at the next key or click; and that Sound off and on again makes a
-// new context. The check holds the browser's resume itself, since sitecheck's Chromium never refuses
-// one, and lets it go for the click. It starts and ends paused with sound off.
+// changes, at the next sound, and at the next key or click. The check holds the browser's resume
+// itself, since sitecheck's Chromium never refuses one, and lets it go for the click. It starts and
+// ends paused with sound off.
 async function soundWakes(p) {
   const sound = p.$("#sound"), play = p.$("#play"), fig = p.$("#dancer");
   const proto = p.win.AudioContext.prototype, resume = proto.resume;
@@ -812,13 +812,14 @@ async function soundWakes(p) {
     const moves = fig.dataset.moves;
     await p.frames(30);
     expect(fig.dataset.pose === "stand" && fig.dataset.moves === moves, `while the context is suspended, the figure stands still for 30 frames (${fig.dataset.moves} changes of pose)`);
+    // A request that ends while the page plays is a sound, and no click.
+    n = resumes;
+    const calls = p.requests().calls;
+    await until(() => p.requests().calls > calls);
+    expect(resumes > n, `the next sound asks to resume the context (${resumes - n} times)`);
 
     play.click();
     await until(() => p.idle());
-    n = resumes;
-    await p.press("a", "hang");
-    expect(resumes > n, `the next sound asks to resume the context (${resumes - n} times)`);
-    await p.press("a", "hang");
     n = resumes;
     p.win.document.body.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "Shift", bubbles: true }));
     expect(resumes > n, `a key anywhere on the page asks to resume the context (${resumes - n} times)`);
@@ -829,16 +830,6 @@ async function soundWakes(p) {
     const asked = expect(resumes > n, `a click anywhere on the page asks to resume the context (${resumes - n} times)`);
     if (asked) await until(() => sound.dataset.audio === "running");
     expect(sound.getAttribute("aria-pressed") === "true" && sound.dataset.audio === "running", `after the click, sound is on and its context runs again (${sound.dataset.audio})`);
-
-    // Sound off closes the context, and Sound on again makes a new one, so that toggling it is a way
-    // out of whatever the browser left wrong in the old one.
-    sound.click();
-    await until(() => sound.dataset.audio === "closed");
-    const old = ctx;
-    sound.click();
-    await until(() => ctx !== old && sound.dataset.audio === "running");
-    expect(old.state === "closed" && ctx.state === "running" && sound.getAttribute("aria-pressed") === "true",
-      `Sound off closes the context (${old.state}), and Sound on again makes a new one, which runs (${ctx.state})`);
   } finally {
     proto.resume = resume;
   }
