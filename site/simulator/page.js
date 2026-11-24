@@ -1247,8 +1247,9 @@ async function start() {
   drawMark();
   setTurbo(turboRemembered());
   dancerStart();
-  // The constellations of the sky, which the page works without: see constellations.js.
-  import("./constellations.js" + version).then((c) => c.start($("sky"))).catch(() => {});
+  // The constellations of the sky, which the page works without: see constellations.js. A module that
+  // does not load is left out, and an error in it shows in the console.
+  import("./constellations.js" + version).then((c) => c.start($("sky")), () => {});
   const sound = import("./sound.js" + version).catch(() => null);
   R = await import("./run.js" + version);
   B = await import("./bucket.js" + version);
