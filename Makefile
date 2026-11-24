@@ -371,6 +371,12 @@ site-check:
 		$(SITECHECK) -root $$dir/site -version $(or $(SITEVERSION),$(SITECOMMIT)); \
 		status=$$?; rm -rf $$dir; exit $$status
 
+# site-icons draws the favicons of the site and its web app manifest from the logo into SITEDIR, which
+# commits them: see internal/siteicons.
+.PHONY: site-icons
+site-icons:
+	go run ./internal/siteicons -out $(SITEDIR)
+
 # LINKSC, run in the directory of a module with package patterns after it, lists the packages and
 # their dependencies for LINKSCAWK, which prints a line for each of those packages that has tests:
 # "c" and its import path if its test binary links C, and "go" and its import path if not. A test
