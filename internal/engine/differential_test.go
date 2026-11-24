@@ -1193,10 +1193,23 @@ func (p *pair) step(c stmttest.Call) string {
 		// decides alone.
 		return fmt.Sprintf("%q with the arguments %v: a literal of a condition is longer than the length limit, and the engine gives %v, and the rule %q", src, args, got, tooBig)
 	}
+	// A select that still has its subqueries here is one whose subqueries the engine did not compute,
+	// as it computes none for a select that can give no row whatever they give: it must give no row,
+	// and SQLite runs its text, so that the rows of SQLite say whether the engine was right to compute
+	// none. The comparisons of its order and its access below read a statement without a subquery, and
+	// a select without a row has nothing for them.
+	sel, isSelect := u.(*stmt.Select)
+	uncomputed := isSelect && subqueried(sel) && got.err == ""
+	if uncomputed {
+		p.count("subquery that the engine did not compute, of a select that gave no row")
+		if len(got.rows) > 0 {
+			return fmt.Sprintf("%q with the arguments %v: the engine gives the rows %v without computing its subqueries", src, args, got.rows)
+		}
+	}
 	// The rows of a query with ORDER BY or LIMIT are compared as [ordered.differs] says, those of the
 	// instance and those of the other instance, which [pair.bothWays] compared by their number alone.
 	differs := got.String() != want.String()
-	if sel, ok := u.(*stmt.Select); ok && c.Query && (sel.OrderBy != nil || sel.Limited()) && got.err == "" && want.err == "" {
+	if isSelect && !uncomputed && c.Query && (sel.OrderBy != nil || sel.Limited()) && got.err == "" && want.err == "" {
 		q := orderedOf(sel, args)
 		if how := q.compare(t, o, got, want); how != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, how)
@@ -1225,7 +1238,7 @@ func (p *pair) step(c stmttest.Call) string {
 			return fmt.Sprintf("%q with the arguments %v: the engine gives\n%v\nand SQLite\n%v", src, args, got, want)
 		}
 	}
-	if sel, ok := u.(*stmt.Select); ok && c.Query && got.err == "" && want.err == "" {
+	if isSelect && !uncomputed && c.Query && got.err == "" && want.err == "" {
 		if failure := p.checkOrder(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}

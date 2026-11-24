@@ -122,6 +122,13 @@ var subqueryReads = func() []subqueryTestCall {
 		{src: "select k, v from t where v >= (select x from u where k = 1) order by v, k limit 2"},
 		{src: "select k from t where w = (select y from u where k = 9) order by k desc limit 1"},
 		{src: "select * from t where w <= (select k from u1) order by w desc"},
+		// A statement that can give no row, whose subquery the engine does not compute: LIMIT 0 of the
+		// statement, as a literal and as an argument, and another condition that is never true.
+		{src: "select k from t where k = (select k from u1) limit 0"},
+		{src: "select k from t where k = (select k from u1) limit ?", args: []any{int64(0)}},
+		{src: "select k from t where k = (select k from u1) order by k limit 0"},
+		{src: "select k from t where k is null and k = (select k from u1) order by k"},
+		{src: "select k from t where w = ? and k = (select k from u1) order by k limit 2", args: []any{nil}},
 	}
 	// Every operator, in each of its spellings, on both sides.
 	for _, op := range []string{"=", "==", "!=", "<>", "<", "<=", ">", ">="} {
@@ -194,7 +201,7 @@ func TestEngine_subquery(t *testing.T) {
 				is.Equal(t, p.o.state(t), i.state())
 			}
 		}
-		for _, k := range []string{"reached: subquery whose value was NULL", "reached: subquery whose value was that of its one first row", "excused: " + excusedType} {
+		for _, k := range []string{"reached: subquery whose value was NULL", "reached: subquery whose value was that of its one first row", "reached: subquery that the engine did not compute, of a select that gave no row", "excused: " + excusedType} {
 			t.Log(k, y[k])
 			is.True(t, y[k] > 0, k)
 		}
