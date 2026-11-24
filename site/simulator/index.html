@@ -224,8 +224,8 @@ code { font-family: inherit; }
 .btn.big { min-height: 44px; padding: 10px 16px; font-size: 14px; gap: 16px; }
 .btn.play { min-width: 9.5em; justify-content: space-between; }
 
-/* The hero: the headline alone, large, with the sky around it. Its width is that of its longest
-   line, so that the sky keeps clear of the words and not of the whole band. */
+/* The hero: the headline alone, large, with the sky around it, which keeps clear of its lines and not
+   of the whole band. */
 
 .intro { border-bottom: var(--rule); padding: clamp(48px, 6.5vw, 96px) 0; }
 h1 {
@@ -774,12 +774,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const BLINKS = 12, GLINTS = 3;
   // The sky is everywhere below the header. Stars keep clear of the header, of the sticky bar where it
   // stands before it sticks, of the rules across the page of the elements RULED, of the boxes BOXES,
-  // and of the words WORDS, whose glyphs can reach out of their boxes where the lines are tight.
+  // of the words WORDS, by their boxes and their glyphs, which can reach out of their boxes where the
+  // lines are tight, and of the headings HEADINGS by the glyphs of each line alone, since a balanced
+  // heading's box is wider than its lines.
   // Content added to the page needs adding here, and to the elements that the ResizeObserver below
   // watches if its size can change alone. The stick figure #dancer is left out: it walks along the
   // top line of .logs in front of the sky, by a transform that changes no layout.
   const BOXES = "#failure, .requests, .fork, .inst, .s3, .logs, .ask-box";
-  const WORDS = "h1, .ask-head > *, .about h2, .about p, footer p, footer li";
+  const WORDS = ".ask-head > *, .about p, footer p, footer li";
+  const HEADINGS = "h1, .about h2";
   const RULED = ".intro, .ask, .about";
   // LEVELS are the opacities of the stars that do not twinkle.
   const LEVELS = [0.26, 0.38, 0.52];
@@ -825,14 +828,13 @@ document.addEventListener("DOMContentLoaded", () => {
       if (top) add(-Infinity, r.top, Infinity, r.top + top);
       if (bottom) add(-Infinity, r.bottom - bottom, Infinity, r.bottom);
     }
-    const words = document.createRange();
-    for (const el of document.querySelectorAll(BOXES + ", " + WORDS)) {
-      const r = el.getBoundingClientRect();
-      if (r.width || r.height) add(r.left, r.top, r.right, r.bottom);
-      if (!el.matches(WORDS)) continue;
-      words.selectNodeContents(el);
-      const g = words.getBoundingClientRect();
-      if (g.width || g.height) add(g.left, g.top, g.right, g.bottom);
+    const glyphs = document.createRange();
+    for (const el of document.querySelectorAll(BOXES + ", " + WORDS + ", " + HEADINGS)) {
+      const heading = el.matches(HEADINGS), r = el.getBoundingClientRect();
+      if (!heading && (r.width || r.height)) add(r.left, r.top, r.right, r.bottom);
+      if (el.matches(BOXES)) continue;
+      glyphs.selectNodeContents(el);
+      for (const g of heading ? glyphs.getClientRects() : [glyphs.getBoundingClientRect()]) if (g.width || g.height) add(g.left, g.top, g.right, g.bottom);
     }
     // The edges of the instances to S3 run below their boxes, down to S3, where the instances stand
     // side by side.
