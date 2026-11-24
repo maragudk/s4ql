@@ -168,7 +168,7 @@ func TestSVG(t *testing.T) {
 }
 
 func TestManifest(t *testing.T) {
-	t.Run("should name the site and list the two icons of the manifest", func(t *testing.T) {
+	t.Run("should name the site and list the two icons of the manifest, the one of 512 pixels also as maskable", func(t *testing.T) {
 		b, err := manifest()
 		is.NotError(t, err)
 
@@ -191,14 +191,13 @@ func TestManifest(t *testing.T) {
 		is.Equal(t, "#000000", m.ThemeColor)
 		is.Equal(t, "#000000", m.BackgroundColor)
 		is.Equal(t, "standalone", m.Display)
-		is.Equal(t, 2, len(m.Icons))
-		is.Equal(t, "web-app-manifest-192x192.png", m.Icons[0].Src)
-		is.Equal(t, "192x192", m.Icons[0].Sizes)
-		is.Equal(t, "image/png", m.Icons[0].Type)
-		is.Equal(t, "any", m.Icons[0].Purpose)
-		is.Equal(t, "web-app-manifest-512x512.png", m.Icons[1].Src)
-		is.Equal(t, "512x512", m.Icons[1].Sizes)
-		is.Equal(t, "maskable", m.Icons[1].Purpose)
+		is.Equal(t, 3, len(m.Icons))
+		for i, want := range []struct{ size, purpose string }{{"192", "any"}, {"512", "any"}, {"512", "maskable"}} {
+			is.Equal(t, "web-app-manifest-"+want.size+"x"+want.size+".png", m.Icons[i].Src)
+			is.Equal(t, want.size+"x"+want.size, m.Icons[i].Sizes)
+			is.Equal(t, "image/png", m.Icons[i].Type)
+			is.Equal(t, want.purpose, m.Icons[i].Purpose)
+		}
 		is.True(t, layoutOf(512).maskable)
 	})
 }

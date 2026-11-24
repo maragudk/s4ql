@@ -169,7 +169,9 @@ func svg() []byte {
 		path(layoutOf(32), 1), path(layoutOf(16), 2))
 }
 
-// manifest is the web app manifest, with the icons of 192 and 512 pixels.
+// manifest is the web app manifest, with the icons of 192 and 512 pixels, each with the purpose any,
+// and a maskable icon also as maskable. That is an entry of its own, since a browser may warn about
+// one entry for both purposes.
 func manifest() ([]byte, error) {
 	type icon struct {
 		Src     string `json:"src"`
@@ -186,11 +188,13 @@ func manifest() ([]byte, error) {
 		Display         string `json:"display"`
 	}{Name: "s4ql", ShortName: "s4ql", ThemeColor: "#000000", BackgroundColor: "#000000", Display: "standalone"}
 	for _, size := range []int{192, 512} {
-		purpose := "any"
-		if layoutOf(size).maskable {
-			purpose = "maskable"
+		add := func(purpose string) {
+			m.Icons = append(m.Icons, icon{Src: fmt.Sprintf("web-app-manifest-%[1]dx%[1]d.png", size), Sizes: fmt.Sprintf("%[1]dx%[1]d", size), Type: "image/png", Purpose: purpose})
 		}
-		m.Icons = append(m.Icons, icon{Src: fmt.Sprintf("web-app-manifest-%[1]dx%[1]d.png", size), Sizes: fmt.Sprintf("%[1]dx%[1]d", size), Type: "image/png", Purpose: purpose})
+		add("any")
+		if layoutOf(size).maskable {
+			add("maskable")
+		}
 	}
 	b, err := json.Marshal(m, jsontext.Multiline(true), jsontext.WithIndent("  "))
 	if err != nil {
