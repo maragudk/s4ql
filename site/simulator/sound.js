@@ -405,6 +405,7 @@ function broken() {
 // SOUND is the item of localStorage that remembers the toggle.
 const SOUND = "s4ql:sound";
 const GESTURES = ["click", "keydown"];
+const NO_GESTURE = ["Shift", "Control", "Alt", "AltGraph", "Meta", "OS", "Fn", "CapsLock", "Escape", "Tab"];
 let waiting = false; // whether sound that is remembered on waits for its context to run
 
 // remembered says whether the browser remembers sound on.
@@ -444,9 +445,10 @@ function open() {
 
 // first is the visitor's first click or key on the page while sound is remembered on, which turns
 // sound on in that gesture, before the page acts on it, so that its own sound is heard. A click or key
-// on the toggle is the toggle's.
+// on the toggle is the toggle's. A modifier alone, such as the Command of Command+Tab, Escape, and Tab
+// are no gesture that lets a browser start audio, so sound waits on.
 function first(e) {
-  if (toggle.contains(e.target)) return;
+  if (toggle.contains(e.target) || (e.type === "keydown" && NO_GESTURE.includes(e.key))) return;
   for (const type of GESTURES) document.removeEventListener(type, first, true);
   if (!waiting || ctx) return;
   try {

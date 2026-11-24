@@ -848,14 +848,18 @@ async function kept() {
   expect(keyed && pressed && soundOff === "off, off" && off(p),
     `while Sound waits, a key on it leaves it waiting, a click on it turns it on at once, the next click turns it off, and it is off after a reload (${state(p)})`);
 
-  // A key anywhere on the page starts sound that waits.
+  // A key anywhere on the page starts sound that waits, but a modifier alone, Escape, or Tab, which
+  // are no gesture for a browser.
   p.$("#sound").click();
   await until(() => runs(p));
   p = await reload(p);
-  p.win.document.body.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "k", bubbles: true }));
+  const key = (k) => p.win.document.body.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: k, bubbles: true }));
+  for (const k of ["Meta", "Shift", "Escape", "Tab"]) key(k);
+  const unmoved = waits(p);
+  key("k");
   const keyMade = p.win.s4qlContexts;
   await until(() => runs(p));
-  expect(keyMade === 1, `a key on the page starts Sound that waits (${state(p)})`);
+  expect(unmoved && keyMade === 1, `a key on the page starts Sound that waits, and Meta, Shift, Escape, and Tab before it do not (${state(p)})`);
 
   // Turbo turned on again is on after a reload.
   p.$("#turbo").click();
