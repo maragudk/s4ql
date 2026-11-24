@@ -37,8 +37,8 @@
 // once. The site check renders a burst through player offline and holds its peak to at most 0.06,
 // or −24 dBFS. A figure of a kind is dropped within SPACING of the start of the one before it, or
 // while that one still sounds, so that a kind never sounds over itself, and every figure beyond
-// PER_SECOND a second, so that turbo and a burst of events do not become a buzz. Figures that fall together start
-// STAGGER apart instead of as a chord.
+// PER_SECOND a second, so that turbo and a burst of events do not become a buzz. Figures that fall
+// together start STAGGER apart instead of as a chord.
 //
 // The page calls hear with each event of the engine, and whether the event is live: while playback
 // plays, or in the answer to the visitor's own action, but for the later steps of a reset of the

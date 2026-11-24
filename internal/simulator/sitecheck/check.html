@@ -1078,7 +1078,10 @@ async function persistence(address) {
     `a reload keeps the database, its name, and its ${p.commits} commit objects, and the time goes on from ${p.$("#clock").textContent}` +
     ` (${p.$("#s3-path").textContent}, ${before.commits} commit objects, ${before.history} to ${p.win.s4qlPage.history} ms of history, the log: ${[...p.$("#log").children].slice(-3).map((li) => li.textContent).join(" | ")})`);
   const took = await p.skipUntil(() => logHas(p, /^\S+a catches up: \d+ commit objects? from S3\.$/) && p.inst("a").dataset.role === "serves");
-  expect(p.inst("a").dataset.role === "serves", `a catches up from S3 and serves ${took / 1000} s of fake time after the reload`);
+  // The catch-up downloads commit objects that S3 held before the reload, and no more than it held.
+  const caughtUp = [...p.$("#log").children].map((li) => /a catches up: (\d+) commit objects? from S3\.$/.exec(li.textContent)).find(Boolean);
+  const caught = caughtUp ? Number(caughtUp[1]) : 0;
+  expect(caught > 0 && caught <= before.commits, `a catches up from S3 with ${caught} of the ${before.commits} commit objects from before the reload, and serves ${took / 1000} s of fake time after it`);
   // The visitor's table is in S3 after the reload, and the box has the text that it had.
   const text = p.$("#sql-text").value;
   const line = await p.sql("select v from mine where k = 1");

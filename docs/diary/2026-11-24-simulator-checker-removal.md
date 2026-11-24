@@ -114,3 +114,53 @@ That `callEnded` tells `knownKeys` of exactly the calls that `checker.writeEnded
 ### Future work
 
 None.
+
+## Step 3: The README, the review, and the checks
+
+**Author:** builder (simulator checker removal)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief of Step 1, requirements 7 and 8, and its verification)
+
+**Interpretation:** have a writer bring `/internal/simulator/README.md` in line, review the branch, and run every check that the brief names.
+
+**Inferred intent:** a branch that the lead can take through its pull request without redoing any of it.
+
+### What I did
+
+A writer sub-agent rewrote `/internal/simulator/README.md` from a brief with the facts of the diff: it deleted "The invariants", the event `check`, and the rows `log`, `violations`, and `excused`, rewrote `end`, the session, the stored bucket, the comparison with the model, the observations, the tests, and the memory note, and added near the top: "The engine does not check the results of its runs: it records what the code did, and judges none of it. The simulations of `internal/core` and `internal/engine` verify the storage code: their tests check what each run did, and plant bugs in the code to show that the checks find them." I read its diff; it changed no number, and kept the dated heap figures with a clause that they were measured with the checker's records still kept.
+
+The review (`/code-review medium ee2a74f...HEAD`) found no correctness bug and three nits. Two I fixed: the expect after the reload in `/internal/simulator/sitecheck/check.html` restated the condition that `skipUntil` had just waited for, so it could never fail; it now reads the count of the line "a catches up: N commit objects from S3." and holds it between 1 and the commit objects from before the reload (109 of 109 and 106 of 106 in the two runs of `make site-check`). And a line of the header of `/site/simulator/sound.js` that my edit left long is wrapped again. The third I left: the review would keep the deleted box test under every fault as a smoke test; the brief says a test whose only point was "no violation" is deleted, and that test asserted nothing else.
+
+Checks, all at the last commit or the one before the two nits: `go test -race -tags s4ql_browser -shuffle on ./internal/simulator/...` passes; `make test-browser BROWSERPKGS='./internal/simulator ./internal/simulator/engine'` passes (37 s and 1 s); `make site-check` passes, before and after the nits; `make lint` reports 0 issues everywhere; `go test -race -count=50 -run TestKnownKeys` passes. With playwright-cli on `go run -tags s4ql_browser ./internal/simulator/serve -root site -isolated=false -addr 127.0.0.1:8187`: Sound on, Play, Pause the clocks of `a` while it served, resume them, crash `b`; the page stayed `data-engine="ready"`, `#failure` hidden, no `li.alarm`, no line with "checker", "violat", "stale read", or "spec allows" in either snapshot, and the console had 0 messages.
+
+Numbers, by `make site` and `wc -c`, `gzip -9 -c | wc -c` on `/site/simulator/engine/engine.wasm`: 14,559,324 bytes and 3,435,091 gzipped before, 14,431,152 and 3,407,272 after. Non-test Go in `internal/simulator` with its subpackages: 5,592 lines before, 4,939 after (4,841 and 4,188 in the package itself). The fingerprint at the last Go commit is still byte for byte the one before.
+
+### Why
+
+The README is the specification of the page, so it had to stop describing events and fields that no longer exist.
+
+### What worked
+
+Giving the writer the diff's base commit and the list of facts to verify kept its work to the README and to what the code does.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The site check's helper `skipUntil` loops until its condition holds, so an expect right after it on the same condition proves nothing; a step after it must assert something else.
+
+### What was tricky
+
+Deciding what the step after the reload should still assert once the check of violations was gone.
+
+### What warrants review
+
+The new expect after the reload in `/internal/simulator/sitecheck/check.html`, and the README's sentence on the heap figures, which is the one place that speaks of the engine as it was.
+
+### Future work
+
+The simulator's tests no longer check results against an oracle, which was accepted. If a smoke test of box statements under every fault with a crash is wanted again, it would assert that each call ends once, as `eachCall` does for the client.
