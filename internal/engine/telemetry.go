@@ -80,7 +80,8 @@ const (
 	// attrSubqueriesFound is the number of the scalar subqueries of the statement that found a row, of
 	// those that it computed: 0 for a subquery whose value is NULL because it found no row. A
 	// statement that failed before the choice of its access, as [attrAccess] says, has none of the
-	// attributes of the reading of its subqueries.
+	// attributes of the reading of its subqueries, and so has one that computed none, because it can
+	// give or change no row whatever they give, as [build.compute] says.
 	attrSubqueriesFound = "statement.subqueries.found"
 	// attrSubqueriesRowsRead is the number of rows that the scalar subqueries of the statement read
 	// from the cache, together, which [attrRowsRead] counts too.
@@ -95,7 +96,8 @@ const (
 	attrSubqueriesIndex = "statement.subqueries.index"
 	// attrSubqueriesOrder is how the rows of each scalar subquery of the statement came in the order of
 	// its ORDER BY, in the words of [attrOrder], in the order of the text, joined by commas, empty for
-	// one without ORDER BY. A statement whose subqueries have no ORDER BY has none.
+	// one without ORDER BY and for one of LIMIT 0, which reads nothing. A statement whose subqueries
+	// have no order has none.
 	attrSubqueriesOrder = "statement.subqueries.order"
 	// attrNothing is whether a statement of IF NOT EXISTS or IF EXISTS did nothing because its object
 	// was there, or not there, as SQLite does nothing then: true, or false for one that went on to do

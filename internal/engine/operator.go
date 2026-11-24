@@ -879,7 +879,7 @@ func (b build) ordered(ctx context.Context, s *scan, f *Filter, o *Order, l *Lim
 		}
 	}
 	if f != nil {
-		if err := b.compute(ctx, f, s, conditions); err != nil {
+		if err := b.compute(ctx, f, s, conditions, l != nil && n == 0); err != nil {
 			return nil, err
 		}
 	}
@@ -1050,7 +1050,7 @@ func (b build) bind(ctx context.Context, f *Filter, s *scan, conditions []condit
 	if err := b.types(f, s, conditions); err != nil {
 		return nil, err
 	}
-	if err := b.compute(ctx, f, s, conditions); err != nil {
+	if err := b.compute(ctx, f, s, conditions, false); err != nil {
 		return nil, err
 	}
 	if err := b.reach(ctx, s, conditions); err != nil {

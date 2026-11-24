@@ -291,6 +291,10 @@ func TestEngine_report(t *testing.T) {
 				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:index subqueries.index:i subqueries.order:delivered access:primary_key rows_read:3 rows:1 outcome:ok"},
 			{src: "delete from t where k = (select k from t where w = 30)",
 				want: "subqueries:1 subqueries.found:1 subqueries.rows_read:1 subqueries.access:index subqueries.index:i access:primary_key rows_read:2 rows:1 outcome:ok"},
+			// A statement that can give no row whatever its subqueries give computes none, as SQLite.
+			{src: "select * from t where w = (select w from t order by w) limit 0", want: "subqueries:1 access:none rows_read:0 rows:0 outcome:ok"},
+			{src: "select * from t where k = null and w = (select w from t)", want: "subqueries:1 access:none rows_read:0 rows:0 outcome:ok"},
+			{src: "delete from t where k is null and w = (select w from t)", want: "subqueries:1 access:none rows_read:0 rows:0 outcome:ok"},
 			// A statement that failed before its access was chosen has the number of its subqueries only.
 			{src: "select * from t where k = (select x from t)", want: "subqueries:1 rows:0 outcome:sqlite_error"},
 			{src: "select * from t where k = (select k from t limit ?)", want: "subqueries:1 rows:0 outcome:wrong_arguments"},
@@ -301,6 +305,16 @@ func TestEngine_report(t *testing.T) {
 			is.Equal(t, 1, len(h.events), c.src)
 			is.Equal(t, c.want, reading(h.events[0]), c.src)
 		}
+
+		// A write in a read-only transaction is refused after its names, as in SQLite, and its
+		// subqueries read nothing.
+		h := &recorder{}
+		conn := newLoggedConn(newTable(), bugs{}, h)
+		is.NotError(t, conn.BeginReadOnly(t.Context()))
+		_, err := conn.Exec(t.Context(), "update t set w = 1 where k = (select k from t order by w desc)")
+		is.Equal(t, "attempt to write a readonly database", err.Error())
+		is.Equal(t, "subqueries:1 access:none rows_read:0 rows:0 outcome:sqlite_error", reading(h.events[0]))
+		is.NotError(t, conn.Rollback(t.Context()))
 	})
 
 	t.Run("should give the access, the index of an access by one, and the rows read of a select, an update, and a delete in the event, and neither an access nor rows read for a statement that reads no rows of a table and for one that failed before its access was chosen", func(t *testing.T) {

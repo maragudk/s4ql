@@ -359,8 +359,28 @@ type subqueryRead struct {
 // reads forward or backward as the engine draws it for a query; it reads its first row, which it
 // stops at, and its value is the value of its column in that row, or NULL without a row or with a
 // LIMIT of 0, which reads nothing. What each read is recorded on s, for the event of the statement.
-func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []condition) error {
+//
+// A statement that can give or change no row whatever its subqueries give, as SQLite runs no
+// subquery for it, computes none, and each value is NULL, which reads nothing more: one whose
+// statement says none, with none set, as a query with LIMIT 0 does; one with another condition that
+// is never true, as [never] says; and the sink of a write that is built only to look its names up,
+// in a [readOnly] transaction, and is not run.
+func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []condition, none bool) error {
 	if b.subs == nil {
+		return nil
+	}
+	var others []condition
+	for i, c := range f.Conditions {
+		if _, ok := c.Value.(*Subquery); !ok {
+			others = append(others, conditions[i])
+		}
+	}
+	if _, lookups := b.r.(readOnly); none || lookups || never(s.table, others) {
+		for i, c := range f.Conditions {
+			if _, ok := c.Value.(*Subquery); ok {
+				conditions[i].value = null()
+			}
+		}
 		return nil
 	}
 	var values []*s4qlpb.Value
