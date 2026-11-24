@@ -981,10 +981,11 @@ func (b build) walk(ctx context.Context, f *Filter, t, outer *s4qlpb.CreateTable
 					return nil, err
 				}
 				if b.subs.prepared && in.width > 1 {
-					// SQLite gives the offset of the left side of the comparison.
+					// SQLite gives the offset of the column on the left of the comparison, and none (-1)
+					// for the subquery on the left.
 					offset := c.Column.Offset
 					if c.ValueFirst {
-						offset = sub.Offset
+						offset = -1
 					}
 					return nil, rowValueMisused(offset)
 				}
