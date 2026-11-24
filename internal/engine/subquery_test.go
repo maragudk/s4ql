@@ -1,6 +1,8 @@
 package engine_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -195,6 +197,168 @@ func TestEngine_subquery(t *testing.T) {
 			t.Log(k, y[k])
 			is.True(t, y[k] > 0, k)
 		}
+	})
+
+	t.Run("should run a subquery in a transaction on its state, keep its change with the commit, and take it back with the roll back", func(t *testing.T) {
+		for _, commit := range []bool{true, false} {
+			i := newInstance(t, engine.Options{})
+			p := newPair(t, i, tally{})
+			for _, src := range subquerySetUp {
+				is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+			}
+			for _, c := range []*engine.Conn{i.c, p.other.c} {
+				is.NotError(t, c.Begin(t.Context()))
+			}
+			for _, src := range oracleBegin(false) {
+				is.Equal(t, "", p.o.run(t, src).err, src)
+			}
+			p.inTx = true
+			// A change of the transaction, which the subqueries after it read.
+			is.Equal(t, "", p.step(stmttest.Call{Src: "insert into u values (4, 'a', 9)", Supported: true}))
+			for _, c := range append(slices.Clone(subqueryReads), subqueryWrites...) {
+				if failure := p.step(c.call()); failure != "" {
+					t.Fatal(failure)
+				}
+			}
+			for _, c := range []*engine.Conn{i.c, p.other.c} {
+				if commit {
+					is.NotError(t, c.Commit(t.Context()))
+				} else {
+					is.NotError(t, c.Rollback(t.Context()))
+				}
+			}
+			for _, src := range oracleEnd(false, commit) {
+				is.Equal(t, "", p.o.run(t, src).err, src)
+			}
+			p.inTx = false
+			is.Equal(t, p.o.state(t), i.state())
+			// After a restart with an empty cache, the log gives the same rows, and the subqueries read
+			// them.
+			i.restart(true, engine.Options{})
+			p.other.restart(true, engine.Options{})
+			is.Equal(t, p.o.state(t), i.state())
+			for _, c := range subqueryReads {
+				if failure := p.step(c.call()); failure != "" {
+					t.Fatal(failure)
+				}
+			}
+		}
+	})
+
+	t.Run("should read a subquery in a read-only transaction, and refuse an update or a delete with one after the errors of its names, as SQLite does", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		p := newPair(t, i, nil)
+		for _, src := range subquerySetUp {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		for _, c := range []*engine.Conn{i.c, p.other.c} {
+			is.NotError(t, c.BeginReadOnly(t.Context()))
+		}
+		for _, src := range oracleBegin(true) {
+			is.Equal(t, "", p.o.run(t, src).err, src)
+		}
+		p.inTx, p.readOnly = true, true
+		for _, c := range append(slices.Clone(subqueryReads), subqueryWrites...) {
+			if failure := p.step(c.call()); failure != "" {
+				t.Fatal(failure)
+			}
+		}
+	})
+
+	t.Run("should give SQLite's rows for every pair of types of a column and of the column of its subquery, or refuse the pair as of other types", func(t *testing.T) {
+		types := []string{"int", "integer", "real", "text", "blob"}
+		// Values that SQLite's affinities would make equal across the types: 1, 1.0, '1', and x'31'.
+		values := []string{"1", "1", "1.0", "'1'", "x'31'"}
+		setUp := []string{
+			"create table a (k int primary key, i int, n integer, r real, s text, b blob) strict, without rowid",
+			"create table a2 (k int primary key, i int, n integer, r real, s text, b blob) strict, without rowid",
+			"insert into a values (1, " + strings.Join(values, ", ") + ")",
+			"insert into a values (2, 2, 2, 2.0, '2', x'32')",
+			"insert into a values (3, null, null, null, null, null)",
+			"insert into a2 values (1, " + strings.Join(values, ", ") + ")",
+			"insert into a2 values (2, null, null, null, null, null)",
+		}
+		columns := []string{"i", "n", "r", "s", "b"}
+		y := tally{}
+		p := newPair(t, newInstance(t, engine.Options{}), y)
+		for _, src := range setUp {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		for x, outer := range columns {
+			for z, inner := range columns {
+				for _, src := range []string{
+					"select k from a where " + outer + " = (select " + inner + " from a2 where k = 1)",
+					"select k from a where (select " + inner + " from a2 where k = ?) <= " + outer,
+					"select k from a where " + outer + " != (select " + inner + " from a2 where k = 2)",
+					// Row 2 has the values that the update gives it.
+					"update a set r = 2.0 where k = 2 and " + outer + " >= (select " + inner + " from a2 order by k limit 1) returning k",
+				} {
+					args := []any{}
+					if strings.Contains(src, "?") {
+						args = []any{int64(1)}
+					}
+					if failure := p.step(stmttest.Call{Src: src, Args: args, Query: true, Supported: true}); failure != "" {
+						t.Fatal(failure)
+					}
+					same := storageClass(strings.ToUpper(types[x])) == storageClass(strings.ToUpper(types[z]))
+					is.Equal(t, same, p.last.err == "", src, p.last.err)
+					if !same {
+						is.Equal(t, fmt.Sprintf("s4ql: not supported: subquery 1, of the column a2.%v of type %v, compared with the column a.%v of type %v",
+							inner, strings.ToUpper(types[z]), outer, strings.ToUpper(types[x])), p.last.message, src)
+					}
+				}
+			}
+		}
+		is.Equal(t, 4*(25-7), y["excused: "+excusedType])
+	})
+
+	t.Run("should end a subquery with the error of its context, and change nothing", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		for _, src := range subquerySetUp {
+			is.Equal(t, "", i.exec(src).err, src)
+		}
+		before := i.state()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		for _, src := range []string{"select k from t where k = (select k from u)", "update t set w = 3 where k = (select k from u order by k limit 1)", "delete from t where k >= (select k from u1)"} {
+			_, err := i.c.Exec(ctx, src)
+			is.True(t, errors.Is(err, context.Canceled), src)
+		}
+		is.Equal(t, before, i.state())
+	})
+
+	t.Run("should run goqite's receive without its arithmetic on goqite's table, two in a row picking two messages, and none on an empty queue", func(t *testing.T) {
+		p := newPair(t, newInstance(t, engine.Options{}), tally{})
+		for _, src := range []string{goqiteTable, goqiteIndex} {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		receive := "update goqite set timeout = ?, received = ? where queue = ? and id = (select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1) returning id, body, received"
+		now, later := "2026-11-24T12:00:00.000Z", "2026-11-24T12:01:00.000Z"
+		args := []any{later, int64(1), "default", "default", now, int64(3)}
+		is.Equal(t, "", p.step(stmttest.Call{Src: receive, Args: args, Query: true, Supported: true}))
+		is.Equal(t, 0, len(p.last.rows))
+		send := "insert into goqite (id, created, updated, queue, body, timeout, received, priority) values (?, ?, ?, ?, ?, ?, 0, ?)"
+		// m_2 and m_3 have the highest priority, and m_3 the earlier time; m_4 ties with m_3 on both.
+		for _, m := range []struct {
+			id, created string
+			priority    int64
+		}{{"m_1", "2026-11-24T11:50:00.000Z", 0}, {"m_2", "2026-11-24T11:52:00.000Z", 1}, {"m_3", "2026-11-24T11:51:00.000Z", 1}, {"m_4", "2026-11-24T11:51:00.000Z", 1}, {"o_1", "2026-11-24T11:40:00.000Z", 5}} {
+			queue := "default"
+			if m.id == "o_1" {
+				queue = "other"
+			}
+			is.Equal(t, "", p.step(stmttest.Call{Src: send, Args: []any{m.id, m.created, m.created, queue, []byte("body " + m.id), now, m.priority}, Supported: true}))
+		}
+		var received []string
+		for range 5 {
+			is.Equal(t, "", p.step(stmttest.Call{Src: receive, Args: args, Query: true, Supported: true}))
+			received = append(received, strings.Join(p.last.rows, " "))
+		}
+		is.True(t, received[0] == `"m_3",x'626f6479206d5f33',1` || received[0] == `"m_4",x'626f6479206d5f34',1`, received[0])
+		is.True(t, received[1] == `"m_3",x'626f6479206d5f33',1` || received[1] == `"m_4",x'626f6479206d5f34',1`, received[1])
+		is.True(t, received[0] != received[1])
+		is.EqualSlice(t, []string{`"m_2",x'626f6479206d5f32',1`, `"m_1",x'626f6479206d5f31',1`, ""}, received[2:])
+		is.Equal(t, p.o.state(t), p.i.state())
 	})
 }
 
