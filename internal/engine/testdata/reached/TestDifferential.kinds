@@ -543,7 +543,9 @@
 6	reached: delete with a subquery of * of more than one column: sub-select returns
 15	reached: delete with a subquery refused: compared with the column
 2	reached: delete with a subquery refused: correlated subquery
-14	reached: delete with a subquery refused: for LIMIT
+# Lowered from 14 by the review of the generated checks of slice 15 on 2026-11-24, which made an
+# argument of the LIMIT of a subquery that s4ql refuses rarer: a third of the 13 of that day.
+4	reached: delete with a subquery refused: for LIMIT
 17	reached: delete with a subquery through Exec not supported
 64	reached: delete with a subquery through Exec ok
 15	reached: delete with a subquery through Query not supported
@@ -667,3 +669,11 @@
 48	reached: update with a subquery whose text ran before ok
 6	reached: update with two subqueries not supported
 9	reached: update with two subqueries ok
+# The aims of the review of the generated checks of slice 15, of 2026-11-24: a third of what the
+# profile of the subqueries reached that day.
+15	reached: select with a subquery and a LIMIT by a literal of 1 that gave rows
+4	reached: select with a subquery and a LIMIT by an argument of 1 that gave rows
+9	reached: select with a subquery and a LIMIT by a literal of more than 1 that gave rows
+3	reached: select with a subquery and a LIMIT by an argument of more than 1 that gave rows
+2	reached: goqite's receive: an update with RETURNING of the row whose key a subquery gives among rows that tie, of which it gave SQLite's first
+1	reached: goqite's receive: an update with RETURNING of the row whose key a subquery gives among rows that tie, of which it gave another

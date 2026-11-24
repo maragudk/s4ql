@@ -82,9 +82,14 @@ type Sequence struct {
 	inner []stmt.Select
 	// decided is set by [Sequence.Decide].
 	decided bool
+	// received is set by [Sequence.receive] for the RETURNING of its update, which goqite's receive
+	// has, and [Sequence.returning] clears it.
+	received bool
 	// again is the last call of a select, an update, or a delete with a subquery, for
-	// [Profile.Again], or nil.
-	again *Call
+	// [Profile.Again], or nil, and limits are the numbers from 1 of the parameters of its LIMITs, of
+	// the select and of its subqueries.
+	again  *Call
+	limits []int
 	// selected are the conditions of the WHERE of the select that the sequence writes, as
 	// [Sequence.where] gave them, for its ORDER BY.
 	selected []stmt.Condition
@@ -776,7 +781,35 @@ var inverses = map[stmt.Operator]stmt.Operator{
 // [Profile.Faults], as [Sequence.fault] says.
 func (q *Sequence) where(table stmt.Name) []stmt.Condition {
 	q.selected = q.subqueries(table, q.selectWhere(table), false)
+	if q.profile.SubqueryLimit > 0 && slices.ContainsFunc(q.selected, func(c stmt.Condition) bool { return c.Value.Subquery > 0 }) && q.rSubquery.IntN(2) == 0 {
+		q.giving(table, q.selected)
+	}
 	return q.selected
+}
+
+// giving makes the first comparison of cs, the conditions of a select of table, with a subquery of
+// table of a named column one that the rows of table meet whenever the subquery finds a value that is
+// not NULL: the comparison is by =, the subquery gives the column that it is compared with, and its
+// LIMIT 0 becomes 1. A comparison of a name that the shape does not have, or with a subquery of
+// another table or of *, is left as it is, and so are the others.
+func (q *Sequence) giving(table stmt.Name, cs []stmt.Condition) {
+	shape := q.shapeOf(table)
+	for i, c := range cs {
+		if c.Value.Subquery == 0 {
+			continue
+		}
+		sub := &q.inner[c.Value.Subquery-1]
+		column := columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold())
+		if column == nil || sub.Columns == nil || nameOf(sub.Table.Raw, 0).Fold() != table.Fold() {
+			return
+		}
+		cs[i].Operator = stmt.OpEqual
+		sub.Columns = []stmt.Name{{Raw: q.spell(q.rSubquery, column.Name.Value)}}
+		if sub.Limit.Value == stmt.Value(stmt.Integer(0)) {
+			sub.Limit.Value = stmt.Integer(1)
+		}
+		return
+	}
 }
 
 // selectWhere gives the conditions of the WHERE of a select of table without its subqueries, as
@@ -803,7 +836,8 @@ func (q *Sequence) selectWhere(table stmt.Name) []stmt.Condition {
 // [Sequence.orderColumns] draws it, and a LIMIT for one select in [Profile.Limit], and for every
 // select whose ORDER BY is aimed at an index beside one of a range: 0 one time in eight, from 1 to 4
 // one time in two, from 6 to 105 one time in four, which is mostly above the number of rows of a
-// table of the sequence, and else the largest integer of 64 bits.
+// table of the sequence, and else the largest integer of 64 bits. With [Profile.SubqueryLimit], a
+// select with subqueries and without a LIMIT then gets one of 1 or from 2 to 4.
 func (q *Sequence) order(table stmt.Name) ([]stmt.OrderColumn, stmt.Term) {
 	r, p := q.rOrder, q.profile
 	var columns []stmt.OrderColumn
@@ -830,18 +864,27 @@ func (q *Sequence) order(table stmt.Name) ([]stmt.OrderColumn, stmt.Term) {
 			limit.Value = stmt.Integer(math.MaxInt64)
 		}
 	}
+	if p.SubqueryLimit > 0 && limit.Value == nil && slices.ContainsFunc(q.selected, func(c stmt.Condition) bool { return c.Value.Subquery > 0 }) && r.IntN(p.SubqueryLimit) == 0 {
+		limit.Value = stmt.Integer(1)
+		if r.IntN(2) == 0 {
+			limit.Value = stmt.Integer(2 + r.IntN(3))
+		}
+	}
 	return columns, limit
 }
 
 // returning gives the RETURNING of an insert, an update, or a delete of table, as [Generator.Return]
-// gives it: one for one statement in [Profile.Returning]. It is * one time in three, and otherwise
+// gives it: one for one statement in [Profile.Returning], and for each goqite's receive that
+// [Sequence.receive] wrote. It is * one time in three, and otherwise
 // from one to [sequenceColumns]+1 names of the columns of the shape of the table, of which one in
 // four after the first is an earlier one, which the clause then names twice, and one in twelve any
 // name of a column of the sequence, which the table may not have: a fault of the area, a quarter as
 // likely in a profile without it among [Profile.Faults], as [Sequence.fault] says.
 func (q *Sequence) returning(table stmt.Name) (bool, []string) {
 	r := q.rReturning
-	if r.IntN(q.profile.Returning) != 0 {
+	received := q.received
+	q.received = false
+	if r.IntN(q.profile.Returning) != 0 && !received {
 		return false, nil
 	}
 	if r.IntN(3) == 0 {
@@ -1200,6 +1243,56 @@ func (q *Sequence) receive(r Rand, table stmt.Name) []stmt.Condition {
 			by = append(by, orderColumn{c.Name.Value, r.IntN(2) == 0})
 		}
 	}
+	if q.profile.Ties > 0 && r.IntN(4) != 0 {
+		// A queue whose messages are ready, as goqite's mostly are: each pin is of one of the two values
+		// of [Profile.Ties], which many rows share, and each bound holds both, so that the receive finds
+		// several messages; and an ORDER BY of two columns outside the key, the pinned one first, if
+		// there is a pin, on which every message that the WHERE finds ties, as on goqite's priority
+		// where messages share one, so that the messages tie where they share the value of the second,
+		// as on goqite's created where messages are sent in the same millisecond.
+		for i, c := range sub.Where {
+			column := columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold())
+			switch {
+			case column == nil || column.PrimaryKey:
+			case c.Operator == stmt.OpEqual:
+				sub.Where[i].Value = stmt.Term{Value: tieValue(column.Type, r.IntN(2))}
+			case c.Operator == stmt.OpGreater || c.Operator == stmt.OpGreaterOrEqual:
+				sub.Where[i].Operator, sub.Where[i].Value = stmt.OpGreaterOrEqual, stmt.Term{Value: tieValue(column.Type, 0)}
+			case c.Operator == stmt.OpLess || c.Operator == stmt.OpLessOrEqual:
+				sub.Where[i].Operator, sub.Where[i].Value = stmt.OpLessOrEqual, stmt.Term{Value: tieValue(column.Type, 1)}
+			}
+		}
+		// The pin of the statement stays the pin of its subquery.
+		for _, w := range sub.Where {
+			if len(cs) > 0 && w.Operator == stmt.OpEqual && nameOf(w.Column.Raw, 0).Fold() == nameOf(cs[0].Column.Raw, 0).Fold() {
+				cs[0] = w
+				break
+			}
+		}
+		var first []orderColumn
+		if len(cs) > 0 {
+			first = []orderColumn{{nameOf(cs[0].Column.Raw, 0).Fold(), r.IntN(2) == 0}}
+		}
+		// The second is the next of the aimed ORDER BY one time in two, which an index delivers, and
+		// otherwise another column, which the engine may sort, and then draws among the messages that
+		// tie.
+		var rest []orderColumn
+		if r.IntN(2) == 0 {
+			rest = slices.DeleteFunc(slices.Clone(by), func(c orderColumn) bool {
+				return c.fold == key.Name.Value || len(first) > 0 && c.fold == first[0].fold
+			})
+		}
+		order := slices.Clone(others)
+		shuffle(r, order)
+		for _, c := range order {
+			if !slices.ContainsFunc(append(first, rest...), func(o orderColumn) bool { return o.fold == c.Name.Value }) {
+				rest = append(rest, orderColumn{c.Name.Value, r.IntN(2) == 0})
+			}
+		}
+		if by = append(first, rest...); len(by) > 2 {
+			by = by[:2]
+		}
+	}
 	if q.decided && !slices.ContainsFunc(by, func(c orderColumn) bool { return c.fold == key.Name.Value }) {
 		by = append(by, orderColumn{key.Name.Value, r.IntN(2) == 0})
 	}
@@ -1207,6 +1300,7 @@ func (q *Sequence) receive(r Rand, table stmt.Name) []stmt.Condition {
 		sub.OrderBy = append(sub.OrderBy, stmt.OrderColumn{Name: stmt.Name{Raw: q.spell(r, c.fold)}, Descending: c.descending})
 	}
 	q.inner = append(q.inner, sub)
+	q.received = true
 	return append(cs, stmt.Condition{Column: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Subquery: len(q.inner)}})
 }
 
@@ -2302,14 +2396,20 @@ func (q *Sequence) next() Call {
 	p := q.profile
 	if p.on(areaSubquery) && p.Again > 0 && q.again != nil && q.rSubquery.IntN(p.Again) == 0 {
 		// The text of an earlier statement with a subquery again, as a prepared statement runs, with
-		// each argument the same one time in two and otherwise another of its Go type.
+		// each argument the same one time in two and otherwise another of its Go type, and for a LIMIT
+		// an integer from 0 to 4, which s4ql takes.
 		r := q.rSubquery
 		c := *q.again
 		c.Args = slices.Clone(c.Args)
 		for i, a := range c.Args {
-			if r.IntN(2) == 0 {
-				c.Args[i] = q.like(r, a)
+			if r.IntN(2) != 0 {
+				continue
 			}
+			if slices.Contains(q.limits, i+1) {
+				c.Args[i] = int64(r.IntN(5))
+				continue
+			}
+			c.Args[i] = q.like(r, a)
 		}
 		return c
 	}
@@ -2344,7 +2444,7 @@ func (q *Sequence) next() Call {
 		// An argument of the LIMIT of a subquery that s4ql refuses, as for that of a select below.
 		r := q.rSubquery
 		for _, sub := range subqueriesOf(s) {
-			if sub.Limit.Parameter > 0 && q.fault(r, areaSubquery, 3) {
+			if sub.Limit.Parameter > 0 && q.fault(r, areaSubquery, 6) {
 				args[sub.Limit.Parameter-1] = []any{int64(-1 - r.IntN(3)), 2.0, 1.5, "1", "x", []byte("1"), nil}[r.IntN(7)]
 			}
 		}
@@ -2370,7 +2470,15 @@ func (q *Sequence) next() Call {
 	// one time in eight, and every other statement through Query one time in eight.
 	c := Call{Src: src, Args: args, Query: (k == KindSelect || returns(s)) != (r.IntN(8) == 0), Supported: true}
 	if subqueriesOf(s) != nil {
-		q.again = &c
+		q.again, q.limits = &c, nil
+		if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 {
+			q.limits = append(q.limits, sel.Limit.Parameter)
+		}
+		for _, sub := range subqueriesOf(s) {
+			if sub.Limit.Parameter > 0 {
+				q.limits = append(q.limits, sub.Limit.Parameter)
+			}
+		}
 	}
 	return c
 }

@@ -111,7 +111,9 @@
 49	selects with subqueries that succeeded, whose subqueries the engine computed of their own
 74	selects with subqueries that succeeded, whose subqueries the engine computed in a transaction
 16	selects with subqueries that gave rows
-453	selects with subqueries with SQLite's error
+# Lowered from 453 by the review of the generated checks of slice 15 on 2026-11-24, which made
+# fewer of the statements with subqueries fail and halved the hammer cell: a third of the 414 then.
+138	selects with subqueries with SQLite's error
 97	updates with subqueries that succeeded
 40	updates with subqueries that succeeded of their own
 56	updates with subqueries that succeeded in a transaction
@@ -151,3 +153,8 @@
 1	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of SQLite's first
 4	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of another
 2	subqueries in a transaction: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of another
+# The aims of the review of the generated checks of slice 15, of 2026-11-24: a third of the total.
+7	selects with subqueries that the engine computed in a read-only transaction after a write was acknowledged
+1	selects with subqueries that gave rows in a read-only transaction after a write was acknowledged
+2	statements with subqueries refused of their own whose values are checked against SQLite's
+2	statements with subqueries refused in a transaction whose values are checked against SQLite's

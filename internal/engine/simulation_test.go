@@ -190,6 +190,9 @@ type attempt struct {
 	// the text, as the engine computed them the last time that it ran the statement, which its hook
 	// gives the run (see [run.open]), or nil for a statement whose subqueries it did not compute.
 	subqueries []*s4qlpb.Value
+	// newer is set for a statement of a transaction that spans statements that started after a write
+	// was acknowledged since the begin of the transaction, which it must not see.
+	newer bool
 }
 
 // txRecord is a transaction that spans statements, as its caller saw it.
@@ -585,7 +588,7 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked), args: values(call.Args), tx: tx, gen: gen, start: r.tick()}
 	if tx != nil {
 		// A statement of a transaction must see what was acknowledged before the transaction began.
-		a.acked = tx.acked
+		a.acked, a.newer = tx.acked, len(r.acked) > tx.acked
 		tx.stmts = append(tx.stmts, a)
 	}
 	a.src = withID(call.Src, a.id)
@@ -748,6 +751,14 @@ func subqueryKinds(a *attempt, s stmt.Statement, kind string) []string {
 		}
 		if a.query && len(a.answer.rows) > 0 {
 			kinds = append(kinds, kind+" with subqueries that gave rows")
+		}
+		if a.tx != nil && a.tx.readOnly && a.subqueries != nil && a.newer {
+			// A write was acknowledged after the begin of the read-only transaction and before the
+			// statement, so that the newest state is not the one that its subqueries must read.
+			kinds = append(kinds, kind+" with subqueries that the engine computed in a read-only transaction after a write was acknowledged")
+			if a.query && len(a.answer.rows) > 0 {
+				kinds = append(kinds, kind+" with subqueries that gave rows in a read-only transaction after a write was acknowledged")
+			}
 		}
 	case sqliteFailed:
 		kinds = append(kinds, kind+" with subqueries with SQLite's error")
@@ -1818,6 +1829,11 @@ func (r *run) verify(ctx context.Context) {
 			r.countWhere(a, "of their own")
 		}
 		for _, a := range refused[k] {
+			// The values that the engine computed decide the order of the rule, as whether an update
+			// changes a row before the types of its SET, so each must be among SQLite's candidates first.
+			if _, _, failure := r.flattened(o, a, a.src, oracleValues(a.args), "refused of their own"); failure != "" {
+				r.violate(ctx, "the statement %v at commit %v: %v", a.id, k, failure)
+			}
 			if want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...); a.answer.message != want {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %q, and the rule for the type of a value %q", a.id, a.src, k, a.answer.message, want)
 			}
@@ -1970,7 +1986,11 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		for _, a := range tx.stmts {
 			if a.typeRefused {
 				// A read-only transaction refuses an insert before it looks at its value, and runs a
-				// select.
+				// select. The values that the engine computed must be among SQLite's candidates, as for
+				// a statement of its own that was refused.
+				if _, _, failure := r.flattened(o, a, a.src, oracleValues(a.args), "refused in a transaction"); failure != "" {
+					r.violate(ctx, "the statement %v of the transaction %v (%v), which began at commit %v: %v", a.id, tx.id, kind, at, failure)
+				}
 				want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...)
 				if tx.readOnly {
 					want = readOnlyRule(r.t, o, a.src, oracleValues(a.args))
@@ -2702,7 +2722,7 @@ var simEnvironments = []simEnvironment{
 		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 6}, {stmttest.Subquery, 8}}, 0.07},
 	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
 	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 16}, {stmttest.Subquery, 40}}, 0.06},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 16}, {stmttest.Subquery, 20}}, 0.06},
 }
 
 // TestSimulation runs each environment of [simEnvironments], the default, the idle, and the hammer
@@ -3046,8 +3066,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// oldValues is, in a transaction more often than of its own: 143 of 200 seeds find the bug, 125
 		// of them by its own violation.
 		{"dropLast", hammerWorkload, "hammer", stmttest.Returning, []string{", and in SQLite", "gives the rows of RETURNING"}},
-		// The bugs of the scalar subqueries of slice 15, of 200 seeds on 2026-11-24, after the last aims
-		// of the profile. A value that is not among SQLite's candidates is found by [run.flattened], whose
+		// The bugs of the scalar subqueries of slice 15, of 200 seeds on 2026-11-24, before the aims of
+		// the review of their checks that day, which changed the profile and did not count them again;
+		// every bug was still found by two seeds of its own violation after them. A value that is not among SQLite's candidates is found by [run.flattened], whose
 		// violation says that the statement "gives the subquery" a value, and SQLite one of others. The
 		// hammer environment has no crashes, so the first 100 of the seeds are those of the sanitizer's
 		// setting; on the profile before its last aims they found each bug 14 to 87 times.

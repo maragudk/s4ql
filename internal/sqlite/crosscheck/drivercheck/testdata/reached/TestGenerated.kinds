@@ -532,6 +532,9 @@
 203	reached: subquery of the table of its statement ok
 11	reached: subquery of another table ok
 96	reached: comparison with a subquery ok
-1	reached: select with a subquery through query row value misused
 2	reached: update with a subquery through exec attempt to write a readonly database
 1	reached: goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, by an ORDER BY of two columns or more and LIMIT 1, beside a pin, that changes the row
+# Left out by the review of the generated checks of slice 15 on 2026-11-24, whose aims of the
+# profile left it reached 1 and 2 times: a select with a subquery of * of more than one column
+# through query, row value misused, which TestDifferential of the engine reaches and TestEngine_subquery
+# pins against SQLite.

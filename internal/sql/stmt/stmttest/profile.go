@@ -118,11 +118,17 @@ type Profile struct {
 	Subquery int
 	// Again, if not 0 and with Subquery, makes one call in Again the text of the last select, update,
 	// or delete with a subquery again, as a prepared statement runs it, with each argument the same one
-	// time in two and otherwise another value of its Go type, as [Sequence.Like] gives it.
+	// time in two and otherwise another value of its Go type, as [Sequence.Like] gives it, but for a
+	// LIMIT, whose other argument is an integer from 0 to 4.
 	Again int
 	// Receive, if not 0 and with Subquery, makes one update in Receive of those with subqueries goqite's
 	// receive, as [Sequence.receive] draws it.
 	Receive int
+	// SubqueryLimit, if not 0 and with Subquery, gives one select in SubqueryLimit with subqueries and
+	// without a LIMIT one, of 1 one time in two and else from 2 to 4, so that a select whose LIMIT lets
+	// rows through computes its subqueries, as [Sequence.order] says; and one select with subqueries
+	// in two a first subquery that gives rows, as [Sequence.giving] says.
+	SubqueryLimit int
 	// TableNames is the least number of names of tables of the sequence, or 0 for one or two, so that
 	// a subquery reads another table than its statement as often as its own.
 	TableNames int
@@ -185,8 +191,8 @@ var (
 	// shapes that s4ql refuses: a correlated name, a column of another type, * of several columns, and
 	// an argument of its LIMIT that is not an integer from 0. Also goqite's receive: an update of the
 	// row whose key a subquery of its own table gives, by goqite's index and with RETURNING.
-	Subquery = &Profile{Name: "subquery", Faults: []string{areaSubquery}, Aim: 3, Weights: weights(3, 14, 8, 1, 8, 5, 4, 1), Where: 2, Indexes: 2, Columns: 3,
-		Parameters: 3, Transactions: 3, Limit: 6, Keys: 2, Shared: 2, Ties: 2, Returning: 2, ByKey: 3, Subquery: 1, Receive: 2, Again: 5, TableNames: 2}
+	Subquery = &Profile{Name: "subquery", Faults: []string{areaSubquery}, Aim: 3, Weights: weights(5, 14, 8, 1, 12, 7, 4, 1), Where: 2, Indexes: 2, Columns: 3,
+		Parameters: 3, Transactions: 3, Limit: 6, Keys: 2, Shared: 2, Ties: 1, Returning: 2, ByKey: 3, Subquery: 1, SubqueryLimit: 1, Receive: 2, Again: 5, TableNames: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].

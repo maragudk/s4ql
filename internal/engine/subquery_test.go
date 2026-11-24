@@ -135,6 +135,12 @@ var subqueryReads = func() []subqueryTestCall {
 		{src: "select k, v from t where v >= (select x from u where k = 1) order by v, k limit 2"},
 		{src: "select k from t where w = (select y from u where k = 9) order by k desc limit 1"},
 		{src: "select * from t where w <= (select k from u1) order by w desc"},
+		// A LIMIT of the statement that lets rows through, as a literal and as an argument, of 1 and of
+		// more, for which the engine computes the subquery.
+		{src: "select k from t where k = (select k from u1) limit 1"},
+		{src: "select k from t where k = (select k from u1) limit ?", args: []any{int64(1)}},
+		{src: "select k from t where w = (select w from t order by k limit 1) limit 2"},
+		{src: "select k from t where w = (select w from t order by k limit 1) limit ?", args: []any{int64(3)}},
 		// A statement that can give no row, whose subquery the engine does not compute: LIMIT 0 of the
 		// statement, as a literal and as an argument, and another condition that is never true.
 		{src: "select k from t where k = (select k from u1) limit 0"},
@@ -232,7 +238,9 @@ func TestEngine_subquery(t *testing.T) {
 				is.Equal(t, p.o.state(t), i.state())
 			}
 		}
-		for _, k := range []string{"reached: subquery whose value was NULL", "reached: subquery whose value was that of its one first row", "reached: subquery that the engine did not compute, of a select that gave no row", "reached: subquery that the engine did not compute, of an update or a delete", "excused: " + excusedType} {
+		for _, k := range []string{"reached: subquery whose value was NULL", "reached: subquery whose value was that of its one first row", "reached: subquery that the engine did not compute, of a select that gave no row", "reached: subquery that the engine did not compute, of an update or a delete", "excused: " + excusedType,
+			"reached: select with a subquery and a LIMIT by a literal of 1 that gave rows", "reached: select with a subquery and a LIMIT by an argument of 1 that gave rows",
+			"reached: select with a subquery and a LIMIT by a literal of more than 1 that gave rows", "reached: select with a subquery and a LIMIT by an argument of more than 1 that gave rows"} {
 			t.Log(k, y[k])
 			is.True(t, y[k] > 0, k)
 		}
@@ -948,12 +956,14 @@ func storageClass(typ string) string {
 // engine is got, reaches of slice 15, on SQLite's state before it, as the pair knows it from
 // [pair.subqueriesOf] and the values that the instance computed: by the kind of the statement and its
 // outcome, how it ran, with RETURNING, with two subqueries, a text that ran before, and the refusals
-// of s4ql; for a statement that succeeded, each comparison by its operator and side, the table of
+// of s4ql; for a select that gave rows, its own LIMIT, by literal or ? and by 1 or more, which the
+// engine must not take for one that gives no row; for a statement that succeeded, each comparison by
+// its operator and side, the table of
 // each subquery, its `*`, its LIMIT, where its parameters are, and whether an index serves it, as the
 // model chooses; for each subquery whose value the instance computed, the rows that it finds, by
 // whether its ORDER BY decides the first and with NULL first, and the draw among rows that tie by the
 // kind of the statement; an update or a delete whose subquery reads what it changes; and goqite's
-// receive.
+// receive, also among messages that tie, by the outcome of the draw.
 func (p *pair) reachSubquery(c stmttest.Call, got answer) {
 	t, o, sc := p.t, p.o, p.sub
 	t.Helper()
@@ -1006,6 +1016,18 @@ func (p *pair) reachSubquery(c stmttest.Call, got answer) {
 	}
 	if got.err != "" {
 		return
+	}
+	if s, ok := sc.s.(*stmt.Select); ok && s.Limited() && len(got.rows) > 0 {
+		// A select with a LIMIT of its own that gave rows, so that its subqueries were computed: by
+		// whether the LIMIT is a literal or a ?, and whether it is 1 or more.
+		limited := func(n any, by string) {
+			count(fmt.Sprint("select with a subquery and a LIMIT by ", by, " of ", map[bool]string{true: "1", false: "more than 1"}[n == any(int64(1))], " that gave rows"))
+		}
+		if s.Limit.Parameter > 0 {
+			limited(sc.args[s.Limit.Parameter-1], "an argument")
+		} else if i, ok := s.Limit.Value.(stmt.Integer); ok {
+			limited(int64(i), "a literal")
+		}
 	}
 	// Each comparison with a subquery, and where the parameters are.
 	params := 0
@@ -1120,8 +1142,10 @@ func (p *pair) reachSubquery(c stmttest.Call, got answer) {
 	// goqite's receive, which changes the one row of the message that it gives.
 	if receive, pinned := receiveOf(t, o, sc.s, sc.subs); receive >= 0 && p.i.changes == 1 {
 		count(fmt.Sprint("goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, with ", map[bool]string{true: "a pin of another column", false: "no other pin"}[pinned]))
-		if len(sc.candidates[receive]) > 1 {
-			count("goqite's receive: an update with RETURNING of the row whose key a subquery gives among rows that tie")
+		if len(sc.candidates[receive]) > 1 && p.computed != nil {
+			// By the draw among the messages that tie on the ORDER BY, as on goqite's priority and created.
+			drawn := map[bool]string{true: "SQLite's first", false: "another"}[valueText(t, p.computed[receive]) == sc.first[receive]]
+			count("goqite's receive: an update with RETURNING of the row whose key a subquery gives among rows that tie, of which it gave " + drawn)
 		}
 	}
 }
