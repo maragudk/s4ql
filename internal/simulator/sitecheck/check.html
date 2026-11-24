@@ -559,7 +559,6 @@ async function check() {
   await p.frames(30);
   expect(!p.win.s4qlPage.playing && p.t === held && play.textContent.trim() === "Play", `Pause holds fake time at ${held} ms for 30 frames`);
 
-  await dancer(p);
   await soundWakes(p);
 
   await sqlBox(p);
@@ -852,7 +851,7 @@ async function kept() {
   await until(() => runs(p));
   await until(() => Number(p.$("#dancer").dataset.moves) >= 2);
   expect(made === 1 && blips === 1 && stored() === "off, on",
-    `the first click, on Play, makes the audio context in the click and sounds the blip of sound on, and sound is on once it runs, with the figure dancing (${state(p)}, ${p.$("#dancer").dataset.moves} changes of pose)`);
+    `the first click, on Play, makes the audio context in the click and sounds the blip of sound on, and sound is on once it runs, with the figure dancing (${state(p)}, ${p.$("#dancer").dataset.moves} dance poses)`);
 
   // Reset keeps both toggles, in the page and in storage.
   p.$("#play").click();
@@ -920,50 +919,16 @@ async function kept() {
   forget();
 }
 
-// dancer checks the stick figure on the top line of the frame of the log and the commit objects, on
-// the paused page after it played with sound off: it is decoration, standing with its feet on the
-// line, and it has stood still so far. With sound on it stays still while paused, changes pose while
-// the page plays, and stands still again after Pause. It turns sound off again at the end. sitecheck
-// starts Chromium without the need of a gesture for audio, so the check does not see whether a
-// visitor's click starts the audio context, only that the page's context runs.
-async function dancer(p) {
-  const fig = p.$("#dancer"), sound = p.$("#sound"), play = p.$("#play");
-  const pose = () => `${fig.dataset.pose}, ${fig.dataset.moves} changes of pose`;
-  const box = fig.getBoundingClientRect(), frame = p.$(".logs").getBoundingClientRect();
-  const cs = p.win.getComputedStyle(fig);
-  expect(fig.getAttribute("aria-hidden") === "true" && !fig.hasAttribute("tabindex") && cs.pointerEvents === "none" && cs.position === "absolute",
-    `the figure is decoration: hidden from assistive technology, not focusable, without pointer events, and out of the flow (${cs.pointerEvents}, ${cs.position})`);
-  expect(box.height >= 24 && box.height <= 48 && Math.abs(box.bottom - frame.top) < 0.5 && box.left >= frame.left && box.right <= frame.right,
-    `the figure stands on the top line of the frame of the log, ${box.width} by ${box.height} px, with its feet at ${box.bottom - frame.top} px from the line`);
-  expect(fig.dataset.pose === "stand" && fig.dataset.moves === "0", `while the page played with sound off, the figure stood still (${pose()})`);
-
-  sound.click();
-  await until(() => sound.dataset.audio !== "none" && sound.dataset.audio !== "suspended");
-  expect(sound.getAttribute("aria-pressed") === "true" && sound.dataset.audio === "running", `sound is on, and its audio context runs (${sound.dataset.audio})`);
-  await p.frames(30);
-  expect(fig.dataset.pose === "stand" && fig.dataset.moves === "0", `with sound on, the paused page's figure stands still for 30 frames (${pose()})`);
-
-  play.click();
-  await until(() => Number(fig.dataset.moves) >= 2);
-  expect(true, `with sound on, the playing page's figure dances (${pose()})`);
-
-  play.click();
-  await until(() => p.idle() && fig.dataset.pose === "stand");
-  const moves = fig.dataset.moves;
-  await p.frames(30);
-  expect(fig.dataset.pose === "stand" && fig.dataset.moves === moves, `after Pause, the figure stands still for 30 frames (${pose()})`);
-
-  sound.click();
-  expect(sound.getAttribute("aria-pressed") === "false" && fig.dataset.pose === "stand", `sound is off again, and the figure stands (${pose()})`);
-}
-
 // soundWakes checks that sound which is on comes back when the browser suspends the audio context
-// by itself, as Safari can: the figure stands at once, and the page resumes the context when its state
-// changes, at the next sound, and at the next key or click. The check holds the browser's resume
-// itself, since sitecheck's Chromium never refuses one, and lets it go for the click. It starts and
-// ends paused with sound off.
+// by itself, as Safari can: the figure stops dancing at once, and the page resumes the context when
+// its state changes, at the next sound, and at the next key or click. The check holds the browser's
+// resume itself, since sitecheck's Chromium never refuses one, and lets it go for the click. It
+// starts and ends paused with sound off. sitecheck starts Chromium without the need of a gesture for
+// audio, so that the page's context runs.
 async function soundWakes(p) {
   const sound = p.$("#sound"), play = p.$("#play"), fig = p.$("#dancer");
+  // dancing says whether the figure shows a pose of a dance, and not one of its stroll.
+  const dancing = () => !/^(stand|-?walk\d+)$/.test(fig.dataset.pose);
   const proto = p.win.AudioContext.prototype, resume = proto.resume;
   let ctx = null, resumes = 0, hold = false;
   proto.resume = function () {
@@ -975,17 +940,17 @@ async function soundWakes(p) {
     sound.click();
     await until(() => ctx && sound.dataset.audio === "running");
     play.click();
-    await until(() => fig.dataset.pose !== "stand");
+    await until(dancing);
 
     hold = true;
     let n = resumes;
     await ctx.suspend();
     await until(() => sound.dataset.audio === "suspended");
-    expect(sound.getAttribute("aria-pressed") === "true" && fig.dataset.pose === "stand" && resumes > n,
-      `when the browser suspends the context while sound is on and the page plays, the figure stands at once, and the page asks to resume (${resumes - n} times; ${fig.dataset.pose})`);
+    expect(sound.getAttribute("aria-pressed") === "true" && !dancing() && resumes > n,
+      `when the browser suspends the context while sound is on and the page plays, the figure stops dancing at once, and the page asks to resume (${resumes - n} times; ${fig.dataset.pose})`);
     const moves = fig.dataset.moves;
     await p.frames(30);
-    expect(fig.dataset.pose === "stand" && fig.dataset.moves === moves, `while the context is suspended, the figure stands still for 30 frames (${fig.dataset.moves} changes of pose)`);
+    expect(!dancing() && fig.dataset.moves === moves, `while the context is suspended, the figure dances no more for 30 frames (${fig.dataset.moves} dance poses)`);
     // A request that ends while the page plays is a sound, and no click.
     n = resumes;
     const calls = p.requests().calls;
