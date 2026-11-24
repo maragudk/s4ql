@@ -26,7 +26,10 @@
 // is damaged or of another version is dropped; a write to sessionStorage that fails leaves nothing
 // half-written, and stops the page as S3 full; Reset empties the database and keeps its name; the page stops at the cap of commit
 // objects, and Reset starts over from there; a tab without storage runs in memory; and a tab with an
-// empty sessionStorage, as a new tab has, gets a database of its own. It also checks the words of run.js,
+// empty sessionStorage, as a new tab has, gets a database of its own. The page remembers Turbo and
+// Sound in localStorage across reloads, and Reset keeps them; Sound remembered on waits, without an
+// audio context, until the first click or key on the page; and storage that throws, or holds what
+// the page did not write, gives the toggles of a first visit. It also checks the words of run.js,
 // and that a fault at start-up ends in the page's failure box: the page without run.js, and the page
 // without its Play button, as a page.js of one deploy would find the HTML of another. It writes what
 // it saw, and exits with 0 if the check passed, 1 if it failed, and 2 if it could not run.
