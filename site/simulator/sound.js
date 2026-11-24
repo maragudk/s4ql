@@ -4,8 +4,9 @@
 //
 // The browser remembers the toggle in localStorage, under SOUND, as "on" or "off", across reloads,
 // tabs, and visits. Any other value, or storage that the browser refuses, is off. A browser starts no
-// audio without a gesture of the visitor, so sound that is remembered on waits: the toggle shows
-// that it waits, and the visitor's first click or key on the page turns sound on, in that gesture.
+// audio without a gesture of the visitor, so sound that is remembered on waits: the toggle shows on,
+// its title says why nothing sounds yet, and the visitor's first click or key on the page turns sound
+// on, in that gesture.
 //
 // Each kind of event has one figure, so that a visitor learns them. The pitches are those of one
 // scale, A minor pentatonic from A4 to A6. A figure rises for something that comes back, falls for
@@ -463,12 +464,9 @@ function first(e) {
   }
 }
 
-// settle the toggle from waiting to on, once the context runs.
+// settle ends the wait, and with it the title, once the context runs. The toggle shows on already.
 function settle() {
-  if (waiting && on && ctx.state === "running") {
-    unwait();
-    toggle.setAttribute("aria-pressed", "true");
-  }
+  if (waiting && on && ctx.state === "running") unwait();
 }
 
 // unwait ends the wait of sound that is remembered on.
@@ -485,9 +483,10 @@ function unwait() {
 // fails, which also disables the toggle. While sound is on, a context that the browser suspends or
 // interrupts is resumed when its state changes, and at the next sound, click, or key: see wake.
 //
-// Sound that is remembered on waits: aria-pressed is "mixed", data-audio "waiting" until first makes
-// the context, and the title says what the toggle waits for. It is on once the context runs. A click
-// on the toggle while it waits turns sound on, as from off.
+// Sound that is remembered on waits: the toggle looks on, with aria-pressed "true", data-audio is
+// "waiting" until first makes the context, and the title says what the toggle waits for, until the
+// context runs. A click on the toggle while it waits turns sound off, as from on; before first, that
+// click makes no context.
 export function wire(button) {
   if (!button) return;
   toggle = button;
@@ -496,9 +495,16 @@ export function wire(button) {
   button.disabled = false;
   button.addEventListener("click", () => {
     try {
+      if (waiting && !ctx) {
+        unwait();
+        remember(false);
+        button.setAttribute("aria-pressed", "false");
+        button.dataset.audio = "none";
+        return;
+      }
       if (!ctx) open();
       if (!out) return;
-      on = waiting || !on;
+      on = !on;
       unwait();
       remember(on);
       button.setAttribute("aria-pressed", String(on));
@@ -520,7 +526,7 @@ export function wire(button) {
   });
   if (!remembered()) return;
   waiting = true;
-  button.setAttribute("aria-pressed", "mixed");
+  button.setAttribute("aria-pressed", "true");
   button.dataset.audio = "waiting";
   button.title = "Sound starts at your first click or key on the page.";
   for (const type of GESTURES) document.addEventListener(type, first, true);

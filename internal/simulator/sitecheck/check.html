@@ -783,12 +783,12 @@ function forget() {
 }
 
 // kept checks that the page remembers Turbo and Sound in localStorage across reloads, and that
-// Reset keeps them. Sound remembered on waits, without an audio context, until the first click or key
-// on the page, which makes the context in that gesture; a click on Sound itself turns it on, as from
-// off. A value that the page did not write, and storage that throws, give the toggles of a first
-// visit. The page at /__check/broken/audio/ counts its audio contexts from before its scripts run, in
-// s4qlContexts. sitecheck's Chromium does not refuse a context outside a gesture, so the check counts
-// them where a browser would refuse.
+// Reset keeps them. Sound remembered on looks on, and waits, without an audio context, until the
+// first click or key on the page, which makes the context in that gesture; a click on Sound itself
+// turns it off, without a context. A value that the page did not write, and storage that throws,
+// give the toggles of a first visit. The page at /__check/broken/audio/ counts its audio contexts
+// from before its scripts run, in s4qlContexts. sitecheck's Chromium does not refuse a context outside
+// a gesture, so the check counts them where a browser would refuse.
 async function kept() {
   const address = "/__check/broken/audio/simulator/";
   const stored = () => TOGGLES.map((k) => String(localStorage.getItem(k))).join(", ");
@@ -796,12 +796,14 @@ async function kept() {
     if (p) p.win.frameElement.remove();
     return open(address);
   };
-  // led is how the button Sound looks: its background, and the frame of its square. Its transition is
-  // off while it is read, so that it gives the look of the state and not a moment of the change.
+  // led is how the button Sound looks: its colours, and the fill, frame, and animation of its square.
+  // Its transition is off while it is read, so that it gives the look of the state and not a moment of
+  // the change.
   const led = (p) => {
     const b = p.$("#sound");
     b.style.transition = "none";
-    const look = [p.win.getComputedStyle(b).backgroundColor, p.win.getComputedStyle(b.querySelector(".led")).boxShadow].join(" | ");
+    const bs = p.win.getComputedStyle(b), ls = p.win.getComputedStyle(b.querySelector(".led"));
+    const look = [bs.backgroundColor, bs.color, ls.backgroundColor, ls.boxShadow, ls.animationName].join(" | ");
     b.style.transition = "";
     return look;
   };
@@ -809,7 +811,7 @@ async function kept() {
   const state = (p) => `turbo ${p.$("#turbo").getAttribute("aria-pressed")} at ${p.win.s4qlPage.turbo ? 5 : 1}×, sound ${sound(p)}, ${p.win.s4qlContexts} contexts, stored ${stored()}`;
   const turboOn = (p, on) => p.$("#turbo").getAttribute("aria-pressed") === String(on) && p.win.s4qlPage.turbo === on;
   const off = (p) => sound(p) === "false none" && p.win.s4qlContexts === 0 && !p.$("#sound").title;
-  const waits = (p) => sound(p) === "mixed waiting" && p.win.s4qlContexts === 0 && p.$("#sound").title !== "";
+  const waits = (p) => sound(p) === "true waiting" && p.win.s4qlContexts === 0 && p.$("#sound").title !== "";
   const runs = (p) => sound(p) === "true running" && !p.$("#sound").title;
 
   forget();
@@ -830,8 +832,9 @@ async function kept() {
   expect(turboStored === "off, null" && before && step.fake === step.real && off(p),
     `Turbo left off is off after a reload, in the button and in the speed (${step.fake.toFixed(1)} ms for ${step.real.toFixed(1)} ms; ${state(p)})`);
 
-  // Sound left on waits after a reload: no context, and a button that does not say on, until the
-  // first click on the page, here on Play, which makes the context in the click.
+  // Sound left on waits after a reload: no context, and a button that looks and says on, with a title
+  // that says why nothing sounds yet, until the first click on the page, here on Play, which makes the
+  // context in the click.
   p.$("#sound").click();
   await until(() => runs(p));
   looks.on = led(p);
@@ -841,8 +844,8 @@ async function kept() {
   const waited = waits(p);
   await p.frames(30);
   expect(soundStored === "off, on" && waited && waits(p) && p.$("#dancer").dataset.moves === "0",
-    `Sound left on waits after a reload, for 30 frames without an audio context, and the button says that it waits (${state(p)}, ${p.$("#sound").title})`);
-  expect(new Set(Object.values(looks)).size === 3, `the button Sound looks different off, waiting, and on (${Object.entries(looks).map(([k, v]) => `${k}: ${v}`).join(" / ")})`);
+    `Sound left on waits after a reload, for 30 frames without an audio context, and the button says on, with a title (${state(p)}, ${p.$("#sound").title})`);
+  expect(looks.waiting === looks.on && looks.on !== looks.off, `the button Sound looks the same waiting as on, and different off (${Object.entries(looks).map(([k, v]) => `${k}: ${v}`).join(" / ")})`);
   const S = await new p.win.Function("u", "return import(u)")(new URL("sound.js" + query, p.win.location.href).href);
   p.$("#play").click();
   const made = p.win.s4qlContexts, blips = S.stats.played.blip || 0;
@@ -858,19 +861,21 @@ async function kept() {
   await until(() => p.html.dataset.engine === "ready" && !p.$("#reset").disabled && p.win.s4qlPage.state);
   expect(turboOn(p, false) && runs(p) && stored() === "off, on" && p.win.s4qlContexts === 1, `Reset keeps Turbo off and Sound on, in the page and in storage (${state(p)})`);
 
-  // A key on the Sound button is the button's, and its click turns sound on from waiting, at once.
+  // A key on the Sound button is the button's, and its click turns sound off from waiting, at once and
+  // without a context, so that a later click on the page starts nothing.
   p = await reload(p);
   const sb = p.$("#sound");
   sb.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   const keyed = waits(p);
   sb.click();
-  const pressed = sound(p).startsWith("true ") && p.win.s4qlContexts === 1;
-  await until(() => runs(p));
-  sb.click();
+  const pressed = off(p);
   const soundOff = stored();
+  p.$("#play").click();
+  p.$("#play").click();
+  const later = off(p);
   p = await reload(p);
-  expect(keyed && pressed && soundOff === "off, off" && off(p),
-    `while Sound waits, a key on it leaves it waiting, a click on it turns it on at once, the next click turns it off, and it is off after a reload (${state(p)})`);
+  expect(keyed && pressed && soundOff === "off, off" && later && off(p),
+    `while Sound waits, a key on it leaves it waiting, a click on it turns it off at once without an audio context, a click on Play then starts nothing, and it is off after a reload (${state(p)})`);
 
   // A key anywhere on the page starts sound that waits, but a modifier alone, Escape, or Tab, which
   // are no gesture for a browser.

@@ -211,14 +211,6 @@ code { font-family: inherit; }
   flex: none;
 }
 .btn[aria-pressed="true"] .led { background: currentColor; }
-/* A toggle that waits, as Sound that the browser remembers on does until the first click: the
-   button does not invert, and its square has a dot that blinks, or holds under reduced motion. */
-.btn[aria-pressed="mixed"] .led {
-  background: currentColor;
-  box-shadow: inset 0 0 0 2px var(--void);
-  animation: led-wait 1.2s steps(1, end) infinite;
-}
-@keyframes led-wait { 50% { background: transparent; } }
 .btn .bars {
   display: block;
   width: 32px;
