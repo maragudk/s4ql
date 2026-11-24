@@ -1037,6 +1037,8 @@ type pair struct {
 	computed, force []*s4qlpb.Value
 	// sub is what the pair knows of the subqueries of the call of [pair.step], or nil.
 	sub *subqueryCall
+	// ran holds the texts of the statements with subqueries that the pair ran, for [pair.reachSubquery].
+	ran map[string]bool
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -1049,7 +1051,7 @@ func newPair(t testing.TB, i *instance, y tally) *pair {
 // newPairWith is [newPair] with the options of the other instance on the core, options.
 func newPairWith(t testing.TB, i *instance, y tally, options engine.Options) *pair {
 	t.Helper()
-	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), found: map[string]bool{}, y: y, rnd: rand.New(rand.NewPCG(0, 0x9a7))}
+	p := &pair{t: t, i: i, o: newOracle(t), empty: newOracle(t), found: map[string]bool{}, ran: map[string]bool{}, y: y, rnd: rand.New(rand.NewPCG(0, 0x9a7))}
 	if i.memory != nil {
 		p.other = newMemoryInstance(t)
 	} else {
@@ -1114,15 +1116,11 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	// The rule of a literal that is too long does not read the literals of a subquery, which the
-	// statements of the tests do not lower the limit for.
-	if s == nil || !subqueried(s) {
-		if kind, failure := p.checkLength(c, got); kind != "" {
-			if failure == "" {
-				p.y.excused(kind)
-			}
-			return failure
+	if kind, failure := p.checkLength(c, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
 		}
+		return failure
 	}
 	if kind, failure := p.checkType(c, args, got); kind != "" {
 		if failure == "" {
@@ -2218,7 +2216,22 @@ func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
 	if p.y != nil {
 		found := false
-		reach(p.t, p.o, c, got, p.i.changes, func(what string) {
+		// A statement with subqueries counts what it reaches as the statement with the values that the
+		// instance computed in their place, or NULL for those that it did not compute, as
+		// [subqueryCall.flatten] writes it, and what its subqueries reach as [reachSubquery] says.
+		flat := c
+		if p.sub != nil {
+			values := p.computed
+			if values == nil {
+				values = make([]*s4qlpb.Value, len(p.sub.subs))
+				for i := range values {
+					values[i] = s4qlpb.Value_builder{}.Build()
+				}
+			}
+			flat.Src, flat.Args = p.sub.flatten(values)
+			p.reachSubquery(c, got)
+		}
+		reach(p.t, p.o, flat, got, p.i.changes, func(what string) {
 			p.y["reached: "+what]++
 			found = found || what == "create table if not exists did nothing: a table of the name exists"
 			// The statements of slice 10 count again by the transaction that they ran in.
@@ -3383,11 +3396,23 @@ func oracleArgs(args []any) []any {
 func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
-	if slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) || p.longCondition(c.Src) {
+	if long, _ := p.longChange(c.Src); long != "" || slices.ContainsFunc(args, func(a any) bool { return p.i.limit > 0 && byteLength(a) > p.i.limit }) || p.longCondition(c.Src) {
 		// An argument that is too long gets SQLite's error when SQLite binds it, which the caller
 		// compares, and so does a literal of a condition that is too long, which s4ql refuses before the
-		// type of a value, and SQLite mostly too.
-		return "", ""
+		// type of a value, and SQLite mostly too. A correlated subquery is refused before the lengths,
+		// once SQLite would have given every error of the names.
+		want := ""
+		if s, _ := stmt.Check(c.Src); s != nil && subqueried(s) && len(args) == s.Parameters() && p.o.prepare(t, c.Src) == nil {
+			_, where := tableWhere(s)
+			want = correlatedRule(t, p.o, where, subqueriesIn(s))
+		}
+		if want == "" {
+			return "", ""
+		}
+		if got.err != "not supported" || got.message != want {
+			return excusedType, fmt.Sprintf("%q with the arguments %#v: the engine gives %v (%q), and the rule %q", c.Src, args, got, got.message, want)
+		}
+		return excusedType, ""
 	}
 	want := typeRule(t, p.o, c.Src, args)
 	if p.readOnly {
@@ -3432,6 +3457,10 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 		n = max(n, byteLength(v.Value))
 	}
 	if p.i.limit == 0 || n <= p.i.limit || p.o.prepare(t, c.Src) != nil {
+		return "", ""
+	}
+	if _, where := tableWhere(s); subqueried(s) && correlatedRule(t, p.o, where, subqueriesIn(s)) != "" {
+		// A correlated subquery is refused before the lengths, as [pair.checkType] says.
 		return "", ""
 	}
 	if got.err != tooBig {
@@ -3491,7 +3520,8 @@ func changeTerms(s stmt.Statement) []stmt.Term {
 	for _, c := range where {
 		terms = append(terms, c.Value)
 	}
-	return terms
+	// The values of a subquery, of slice 15, are measured where it is, before the types.
+	return append(terms, subqueryTerms(s)...)
 }
 
 // longChange of src, if it holds an update or a delete with a literal longer than the length limit
@@ -3512,9 +3542,15 @@ func (p *pair) longChange(src string) (kind, in string) {
 		if slices.ContainsFunc(s.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit }) {
 			return "update", "WHERE"
 		}
+		if slices.ContainsFunc(subqueryTerms(s), func(v stmt.Term) bool { return byteLength(v.Value) > p.i.limit }) {
+			return "update", "a subquery"
+		}
 	case *stmt.Delete:
 		if slices.ContainsFunc(s.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit }) {
 			return "delete", "WHERE"
+		}
+		if slices.ContainsFunc(subqueryTerms(s), func(v stmt.Term) bool { return byteLength(v.Value) > p.i.limit }) {
+			return "delete", "a subquery"
 		}
 	}
 	return "", ""
@@ -3530,7 +3566,8 @@ func (p *pair) longChange(src string) (kind, in string) {
 func (p *pair) longCondition(src string) bool {
 	s, _ := stmt.Check(src)
 	sel, ok := s.(*stmt.Select)
-	return ok && p.i.limit > 0 && slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return byteLength(c.Value.Value) > p.i.limit })
+	long := func(v stmt.Term) bool { return byteLength(v.Value) > p.i.limit }
+	return ok && p.i.limit > 0 && (slices.ContainsFunc(sel.Where, func(c stmt.Condition) bool { return long(c.Value) }) || slices.ContainsFunc(subqueryTerms(sel), long))
 }
 
 // tooBig is the err of an [answer] of SQLite's error of a text or a blob that is too long.
@@ -3774,7 +3811,7 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery:
 		n *= 2
 	}
 	return uint64(n)
@@ -3965,6 +4002,18 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"deleteNone", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
 		{"dropLast", stmttest.Returning, 4, []string{"\nand SQLite\n"}, 0},
 		{"starKeyFirst", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
+		// The bugs of slice 15, each found by a value of a subquery that is not among SQLite's
+		// candidates, or, for ownChanges and noRowMatches, by the rows, the count of changes, or the
+		// tables that differ from SQLite's: on 2026-11-24 6 of 12, 7 of 30, 14 of 30, 16 of 30, 12 of
+		// 12, 12 of 30, 13 of 30, and 5 of 12.
+		{"lastRow", stmttest.Subquery, 2, []string{"and SQLite one of"}, 12},
+		{"firstNotNull", stmttest.Subquery, 2, []string{"and SQLite one of"}, 0},
+		{"ownChanges", stmttest.Subquery, 4, nil, 0},
+		{"keepValue", stmttest.Subquery, 5, []string{"and SQLite one of"}, 0},
+		{"noRowMatches", stmttest.Subquery, 4, nil, 12},
+		{"swapSubqueries", stmttest.Subquery, 4, []string{"and SQLite one of"}, 0},
+		{"limitZeroRow", stmttest.Subquery, 4, []string{"and SQLite one of"}, 0},
+		{"orderIgnored", stmttest.Subquery, 2, []string{"and SQLite one of"}, 0},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			// own is the number of the sequences that find the bug by its own failure.

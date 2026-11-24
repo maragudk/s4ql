@@ -526,7 +526,8 @@ func (p *pair) subqueriesOf(c stmttest.Call) *subqueryCall {
 		return nil
 	}
 	args := oracleArgs(c.Args)
-	if len(c.Args) != s.Parameters() || slices.ContainsFunc(c.Args, func(a any) bool { return refusal(a) != "" }) {
+	// An argument with a name is given to the engine by its value, as the driver would refuse it first.
+	if len(c.Args) != s.Parameters() || slices.ContainsFunc(unnamed(c.Args), func(a any) bool { return refusal(a) != "" }) {
 		return nil
 	}
 	sc := &subqueryCall{src: c.Src, s: s, subs: subqueriesIn(s), args: args}
@@ -607,6 +608,12 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 	}
 	text, bound := stmttest.SelectText(&stmt.Select{Table: q.Table, Columns: list, Where: q.Where}, args, orderBy)
 	rows := o.run(t, text, bound...)
+	if rows.err == tooBig {
+		// A literal of the subquery that is longer than the length limit, which SQLite turns into NULL
+		// for a blob in the text, and refuses as an argument here, and s4ql refuses before it computes
+		// a value.
+		return nil, ""
+	}
 	if rows.err != "" {
 		t.Fatalf("%q: SQLite gives %v for %q", src, rows.err, text)
 	}
@@ -800,25 +807,8 @@ func subqueryRule(t testing.TB, o *oracle, src string, s stmt.Statement, args []
 		return fmt.Sprintf("s4ql: not supported: second subquery of * of more than one column (at offset %v)", wide[1].Span.Start)
 	}
 	name, columns := o.columns(t, table.Value)
-	for _, c := range where {
-		q := c.Value.Subquery
-		if q == 0 {
-			continue
-		}
-		_, inner := o.columns(t, subs[q-1].Table.Value)
-		var names []stmt.Name
-		names = append(names, subs[q-1].Columns...)
-		for _, c := range subs[q-1].Where {
-			names = append(names, c.Column)
-		}
-		for _, c := range subs[q-1].OrderBy {
-			names = append(names, c.Name)
-		}
-		for _, n := range names {
-			if stmttest.ColumnOf(inner, n) < 0 {
-				return fmt.Sprintf("s4ql: not supported: correlated subquery (at offset %v)", n.Offset)
-			}
-		}
+	if rule := correlatedRule(t, o, where, subs); rule != "" {
+		return rule
 	}
 	for _, c := range where {
 		q := c.Value.Subquery
@@ -861,6 +851,48 @@ func subqueryRule(t testing.TB, o *oracle, src string, s stmt.Statement, args []
 	return ""
 }
 
+// correlatedRule of the conditions where of a statement that SQLite prepares, whose subqueries are
+// subs, on the database of o: s4ql's refusal of the first name of a subquery, in the order in which
+// the engine looks them up, that the table of the subquery does not have, which SQLite takes from the
+// table of the statement, since it prepares the statement; or "".
+func correlatedRule(t testing.TB, o *oracle, where []stmt.Condition, subs []stmt.Select) string {
+	t.Helper()
+	for _, c := range where {
+		q := c.Value.Subquery
+		if q == 0 {
+			continue
+		}
+		_, inner := o.columns(t, subs[q-1].Table.Value)
+		var names []stmt.Name
+		names = append(names, subs[q-1].Columns...)
+		for _, c := range subs[q-1].Where {
+			names = append(names, c.Column)
+		}
+		for _, c := range subs[q-1].OrderBy {
+			names = append(names, c.Name)
+		}
+		for _, n := range names {
+			if stmttest.ColumnOf(inner, n) < 0 {
+				return fmt.Sprintf("s4ql: not supported: correlated subquery (at offset %v)", n.Offset)
+			}
+		}
+	}
+	return ""
+}
+
+// subqueryTerms of the subqueries of the statement s: the values of their conditions and their
+// LIMIT, in the order of the text.
+func subqueryTerms(s stmt.Statement) []stmt.Term {
+	var terms []stmt.Term
+	for _, q := range subqueriesIn(s) {
+		for _, c := range q.Where {
+			terms = append(terms, c.Value)
+		}
+		terms = append(terms, q.Limit)
+	}
+	return terms
+}
+
 // foundQuery of the conditions where of a statement of the text src on the table, with the arguments
 // args of their parameters: a select that gives a row if the conditions hold for a row of the table,
 // with each value as the text writes it, a subquery among them, and the arguments of its parameters.
@@ -887,4 +919,205 @@ func storageClass(typ string) string {
 		return "INTEGER"
 	}
 	return typ
+}
+
+// reachSubquery counts what the call c of a statement with scalar subqueries, whose answer of the
+// engine is got, reaches of slice 15, on SQLite's state before it, as the pair knows it from
+// [pair.subqueriesOf] and the values that the instance computed: by the kind of the statement and its
+// outcome, how it ran, with RETURNING, with two subqueries, a text that ran before, and the refusals
+// of s4ql; for a statement that succeeded, each comparison by its operator and side, the table of
+// each subquery, its `*`, its LIMIT, where its parameters are, and whether an index serves it, as the
+// model chooses; for each subquery whose value the instance computed, the rows that it finds, by
+// whether its ORDER BY decides the first and with NULL first, and the draw among rows that tie by the
+// kind of the statement; an update or a delete whose subquery reads what it changes; and goqite's
+// receive.
+func (p *pair) reachSubquery(c stmttest.Call, got answer) {
+	t, o, sc := p.t, p.o, p.sub
+	t.Helper()
+	count := p.count
+	kind := map[string]string{"*stmt.Select": "select", "*stmt.Update": "update", "*stmt.Delete": "delete"}[fmt.Sprintf("%T", sc.s)]
+	outcome := "ok"
+	switch {
+	case got.err == "not supported":
+		outcome = "not supported"
+		for _, refusal := range []string{"correlated subquery", "second subquery of * of more than one column", "for LIMIT", "compared with the column"} {
+			if strings.Contains(got.message, refusal) {
+				count(kind + " with a subquery refused: " + refusal)
+			}
+		}
+	case got.err != "":
+		outcome = messageKind(got.err)
+		for _, e := range []string{"row value misused", "sub-select returns"} {
+			if strings.Contains(got.err, e) {
+				count(kind + " with a subquery of * of more than one column: " + e)
+			}
+		}
+	}
+	how := map[bool]string{true: "through Query", false: "through Exec"}[c.Query]
+	count(kind + " with a subquery " + how + " " + outcome)
+	if p.inTx {
+		// Again by the transaction that it ran in, whose state its subqueries read.
+		count(kind + " with a subquery " + outcome + map[bool]string{true: " in a read-only transaction", false: " in a write transaction"}[p.readOnly])
+	}
+	if len(sc.subs) > 1 {
+		count(kind + " with two subqueries " + outcome)
+	}
+	table, where := tableWhere(sc.s)
+	returns := false
+	switch s := sc.s.(type) {
+	case *stmt.Update:
+		returns = s.Returning.Present()
+	case *stmt.Delete:
+		returns = s.Returning.Present()
+	}
+	if returns {
+		count(kind + " with a subquery and RETURNING " + how + " " + outcome)
+	}
+	if p.ran[c.Src] {
+		count(kind + " with a subquery whose text ran before " + outcome)
+	}
+	p.ran[c.Src] = true
+	if receive, _ := receiveOf(t, o, sc.s, sc.subs); receive >= 0 {
+		changed := map[bool]string{true: ", no row found", false: ", rows changed"}[p.i.changes == 0]
+		count("goqite's receive " + how + " " + outcome + map[bool]string{true: changed}[got.err == ""])
+	}
+	if got.err != "" {
+		return
+	}
+	// Each comparison with a subquery, and where the parameters are.
+	params := 0
+	for i, w := range where {
+		if w.Value.Parameter > 0 {
+			params++
+		}
+		if w.Value.Subquery == 0 {
+			continue
+		}
+		op := w.Operator
+		if w.ValueFirst {
+			op = op.Swapped()
+		}
+		count(fmt.Sprint("subquery ", map[bool]string{true: "on the left of ", false: "on the right of "}[w.ValueFirst], op, " in a ", kind))
+		q := sc.subs[w.Value.Subquery-1]
+		if params > 0 || slices.ContainsFunc(where[:i], func(c stmt.Condition) bool {
+			return c.Value.Subquery > 0 && len(parametersIn(sc.subs[c.Value.Subquery-1])) > 0
+		}) {
+			count("subquery with a parameter before it")
+		}
+		if len(parametersIn(q)) > 0 {
+			count("subquery with a parameter in it")
+		}
+		if slices.ContainsFunc(where[i+1:], func(c stmt.Condition) bool { return c.Value.Parameter > 0 }) {
+			count("subquery with a parameter after it")
+		}
+	}
+	for j, q := range sc.subs {
+		count(map[bool]string{true: "subquery of the table of the statement in a ", false: "subquery of another table in a "}[q.Table.Fold() == table.Fold()] + kind)
+		if q.Columns == nil {
+			count("subquery of * of one column")
+		}
+		zero := q.Limit.Value == stmt.Value(stmt.Integer(0)) || q.Limit.Parameter > 0 && sc.args[q.Limit.Parameter-1] == any(int64(0))
+		switch {
+		case zero:
+			count("subquery with LIMIT 0")
+		case q.Limit.Parameter > 0:
+			count("subquery with LIMIT ?")
+		case q.Limited() && q.Limit.Value != stmt.Value(stmt.Integer(1)):
+			count("subquery with a LIMIT above 1")
+		}
+		if sc.candidates[j] == nil || p.computed == nil {
+			continue
+		}
+		name, columns := o.columns(t, q.Table.Value)
+		_, indexes := o.tableIndexes(t, name, columns)
+		inner := q
+		inner.Limit = stmt.Term{Value: stmt.Integer(1)}
+		if a, ok := stmttest.ChosenAccess(columns, indexes, &inner, sc.args); ok && a.Index != "" {
+			count(map[bool]string{true: "subquery whose order an index delivers", false: "subquery that an index serves"}[a.Delivered])
+		}
+		// The rows that the WHERE of the subquery finds, and how its ORDER BY decides the first.
+		text, bound := stmttest.SelectText(&stmt.Select{Table: q.Table, Where: q.Where}, sc.args, "")
+		rows := len(o.run(t, text, bound...).rows)
+		value := valueText(t, p.computed[j])
+		switch {
+		case zero:
+		case rows == 0:
+			count("subquery that finds no row in a " + kind)
+		case rows == 1:
+			count("subquery that finds one row in a " + kind)
+		case len(sc.candidates[j]) > 1:
+			count(fmt.Sprint("subquery that finds several rows that tie for the first, of which it gave ", map[bool]string{true: "SQLite's first", false: "another"}[value == sc.first[j]], ", in a ", kind))
+		case q.OrderBy == nil:
+			count("subquery without ORDER BY that finds several rows of one value in a " + kind)
+		default:
+			count("subquery whose ORDER BY decides the first of several rows in a " + kind)
+			if value == "null" {
+				count("subquery whose ORDER BY puts NULL first of several rows")
+			}
+		}
+		if value == "null" && rows > 0 && !zero {
+			count("subquery whose value was the NULL of a row")
+		}
+	}
+	if kind == "select" {
+		return
+	}
+	// An update or a delete whose subquery reads its own table, and a column of it that the statement
+	// changes, so that a subquery that saw the changes of its statement would give another value.
+	for _, q := range sc.subs {
+		if q.Table.Fold() != table.Fold() || p.i.changes == 0 {
+			continue
+		}
+		changed := kind == "delete"
+		if u, ok := sc.s.(*stmt.Update); ok {
+			read := slices.Clone(q.Columns)
+			for _, c := range q.Where {
+				read = append(read, c.Column)
+			}
+			for _, c := range q.OrderBy {
+				read = append(read, c.Name)
+			}
+			changed = slices.ContainsFunc(u.Set, func(a stmt.Assignment) bool {
+				return q.Columns == nil || slices.ContainsFunc(read, func(n stmt.Name) bool { return n.Fold() == a.Column.Fold() })
+			})
+		}
+		if changed {
+			count(fmt.Sprint(kind, " whose subquery reads what it changes, of ", map[bool]string{true: "one row", false: "several rows"}[p.i.changes == 1]))
+		}
+	}
+	// goqite's receive, which changes the one row of the message that it gives.
+	if receive, pinned := receiveOf(t, o, sc.s, sc.subs); receive >= 0 && p.i.changes == 1 {
+		count(fmt.Sprint("goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, with ", map[bool]string{true: "a pin of another column", false: "no other pin"}[pinned]))
+		if len(sc.candidates[receive]) > 1 {
+			count("goqite's receive: an update with RETURNING of the row whose key a subquery gives among rows that tie")
+		}
+	}
+}
+
+// receiveOf reports whether s, with the subqueries subs, is goqite's receive on the database of
+// o: an update with RETURNING whose WHERE has the key = a subquery of its own table with an ORDER BY
+// of two columns or more and a LIMIT of 1 or of a ?, with the number of that subquery from 0, or -1;
+// and whether it also pins another column with =, as goqite's queue = ?.
+func receiveOf(t testing.TB, o *oracle, s stmt.Statement, subs []stmt.Select) (receive int, pinned bool) {
+	t.Helper()
+	receive = -1
+	u, ok := s.(*stmt.Update)
+	if !ok || !u.Returning.Present() {
+		return -1, false
+	}
+	_, columns := o.columns(t, u.Table.Value)
+	for _, w := range u.Where {
+		position := stmttest.ColumnOf(columns, w.Column)
+		switch {
+		case position < 0 || w.Operator != stmt.OpEqual:
+		case columns[position].PrimaryKey && w.Value.Subquery > 0:
+			q := subs[w.Value.Subquery-1]
+			if q.Table.Fold() == u.Table.Fold() && len(q.OrderBy) > 1 && (q.Limit.Value == stmt.Value(stmt.Integer(1)) || q.Limit.Parameter > 0) {
+				receive = w.Value.Subquery - 1
+			}
+		case !columns[position].PrimaryKey && w.Value.Subquery == 0:
+			pinned = true
+		}
+	}
+	return receive, pinned
 }

@@ -86,3 +86,14 @@
 5	reached: update with RETURNING of the key that moves a row to another key
 10	reached: insert with RETURNING * that gives a row of a table with a column without a default after one with a default
 5	reached: update with RETURNING * that gives a row of a table with a column without a default after one with a default
+# Slice 15, the scalar subquery in a WHERE, in transactions, whose state its subqueries read: a
+# third of the total of 2026-11-24.
+16	reached: delete with a subquery ok in a write transaction
+24	reached: select with a subquery ok in a write transaction
+6	reached: select with a subquery ok in a read-only transaction
+26	reached: update with a subquery ok in a write transaction
+9	reached: update with a subquery attempt to write a readonly database in a read-only transaction
+5	reached: delete with a subquery attempt to write a readonly database in a read-only transaction
+21	reached: subquery whose value was that of its one first row
+2	reached: subquery that finds several rows that tie for the first, of which it gave another, in a select
+5	reached: subquery that the engine did not compute, of an update or a delete

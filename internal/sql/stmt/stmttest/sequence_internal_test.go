@@ -402,7 +402,7 @@ func TestSequence_createIndex(t *testing.T) {
 			q, err := newSequence(13, p)
 			is.NotError(t, err)
 			table := stmt.Name{Raw: "t", Value: "t"}
-			is.True(t, q.indexConditions(table) == nil, "no WHERE of an index before a create index")
+			is.True(t, q.indexConditions(q.rIndexes, table) == nil, "no WHERE of an index before a create index")
 			q.live["t"] = true
 			for range 20 {
 				q.insert(table)
