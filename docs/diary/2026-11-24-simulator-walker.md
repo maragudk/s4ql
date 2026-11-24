@@ -169,3 +169,67 @@ As in step 2.
 ### Future work
 
 None.
+
+## Step 4: In front of the sky
+
+**Author:** builder (walker and sky)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief from the lead, abridged to its requirements)
+
+> 1. Decided: the figure walks in front of the sky. Take `#dancer` out of `CONTENT` and adjust the comment above it.
+> 2. Serve the page (the diaries say how) and, with the playwright-cli skill, watch the figure stand and walk past stars at about 390 and 1440 pixels wide, in every kind of pose that matters (standing, walking both ways, a dance pose with arms out, flat after a crash). If a star showing through or right beside the figure reads as a stray pixel of the figure, fix it with the smallest thing that makes it read as passing in front, for example an opaque black backing just around the figure's lit pixels, or behind its box; it must not paint a visible black rectangle over the frame's top line or anything else, and must not change the figure's size, place, or crispness. If it already reads fine, change nothing and say so. Say what you saw and did.
+> 3. Confirm that the figure's walking does not make the sky redraw (the sky redraws from a `ResizeObserver` and a `matchMedia`; the figure moves by `transform`).
+> 4. Run `make site-check` and `go test -tags s4ql_browser ./internal/simulator/...` on the result. Do not run `make test-asan` or the long fuzz tests. Checks for decoration are not wanted: do not add any step to the site check.
+
+**Interpretation:** after merging `main`, which brought the sky of stars (`/docs/diary/2026-11-24-simulator-stars.md`), make the sky ignore the figure, and look closely at how a star looks next to and inside the walking figure.
+
+**Inferred intent:** no hole in the stars where the figure stood at the last layout, and no star that looks like part of the figure.
+
+### What I did
+
+Reset this branch onto the walker's finished branch and merged `main` (`49c05ec`) into it, without conflict. In `/site/simulator/index.html`:
+
+- `#dancer` is out of the sky's `CONTENT`, and the comment above says why.
+- `.dancer path` gets `stroke: var(--void); stroke-width: 4; paint-order: stroke`: every pixel of the figure gets a black border two of its pixels (4 px) wide, painted under all the white pixels, and cut off by the SVG's box. Under print and forced colours, where the sky is hidden, the stroke is `none`.
+
+Looked at it with playwright at 1440 by 900 at a device pixel ratio of 1, and at 390 by 844 at a ratio of 3. For each, reloaded until stars lay in the strip above the frame (the sky draws its stars anew each load), then pinned the figure beside a star with an injected `#dancer { transform: translateX(...) !important }`, while its pose kept changing, and took crops of 78 by 72 px around it, with and without the backing, enlarged by nearest neighbour. Poses captured: the stand, all 12 frames of the walk each way, the dance poses `tada` (arms up and out), `point`, `nod`, `sweep`, `look` both ways, and `facepalm`, `slump`, and `flat` after a crash of b.
+
+Checked that walking does not redraw the sky: with an init script that wraps `ResizeObserver`, 30 s of strolling gave 66 changes of the figure's `style` (its transform), no call of either observer's callback (page.js's one on the frame and the sky's), and no mutation in `#sky`.
+
+`make site-check`: exit 0, `sitecheck: ok`. `go test -tags s4ql_browser ./internal/simulator/...`: ok.
+
+Self-review: the code-review skill at low effort over the commit reported no findings.
+
+### Why
+
+Stars are 1 css px (2 by 2 for a block) and dimmer than the figure, so a star a few pixels off reads as a star. Two cases did not: a star right against the body or an arm read as a grey stray pixel of the figure, and a star in the hole of the head read as an eye (in `point`, `sweep`, `look`, and `facepalm`). A border of one figure pixel fixed the first but not the second: the middle pixel of the 3 by 3 hole is two pixels from the ring. Two pixels cover the hole. A black box behind the whole figure would hide stars up to 8 px from its lit pixels, a clear gap moving with it; the border keeps the gap to 4 px.
+
+### What worked
+
+- Comparing crops of the same moment with the backing on and off (a `media` of `not all` on the injected style) gave pixel diffs: the figure's own pixels and the frame's line came out identical, and the only differences were the hidden stars.
+- A row check of the line under the feet found it whole (every device pixel white) at both ratios, though the frame's top is at a fraction of a pixel (1075.2 and 2216.9 px): the stroke is clipped at the SVG's bottom edge, where the white feet end too.
+
+### What didn't work
+
+- `python3 -I -c "from PIL import Image ..."`: `ModuleNotFoundError: No module named 'PIL'`, since `-I` leaves out the user's site-packages, where Pillow is. Without `-I` it worked.
+- A command that wrote a file with a here-doc and then opened playwright in one call was refused by the worktree's guard: "this command is too complex to verify that it stays inside the worktree". Writing the file with the Write tool and running one command worked.
+
+### What I learned
+
+- With `paint-order: stroke` the stroke of the whole path is painted before any fill, so the black of one pixel never covers a white neighbour. The SVG clips at its box, so the black never reaches the frame's line or past the figure's 30 by 36 px.
+- At a ratio of 3 a block star is 2 by 2 css px, as big as a pixel of the figure; that is the case most like a stray pixel.
+
+### What was tricky
+
+At the edge of the border a star can be partly covered, leaving a sliver of a device pixel or two; that is what passing in front of it looks like and is too faint to see at real size.
+
+### What warrants review
+
+- `/site/simulator/index.html`, the rule `.dancer path` in the sky's block and its `stroke: none` under print and forced colours.
+- Crops: `walker-sky/final-1440-arm-3-x8.png` (walking, a star beside its arm) and `walker-sky/final-390-0-x8.png` (standing, a star beside its head) in the session's scratchpad.
+
+### Future work
+
+None.
