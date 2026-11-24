@@ -45,3 +45,11 @@ The simulator page, `site/simulator/`, got a box for SQL on 2026-11-23 (`docs/di
 ### Checks
 
 Screenshots at 390, 900, 1000, and 1440 px, after 8 s of play, with the default query and `select missing from barcodes`; `scrollWidth - innerWidth` was 0 at each. `make site-check`: `sitecheck: ok`, no failures. `go test -tags s4ql_browser ./internal/simulator/...`: ok. The page has one colour scheme, the dark one (`color-scheme: dark`, no light tokens), so there was no other to check.
+
+## Step 3: Self-review
+
+**Author:** builder (simulator SQL section)
+
+### What I did
+
+Ran the code-review skill at low effort over `main...HEAD`; it reported no findings. Read the diff once more for selectors left from the old grid (`.logs > .log`, `.logs > .sql`, the rows of the grid); none remain. Nothing to follow up.
