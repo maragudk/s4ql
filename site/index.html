@@ -882,7 +882,7 @@ footer ul {
         </tr>
         <tr>
           <th scope="row" class="caps">Next</th>
-          <td><p>The rest of the SQL that glue needs, agreed one slice at a time (the roadmap's <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#milestones">milestones</a>). The slices, and how each is checked, are in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">roadmap</a>.</p></td>
+          <td><p>What is decided next is in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#at-a-glance">roadmap</a> by area: expressions with an evaluator of s4ql's own, grouping and joining, <code>on conflict</code> upserts, several statements in one <code>Exec</code>, and a limit on the memory of an operator.</p></td>
         </tr>
       </tbody>
     </table>
@@ -893,7 +893,7 @@ footer ul {
   <div class="wrap">
     <div class="block-head">
       <h2 id="roadmap-h">Roadmap</h2>
-      <p>SQL grows in small slices. Nothing is supported until it is listed, all the way down to <code>select 1</code>, and each slice goes through every layer and is checked against SQLite before the next one starts.</p>
+      <p>SQL grows in small pieces. Nothing is supported until it is listed, all the way down to <code>select 1</code>, and each piece goes through every layer and is checked against SQLite before the next one starts.</p>
     </div>
     <ul class="legend caps" aria-label="Legend">
       <li class="built"><span class="glyph" aria-hidden="true"></span>Built</li>
@@ -1006,9 +1006,34 @@ footer ul {
         <div><h3>Slice 15: a scalar subquery in <code>where</code></h3><p>In the <code>where</code> of a <code>select</code>, an <code>update</code>, or a <code>delete</code>, a <code>select</code> in parentheses may stand for one value in a comparison, as goqite's receive needs. It gives the one column of its first row, or null when it finds no row. It runs once, before the statement changes anything. A subquery that names a column of the outer statement is refused, and so is a subquery in any other place. A subquery whose column has another declared type than the column it is compared with is refused too. The statements run, and table tests and the engine's differential tests compare them with SQLite. An independent review found no wrong result. The generated workload, the simulation with planted bugs, the driver's generated test, and mutation testing are still to come.</p></div>
         <span class="where caps">Built</span>
       </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Expressions</h3><p>An evaluator of s4ql's own, in Go. It gives SQLite's answer or an error. Time and randomness come from the host.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Grouping and joining</h3><p>Operators of s4ql's own, in Go, on top of the ordered scans and the lookups by key of the cache.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Upserts</h3><p><code>insert ... on conflict (key) do nothing</code> and <code>do update set ...</code>.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Several statements in one <code>Exec</code></h3><p>They mean the same as running them one after another.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
+      <li class="agreed">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>A limit on operator memory</h3><p>A statement that would hold more fails with a clear error. Spooling to the cache comes later.</p></div>
+        <span class="where caps">Agreed</span>
+      </li>
       <li class="open">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>More SQL, slice by slice</h3><p>Each slice is agreed before it is built. Every table is strict and without rowid, foreign keys are always enforced, and a name is never empty.</p></div>
+        <div><h3>More SQL, piece by piece</h3><p>Each piece is agreed before it is built. Every table is strict and without rowid, foreign keys are always enforced, and a name is never empty.</p></div>
         <span class="where caps">Open</span>
       </li>
       <li class="open">

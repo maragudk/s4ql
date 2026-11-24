@@ -35,6 +35,6 @@ As of 2026-11-24:
   - Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.
 - **How it is checked:** against SQLite with generated statements, in the engine and through `database/sql`, in a deterministic simulation with planted bugs, and with mutation testing and fuzzing. The storage is also tested against a real S3-compatible bucket in CI.
 - **Not built:** `or` and other expressions in a `where`, `offset`, more than one row per `insert`, and a statement while rows of the same transaction are open.
-- **Next:** the rest of the SQL that glue needs, agreed one slice at a time (the roadmap's [milestones](docs/roadmap.md#milestones)).
+- **Next:** what is decided next is in the [roadmap](docs/roadmap.md#at-a-glance) by area: expressions with an evaluator of s4ql's own, grouping and joining, `on conflict` upserts, several statements in one `Exec`, and a limit on the memory of an operator.
 
-The slices, and how each is checked, are in [docs/roadmap.md](docs/roadmap.md). What is open in detail is in [docs/todo.md](docs/todo.md).
+The roadmap by area, and the slices that were built with how each is checked, are in [docs/roadmap.md](docs/roadmap.md). What is open in detail is in [docs/todo.md](docs/todo.md).
