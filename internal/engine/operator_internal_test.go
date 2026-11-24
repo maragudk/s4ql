@@ -781,6 +781,18 @@ func TestFilter(t *testing.T) {
 		is.Equal(t, "i = 2", accessText(scanOf(q).access))
 	})
 
+	t.Run("should read a subquery of a reading without an engine forward, by the path of the zero value", func(t *testing.T) {
+		// The fake scans t in the order of k, so a subquery that reads forward gives 1 first, and one
+		// that reads backward 4.
+		s, err := stmt.Check("select * from t where k = (select k from t)")
+		is.NotError(t, err)
+		q, err := buildQuery(t.Context(), fakeTx{newTable()}, NewPlan(s).(*Query), nil, 1_000_000_000, reading{})
+		is.NotError(t, err)
+		rows, err := collect(t.Context(), q)
+		is.NotError(t, err)
+		is.Equal(t, "[10,1]", fmt.Sprint(rows))
+	})
+
 	t.Run("should pass on an error of the read of the indexes of the table of a select, an update, and a delete that the indexes decide, and scan nothing", func(t *testing.T) {
 		for _, src := range []string{"select * from t where w > 0", "update t set w = 1 where w > 0", "delete from t where w > 0"} {
 			f := newTable()

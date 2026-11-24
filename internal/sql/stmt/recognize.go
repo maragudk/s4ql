@@ -620,7 +620,7 @@ func (r *recognizer) selectOf(sel *ast.Select) (*Select, int) {
 		if i > 0 {
 			r.take(core.Commas[i-1])
 		}
-		if i == 1 && r.inner.Present() && r.at() == rc.Bounds().Start {
+		if i == 1 && r.inner.Present() {
 			// SQLite gives `row value misused` when it prepares the statement, once it has found the
 			// tables.
 			r.reject("subquery of more than one column")
@@ -668,7 +668,7 @@ func (r *recognizer) selectOf(sel *ast.Select) (*Select, int) {
 // adds the select to the subqueries of the statement, and gives the term that names it, and its
 // height as SQLite counts it, one more than that of its select.
 func (r *recognizer) subquery(sq *ast.Subquery) (Term, int) {
-	if r.inner.Present() && r.isNext(sq.LParen) {
+	if r.inner.Present() {
 		r.reject("subquery in a subquery")
 	}
 	r.accept(sq)
@@ -1024,8 +1024,7 @@ func (r *recognizer) conditionValue(e ast.Expr) (Term, int) {
 	case *ast.Subquery:
 		return r.subquery(x)
 	case *ast.Unary:
-		if _, ok := x.X.(*ast.Subquery); ok && x.Op.Kind == token.Minus && r.isNext(x.Op) {
-			r.accept(x)
+		if _, ok := x.X.(*ast.Subquery); ok && x.Op.Kind == token.Minus {
 			r.take(x.Op)
 			r.reject("subquery after a sign")
 		}

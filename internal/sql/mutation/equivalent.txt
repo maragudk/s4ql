@@ -1211,3 +1211,9 @@ internal/engine/returning.go newReturned constant: len(data)-1 => len(data)-2
 	The planted bug dropLast then leaves out the last two rows of several, which TestDifferential_plantedBugs finds by the rows, as it finds dropLast.
 internal/engine/tx.go Conn.writeIn remove statement: planted.oldValues, planted.deleteNone, planted.starKeyFirst = c.e.bugs.oldValues, c.e.bugs.deleteNone, c.e.bugs.starKeyFirst =>
 	The planted bugs oldValues, deleteNone, and starKeyFirst left out of a write in a transaction, which statements of their own find, as for skipUnique and convertReal.
+
+# The scalar subquery of slice 15 in the recognizer, internal/sql/stmt.
+stmt/recognize.go recognizer.selectOf swap arguments: max(height, 2) => max(2, height)
+	max is symmetric.
+stmt/recognize.go recognizer.conditionValue constant: return r.term(e), 0 => return r.term(e), 1
+	The height of a value that is no subquery is not read: recognizer.condition gives the depth of the comparison for a condition without a subquery.
