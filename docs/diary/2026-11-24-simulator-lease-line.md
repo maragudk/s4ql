@@ -50,6 +50,8 @@ Saying the wait truthfully when the page cannot know who held the lease, nor whe
 
 A self-review with the code-review skill (low) found two things. One said that `lease.duration / 1000` gives `NaN` if the state's duration is a string such as "30s", as the stored manifest has it. It is not: the state's manifest is the engine's `ManifestObject`, whose `Duration` is in ms (`millis(l.Duration)` in `/internal/simulator/run.go`), as `drawS3` already uses it, and the browser shows "30 s". I added a comment that says the unit. The other: any state but `waiting` counted as waiting for the lease, so a crashed or stopped instance would be named. None is at the start, but `storedLine` now counts only `starting` and `running`. `make site-check` passed again.
 
+The lead then changed the wording, because "by its own clock" and "to run out" read as written for the code's reviewer: the second sentence is now "a waits out the 30 s lease from before the reload." ("a and b wait out …" for two). "Waits out" says that the full length is waited, as `acquire` does. The comment at `storedLine` keeps why it says "the lease" and not "its lease", and that the real wait is the duration and the margin, timed from the first read.
+
 ### Future work
 
 - After the wait, "a takes the lease over from ae273799." names the old holder by its ID. It could say "from before the reload".

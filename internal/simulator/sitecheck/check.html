@@ -299,12 +299,12 @@ async function unit() {
     R.storedLine("db-k7m2qa", 72, leaseOf("h0", 30000), [{ instance: "a", state: "starting", holder: "" }, { instance: "b", state: "starting", holder: "" }]),
   ];
   const wantStored = [
-    "S3 still holds db-k7m2qa: 1,234 commit objects. a waits for the lease of 30 s from before the reload to run out by its own clock.",
-    "S3 still holds db-k7m2qa: 1 commit object. a waits for the lease of 12.5 s from before the reload to run out by its own clock.",
+    "S3 still holds db-k7m2qa: 1,234 commit objects. a waits out the 30 s lease from before the reload.",
+    "S3 still holds db-k7m2qa: 1 commit object. a waits out the 12.5 s lease from before the reload.",
     "S3 still holds db-k7m2qa: 72 commit objects.",
     "S3 still holds db-k7m2qa: 72 commit objects.",
     "S3 still holds db-k7m2qa: 72 commit objects.",
-    "S3 still holds db-k7m2qa: 72 commit objects. a and b wait for the lease of 30 s from before the reload to run out by their own clocks.",
+    "S3 still holds db-k7m2qa: 72 commit objects. a and b wait out the 30 s lease from before the reload.",
   ];
   expect(JSON.stringify(storedLines) === JSON.stringify(wantStored), `the line of a start on the stored database says who waits for a lease from before the reload, and for how long (${storedLines.join(" | ")})`);
 
@@ -911,7 +911,7 @@ async function persistence(address) {
   const leaseSeconds = storedLease && /^(\d+(?:\.\d+)?)s$/.exec(storedLease.duration);
   p = await reload(p);
   const reloadLine = [...p.$("#log").children].map((li) => li.textContent).find((text) => /S3 still holds db-/.test(text)) || "";
-  const waitWords = leaseSeconds ? ` a waits for the lease of ${Number(leaseSeconds[1])} s from before the reload to run out by its own clock.` : "";
+  const waitWords = leaseSeconds ? ` a waits out the ${Number(leaseSeconds[1])} s lease from before the reload.` : "";
   expect(storedLease && leaseSeconds && reloadLine.endsWith(`S3 still holds ${name.slice("s4ql-sim/".length, -1)}: ${before.commits.toLocaleString("en")} commit object${before.commits === 1 ? "" : "s"}.${waitWords}`),
     `the line of the reload says that a waits for the lease from before the reload, of ${storedLease && storedLease.duration} in the stored manifest: ${reloadLine}`);
   // The time of the history after the reload is the offset of the seed plus the time of the session,

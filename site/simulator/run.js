@@ -213,18 +213,20 @@ export function resetLine(e, first) {
 // still holds, and who waits for the lease from before the reload. A manifest that names a lease
 // makes each instance that starts under another holder ID wait for it, because the instance cannot
 // know that the holder is gone: it takes the lease only after it has watched the manifest stand still
-// for the lease's duration and a margin, by its own monotonic clock, whatever the lease's time of
-// renewal says (acquire in internal/core/lease.go). Only an instance that is starting or running
-// waits: one that waits for a to serve before it starts does not. Nothing in S3 says which instance
-// held the lease. The duration of the state's manifest is in ms.
+// for the lease's duration and a margin (max(2 s, a tenth of the duration)), timed by its own
+// monotonic clock from its first read of the manifest, whatever the lease's time of renewal says
+// (acquire in internal/core/lease.go). So the real wait is the duration and the margin, which "waits
+// out" covers without the line copying the core's margin. Only an instance that is starting or
+// running waits: one that waits for a to serve before it starts does not. The line says "the lease",
+// not "its lease", because nothing in S3 says which instance held it: the engine seeds the stored
+// objects without the processes that wrote them. The duration of the state's manifest is in ms.
 export function storedLine(name, n, manifest, instances) {
   const text = `S3 still holds ${name}: ${n.toLocaleString("en")} commit object${n === 1 ? "" : "s"}.`;
   const lease = manifest && manifest.lease;
   if (!lease) return text;
   const waiting = (instances || []).filter((i) => (i.state === "starting" || i.state === "running") && i.holder !== lease.holder).map((i) => i.instance);
   if (waiting.length === 0) return text;
-  const one = waiting.length === 1;
-  return `${text} ${waiting.join(" and ")} wait${one ? "s" : ""} for the lease of ${lease.duration / 1000} s from before the reload to run out by ${one ? "its own clock" : "their own clocks"}.`;
+  return `${text} ${waiting.join(" and ")} wait${waiting.length === 1 ? "s" : ""} out the ${lease.duration / 1000} s lease from before the reload.`;
 }
 
 // actionWords of an action event of a session, as the visitor's own words.
