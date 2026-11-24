@@ -1,0 +1,1798 @@
+ ▐▛███▛█   Claude Code v2.1.330
+▝▜██████▀  Fable 5.2 · Claude Ultra
+ ▝▝   ▝▝   ~/Developer/s4ql
+
+⚠ Your login expires in 1 day · run /login to renew
+
+⏺ The export is committed and pushed (9238075) as
+  docs/conversations/2026-11-21-slice-13-workload-profiles-and-mutation.txt. It
+  is a new file, since it holds only the part since the last compaction.
+
+✻ Cogitated for 8s · done Monday 12:50 PM
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+  ⎿  Referenced file AGENTS.md
+  ⎿  Referenced file site/index.html
+  ⎿  Read docs/todo.md (33 lines)
+  ⎿  Read ../../../../private/tmp/claude-502/-Users-maragubot-Developer-s4ql/f13
+     43515-adca-4ca0-9eb0-f507768f8fc7/tasks/bu1r19qqx.output (3 lines)
+  ⎿  Read ../../../../private/tmp/claude-502/-Users-maragubot-Developer-s4ql/f13
+     43515-adca-4ca0-9eb0-f507768f8fc7/tasks/byh21f15y.output (4 lines)
+
+⏺ Task "Mutation testing of slice 8" completed in background
+
+⏺ Task "Land CI pull request #101" completed in background
+
+⏺ Task "Slice 12 engine and checks" completed in background
+
+⏺ Task "Generated checks of slice 13" completed in background
+
+⏺ Task "Wait for CI on #94 to finish, then list its checks" still running in 
+  background
+
+⏺ Task "Wait for CI on #101's final head, then list its checks" still running in
+  background
+  ⎿  Skills restored (fabrik:address-code-review, fabrik:git, 
+     fabrik:one-at-a-time, fabrik:diary)
+
+❯ Anything that needs to be saved before I restart the harness?                 
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ No, nothing needs saving. main is clean and level with origin/main at 9238075,
+  no sub-agent is running, and /Volumes/990/s4ql/ is empty.
+
+  Two things a restart ends, neither a loss:
+
+  - Stale background waits: two shells are still listed as waiting on CI for #94
+    and #101. Both were landed long ago, so the restart just clears them.
+  - The other session's worktree: agent-a534657ccdda20876 belongs to the site
+    session and I have left it alone.
+
+  Usage was at 48% of the week at the last check, against the 50% backstop, so I
+  have started nothing new. The next decision, when you want it, is which slice
+  follows 13 on the way to glue.
+
+✻ Churned for 7s · done Monday 12:53 PM
+
+⏺ 2 background shell command tasks didn't finish before the previous session
+  ended. Task ids: b8cg6q2f1, bbwessytv.
+
+❯ Okay, restarted. What do we build next? Let's up usage to 60%.                
+
+  Searched for 1 pattern, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Backstop noted at 60%; usage stands at 48%.
+
+  I propose returning as slice 14, on insert, update, and delete, with named
+  columns and *.
+
+  - Why this one: it is the only remaining piece that changes the shape of the
+    driver, because a writing statement then gives rows through Query. goqite
+    needs it twice (insert ... returning id, and the receive's update ... 
+    returning id, body).
+  - What comes after it: the rest of goqite's receive is expression work,
+    arithmetic in set and the scalar subquery, which fits well as the slices
+    right after.
+  - The alternative: arithmetic in set first. It is smaller, but it opens the
+    question of how s4ql evaluates expressions, which functions and expression
+    defaults then build on, and I would rather bring you that as a design
+    question of its own.
+
+  Shall I write slice 14 as returning into the roadmap and start the builder?
+
+✻ Sautéed for 24s · done Monday 12:54 PM
+
+※ recap: We are building s4ql toward running glue; slices 1 to 13 are merged and nothing is running. Next action is yours: confirm whether slice 14 should be `returning` on insert, update, and delete, so I can start the builder. (turn off recaps in /config)
+
+❯ yes                                                                           
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+⏺ Starting slice 14: a writer for the roadmap entry and a builder for the
+  statement pass, in parallel.
+
+⏺ 2 background agents launched (↓ to manage)
+   ├ fabrik:writer (Roadmap entry for slice 14)
+   └ fabrik:builder (Slice 14 statement pass)
+
+⏺ Slice 14 is under way: a writer is adding returning to the roadmap, the site's
+  roadmap section, and the README's "Next" line, and a builder is doing the
+  statement pass. The engine and driver follow once the statement pass is
+  merged.
+
+  One detail I decided, by the rule that a change counts only once it is
+  committed: outside a transaction, a statement with returning commits before it
+  gives its first row, and if the commit fails it gives the error and no rows.
+  SQLite itself commits only when the rows are read to the end. Say so if you
+  want it otherwise.
+✻ Churned for 1m 43s · done Monday 12:59 PM
+
+› Message from fabrik:writer
+  I added slice 14 to the roadmap, the site, and the README, and committed it.
+  It is not pushed.
+
+  Branch `worktree-agent-a28e36a9e79b3e4ae`, commit `f4fe650` ("Add slice 14,
+  `returning`, to the roadmap").
+
+  - **`docs/roadmap.md`:** the new section "Slice 14: `returning` on `insert`,
+  `update`, and `delete`" comes after slice 13. It has your content, in the form
+  and voice of slices 11 to 13. The Milestones sentence now says slices 5 to
+  14, and that the rest comes after slice 14.
+  - **`site/index.html`:** the roadmap section has a new item for slice 14,
+  after slice 13. It uses the same markup and "Agreed" label that slices 10 to
+  13 had before they were built. The "Next" cell of the status section now names
+  `returning` first. Nothing else in `site/` changed.
+  - **`README.md`:** only the "Next" line changed: "`returning` on `insert`,
+  `update`, and `delete`, then the rest of the SQL that glue needs, agreed one
+  slice at a time (the roadmap's milestones)."
+
+  Choices of mine and gaps:
+
+  - **Qualified columns:** `select` does not take them.
+  `internal/sql/stmt/README.md` refuses `t.v` and `t.*` in the select list as
+  `result column other than a column or *`. So I kept the rejected line, worded
+  like slice 7's: "A column with the name of its table, such as `returning
+  t1.v1`, and `t1.*`."
+  - **Go example:** I added one line beside the SQL example, as slices 5 to 8
+  have. It is `db.QueryContext` with an `update ... returning v1, v2`, because
+  the split between `Exec` and `Query` is part of the slice. Delete it if you
+  want only the SQL example.
+  - **Todo link:** the line on details to decide links to `todo.md`, as slice 13
+  does, because `docs/todo/slice-14.md` does not exist yet.
+  - **Bullet on `Exec`:** I wrote it as "`RowsAffected` gives the same count as
+  without `returning`", to match how slice 8 phrases the count.
+  - **Spec wording:** the row-order rule in `docs/spec.md` opens with a general
+  sentence, then lists only `select` and ties under `order by`. The general
+  sentence covers rows from `returning`, so I did not touch the spec. You may
+  want to raise the wording with Markus.
+  - **Not covered:** the content does not say what happens with `*` and another
+  column in one list, such as `returning *, v1`. `select` refuses that today as
+  `* and another result column`. The builder could decide it, or you could add
+  it to the rejected list.
+  - **Dates:** I did not change the "As of" dates in the status sections of the
+  README and the site.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Roadmap entry for slice 14" finished · 1m 49s
+
+  Cherry-picked d73d490, pushed to main, ran 3 shell commands · 1 failed (ctrl+o to expand)
+
+⏺ Slice 14 is in the roadmap, the site's roadmap section, and the README's
+  "Next" line (d73d490, pushed). The statement pass builder is still running.
+
+✻ Worked for 14s · done Monday 1:01 PM
+
+› Message from fabrik:builder
+  The statement pass of slice 14 is done on the branch
+  `worktree-agent-a1197f7b295299ade`: 5 commits on `9238075`, the last
+  `a0e2301`. Not pushed. `make test`, `make lint` (0 issues) and `make test-sql`
+  all pass. `make test-sql` is the full run that checks the counts, and no
+  `.tsv` file in `testdata/reached/` changed, because `Sequence` writes no
+  RETURNING. `FuzzCheck`, `FuzzGenerate` and `FuzzSQL` each ran 30 s and found
+  nothing.
+
+  ## What the pass accepts and refuses
+  The tokenizer and parser already read RETURNING, so all the work is in
+  `internal/sql/stmt` and `stmttest`.
+  - **The form:** a new field `Returning stmt.Returning` on `Insert`, `Update`
+  and `Delete`. It holds `Span`, from the keyword RETURNING to the end of the
+  last column or the `*`, and `Columns`, the names in text order or nil for `*`.
+  `Present()` says whether the clause is there.
+  - **Same code as the select list:** `recognizer.returning` reads each column
+  with `resultColumn`, the code that reads a select list. The two accept the
+  same forms and refuse the rest under the same names.
+  - **The select list takes no `t.v`, so RETURNING does not either.** You asked
+  to be told which way this went.
+  - **Accepted:** `*` alone, or one or more bare or double-quoted names, a
+  column more than once, and the 84 keywords SQLite reads as column names.
+  RETURNING adds no parameters.
+  - **Refused as `result column other than a column or *`:** an expression, a
+  function, a literal, `?`, parentheses, COLLATE, `t.v`, `t.*`, `main.t.v` and
+  `excluded.v`.
+  - **Other refusals:** an alias is `alias`; `*` together with another column is
+  `* and another result column`; TRUE and FALSE are `TRUE or FALSE`; names in
+  brackets, backticks, or empty get their usual names.
+  - **Syntax errors, as SQLite gives them:** an empty list, RETURNING twice,
+  `returning distinct`, RETURNING before WHERE, and RETURNING on a select,
+  create table, drop table, create index, drop index or inside a trigger.
+
+  ## Where s4ql differs from SQLite (for Markus to confirm)
+  All are recorded in `docs/todo/slice-14.md`:
+  - `*` with another column is refused (as in the select list). SQLite gives the
+  columns in text order.
+  - `t.v` is refused. SQLite accepts it; it rejects `t.*` with `RETURNING may
+  not use "TABLE.*" wildcards`.
+  - `true` is refused. SQLite reads it as 1.
+
+  A column named twice is supported. SQLite returns it twice, and the select
+  list allows the same.
+
+  ## What the engine builder needs to know
+  - **Removing the guards:** `engine.returningRefusal` (in
+  `internal/engine/returning.go`, called in `engine.check`) refuses these
+  statements with `RETURNING clause` at the keyword, exactly as the pass did
+  before. Also remove the panic in `engine.NewPlan`, `returned()` and the
+  exception in `pair.step`. The driver's `check` in `conn.go` now calls
+  `engine.Check` after `stmt.Check`, so `Prepare` refuses too. That parses the
+  text twice; the builder decides whether to keep it.
+  - **Facts measured in SQLite:**
+    - Result columns are named as the table stores them.
+    - An insert returns what a later select of those columns reads: defaults
+  included, and `-0.0` comes back as `0.0`.
+    - An update returns one row per row it matches, as many as `changes()`
+  counts, with the new values. A delete returns the values the row had.
+    - `no such column` for a RETURNING column comes after every other name
+  error, including a missing column under IS NULL in WHERE.
+    - A failed constraint returns no row and changes nothing.
+  - **The generator:** `stmttest.Generator.Returning` is off by default. With it
+  off, a 32,400-line dump of the generator's output was byte-identical before
+  and after. I added no hook; that belongs with the area and profile in the
+  generated checks.
+  - **Pinned counts:** they moved only because of the generator's draws: mutants
+  41→45 and 131→167, near misses 2,089→1,983. With the option off they are the
+  old values again, and none of the excused texts contains RETURNING.
+
+  ## Problems found and fixed
+  - **Review finding:** `pair.step` checked type and length rules on RETURNING
+  texts, so `FuzzSQL` could fail on `insert into t1 (v1) values ('x') returning
+  v1`. Such statements now skip those rules, and `TestPair_returning` pins it.
+  - **Review finding:** `NewPlan` now panics on RETURNING, so no path that skips
+  `engine.check` can run the change and drop the rows.
+  - **Writer's findings:** wrong counts in my notes, an unread counter
+  (`TestGenerate` now logs and requires it), and two stale README sentences
+  saying the engine still refuses ORDER BY and LIMIT. All fixed. The writer's
+  README commit is cherry-picked in; its worktree `agent-ab793736043d29171` can
+  be removed.
+
+  ## For you
+  1. **Simulator box (not fixed; `internal/simulator` was off-limits).**
+  `box.go` sends any text the pass accepts down the write path. A RETURNING
+  statement now begins a write transaction before the engine refuses it, and the
+  event says "abandoned" where it said "failed". It lasts until the engine runs
+  RETURNING.
+  2. **Existing bug outside this slice.** s4ql runs a select of more than 2,000
+  result columns; SQLite refuses it with `too many columns in result set`. I
+  confirmed this with a throwaway engine test. It is an open item in
+  `docs/todo/sql-front-end.md`, and RETURNING has the same limit.
+  3. **Roadmap anchor is a guess.** `docs/todo/slice-14.md` links to
+  `../roadmap.md#slice-14-returning-on-insert-update-and-delete`. Check it
+  against the heading your writer used.
+
+  ## Files
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a1197f7b295299ade/d
+  ocs/todo/slice-14.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a1197f7b295299ade/d
+  ocs/diary/2026-11-23-returning-stmt.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a1197f7b295299ade/i
+  nternal/sql/stmt/recognize.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a1197f7b295299ade/i
+  nternal/sql/stmt/stmt.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a1197f7b295299ade/i
+  nternal/engine/returning.go`
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Slice 14 statement pass" finished · 40m 50s
+
+⏺ Agent(Land slice 14 statement pass) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The statement pass of slice 14 is built and is going through its pull request
+  and CI now. The engine and driver builder starts when it is merged.
+
+  - What it does: insert, update, and delete take returning with column names or
+    *. Until the engine step, the engine and the driver refuse such a statement
+    as not supported.
+  - Stricter than SQLite, for you to confirm:
+    - returning *, v1 is refused, as a select list refuses it.
+    - returning t1.v1 is refused.
+    - returning true is refused.
+  - Found on the way, not from this slice: s4ql runs a select of more than 2,000
+    result columns, where SQLite refuses it. It is recorded as an open item.
+  - Simulator: until the engine step, the simulator's SQL box reports a
+    returning statement as "abandoned" where it said "failed". That code belongs
+    to the other session, so I left it.
+
+✻ Churned for 25s · done Monday 1:41 PM
+
+› Message from general-purpose
+  Pull request #129 ("Statement pass of slice 14, `returning`") is merged. It
+  was opened with reviewer markuswustenberg.
+
+  - **Checks:** CI run 45176678463 had 29 checks, all `pass`. That includes
+  `changes`, and none were `skipping` or failed. I did not retry anything.
+  - **Merge:** `gh pr view` says `MERGED`. The merge commit on `main` is
+  0f32a53bbb31da33b53cf8f72cb21e6ad2ffa8d5, and local `main` is fast-forwarded
+  to it.
+  - **Cleaned up:**
+    - The worktree `agent-a1197f7b295299ade` is removed. It was locked, so I
+  unlocked it first.
+    - The local branch `worktree-agent-a1197f7b295299ade` and its remote branch
+  are deleted.
+    - The helper worktree `agent-ab793736043d29171` and its branch
+  `worktree-agent-ab793736043d29171` are deleted. `git cherry` showed its only
+  commit (e8a422a) with a `-` prefix, so it was already in `main`.
+  - **Untouched:** `agent-a534657ccdda20876` and every `simulator-*` and
+  `browser-*` branch.
+  - **Odd:** nothing. CI had not started when I first listed runs, so I waited
+  about 20 seconds. `gh run watch` moved to the background after 180 seconds, so
+  I waited for it to finish before merging.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Land slice 14 statement pass" finished · 7m 30s
+
+⏺ fabrik:builder(Slice 14 engine and driver)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The statement pass is merged (#129, all 29 checks passed), and the engine and
+  driver builder for returning is running. Usage is at 49% of the week.
+
+✻ Cogitated for 48s · done Monday 1:49 PM
+
+› Message from fabrik:builder
+  ## Report: engine step of slice 14 (`returning`)
+
+  **Branch:** `worktree-agent-a9579e82a7d8bcd14`. It has 9 commits on `main`
+  (0f32a53). Nothing is pushed.
+
+  ### What runs now
+  An insert, an update, or a delete with `returning` and named columns or `*`
+  now runs end to end through `database/sql`. This covers Exec, Query, QueryRow,
+  prepared statements, arguments, write and read-only transactions, and a
+  restart with an empty cache.
+
+  Everything passes:
+  - `make test`
+  - `make test-sql`
+  - `make lint`
+  - the new tests at `-count=50`, and under `-race` about 130 times
+
+  The four guards of the statement pass are gone, and the driver's `check` calls
+  `stmt.Check` alone again, so `Prepare` parses the text once. `engine.Check`
+  added nothing there except an argument count that `Prepare` does not know.
+
+  The commit format and replay are unchanged.
+
+  ### Decisions
+  All of these are recorded in `docs/todo/slice-14.md` under "The engine and the
+  driver".
+
+  - **Where the rows are held: in Go memory.** Each sink adds a row after
+  writing it. A delete reads the row with a `get` just before deleting it. The
+  rows can't come from the cache: outside a transaction they have to outlive the
+  commit, and a delete's rows are gone from the table.
+    - There is no bound on this memory. I recorded it as an open item in
+  `docs/todo/storage-core.md`; a spool in the cache, like `KeySet`, would bound
+  it.
+  - **Commit before rows.** `Conn.write` returns the rows only after the commit
+  returns nil; `writeIn` returns them after the savepoint is released.
+    - A commit that fails, including one whose outcome is unknown, gives its
+  error and no rows.
+    - `TestConn_returning` pins this with a store that refuses the commit as too
+  large (`simstore.Options.MaxSize`). `TestReturning` in `conn_test.go` pins
+  the unknown outcome.
+  - **A statement while the rows are open.**
+    - In a transaction, the rows of a `returning` count as the connection's
+  rows, like a select's. So `ErrRowsOpen` applies, and a commit while a loop
+  reads them rolls back. I chose this so that one rule covers all open rows in a
+  transaction, and so that lifting it later breaks nothing.
+    - Outside a transaction the rows hold nothing and are not set as
+  `Conn.rows`, so a statement or a begin can run beside them. This is needed
+  because a select's open rows may still hold the reader there.
+  - **Row order.** The rows come in the order of the primary key of the rows
+  changed, or the reverse. The engine draws one direction per statement with
+  `returning`, the same way it draws for a query (`Engine.order`). The pair
+  checks the order against a select of SQLite run before the change
+  (`pair.returnedInOrder`, `pair.checkReturned`), and counts both directions
+  under `reached:`.
+  - **Context cancellation.** It behaves as for the statement without
+  `returning`. A context that ends while the caller reads the rows ends them
+  with the context's error, and the change stays committed.
+  - **Telemetry.** A statement with `returning` logs one event, as the write it
+  is, when the write ends and before its rows are read.
+    - `statement.rows` is the count changed, which equals the count returned.
+    - An update or a delete also gets `statement.direction`.
+    - `statement.rows_read` includes the extra `get` of a delete.
+    - `report.end` now logs only once. No new metric or attribute.
+  - **Smaller details:**
+    - The plan types have a field `Returning *Returning`, and `Format` prints
+  it.
+    - `-0.0` comes back as `0.0`.
+    - The columns are named as the table stores them, with their declared types.
+  SQLite reports declared types for `returning` columns too, so they match
+  mattn.
+    - The `returning` columns are resolved after every other name in the
+  statement, with the same `no such column` error as a select list.
+
+  ### Where s4ql differs
+  - **From SQLite:** no new difference was found. SQLite gave key order in every
+  case I measured; s4ql varies the order, by the spec's rule.
+  - **From mattn/go-sqlite3:** its Exec of a statement with `returning` reports
+  the change count of the statement before it. mattn steps the statement once,
+  and SQLite only updates the count when the statement finishes; the pinned
+  shell shows the correct count. The driver check now runs SQLite's side of such
+  an Exec through Query and counts the rows (`execByQuery`).
+
+  ### For the builder of the generated checks
+  - `stmttest.Generator.Returning` stays at 0 in `Sequence`, and every least
+  number and pinned count is unchanged.
+  - In the driver check, `pair.openRows` (for `callQueryOpen`) runs its text a
+  second time, and so does a QueryRow with more than one column. A generated
+  write with `returning` will meet this. An insert would then fail with `UNIQUE`
+  on the second run, where the test requires no error.
+  - `PathAccessOf` builds an update or a delete without its `returning`, so that
+  `reachChange` still sees the access when a `returning` column is missing.
+
+  ### Tests
+  - **Engine** (`internal/engine/returning_test.go`): 44 calls through
+  `pair.step`, run on the core and in memory, in write transactions with commit
+  and rollback, in a read-only transaction, and with restarts. They cover every
+  type, defaults, nulls, -0.0, a column named twice, `*`, arguments, updates of
+  the key, of an indexed column, with the values a row already has, and matching
+  no row, constraint failures, and the order of the errors.
+  - **Engine, `TestConn_returning`:** columns, change counts, order varying over
+  40 seeds, a failed commit, context, open rows, the event, and goqite's send
+  (with the id from the caller) and receive (`update ... where id = ? returning
+  id, body`).
+  - **Driver:** `TestReturning`. The driver check has two sequences of slice 14
+  and a goqite subtest in `TestPair` that restarts with an empty cache.
+  - **Golden plans:** goqite's receive by id and a delete of a queue, both with
+  `returning`.
+
+  ### Self-review
+  The `code-review` skill found no bugs and four nits:
+  - Fixed: the notes said every insert draws a direction; only one with
+  `returning` does.
+  - Fixed: the planted bug `keepRead` no longer leaves the rows of a `returning`
+  open.
+  - Left: `returnedInOrder` with an update that sets a column twice. The pass
+  never produces one.
+  - Left for you: the simulator's SQL box (`internal/simulator/box.go`) still
+  builds. It now runs a statement with `returning` through `Conn.Exec` and drops
+  its rows; before, it refused it. I changed nothing there.
+
+  The one failure I found was a race-run failure that depended on the seed, not
+  on timing. With `-directions=7222707078055668510`, two rounds drew one
+  direction for every counted statement. The rounds now continue until both
+  directions appear, at most 20.
+
+  A writer updated `internal/engine/README.md`. I cherry-picked its commit and
+  removed its worktree and branch.
+
+  ### Questions
+  1. Do you want the rows of a `returning` in a transaction to keep refusing
+  other statements with `ErrRowsOpen`? Allowing them would be simple, since the
+  rows are fully held.
+  2. The simulator box drops the rows of a `returning`: should it show them, or
+  keep refusing such statements, or is it fine as it is? I left it alone, as the
+  brief says.
+
+  ### Files
+  - `internal/engine/returning.go`
+  - `internal/engine/returning_test.go`
+  - `internal/engine/engine.go`
+  - `internal/engine/tx.go`
+  - `internal/engine/operator.go`
+  - `internal/engine/plan.go`
+  - `internal/engine/telemetry.go`
+  - `internal/engine/export_test.go`
+  - `internal/engine/differential_test.go`
+  - `internal/engine/access_test.go`
+  - `internal/engine/testdata/plans/goqite*.txt`
+  - `internal/engine/README.md`
+  - `conn.go`
+  - `conn_test.go`
+  - `internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`
+  - `docs/todo/slice-14.md`
+  - `docs/todo/storage-core.md`
+  - `docs/diary/2026-11-23-returning-engine.md`
+
+⏺ Agent(Review slice 14 engine branch) Opus 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Slice 14 engine and driver" finished · 38m 19s
+
+⏺ The engine and driver for returning are built on a branch, and an independent
+  reviewer is reading it before I land it. Usage is at 51%.
+
+  - What runs: insert, update, and delete with returning, through Exec, Query,
+    prepared statements, transactions, and a restart with an empty cache.
+    goqite's send and its receive by id are among the tests.
+  - Rows are held in Go memory, with no bound yet. That is recorded as an open
+    item; a spool in the cache would bound it.
+  - Open rows in a transaction: the rows of a returning block other statements
+    in the same transaction, as a select's rows do. One rule for all open rows,
+    and lifting it later breaks nothing.
+  - Row order: primary key order or its reverse, drawn per statement, by the
+    spec's rule.
+  - mattn/go-sqlite3: its Exec of a statement with returning reports the change
+    count of the statement before it. s4ql reports the right count, and the
+    reviewer is checking that claim.
+  - Simulator: the SQL box now runs a returning statement and drops its rows.
+    That is the other session's code, so it is theirs to decide whether to show
+    them.
+
+✻ Sautéed for 30s · done Monday 2:28 PM
+
+› Message from general-purpose
+  ## Review of `worktree-agent-a9579e82a7d8bcd14` (slice 14, `returning` in the
+  engine and driver)
+
+  The SQL is correct in everything I tried. I found two faults in what the
+  caller is told after a commit has succeeded. Both are new with this slice, and
+  both break the promise in the package doc (`s4ql.go`, "Errors"): every error
+  except `ErrOutcomeUnknown` means the statement is not committed. I would fix
+  finding 1 and at least document finding 2 before the merge.
+
+  **1. A committed statement gets `ErrStopped` when the connector closes during
+  `Query`. Must fix; small change.**
+  - **Input:** `db.QueryContext(ctx, "insert into t1 (v1) values (1) returning
+  v1")`, with `db.Close()` coming between the commit and the return.
+  - **Wrong result:** `conn.QueryContext` (`conn.go`) gets the held rows back
+  from the engine. Then `c.c.hold(held)` fails, and it returns `errClosed`:
+  "s4ql: the instance has stopped: closed".
+  - **Proof:** a throwaway test (store wrapper whose `Swap` starts `db.Close()`
+  once the swap is applied) gave that error, and a second instance then read the
+  row as committed. `Exec` of the same statement in the same setup returned
+  nil.
+  - **Why it is new:** before this slice, a write through `Query` returned
+  `noRows` before `hold`.
+  - **Fix:** don't refuse rows that hold no read transaction. Return the
+  `returned` rows even when the connector is closed, or skip `hold` for them.
+
+  **2. A context that ends after the store applied the commit: `Exec` reports
+  success, `QueryRow` reports an error. Document before the merge; possibly a
+  design point for Markus.**
+  - **Input:** goqite's send shape, `QueryRowContext(ctx, "insert ... returning
+  v1").Scan(&v)`, with `ctx` cancelled right after the store applied the `Swap`.
+  This is a deadline running out during the S3 request.
+  - **Wrong result:** "s4ql: context canceled", yet the row is committed.
+  `ExecContext` in the same setup returned nil. A caller that retries would send
+  the message twice.
+  - **Proof:** a throwaway test, run 3 out of 3 times.
+  - **Where the error comes from:** the engine's own context check in the held
+  rows (`returned.rows`, which calls `values.rows`). `TestConn_returning`
+  deliberately pins this ("A context that ends after the commit ends the rows
+  with its error").
+  - **Limit of a code fix:** database/sql closes the rows itself once the
+  context is done (`awaitDone`), so code alone cannot remove the ambiguity.
+  - **Suggested:**
+    - Stop checking the context in `returned`, since the rows hold nothing. The
+  error left is then database/sql's own, which the doc says says nothing about a
+  commit.
+    - Say in the package doc that once `Query` of a statement with `returning`
+  has returned without error, the statement is committed. An error from its
+  rows, or from `Row.Scan`, says nothing about the commit, just like `ErrNoRows`
+  there.
+
+  **3. Open items, low:**
+  - `Exec` of a statement with `returning` still holds every row in memory. A
+  `delete` also does one extra `get` per row. `Exec` could build the statement
+  without its `returning`. This belongs beside the existing open item on memory.
+  - The site simulator's SQL box now runs a statement with `returning` through
+  `Exec` and shows no rows, where it refused it before. The builder already
+  noted this.
+
+  **Checked and correct, against SQLite with `pair.step` and the driver check:**
+  - **Rows moving within the range being scanned:**
+    - `update` of an indexed column that the statement's own `where` reads,
+  through single-column and composite indexes.
+    - `update` of the key into and out of the scanned range.
+    - These are safe because `changeRows` collects all keys before it changes
+  any row.
+  - **Constraint failing part-way:** `UNIQUE`, `NOT NULL`, and a record over the
+  length limit partway through many rows. All gave no rows and changed nothing.
+  - **Inside a transaction:** `returning` after earlier changes to the same
+  rows, failed statements (the savepoint is rolled back, and the earlier changes
+  stay), commit and rollback, then a restart with an empty cache. State matched
+  SQLite each time.
+  - **Wide tables:** 64, 65 and 100 columns, with `returning *` and with the
+  last column named.
+  - **Values:** nulls, defaults, `-0.0`, and seeds 1 to 3 for row order.
+  - **Driver sequence:** `QueryRow`, prepared and repeated runs, `Stmt` inside a
+  transaction, rollback and commit.
+  - **Mutation:** reporting the wrong direction made `TestEngine_returning`
+  fail, so the order check can fail.
+
+  **The builder's claims:**
+  - **mattn:** confirmed in
+  `/Volumes/990/go/mod/github.com/mattn/go-sqlite3@v1.14.53/sqlite3.go`.
+  `execSync` steps the statement once (`_sqlite3_step_row_internal`) and reads
+  `sqlite3_changes` straight after that first step. `execByQuery`, which counts
+  the rows instead, is a sound replacement.
+  - **Telemetry:** no existing path called `report.end` twice. The new guard
+  only stops the end of the `returning` rows from logging a second event.
+  Existing events do not change.
+  - **Planted bug `keepRead`:** it changed only for `returning` rows. Its effect
+  on the rows of a `select` is unchanged.
+  - **Timing:** no test depends on it. The loop of rounds and the 40-seed
+  variation test are both fixed for a given seed.
+
+  I did not run `make test`. All throwaway tests are deleted, and my worktree is
+  clean.
+
+⏺ fabrik:builder(Fix review findings slice 14)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Agent "Review slice 14 engine branch" finished · 9m 49s
+
+⏺ The review found the SQL correct in every hard case it tried, and two faults
+  in what the caller is told after a commit has succeeded. A fresh builder is
+  fixing them before I land the branch.
+
+  - Close during Query: if the database is closed between the commit and the
+    return of the rows, Query gave "the instance has stopped" although the
+    change was committed. The fix: once the commit is acknowledged, the rows are
+    always returned.
+  - Context ending after the commit: QueryRow gave "context canceled" for a
+    committed change, where Exec gave success. A caller that retries would send
+    a goqite message twice. The fix: the held rows no longer check the context.
+
+  One part of the second fault cannot be fixed in code, and it touches the
+  public contract, so you should know it: database/sql itself closes rows when
+  their context ends. So the package doc will say that once Query of a returning
+  statement has returned without error, the statement is committed, and a later
+  error from the rows or from Row.Scan says nothing about the commit.
+
+  The reviewer also confirmed the claim about mattn's Exec count in mattn's
+  source.
+
+✻ Brewed for 34s · done Monday 2:38 PM
+
+› Message from fabrik:builder
+  All three findings are fixed on the branch `worktree-agent-afdb6c3442418f885`:
+  3 commits on top of `worktree-agent-a9579e82a7d8bcd14` (4589545, a40aa09,
+  30c642b), not pushed. `make test`, `make lint` and `make test-sql` pass, and
+  every new test passed `-count=50` with and without `-race`, and again under
+  load with `-cpu 1,4`.
+
+  **Finding 1 (a committed statement got "stopped" when the connector closed
+  during `Query`):**
+  - **Fix:** a new `engine.Rows.Holds()` reports false for the rows of a
+  `returning` outside a transaction. `conn.QueryContext` now asks
+  `connector.hold` only when `r.Holds()` is true. So once the commit is
+  acknowledged, the rows come back without an error, also on a connector that is
+  closed or closing, and its close does not close them.
+  - **Inside a transaction:** the rows are still held and refused after a close,
+  because nothing there is committed.
+  - **Other paths:** I checked every step between the commit's acknowledgement
+  and the return of the rows, in the engine, the driver and `database/sql`. None
+  of them can fail.
+  - **Test:** `TestReturning` in `conn_test.go`, "should give the rows of a
+  committed statement with RETURNING when the database closes between the commit
+  and the end of Query". The store wrapper `faulty` has a new `afterSwap` hook.
+  It starts `db.Close()` once the swap is applied and waits until the
+  connector's close has begun (new `OpenStoreConnector` and
+  `Connector.Closing()` in `export_test.go`). That forces the order, so no
+  timing decides it.
+  - **Red before the fix:** `"s4ql: the instance has stopped: closed"`.
+
+  **Finding 2 (a context ending after the commit made `QueryRow` report "context
+  canceled"):**
+  - **Fix:** `returned.rows` no longer checks the context, outside a transaction
+  and inside one. In a transaction the change is made as well, and the rows
+  hold the connection but nothing that the context bounds, so I found no reason
+  to keep the check there.
+  - **Engine test:** the `TestConn_returning` subtest that pinned the old
+  behaviour is renamed "...and give every row where it ends after the change".
+  It now requires the rows in both cases.
+  - **Driver test:** a new `TestReturning` subtest, "should commit a statement
+  with RETURNING whose Query returns no error, also when its context ends once
+  the commit is applied, whatever its rows then give". It uses `afterSwap` to
+  cancel the context, through `QueryContext` and `QueryRowContext`.
+  - **Docs:** the "Errors" section of `s4ql.go` now says that once
+  `QueryContext` of a `returning` has returned without an error, the statement
+  is committed, and that a later error from `Rows.Err` or `Row.Scan` says
+  nothing about the commit.
+  - **Found while testing:** under `-race`, `database/sql` can close the rows
+  between `Next` and `Scan`, so `Scan` itself gives `context.Canceled`. The test
+  accepts that.
+
+  **Finding 3 (`Exec` held every row, and a delete made an extra `get` per
+  row):**
+  - **Fix:** `Conn.write` and `Conn.writeIn` take a new `returns` flag, and
+  `Exec` passes false. The sink is still built with its `returning`, so the
+  errors, their order and the count are unchanged. A new `dropReturns` then
+  empties the sink's rows before it runs.
+  - **Test:** a new `TestConn_returning` subtest, "should drop the rows of
+  RETURNING in Exec, with the errors and the count of Query, and read no deleted
+  row again". It compares the errors of `Exec` and `Query` for a missing
+  `returning` column (on an insert, an update and a delete) and for a UNIQUE
+  failure. For a delete of 2 rows, `Exec` now logs `statement.rows_read` 2,
+  where `Query` logs 4.
+  - **Telemetry:** besides the lower `rows_read` you expected, an update or
+  delete with `returning` through `Exec` no longer logs `statement.direction`.
+  The engine still makes the draw, so the sequence of draws doesn't depend on
+  Exec or Query, but no row shows it.
+  - **Docs:** the doc comments for `rows_read` and `direction` in `telemetry.go`
+  and the engine README are updated, and the open item on memory in
+  `docs/todo/storage-core.md` now says that `Exec` holds no rows.
+
+  **Self-review** (code-review skill, medium) found four nits and no blocking
+  bug:
+  - I fixed three. The doc of `connector.Close` now names the rows it leaves
+  open. `faulty.Swap` no longer skips a planned `loseNext` after `afterSwap`.
+  The direction attribute for `Exec` is the change above.
+  - The fourth nit was that rows inside a transaction no longer end with their
+  context, so they could keep the connection busy. I kept the change: `Rows.All`
+  still ends the rows when a loop stops early, and the driver closes them when
+  `database/sql` closes its rows.
+
+  **Notes and diary:** the review notes are under "Review of the engine step" in
+  `docs/todo/slice-14.md`, and the two old bullets on context and telemetry now
+  point there. The diary is `docs/diary/2026-11-23-returning-engine-review.md`.
+
+  **Left open:** the rows of a `returning` through `Query` are still held in
+  memory without a bound, which is the existing open item. Nothing else turned
+  up outside the brief.
+
+  Files changed:
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/co
+  nn.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/ro
+  ws.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/s4
+  ql.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/ex
+  port_test.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/s4
+  ql_test.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/co
+  nn_test.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/in
+  ternal/engine/engine.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/in
+  ternal/engine/tx.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/in
+  ternal/engine/returning.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/in
+  ternal/engine/telemetry.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/in
+  ternal/engine/returning_test.go
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/in
+  ternal/engine/README.md
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/do
+  cs/todo/slice-14.md
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/do
+  cs/todo/storage-core.md
+  - /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-afdb6c3442418f885/do
+  cs/diary/2026-11-23-returning-engine-review.md
+⏺ Agent(Land slice 14 engine, update status) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Agent "Fix review findings slice 14" finished · 21m 34s
+
+⏺ All three review findings are fixed, and the branch is going through its pull
+  request and CI now; the status texts follow after the merge.
+
+  - Close during Query: once the commit is acknowledged, the rows come back
+    without an error, also on a database that is closing. A test forces that
+    order from inside the fake store.
+  - Context ending after the commit: the held rows no longer check the context,
+    and the package doc now says that a Query of a returning statement that
+    returned no error is committed, whatever its rows report afterwards.
+  - Exec: it no longer holds the rows it drops, and a delete through Exec no
+    longer reads each row a second time.
+
+  Next after the merge are the generated checks of returning, then mutation
+  testing.
+
+✻ Baked for 27s · done Monday 3:00 PM
+
+› Message from general-purpose
+  Slice 14's engine and driver branch is merged as PR #130, merge commit
+  70b53ccc3fff12d9f7a9221cd03c24aefe916612, and the status texts are updated and
+  pushed on `main`.
+
+  - **Checks:** 29 checks, all `pass`, with `changes` among them, so none was
+  skipped. The PR state read `MERGED` before I cleaned up.
+  - **Cleanup:**
+    - I ran `git pull --ff-only origin main`.
+    - I removed the worktrees `agent-afdb6c3442418f885`,
+  `agent-a9579e82a7d8bcd14` and `agent-acce3f6e33918ee4b`. Only `a9579` was
+  locked.
+    - I deleted their local branches. `git cherry` showed no `+` lines for any
+  of them.
+    - I deleted the remote branch `worktree-agent-afdb6c3442418f885`.
+    - I left `agent-a534657ccdda20876` and all `simulator-*` and `browser-*`
+  branches alone.
+  - **Status commit:** 1605314, "Update the status after the engine and driver
+  of slice 14". It changes 3 files:
+    - `docs/roadmap.md`: the status line of "Slice 14" now says built on
+  2026-11-23, as specified. I left the line "Everything of slices 1 to 13 ..."
+  alone.
+    - `README.md`: the Status date is 2026-11-23, `returning` is added to what
+  works, and "Next" now names the generated checks and the mutation testing of
+  `returning`.
+    - `site/index.html`: the `status` section has the same changes. In the
+  `roadmap` section, slice 14 now uses the markup, class and "Built" label of
+  slice 13, with a sentence on how it is checked.
+    - `docs/todo.md` needed nothing, because the `slice-14.md` line was already
+  there.
+  - **Odd:**
+    - No CI run showed up for the branch for a minute or two after the PR was
+  opened. The first `gh pr checks` showed only 2 pending checks, and I only
+  counted the 29 once the run had finished.
+    - `gh run watch` moved to the background twice, and I waited for it to
+  finish.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Land slice 14 engine, update status" finished · 7m 55s
+
+⏺ fabrik:builder(Generated checks of slice 14)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ returning is built and merged (#130, all 29 checks passed), and the status
+  texts are updated (1605314). The builder of the generated checks is running
+  now; mutation testing follows it. Usage is at 51% of the week.
+
+✻ Sautéed for 44s · done Monday 3:09 PM
+
+› Message from fabrik:builder
+  placeholder
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The checks builder is still running: it has six commits and is now in its own
+  review with two helpers. The message that just arrived from it was an empty
+  placeholder, so I am waiting for its real report.
+
+✻ Sautéed for 8s · done Monday 3:51 PM
+
+› Message from fabrik:builder
+  The report "placeholder" from the returning-checks builder was sent by
+  mistake; the work is still running (timing, README writer, self-review), and
+  the real report follows when it is done.
+
+⏺ The builder confirmed the placeholder was sent by mistake; its real report
+  comes when the timing runs, the README update, and its self-review are done.
+
+✻ Baked for 1s · done Monday 3:51 PM
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  48m 43s
+
+⏺ The checks builder has paused while its own helpers finish; it resumes and
+  reports when they are done. Nothing to act on yet.
+
+✻ Cooked for 2h 59m 35s · done Monday 3:57 PM
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  50m 58s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  51m 2s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  51m 10s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  51m 57s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  52m 51s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  54m 40s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  56m 34s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  57m 16s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  58m 20s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  1h 0m 57s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  1h 3m 44s
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  1h 3m 46s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  1h 4m 2s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  1h 4m 48s
+
+⏺ Agent "Generated checks of slice 14" is waiting on its own background work · 
+  1h 21m 51s
+
+› Message from fabrik:builder
+  Final report of the builder of the generated checks of slice 14 (this replaces
+  the earlier report that said only "placeholder", which I sent by mistake).
+  The checks are built on branch `worktree-agent-adba0e2e9333a5567`, 8 commits
+  on `main` at `1605314`. They found no fault in s4ql, and one difference from
+  SQLite that no recorded decision covers, which needs your call. No workflow
+  file changed. `make test`, `make lint`, and `make test-sql` pass. Nothing is
+  pushed.
+
+  DECISION NEEDED: RETURNING under a lowered length limit.
+  - What happens: SQLite writes each row of RETURNING into a record of its own
+  before it gives the rows. When RETURNING names a column twice, that record can
+  be longer than the limit although the row fits. SQLite then refuses the
+  statement with `string or blob too big` and changes nothing; s4ql gives the
+  rows and makes the change.
+  - Where it showed: TestDifferential met it once, on `delete ... returning
+  "generated", "generated", "T1 "` of a row with a blob near the limit.
+  - Meanwhile: a narrow excuse, `excusedReturningTooBig` with
+  `pair.returningTooBig`, pinned exactly at 1. It applies only to a column named
+  twice, a lowered limit, SQLite's 18/18 against no error in s4ql, the
+  statement without RETURNING passing in SQLite under the limit, and s4ql's rows
+  matching SQLite's run without the limit.
+  - The choice: keep it as a known difference, as slice 13 did for the sort near
+  the limit, or make s4ql measure each row of RETURNING as SQLite builds it and
+  refuse it. The second needs SQLite's record format for a row that is not
+  stored. Written up in docs/todo/slice-14.md, "Generated checks".
+
+  WHAT THE CHECKS COVER NOW
+  - Generator: a new area `returning`, with the hook `Generator.Return` and the
+  profile `returning` at slot 11; `Mixed` has `Returning` 5. Two new profile
+  fields aim at goqite: `ByKey` (an update of the row of a key) and `KeyLeftOut`
+  (an insert that leaves out a key with a default); both are 0 in every other
+  profile. A statement with RETURNING runs through Query seven times in eight.
+  Only the digests of `mixed` and `returning` moved.
+  - Engine differential tests: `reachReturning` counts each statement by Query
+  or Exec and outcome, `*`, names, a column twice, a missing column, no, one, or
+  several rows, every type, NULL, a column left out of an insert's list (with
+  and without a default), SET of the key and of an indexed column, constraint
+  failures where WHERE finds two rows or more, and goqite's send and receive by
+  id. An update or a delete with RETURNING is checked against the model of the
+  access choice and counted. TestConn_differential counts the commit and the
+  roll back of a transaction whose RETURNING gave rows. 80 sequences of the
+  profile in TestDifferential, 40 in TestConn_differential. Both directions of
+  row order occur: 19 and 29 times in TestDifferential, 5 and 5 in
+  TestConn_differential. A fixed order, planted by hand and reverted, failed
+  both tests on their least numbers.
+  - Driver check: a write now runs once on each side. QueryRow scans into as
+  many destinations as RETURNING has columns (`queryRow`,
+  `pair.returningWidth`); mattn's side runs it through Query (`execByQuery`).
+  `callQueryOpen` of a write in a transaction runs once (`pair.openWrite`);
+  `pair.closeRows`, and `pair.end` when the transaction ends, compare the rest
+  of the rows and the table. `checkQuoted` handles a column of RETURNING in
+  double quotes; its excuse was renamed, so its exact rows moved in every
+  profile. The profile runs 30 sequences.
+  - Simulation: the rows a caller read from a statement of its own must equal
+  SQLite's run of its commit in the log. An acknowledged statement must be in
+  the log, as before, and survive the crashes and the final replay into an empty
+  cache. In a transaction, rows are compared with SQLite's on the transaction's
+  state. Default and hammer each have a cell of 6 seeds of `returning`.
+  - Least numbers: a third of the 2026-11-23 totals for 59 kinds in
+  TestDifferential, 11 in TestConn_differential, 9 in TestSimulation, and 29 in
+  TestGenerated. Four more are required once over all profiles in TestGenerated.
+  Recounts moved only rows of `mixed`, `returning`, and the environments that
+  hold them.
+
+  PLANTED BUGS
+  TestDifferential_plantedBugs, sequences of 30 that find each, each by rows
+  that differ from SQLite's:
+  - oldValues 11, deleteNone 16, dropLast 11, starKeyFirst 16.
+  - rowsOfFailed cannot be found there, since no commit fails there.
+  TestSimulation_plantedBugs, all in the hammer environment, which has no
+  crashes, so the sanitizer plays the same seeds; the test needs 2 within 100:
+  - rowsOfFailed: 71 of 200 seeds, all 71 by its own violation; 39 of the first
+  100 with the sanitizer setting.
+  - oldValues: 132 of 200, 46 by its own violation; 25 of the first 100 with the
+  sanitizer setting.
+  - dropLast: 135 of 200, 112 by its own violation; 58 of the first 100 with the
+  sanitizer setting.
+  - deleteNone and starKeyFirst do not run in the simulation.
+  Left out: "rows of a statement rolled back at its savepoint", because the
+  engine gives rows only with a nil error, and the variant that also drops the
+  error is the existing `keepFailed`. "The order never varies" is caught only by
+  the least numbers, as above.
+
+  FIXES FROM REVIEW
+  - A real test fault: the simulation compared a write that was read only in
+  part by its rows. It is now compared by its error alone.
+  - From the review: `Conn.queryText` in internal/engine/engine.go now never
+  gives rows together with an error. This is a small production hardening; no
+  code path did that before.
+  - The writer's README updates for `stmttest` and the engine are reviewed and
+  committed.
+
+  RUN TIMES, back to back, twice, main then branch, machine load 12 to 14:
+  - engine, full: main 101 s and 101 s; branch 115 s and 114 s.
+  - engine, -short: main 54 s and 52 s; branch 57 s and 57 s.
+  - engine, -race -short: main 154 s and 154 s; branch 181 s and 166 s, measured
+  before dropLast went from 4.6 s to 1.05 s under race.
+  - driver check: main 13 s and 13 s; branch 14 s and 15 s.
+  - driver check, -race: main 44 s and 43 s; branch 50 s and 48 s.
+  I did not change the sanitizer shards: most of the new time is in
+  TestSimulation_plantedBugs, which is already split across shards by subtest.
+  The full engine package is about 13% slower; if CI's `sql` job needs it back,
+  the cheapest cut is the factor 2 of `returning` in `sequencesOf`, at the cost
+  of goqite's receive, which is already thin.
+
+  THIN OR OPEN (listed in docs/todo/generated-workload.md)
+  - goqite's receive by id: 7 times in TestDifferential, 6 in
+  TestConn_differential.
+  - RETURNING row order in TestConn_differential: 5 and 5.
+  - In the simulation: a failed commit 9 times, an unknown outcome 8.
+  - The driver check requires goqite's send and receive, and update and delete
+  with RETURNING of several rows, only once over all profiles.
+  - When a transaction ends with a write's rows still open, the
+  commit-with-rows-open path is no longer exercised for writes: the rest is now
+  compared before the end instead.
+
+  Main files:
+  - internal/sql/stmt/stmttest/profile.go
+  - internal/sql/stmt/stmttest/sequence.go
+  - internal/engine/differential_test.go
+  - internal/engine/simulation_test.go
+  - internal/engine/bugs.go
+  - internal/sqlite/crosscheck/drivercheck/drivercheck_test.go
+  - docs/todo/slice-14.md
+  - docs/diary/2026-11-23-returning-checks.md
+  All are under
+  /Users/maragubot/Developer/s4ql/.claude/worktrees/agent-adba0e2e9333a5567. The
+  scratch directory /Volumes/990/s4ql/worktree-agent-adba0e2e9333a5567 is
+  deleted.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent(Review slice 14 generated checks) Opus 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Agent "Generated checks of slice 14" finished · 1h 24m 0s
+
+⏺ The generated checks of returning are built on a branch, and an independent
+  reviewer is now planting faults of its own to see whether the checks find
+  them. Usage is at 52%.
+
+  - No fault found in s4ql. Generated sequences with returning now run in the
+    engine's differential tests, through the driver against mattn/go-sqlite3,
+    and in the simulation.
+  - Simulation: rows that a caller read must match the commit in the log, and an
+    acknowledged statement must survive crashes and a replay into an empty
+    cache.
+  - Planted bugs: five, each found. Of the three that run in the simulation, the
+    rarest is found in 71 of 200 seeds, and in 39 of the first 100 under the
+    sanitizer's setting, where the test needs 2.
+  - One difference from SQLite, which I decided to keep as a known difference:
+    under a lowered length limit, SQLite refuses a returning that names a column
+    twice when the returned row grows past the limit, although the stored row
+    fits. s4ql gives the rows. It is the same kind of difference as slice 13's
+    sort near the limit, and it is excused narrowly and pinned at one
+    occurrence.
+  - Cost: the engine's full test run is about 13% slower (101 s to 115 s here).
+
+✻ Brewed for 28s · done Monday 4:33 PM
+
+› Message from general-purpose
+  ## Review of `worktree-agent-adba0e2e9333a5567`: the generated checks of slice
+  14 (`returning`)
+
+  **Verdict: nothing blocks the merge.** I planted 19 faults of my own. 16 were
+  found by the generated checks, and 2 more only by table tests. One survived
+  every check (finding 1). Nothing I found is wrong with the production code. On
+  the clean branch, `make test-sql`, the three engine checks and the driver
+  check all pass. I ran `make test-sql` twice, the second time with the worktree
+  certainly clean. My worktree is clean, and I deleted my scratch directory on
+  `/Volumes/990`.
+
+  ### Planted faults
+  Each fault was planted alone in a copy of the tree. "Diff" is
+  `TestDifferential`, "Tx" is `TestConn_differential`, "Sim" is
+  `TestSimulation`, "Drv" is the driver check (`TestSequences`/`TestGenerated`).
+  The tests stop at the first failure, so I measured how often faults are found
+  only for E1 and E3: I put each behind a planted-bug flag and counted with the
+  `_plantedBugs` tests.
+
+  | # | Fault (file) | Result |
+  |---|---|---|
+  | E1 | update that changes the key returns the old key (operator.go) | Diff,
+  Drv. Diff finds it in 2 of 30 `returning` sequences, Sim in 12 of 100 hammer
+  seeds. Tx and the 6-seed Sim cells miss it. **Survives `-short`** |
+  | E2 | first row given twice when there are several (returning.go) | Diff, Tx,
+  Sim, Drv |
+  | E3 | `*` puts the columns that have a default last (returning.go) | Diff (2
+  of 30 sequences), Drv. **Survives `-short`** |
+  | E4 | a column named twice is given once | all four |
+  | E5/E5b | delete with RETURNING always in key order; the draw is still made
+  (engine.go `order`) | **Survives everything**: generated checks, `_returning`
+  table tests, driver check |
+  | E6 | unknown commit outcome gives rows with no error, for RETURNING only |
+  Sim, all three environments ("is not in the log") |
+  | E7 | -0.0 is no longer turned into 0.0 | Diff, Sim, Drv |
+  | E8 | an empty blob is given as NULL | Diff, Drv (also under `-short`) |
+  | E9 | a statement that changes no row gives no columns | all four |
+  | E10 | `Exec` of a delete with RETURNING counts at most 1 | Diff, Drv. The
+  driver check does compare the `Exec` count, so running mattn's `Exec` through
+  `Query` loses nothing there |
+  | E11 | in a transaction, rows of a statement that failed are carried into the
+  next statement's rows | Sim, Tx (Drv misses it) |
+  | E12 | driver: no declared type for rows of RETURNING outside a transaction
+  (rows.go) | Drv |
+  | E13 | `Commit` while a loop reads RETURNING rows commits instead of refusing
+  (tx.go) | Survives everything. Not reachable through `database/sql`, which
+  closes the rows before the driver's `Commit` |
+  | E14 | rows of RETURNING end when their context ends | Generated checks miss
+  it; the table test `TestConn_returning` catches it |
+  | E19 | an insert gives the columns its list leaves out, with a default, as
+  NULL | Diff, Tx, Sim, Drv |
+  | E23 | column names as written in RETURNING, not as the table stores them |
+  Diff, Tx, Sim, Drv |
+  | E42 | a context that ended after a successful commit turns it into a failure
+  | Survives (see finding 3) |
+  | E43 | driver: `Query` swallows an unknown outcome (conn.go) | Only the table
+  test `TestReturning`; the generated checks never test the driver under faults
+  |
+
+  ### Findings, most severe first
+  1. **The order of RETURNING rows is pinned for all statements together, not
+  per statement (medium, open item).** The kinds "RETURNING whose rows came in
+  the (reverse of the) order of the key" do not say which statement gave the
+  rows. A delete, or only an update, stuck in one direction (E5b) passes
+  everything, which breaks the spec's rule that unspecified order varies. The
+  table test of variation uses only an update. Fix: add the statement to those
+  two kinds in `pair.checkReturned` and require both directions for update and
+  delete. It is cheap and could go in before the merge.
+  2. **Faults that are found rarely (low).** E1 and E3 are each found by 2 of 30
+  sequences, and not at all under `-short`. CI runs without `-short`, so they
+  are caught there. A kind for "update with RETURNING of the key that sets the
+  key", and one for `*` on a table whose defaulted column is not last, would
+  make them sturdier. Open item.
+  3. **No generated check ends a context between the commit and the return (low,
+  true on paper).** The simulated clock gives that window zero width, so E42
+  never happens. The check that would catch it ("in commit, its caller was told
+  failed") exists. Today's code reads no context after the commit. Open item, or
+  leave it.
+  4. **The simulation checks the invariant on the engine, not on the driver
+  (low).** E43 is caught only by `TestReturning`. That is adequate, but worth
+  one line in the README.
+  5. **Stale documentation (nit, fix in passing).** `internal/engine/README.md`
+  (around line 1100) and `docs/todo/slice-14.md` ("Generated checks") still say
+  "A `Query` that fails must give no row (`run.statement`)". The diary says that
+  check was removed, and `run.statement` never reads rows after an error.
+  6. **The production change is right but guards a path that does not exist
+  today.** `queryText` now gives no rows whenever `write` returns an error. No
+  path in `write`/`writeIn` returns both rows and an error, even with the
+  planted bugs, and the driver drops rows on an error anyway. It is harmless and
+  makes the rule hold by construction.
+
+  ### What the reading checked
+  - **The two excuses are not wider than the decision.**
+  `excusedReturningTooBig` needs a column named twice, a lowered limit, SQLite's
+  18/18, and s4ql with no error. The statement without RETURNING must also
+  succeed in SQLite, and the answer without the limit must equal s4ql's;
+  anything else fails the comparison. Its count is pinned exactly at 1.
+  Multi-row VALUES is not supported, so no insert gives several rows. The
+  renamed `excusedQuoted` still requires s4ql's exact pinned-build error on
+  every run.
+  - **The `.kinds` files are hand-written, and recounts touch only the `.tsv`
+  files.** One driver kind is not required: "update with RETURNING through exec
+  ok". The engine requires it.
+  - **Simulation invariant.** Half 1 (rows read with no error belong to a commit
+  in the log, compared with SQLite's run of that commit) failed when broken, by
+  E2, E4, E9, E19 and E23. Inside transactions, E11 shows it too. Half 2 (a
+  failed commit gives no change, and an unknown outcome stays unknown) failed
+  when broken by `rowsOfFailed` and E6. "No rows on failure" holds by
+  construction, not by a check.
+  - **The commit-with-rows-open path for writes that the builder says is no
+  longer exercised** cannot be reached through `database/sql` (E13), so dropping
+  it loses nothing that matters.
+  - **Timing:** nothing in the new checks depends on it.
+
+  I did not plant "a prepared statement run twice gives the first run's rows".
+  The driver's `prepared` keeps no state, so the fault would have been
+  contrived.
+
+
+⏺ fabrik:builder(Fix review of slice 14 checks)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Agent "Review slice 14 generated checks" finished · 21m 38s
+
+⏺ The review of the generated checks found nothing that blocks the merge and no
+  fault in the production code. A builder is closing the gaps it found before I
+  land the branch.
+
+  - The reviewer planted 19 faults of its own: the generated checks found 16,
+    table tests found 2 more, and one survived everything.
+  - The survivor: a delete whose returning rows always come in key order. The
+    checks counted both directions of the order over all statements together, so
+    one statement stuck in one direction passed. The fix requires both
+    directions for update and for delete separately.
+  - Two faults were found only rarely (by 2 of 30 sequences each): an update of
+    the key that returns the old key, and * with the columns in the wrong order.
+    The profile is being aimed at both.
+  - Left as an open item: no generated check ends a context between the commit
+    and the return of the rows. Today's code reads no context there.
+
+✻ Crunched for 25s · done Monday 4:55 PM
+
+› Message from fabrik:builder
+  Branch: `worktree-agent-a38dc2f6a63583b3b`. It is your branch reset to
+  `worktree-agent-adba0e2e9333a5567`, plus 5 commits (25206db..d1b639f). Nothing
+  is pushed and no production code changed. Every fault was planted by hand and
+  reverted. `make test`, `make lint` (0 issues) and `make test-sql` pass. The
+  changed table tests also pass with `-count=20` and with `-race -count=5`.
+
+  **1. Order of the rows, checked per statement.**
+  - `pair.checkReturned` now counts "update with RETURNING whose rows came in
+  the order of the key", its reverse, and the same two for a delete.
+  - All four are required in `TestDifferential`, `TestConn_differential` and the
+  first part of `TestEngine_returning`.
+  - `TestConn_returning`'s variation test now also runs a delete of the three
+  rows after the update, and requires both orders of each.
+  - `TestConn_differential` needed 80 sequences of `returning` instead of 40:
+  with 40, the reverse order of a delete was reached only twice.
+  - Proof: I made `Engine.order` draw the direction and then force forward, once
+  for `*Delete` and once for `*Update`. For the delete, `TestDifferential`,
+  `TestConn_differential` and both table tests fail on the least number of the
+  reverse kind ("0 times … requires 7" and "requires 2"). For the update, the
+  same four tests fail on the update's reverse kind.
+  - Only the engine checks the order; the driver check does not count it.
+
+  **2. The two rare faults** (counted over the sequences `TestDifferential`
+  runs; the short-run count is no slower, it is the same number of sequences):
+
+  | Fault | Before | After |
+  |---|---|---|
+  | Update that moves the key returns the old key | 4 of 80; 0 of 8 under
+  `-short` | 23 of 80; 4 of 8 under `-short` |
+  | `*` puts the columns with a default last | 6 of 80; 0 of 8 under `-short` |
+  42 of 80; 6 of 8 under `-short` |
+
+  `mixed` finds each in 5 of 200 sequences and in 0 of 20 under `-short`.
+  Nothing changed in `mixed`.
+
+  - New profile fields, each 0 in every other profile, so only the `returning`
+  digest changed:
+    - `NewKey` moves a row to a key no insert gives.
+    - `EveryRow` updates every row.
+    - `DefaultFirst` gives one table in two a default on its first column and
+  none on its last.
+  - The profile's update weight went from 7 to 12.
+  - Two new kinds count what the aims reach: "…of the key that moves a row to
+  another key" and "`*` that gives a row of a table with a column without a
+  default after one with a default" (per statement).
+  - New subtests in `sequence_internal_test.go` pin the three fields.
+
+  **3. Driver kind.** "update with RETURNING through exec ok" is now in
+  `TestGenerated.kinds` with least number 3 (11 reached). `TestGenerated` runs
+  50 sequences of `returning` instead of 30, because the profile change dropped
+  two delete kinds to 2. With 50, the four slice-14 kinds that were required
+  once over all profiles reach 3 or more, so they are now required per profile.
+
+  **4 and 5. Docs.** The engine README and the "Generated checks" section of
+  slice-14 now say that no row comes with an error because `Conn.queryText` only
+  gives rows on a nil error, and that `run.statement` reads no rows after an
+  error. The README also says:
+  - The simulation checks the RETURNING rule on the engine.
+  - Through the driver, only `TestReturning` checks an unknown outcome, and a
+  commit applied while the context ends or the database closes.
+  - **Correction to the brief:** `TestReturning` has no test of a commit the
+  store refuses. That case is checked only by `TestConn_returning` on the
+  engine, and I wrote it that way.
+
+  **6. Open item.** Added to `docs/todo/generated-workload.md`, and the
+  thin-kinds item there is updated.
+
+  **Least numbers.** None was lowered or dropped; the new ones are a third of
+  their totals. I did not add "delete … `*` …" to `TestConn_differential.kinds`
+  because that test reaches it only twice; `TestDifferential` requires it.
+
+  **Side effects you should know about:**
+  - The default run no longer meets `excusedReturningTooBig`. A new subtest of
+  `TestPair_returning` now pins that excuse on a delete, an update and an
+  insert.
+  - The hammer cell of `returning` in `TestSimulation` went from 6 to 16 seeds.
+  With fewer, "statements … through Query whose outcome is unknown" reached at
+  most 2 in any run, and a required kind needs one run that reaches it 3 times.
+  It is now exactly 3, in one run only.
+  - `TestDifferential_plantedBugs` now finds the four slice-14 bugs in 21, 16,
+  13 and 16 of 30 sequences. I raised the least numbers to a third: `oldValues`
+  3→7, `dropLast` 3→4.
+  - `TestSimulation_plantedBugs` with 200 seeds finds the three bugs in 62, 149
+  and 143 seeds (62, 54 and 125 by their own violation). The README and the
+  comments beside those bugs show these counts.
+  - In `TestGenerated.tsv`, "select * with NULL ok" moves by one between two
+  recounts of the same code, for `mixed` and for `order`. That is older noise,
+  not from this change, and far above its least numbers.
+
+  **Run time** of `go test -count=1 ./internal/engine/`, base `a841d8c` and this
+  branch back to back on a machine at load about 13: 112.3 s before, 114.9 s
+  after (+2.6 s).
+
+  **Self-review.** The code-review skill found no bug and three nits, all fixed:
+  the share test could count a NewKey update with a fault in its SET as a ByKey
+  update; the `generatedOf` comment lost one reason for the extra sequences;
+  and the record of the earlier step in slice-14 was stale.
+
+  **Left:** the open items, mainly the unknown-outcome kind in the simulation,
+  which only one run reaches, and exactly 3 times. I don't know the reviewer's
+  full list of 19 faults. The new slice-14 section names only the faults your
+  brief named and the 16/2/1 totals.
+
+  Files:
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a38dc2f6a63583b3b/d
+  ocs/todo/slice-14.md` (section "Review of the generated checks")
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a38dc2f6a63583b3b/d
+  ocs/diary/2026-11-23-returning-checks-review.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a38dc2f6a63583b3b/d
+  ocs/todo/generated-workload.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a38dc2f6a63583b3b/i
+  nternal/engine/README.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a38dc2f6a63583b3b/i
+  nternal/sql/stmt/stmttest/README.md`
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Fix review of slice 14 checks" finished · 47m 39s
+
+⏺ Agent(Land slice 14 checks, update status) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The review gaps in the generated checks are closed, and the branch is going
+  through its pull request and CI now. Usage is at 53%.
+
+  - Row order: both directions are now required for update and for delete
+    separately. A fault planted by hand in either one fails four tests.
+  - The two rare faults are now found often: an update of the key returning the
+    old key goes from 4 to 23 of 80 sequences, and * with columns in the wrong
+    order from 6 to 42 of 80. Both are now found under -short too.
+  - Cost: the engine's test run grew by 2.6 s (112.3 s to 114.9 s).
+  - Thin spot, recorded: in the simulation, a returning statement with an
+    unknown commit outcome is reached exactly as often as its least number
+    requires, in one run only.
+
+  Mutation testing of slice 14 follows after the merge.
+
+✻ Brewed for 26s · done Monday 5:43 PM
+
+› Message from general-purpose
+  Pull request #131 is merged and cleaned up, and the status texts are updated
+  and pushed.
+
+  - **Pull request:** #131. The branch changed nothing under `.github/`. The
+  reviewer is markuswustenberg.
+  - **Checks:** 29 checks, all `pass` (none `skipping`), including `changes`.
+  The CI run was 45219718963.
+  - **Longest jobs:** `asan-fuzz (1)` 354 s, `test-engine` 330 s, `asan-fuzz
+  (3)` 323 s.
+  - **Merge commit:** `f2012f375b1965c0c20880d0ce8494a559bd4235`. `gh pr view`
+  said `MERGED` before I cleaned up.
+  - **Cleanup:**
+    - `main` was fast-forwarded.
+    - I removed the three worktrees (`agent-adba0e2e9333a5567` was locked, so I
+  unlocked it first) and deleted the three local branches. `git cherry` showed
+  no `+` lines for any of them.
+    - I deleted the remote branch `worktree-agent-a38dc2f6a63583b3b`.
+    - Only `agent-a534657ccdda20876` is left in `git worktree list`. I touched
+  nothing else.
+  - **Status commit:** `8f5156e` ('Update the status after the generated checks
+  of slice 14'), pushed to `main` without a rebase. It changes:
+    - the status line of slice 14 in `docs/roadmap.md`
+    - "Next" in the README's "Status" section
+    - "Next" in the `status` section of `site/index.html`
+    - slice 14's sentence in the `roadmap` section of `site/index.html`
+  - **Odd:** nothing. The README on disk changed once before my commit, and that
+  was my own edit.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Land slice 14 checks, update status" finished · 7m 38s
+
+⏺ fabrik:builder(Mutation testing of slice 14)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The generated checks of returning are merged (#131, all 29 checks passed; the
+  longest CI job took 354 s), and the status texts are updated (8f5156e).
+  Mutation testing of slice 14 is running now, the last check of the slice.
+  Usage is at 53%.
+
+✻ Cogitated for 27s · done Monday 5:51 PM
+
+› Message from fabrik:builder
+  ## Mutation testing of slice 14: report
+
+  **Branch:** `worktree-agent-aa464ec2f3c64d4c6`. It has 11 commits on `main` at
+  `8f5156e`. It is not pushed, and there is no pull request.
+
+  No mutant showed a fault in s4ql. Every mutant is killed or explained, in all
+  three packages.
+
+  ### Scope
+  I selected whole declarations, not single lines: every declaration that holds
+  a line that `git diff 9238075..main` adds or changes, or the place of a
+  removal. The script for this is `pick.py`.
+  - **`stmt`:** `recognizer.insert`, `recognizer.update`, `recognizer.delete`,
+  `recognizer.returning`, `Returning.Present`.
+  - **Engine:** all of `returning.go`, plus:
+    - `Conn.exec`, `Conn.queryText`, `Conn.write`, `Conn.writeIn`,
+  `Engine.order`, `returnedOf`
+    - `Rows.Holds`, `Rows.Close`
+    - `buildSink`, `build.change`, `insert.run`, `update.run`, `remove.run`
+    - `NewPlan`, `Format`, `returningOf`, `formatReturning`, `report.end`
+  - **Driver:** `conn.QueryContext`.
+
+  Files left out:
+  - `bugs.go` changed only the fields of the `bugs` struct, and their hooks are
+  inside the functions above.
+  - `rows.go` and `s4ql.go` changed only comments outside any function.
+
+  The tool could already mutate the root package (`-pkgs .`), so it needed no
+  change.
+
+  ### Numbers
+
+  **Before** (first runs, on the code at `8f5156e`, against the list as it was):
+
+  | Package | Generated | Not compiled | Killed | Timed out | Equivalent |
+  Unexplained |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `stmt` | 204 | 19 | 184 | 0 | 1 | 0 |
+  | `engine` | 1,510 | 361 | 1,076 | 2 | 29 | 42 |
+  | `.` | 45 | 6 | 31 | 5 | 0 | 3 |
+
+  **After** (the rerun on the final code: every survivor of the first runs, and
+  every mutant of `newReturned`, with every test):
+
+  | Package | Generated | Not compiled | Killed | Timed out | Equivalent |
+  Killed by new tests | Removed | Unexplained |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `stmt` | 204 | 19 | 184 | 0 | 1 | 0 | 0 | 0 |
+  | `engine` | 1,509 | 362 | 1,097 | 2 | 48 | 22 | 1 | 0 |
+  | `.` | 45 | 6 | 32 | 5 | 2 | 1 | 0 | 0 |
+
+  Neither report of the rerun has an equivalent entry that matches no survivor.
+
+  ### Real faults
+  None.
+
+  The round did find two old entries in `equivalent.txt` that slice 14 had made
+  wrong. Both of their mutants were killed:
+  - **`report.end condition: r.access != "" => true #2`:** its reason said a
+  direction is never set without an access. An insert with RETURNING now draws a
+  direction and has no access. I removed the entry.
+  - **`report.end remove statement: return =>`:** slice 14 put `if r.ended {
+  return }` first in `report.end`, so this key now named that new guard. The
+  entry for the level check is now `#2`.
+
+  A statement that a slice adds before others of the same text renumbers their
+  keys, so an old entry can silently name a new mutant. The report's list of
+  entries that match no survivor is what catches this.
+
+  ### Test gaps closed
+  - **Engine (table tests):**
+    - `Rows.Holds` had no engine test. Only the driver's tests read it, and they
+  do not run for an engine mutant.
+    - A begin while the rows of a RETURNING outside a transaction are open.
+    - The draw of a direction for an insert with RETURNING
+  (`TestEngine_reading`).
+    - The read of the row before a delete with RETURNING, its failure, and a row
+  that is gone at that point (`TestChangeRows`).
+    - The internal error of a RETURNING with no columns (`TestBuildReturning`).
+    - A sink whose rows are dropped holds none (`TestDropReturns`).
+    - The Exec and event subtests of `TestConn_returning` now also run inside a
+  transaction. There, Exec of a delete reads no row again, and Query of an
+  update or delete records its direction.
+  - **Driver:** `TestClose` now requires a second refused query after the close
+  has begun. Without it, a query that left the engine's rows open on its
+  connection went unnoticed.
+  - **Generated checks:** none of the survivors needed a new required kind or an
+  aimed profile. No least number in `testdata/reached/` changed.
+
+  ### Dead code removed
+  The `slices.Clone` before the reverse in `engine.newReturned`. Each statement
+  calls `returnedOf` once, and nothing reads the sink's rows after that, so the
+  rows are now reversed in place. The doc comment says so.
+
+  ### Entries added to `equivalent.txt`
+  These are in two new sections at the end of the file.
+  - `Conn.queryText condition: err != nil => false #2`: `Conn.write` and
+  `Conn.writeIn` never return a `*returned` together with an error.
+  - `conn.QueryContext condition: len(r.Columns()) == 0 => false`: the driver's
+  rows over engine rows that have ended give the same result as `noRows`. The
+  only difference is a nil versus an empty slice of column names, which nothing
+  promises.
+  - `conn.QueryContext remove statement: return noRows{}, nil =>`: same reason
+  as the previous entry.
+  - `returning.add condition: v.HasReal() => true`: `GetReal` of a value that
+  holds no real is +0.0, whose sign bit is clear.
+  - 16 variants of planted bugs, each with how the planted-bug test still finds
+  it:
+    - 5 of `rowsOfFailed`. One of them, `returns => true`, changes nothing at
+  all, because `dropReturns` has already emptied the sink when `returns` is
+  false.
+    - 1 of `skipUnique`.
+    - 5 of `starKeyFirst`.
+    - 4 of `dropLast`.
+    - 1 that leaves `oldValues`, `deleteNone`, and `starKeyFirst` out of a write
+  in a transaction.
+
+  ### Run time of the test packages
+  No measurable change: each new test or subtest takes 0.01 s or less. `make
+  test`, `make lint`, and `make test-sql` pass. The new tests passed 30 to 50
+  times under `-race`.
+
+  The self-review (code-review skill) found no bug. Its one nit was the in-place
+  reverse in `newReturned`. I left it as it is, because there is one call per
+  statement and the doc comment says the function takes the rows.
+
+  ### How the runs went
+  - Up to 7 workers at once, at a load of 11 to 26 on 10 cores.
+  - The main disk stayed at 45 GB free, and swap stayed flat at 1,964 MB used.
+  - The scratch directory `/Volumes/990/s4ql/worktree-agent-aa464ec2f3c64d4c6/`
+  is deleted.
+
+  ### Files
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/d
+  ocs/diary/2026-11-23-mutation-14.md`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/d
+  ocs/todo/slice-14.md` (section "Mutation testing")
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/i
+  nternal/sql/mutation/README.md` (section "RETURNING of slice 14")
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/i
+  nternal/sql/mutation/equivalent.txt`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/i
+  nternal/engine/returning.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/i
+  nternal/engine/returning_internal_test.go` (new)
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/i
+  nternal/engine/returning_test.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/i
+  nternal/engine/access_internal_test.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/i
+  nternal/engine/operator_internal_test.go`
+  - `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-aa464ec2f3c64d4c6/c
+  onn_test.go`
+
+  ### Open questions
+  1. A mutant of the engine never runs the root package's tests, so any engine
+  promise that only the driver reads has no layer in an engine run. This round
+  closed the one case it found (`Rows.Holds`). Should the runner also run the
+  root's tests for mutants of `internal/engine`? That would cost about 5 s per
+  survivor.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent(Land slice 14 mutation, final status) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ Agent "Mutation testing of slice 14" finished · 2h 55m 57s
+⏺ Mutation testing of slice 14 is done and found no fault in s4ql; its branch is
+  going through its pull request and CI now. Usage is at 54%.
+
+  - Scope: 1,758 mutants over the statement pass (204), the engine (1,509), and
+    the driver (45). Every one is killed or explained.
+  - Test gaps closed: 23 mutants are now killed by new tests, mostly in the
+    engine. Examples: whether the rows of a returning hold a read transaction,
+    and the read of a row before a delete returns it.
+  - Removed: one needless copy of the rows before they are reversed.
+  - Two old entries in the list of equivalent mutants had become wrong through
+    slice 14's changes, and both mutants were in fact killed. The list is
+    corrected.
+
+  Once this is merged, slice 14 is complete, and the next decision is yours:
+  which slice follows on the way to glue.
+
+✻ Cogitated for 23s · done Monday 8:47 PM
+
+› Message from general-purpose
+  Pull request #132 'Mutation testing of slice 14' is merged and cleaned up, and
+  the status texts are updated and pushed.
+
+  - **Checks:** 29 checks, all in bucket `pass`, including `changes`. The CI run
+  was 45252658711. The branch changed nothing under `.github`.
+  - **Merge:** merge commit 5078f097c8c9de9e4997bb6367c5e07b247cb680. `gh pr
+  view` said `MERGED`.
+  - **Cleanup:**
+    - `main` was fast-forwarded.
+    - The worktree `agent-aa464ec2f3c64d4c6` was removed. It was not locked.
+    - `git cherry` showed no `+` lines, so the local branch was deleted.
+    - The remote branch was deleted.
+    - Only `agent-a534657ccdda20876` is left among the worktrees, and I did not
+  touch it.
+  - **Status commit:** 6ca461b, 'Update the status after mutation testing of
+  slice 14', pushed to `main` without a rebase.
+    - `docs/roadmap.md`: the status line of slice 14 now says "built, with the
+  generated checks and the mutation testing done on 2026-11-23."
+    - `README.md`: "Next" now says the rest of the SQL that glue needs.
+    - `site/index.html`: the same change to "Next" in the status section. In the
+  roadmap section, slice 14's last sentence no longer says mutation testing is
+  to come. It now says "Mutation testing of the new code left no mutant
+  unexplained." That wording is mine, so change it if you want it shorter.
+
+  Nothing odd happened. `gh run watch` was moved to the background after 180
+  seconds, so I read the checks directly once the run had finished.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Land slice 14 mutation, final status" finished · 7m 48s
+
+⏺ Slice 14 is complete: returning on insert, update, and delete is built, with
+  generated checks and mutation testing, all merged (#129 to #132, every check
+  passed each time). main is clean at 6ca461b, and usage is at 54% of the week
+  against the 60% backstop.
+
+  Things I decided that you may want to overrule:
+
+  - Commit before rows: outside a transaction, the statement commits before
+    Query returns. A later error from the rows says nothing about the commit,
+    and the package doc says so.
+  - Stricter than SQLite: returning *, v1, returning t1.v1, and returning true
+    are refused.
+  - Known difference: under a lowered length limit, SQLite refuses a returning
+    that names a column twice when the returned row passes the limit; s4ql gives
+    the rows.
+  - Open rows: the rows of a returning inside a transaction block other
+    statements in it, as a select's do.
+  - Memory: rows returned through Query are held in memory without a bound,
+    recorded as an open item.
+
+  Next decision: I propose the scalar subquery as slice 15, on the right of = in
+  a where, with order by and limit 1. It is how goqite's receive picks its
+  message (where id = (select id from goqite where ... order by priority desc, 
+  created limit 1)), and it needs no expression evaluation. After it, only
+  received + 1 is missing from that statement, and that one I want to bring you
+  as a design question on how s4ql evaluates expressions.
+
+  Shall I add it to the roadmap and start?
+
+✻ Worked for 4h 22m 50s · done Monday 8:55 PM
+
+※ recap: We are building s4ql's SQL toward running glue, and slice 14, returning on insert, update, and delete, is now complete and merged. Next action: you decide whether slice 15 is the scalar subquery in a where, as I proposed. (turn off recaps in /config)
+
+❯ What's new since my last message? Concisely.                                  
+
+⏺ Since your "yes", slice 14 is built and complete: returning on insert, update,
+  and delete, merged in #129 to #132 with all checks passing. Usage is at 54%
+  of the week, against your 60% backstop.
+
+  - Checked: generated checks against SQLite and mattn/go-sqlite3, the
+    simulation, and mutation testing found no fault in s4ql. Two independent
+    reviews found two faults before the merge, both fixed: a committed returning
+    statement could report an error if the database closed or the context ended
+    right after the commit.
+  - Decided by me, for you to overrule:
+    - Outside a transaction the statement commits before Query returns, so a
+      later error from the rows says nothing about the commit.
+    - returning *, v1, returning t1.v1, and returning true are refused, where
+      SQLite accepts them.
+    - Rows from Query are held in memory without a bound for now.
+  - Waiting for you: I propose the scalar subquery as slice 15, where id = 
+    (select ... order by ... limit 1), which is how goqite's receive picks its
+    message. Shall I add it to the roadmap and start?
+
+✻ Cooked for 5s · done 9:35 AM
+
+❯ Could we briefly discuss the "Outside a transaction the statement commits     
+  before Query returns"? Why did you decide as you did, pros/cons?              
+
+⏺ I chose it because in s4ql a commit is a write to S3 that can fail or end with
+  an unknown outcome, and the caller must hear that from a place they always
+  check.
+
+  The alternative is SQLite's way: the change is made on the first step, and the
+  commit happens when the rows are read to the end or closed.
+
+  For committing before Query returns:
+  - Errors reach the caller. A failed commit comes back as the error of Query.
+    In SQLite's way it would come from Rows.Close, which most Go code runs in a
+    defer and ignores.
+  - A row read is a row committed. goqite reads the id of a sent message and
+    hands it on. With the commit first, that id always belongs to a message that
+    is durably there.
+  - One rule with Exec. Both acknowledge at the same point, so the package doc's
+    promise on errors holds for both.
+  - The writer is not held open. In SQLite's way, a caller that reads slowly or
+    forgets to close its rows keeps the write transaction open, and s4ql has one
+    writer.
+
+  Against it:
+  - Rows are held in memory. They must outlive the commit, so they cannot be
+    read from the cache. SQLite also collects them in memory on the first step,
+    so this is no worse than SQLite, but it is unbounded for now.
+  - Query waits for S3 before the first row, as Exec does.
+  - One ambiguity remains. database/sql closes rows when their context ends, so
+    a caller can still see a context error for a committed change. It is
+    documented, and SQLite's way has the same problem in a worse form.
+  - Timing differs from SQLite. I found no case where a caller can observe that,
+    other than when the commit error arrives.
+
+  Inside a transaction none of this applies: the rows come at once, and the
+  transaction's own commit is the acknowledgement.
+
+✻ Worked for 18s · done 10:17 AM
+
+❯ Okay, sounds reasonable.                                                      
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Update(docs/roadmap.md)
+  ⎿  Added 1 line, removed 1 line
+      523  - `returning` at the end of an `insert`, an `update`, or a `de
+           lete`, with a list of column names of the statement's table, o
+           r `*` for all columns in the order of the table.
+      524  - The statement gives one row for each row that it inserts, up
+           dates, or deletes. An `insert` and an `update` give the values
+            after the change. A `delete` gives the values that the row ha
+           d.
+      525  - SQLite does not specify the order of the returned rows, so t
+           hey follow the rule on row order of [the spec](spec.md), as th
+           e rows of a `select` without `order by` do.
+      526 -- Outside a transaction, the statement commits before it gives
+          - its first row. If the commit fails, the statement gives the e
+          -rror and no rows. So a row that a caller has read belongs to a
+          - change that is committed. Inside a transaction, the statement
+          - gives the rows at once, and the change belongs to the transac
+          -tion like any other.                                          
+      526 +- Outside a transaction, the statement commits before it gives
+          + its first row. If the commit fails, the statement gives the e
+          +rror and no rows. So a row that a caller has read belongs to a
+          + change that is committed. Inside a transaction, the statement
+          + gives the rows at once, and the change belongs to the transac
+          +tion like any other. Agreed by Markus on 2026-11-24.          
+      527  - `Exec` runs a statement with `returning` and drops its rows.
+            `RowsAffected` gives the same count as without `returning`. `
+           Query` gives the rows.
+      528  - The commit format does not change.
+      529  - A column named twice in the list, a statement that changes n
+           o row, and whether an `update` that sets a row to the values i
+           t already has returns that row are decided when the slice is b
+           uilt, by SQLite's behaviour, and recorded in [the todo](todo.m
+           d).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Recorded in the roadmap as agreed (d137e17).
+
+  Still open: shall I add the scalar subquery as slice 15, where id = (select 
+  ... order by ... limit 1), and start?
+
+✻ Brewed for 15s · done 10:20 AM
+
+※ recap: We are building s4ql's SQL toward running glue, and slice 14, returning, is complete and merged with usage at 54% of 60%. Next action is yours: say yes or no to the scalar subquery as slice 15. (turn off recaps in /config)
+
+❯ What does _scalar_ subquery mean?                                             
+
+⏺ A scalar subquery is a select in parentheses that stands where a single value
+  would stand, such as a literal or ?. "Scalar" means it gives one value: one
+  column of one row.
+
+  goqite's receive uses one to pick the next message:
+
+  update goqite set timeout = ?
+  where id = (select id from goqite where queue = ? order by priority desc,
+  created limit 1)
+  returning id, body
+
+  The inner select runs first and gives one id, and the outer statement then
+  runs as if that id had been written there.
+
+  Two edge cases follow SQLite's rules:
+
+  - No row: the value is null, so id = null matches nothing. That is what goqite
+    relies on when the queue is empty.
+  - Several rows: SQLite takes the first row and gives no error.
+
+  It is different from the other kinds of subquery, which give more than one
+  value: in (select ...) gives a list, exists (select ...) gives a yes or no,
+  and a subquery in from gives a table. Slice 15 would cover only the scalar
+  kind, on the right of = in a where.
+
+✻ Cogitated for 4s · done 10:40 AM
+
+❯ yes, go ahead with slice 15. But maybe let's export, restart and compact      
+  first                                                                         
+
+⏺ Ready for the export and restart: main is clean and pushed at d137e17, no
+  sub-agent is running, and nothing is left on /Volumes/990/s4ql/.
+
+  I will start slice 15 after the restart: the roadmap entry first, then the
+  statement pass. Run /export and I will move and commit the file.
+
+✻ Brewed for 4s · done 10:41 AM
