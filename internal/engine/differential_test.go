@@ -4230,6 +4230,58 @@ func TestPair_sortTooBig(t *testing.T) {
 	})
 }
 
+// TestPair_subqueryTooLong pins the rule of a literal longer than the length limit in a scalar
+// subquery of slice 15, under a limit of 1,000 bytes: an update or a delete is refused with SQLite's
+// error and excused, a select is compared with SQLite, which turns a blob literal into NULL and gives
+// rows, and a correlated subquery is refused for its name first.
+func TestPair_subqueryTooLong(t *testing.T) {
+	long := strings.Repeat("x", 1001)
+	setup := []string{
+		"create table t (k int primary key, v text) strict, without rowid",
+		"create table u (a int primary key, b text, c blob) strict, without rowid",
+		"insert into t values (1, 'x')",
+		"insert into u values (1, 'x', x'00')",
+	}
+	newSetUp := func(t *testing.T) (*pair, tally) {
+		t.Helper()
+		y := tally{}
+		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), y)
+		for _, src := range setup {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		return p, y
+	}
+
+	t.Run("should refuse an update and a delete with a long literal in a subquery as SQLite does, and excuse them", func(t *testing.T) {
+		p, y := newSetUp(t)
+		for _, src := range []string{
+			"update t set v = 'y' where k = (select a from u where b = '" + long + "')",
+			"delete from t where (select a from u where b > '" + long + "' limit 1) = k",
+		} {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+			is.Equal(t, tooBig, p.last.err, src)
+		}
+		is.Equal(t, 2, y["excused: "+excusedLongChange])
+		is.Equal(t, p.o.state(t), p.i.state())
+	})
+
+	t.Run("should compare a select with a long blob literal in a subquery with SQLite's rows", func(t *testing.T) {
+		p, y := newSetUp(t)
+		src := "select * from t where k = (select a from u where c = x'" + strings.Repeat("ab", 1001) + "')"
+		is.Equal(t, "", p.step(stmttest.Call{Src: src, Query: true, Supported: true}), src)
+		is.Equal(t, tooBig, p.last.err, src)
+		is.Equal(t, 1, y["excused: "+excusedLongCondition])
+	})
+
+	t.Run("should refuse a correlated subquery with a long literal for its name, before the length", func(t *testing.T) {
+		p, y := newSetUp(t)
+		src := "delete from t where k = (select a from u where v = '" + long + "')"
+		is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		is.Equal(t, "s4ql: not supported: correlated subquery (at offset 47)", p.last.message)
+		is.Equal(t, 1, y["excused: "+excusedType])
+	})
+}
+
 func TestPair_orderBy(t *testing.T) {
 	// run the calls on the pair, each of which must give what SQLite or s4ql's rule gives.
 	run := func(t *testing.T, p *pair, calls []stmttest.Call) {
