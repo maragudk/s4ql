@@ -584,15 +584,12 @@ h2 {
   .s3 > div:first-child { padding: 12px 16px; }
 }
 
-/* The log, the box for SQL, and the commit objects, below the system. The log runs down the left,
-   as tall as the box and the commit objects beside it. */
+/* The log and the commit objects, below the system, side by side, and one above the other below 960
+   px. The commit objects keep at least the width of the line under a bar code. */
 
-.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-rows: auto 1fr; border: var(--rule); margin: 48px 0 40px; }
+.logs { display: grid; grid-template-columns: minmax(0, 3fr) minmax(440px, 2fr); border: var(--rule); margin: 48px 0 40px; }
 .logs > section { min-width: 0; }
-.logs > .log { grid-area: 1 / 1 / 3 / 2; display: flex; flex-direction: column; }
-.logs > .log .scroll { flex: 1 1 0; height: auto; min-height: 480px; }
-.logs > .sql { grid-area: 1 / 2; border-left: var(--rule); border-bottom: var(--rule); scroll-margin-top: 150px; }
-.logs > .objects { grid-area: 2 / 2; border-left: var(--rule); }
+.logs > .objects { border-left: var(--rule); }
 .log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 12px 20px; border-bottom: var(--rule); }
 .log-head span { font-size: 13px; }
 .scroll { height: 480px; overflow-y: auto; scrollbar-width: thin; }
@@ -621,14 +618,22 @@ h2 {
 .commit.head { background: var(--lumin); color: var(--void); }
 .commit.orphan { outline: 1px dashed var(--lumin); outline-offset: -5px; }
 
-/* The box for SQL: a statement, Run, and what came back. A value shows its type as SQL writes it:
-   text in quotes, a blob as x'…', and NULL in small capitals, dimmed. */
-.sql-form { display: grid; gap: 10px; padding: 12px 20px; }
+/* The box for SQL, in a band of its own below the simulation, between two rules across the page: a
+   statement and Run on the left, and what came back on the right, where the rows get the wider
+   column. A value shows its type as SQL writes it: text in quotes, a blob as x'…', and NULL in small
+   capitals, dimmed. */
+
+.ask { border-top: var(--rule); border-bottom: var(--rule); padding: 32px 0 40px; scroll-margin-top: 150px; }
+.ask-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin: 0 0 20px; }
+.ask-head .letter { font-size: 32px; font-weight: 700; line-height: 1; letter-spacing: -0.02em; text-transform: none; }
+.ask-head span { font-size: 13px; }
+.ask-box { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); border: var(--rule); }
+.sql-form { display: grid; align-content: start; gap: 10px; padding: 16px 20px 20px; min-width: 0; }
 .sql-form p { margin: 0; }
 .sql-form textarea {
   display: block;
   width: 100%;
-  min-height: 72px;
+  min-height: 96px;
   resize: vertical;
   margin: 0;
   padding: 8px 12px;
@@ -642,8 +647,8 @@ h2 {
 }
 .sql-form textarea:focus-visible { outline-offset: 2px; }
 .sql-run { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-.sql-out { border-top: var(--rule); }
-.sql-status { margin: 0; padding: 8px 20px; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.sql-out { border-left: var(--rule); min-width: 0; }
+.sql-status { margin: 0; padding: 12px 20px; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .sql-status[data-failing="true"] { background: var(--lumin); color: var(--void); }
 .sql-status[data-failing="true"] ::selection { background: var(--void); color: var(--lumin); }
 .sql-rows { max-height: 360px; overflow: auto; scrollbar-width: thin; border-top: var(--rule); }
@@ -656,12 +661,15 @@ h2 {
 .sql-rows .null { opacity: 0.55; }
 
 @media (max-width: 960px) {
-  .logs { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
-  .logs > .log, .logs > .sql, .logs > .objects { grid-area: auto; border-left: 0; }
-  .logs > .sql { border-bottom: 0; }
-  .logs > .log, .logs > .objects { border-top: var(--rule); }
-  .logs > .log .scroll { flex: none; height: 360px; min-height: 0; }
+  .logs { grid-template-columns: minmax(0, 1fr); }
+  .logs > .objects { border-left: 0; border-top: var(--rule); }
   .scroll { height: 360px; }
+  .ask-box { grid-template-columns: minmax(0, 1fr); }
+  .sql-out { border-left: 0; border-top: var(--rule); }
+}
+@media (max-width: 720px) {
+  .ask { padding: 24px 0 32px; }
+  .ask-head { margin-bottom: 16px; }
 }
 @media (max-width: 520px) {
   .entries li { gap: 10px; padding: 4px 16px; }
@@ -858,22 +866,6 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
       </dl>
     </section>
     <div class="logs">
-      <section class="sql" id="sql" aria-labelledby="sql-h" data-pending="false">
-        <div class="log-head"><h2 id="sql-h">SQL</h2><span id="sql-to"></span></div>
-        <form class="sql-form" id="sql-form">
-          <p class="small" id="sql-note">One statement of what s4ql supports so far, see the <a href="../#roadmap">roadmap</a>. The app's table <code>barcodes</code> is there to read; make tables of your own to write.</p>
-          <label class="vh" for="sql-text">Statement</label>
-          <textarea id="sql-text" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="sql-note">select code from barcodes order by code desc limit 5</textarea>
-          <div class="sql-run">
-            <button class="btn" type="submit" id="sql-run" aria-keyshortcuts="Control+Enter Meta+Enter" disabled>Run</button>
-            <span class="caps" id="sql-keys">Ctrl+Enter</span>
-          </div>
-        </form>
-        <div class="sql-out" role="status">
-          <p class="sql-status" id="sql-status" data-failing="false">Nothing run yet.</p>
-          <div class="sql-rows" id="sql-rows" tabindex="0" aria-label="Rows" hidden></div>
-        </div>
-      </section>
       <section class="log" aria-labelledby="log-h">
         <div class="log-head"><h2 id="log-h">Log</h2><span id="lines"></span></div>
         <div class="scroll" tabindex="0" aria-label="Log, newest first">
@@ -886,6 +878,27 @@ noscript p { padding: 24px var(--gutter); margin: 0; border-bottom: var(--rule);
           <ol class="commits" id="commits"><li class="empty">None yet.</li></ol>
         </div>
       </section>
+    </div>
+  </div>
+</section>
+
+<section class="ask" id="sql" aria-labelledby="sql-h" data-pending="false">
+  <div class="wrap">
+    <div class="ask-head"><h2 class="letter" id="sql-h">SQL</h2><span id="sql-to"></span></div>
+    <div class="ask-box">
+      <form class="sql-form" id="sql-form">
+        <p class="small" id="sql-note">One statement of what s4ql supports so far, see the <a href="../#roadmap">roadmap</a>. The app's table <code>barcodes</code> is there to read; make tables of your own to write.</p>
+        <label class="vh" for="sql-text">Statement</label>
+        <textarea id="sql-text" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="sql-note">select code from barcodes order by code desc limit 5</textarea>
+        <div class="sql-run">
+          <button class="btn" type="submit" id="sql-run" aria-keyshortcuts="Control+Enter Meta+Enter" disabled>Run</button>
+          <span class="caps" id="sql-keys">Ctrl+Enter</span>
+        </div>
+      </form>
+      <div class="sql-out" role="status">
+        <p class="sql-status" id="sql-status" data-failing="false">Nothing run yet.</p>
+        <div class="sql-rows" id="sql-rows" tabindex="0" aria-label="Rows" hidden></div>
+      </div>
     </div>
   </div>
 </section>
