@@ -325,6 +325,41 @@ function setPlaying(on) {
   debt = 0;
   root.dataset.playing = String(playing);
   set($("play-word"), playing ? "Pause" : "Play");
+  keepAwake();
+}
+
+// The screen stays on while the page plays, where the browser has the Screen Wake Lock API. A lock
+// that the browser takes back, as when the tab is hidden, is asked for again when the page is visible
+// and plays. A request that fails, as before a first click or key, or at low battery, is ignored and
+// tried again at the next click or key.
+let awake = null; // the lock that the page holds, or null
+let waking = false; // whether a request for the lock is on its way
+
+function keepAwake() {
+  if (!playing) {
+    const lock = awake;
+    awake = null;
+    if (lock) lock.release().catch(() => {});
+    return;
+  }
+  if (awake || waking || document.visibilityState !== "visible" || !navigator.wakeLock) return;
+  waking = true;
+  const done = () => { waking = false; };
+  try {
+    navigator.wakeLock.request("screen").then((lock) => {
+      done();
+      if (!playing) {
+        lock.release().catch(() => {});
+        return;
+      }
+      awake = lock;
+      lock.addEventListener("release", () => {
+        if (awake === lock) awake = null;
+      });
+    }, done);
+  } catch {
+    done();
+  }
 }
 
 function setTurbo(on) {
@@ -421,6 +456,13 @@ function wire() {
     return { name, el, f, b, s3, disk, clocks };
   });
   for (const b of document.querySelectorAll("#requests [data-target]")) b.addEventListener("click", () => send(b.dataset.target));
+  document.addEventListener("visibilitychange", keepAwake);
+  window.addEventListener("pagehide", () => {
+    const lock = awake;
+    awake = null;
+    if (lock) lock.release().catch(() => {});
+  });
+  for (const type of ["click", "keydown"]) document.addEventListener(type, keepAwake, true);
   $("play").addEventListener("click", () => {
     setPlaying(!playing);
     // A statement of the box that is on its way when the page pauses is answered as on a paused page.
