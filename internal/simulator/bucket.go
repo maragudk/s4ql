@@ -171,8 +171,9 @@ func storedCommit(o StoredObject, prefix string) (*CommitObject, error) {
 	return c, nil
 }
 
-// readLog of the seed from the head of its manifest, and check it as the invariants check the log
-// of a run: whole, with each key once, and each key one that the counter has given.
+// readLog of the seed from the head of its manifest, and check that it is a log that a run of this
+// engine could have left: whole, with each key once, each key one that the counter has given, and
+// each delete of a row that the log holds there.
 func (s *seed) readLog() error {
 	byName := map[string]*CommitObject{}
 	for _, c := range s.commits {
@@ -218,8 +219,8 @@ func (s *seed) readLog() error {
 const seedWorkers = 32
 
 // seedStore puts the objects of the seed into the store before any instance starts, through a
-// client of its own, and then tells the checker, the fold, and the purposes of the requests what the
-// store holds. Its event "seeded" has in by the time of the history at the time 0 of the run, which
+// client of its own, and then tells the application, the fold, and the purposes of the requests what
+// the store holds. Its event "seeded" has in by the time of the history at the time 0 of the run, which
 // the wall clocks of the processes read then, so that the history goes on from the bucket's time
 // when the instances start. Each object is written until the store holds it, up to [seedAttempts]
 // times, so a fault of the store delays the seed and does not change it. If the store does not take
@@ -276,9 +277,6 @@ func (r *run) seedStore(ctx context.Context) bool {
 	if r.refused() {
 		return false
 	}
-	for _, o := range commits {
-		r.check.commit(s.commits[o.Key])
-	}
 	e := Event{Kind: "store", What: "seeded", Text: fmt.Sprintf("the store holds %v objects from before", len(s.objects))}
 	if s.manifest != nil {
 		key := s.objects[len(s.objects)-1].Key
@@ -291,7 +289,6 @@ func (r *run) seedStore(ctx context.Context) bool {
 		r.mu.Lock()
 		r.manifests[version] = s.manifest
 		r.mu.Unlock()
-		r.check.seed(s.log, s.manifest.Head)
 		r.keys.stored(s.log)
 	}
 	// The history goes on from where the bucket left it, from the time at which the instances start,
@@ -310,6 +307,11 @@ func (r *run) seedStore(ctx context.Context) bool {
 
 // seedAttempts is the number of times that the seed writes an object before it gives up.
 const seedAttempts = 100
+
+// short form of the name of a commit object.
+func short(name string) string {
+	return name[:min(len(name), 8)]
+}
 
 // refused reports whether the run is refused.
 func (r *run) refused() bool {

@@ -18,7 +18,7 @@
 // binary, as internal/simulator/engine is.
 //
 // The README next to this file describes the messages, the request, the session, the events of the
-// trace, the state, and the invariants that the engine checks.
+// trace, and the state.
 package simulator
 
 import (
@@ -44,7 +44,7 @@ type Engine struct {
 //   - "advance" takes {"by": D} and moves the session's fake time on by D milliseconds.
 //   - "act" takes an [Action] without "at" and does it at the session's time.
 //   - "now" takes {} or {"commits": N} and answers with the [State] of the session now.
-//   - "end" takes {} and ends the session, with the last checks of its invariants and its hash.
+//   - "end" takes {} and ends the session, and answers with its summary and its hash.
 //
 // The commands of a session answer with a [Live]. The session runs on a goroutine of its own, in a
 // bubble of t, so t must outlive it: [Engine.Close] ends it.

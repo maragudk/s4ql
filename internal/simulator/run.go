@@ -56,11 +56,6 @@ type Summary struct {
 	Calls map[string]int `json:"calls"`
 	// Requests to the store, by what happened to them, such as "lost".
 	Requests map[string]int `json:"requests"`
-	// Log is the number of commit objects in the log at the end.
-	Log int `json:"log"`
-	// Violations of the invariants, and Excused those that the design accepts for the faults.
-	Violations int `json:"violations"`
-	Excused    int `json:"excused"`
 }
 
 // The table of the workload, with one column of integers, its primary key, and the statements of
@@ -152,7 +147,7 @@ func simulate(t *testing.T, req Request) Response {
 }
 
 func newRun(t *testing.T, req Request, world *sim.Scheduler, end time.Duration, disks []disk, live bool) *run {
-	r := &run{
+	return &run{
 		req:       req,
 		world:     world,
 		rec:       newRecorder(world, end, live),
@@ -161,8 +156,6 @@ func newRun(t *testing.T, req Request, world *sim.Scheduler, end time.Duration, 
 		manifests: map[store.Version]*ManifestObject{},
 		disks:     disks,
 	}
-	r.check = newChecker(r)
-	return r
 }
 
 // ends the run, whose scheduler returned err, with what res says of a run that has ended: the
@@ -183,7 +176,6 @@ type run struct {
 	rec   *recorder
 	dir   string
 	store *simstore.Store
-	check *checker
 	keys  knownKeys
 
 	mu        sync.Mutex
@@ -257,23 +249,14 @@ type process struct {
 	// closed is set while the database is closed by an action, and final once it is closed for the
 	// end of the run. failed is set while the last open of the database failed.
 	closed, final, failed bool
-	// The clocks as the actions left them, and whether they ever had faults that the design does not
-	// survive together: see [checker.read].
-	wallStopped, monotonicStopped, wallStoppedEver, monotonicStoppedEver, wallBackEver bool
+	// The clocks as the actions left them.
+	wallStopped, monotonicStopped bool
 }
 
 func (p *process) current() *core.DB {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.db
-}
-
-// bothClocks reports whether both clocks of the process have been wrong in the direction that
-// makes a holder believe in its lease too long.
-func (p *process) bothClocks() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.monotonicStoppedEver && (p.wallStoppedEver || p.wallBackEver)
 }
 
 // procHost is the host of a process as the storage core sees it: the instance of the scheduler, which
@@ -314,7 +297,7 @@ func (h storeHost) Trace(ctx context.Context, format string, args ...any) {
 }
 
 // main is the first task of a batch run. It starts the instances, does the actions of the schedule
-// at their times, and at the end runs the last checks and lets every process close its database.
+// at their times, and at the end lets every process close its database.
 func (r *run) main(ctx context.Context) {
 	if !r.setUp(ctx) {
 		return
@@ -338,7 +321,7 @@ func (r *run) main(ctx context.Context) {
 		r.act(ctx, i, schedule[i])
 	}
 	r.sleepUntil(ctx, duration(r.req.End))
-	r.end(ctx)
+	r.end()
 }
 
 // setUp the store, the instances, each with its first process, and the client. With
@@ -350,7 +333,7 @@ func (r *run) setUp(ctx context.Context) bool {
 		Faults:  r.req.Faults.store(),
 	})
 	if !r.seedStore(ctx) {
-		r.end(ctx)
+		r.end()
 		return false
 	}
 	for i := range r.req.Instances {
@@ -379,9 +362,8 @@ func cachePath(dir string, in *instance) string {
 	return filepath.Join(dir, in.name+".db")
 }
 
-// end the run: run the last checks, and let every process close its database.
-func (r *run) end(ctx context.Context) {
-	r.check.final(ctx)
+// end the run: let every process close its database.
+func (r *run) end() {
 	r.mu.Lock()
 	r.ending = true
 	r.mu.Unlock()
@@ -604,9 +586,9 @@ type call struct {
 
 // newCall of the caller with the op, which starts now. A write takes the key of the next value of
 // the counter of the run. A delete and a read take a key that the application knows, which
-// [knownKeys.pickDelete] and [knownKeys.pickRead] pick by a number from the seed. While there is no key to
-// pick, the call is a write. The checker learns each write of the application when it starts. A call
-// of the box runs the statement text, and takes nothing from the counter or the seed.
+// [knownKeys.pickDelete] and [knownKeys.pickRead] pick by a number from the seed. While there is no
+// key to pick, the call is a write. A call of the box runs the statement text, and takes nothing
+// from the counter or the seed.
 func (r *run) newCall(caller, op, text string) *call {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -626,9 +608,6 @@ func (r *run) newCall(caller, op, text string) *call {
 		r.values++
 		c.value = barcode(r.values)
 	}
-	if c.op != opRead {
-		r.check.made(c.txn())
-	}
 	return c
 }
 
@@ -645,14 +624,6 @@ func (c *call) statement() (string, []any) {
 	default:
 		return selectSQL, []any{c.key}
 	}
-}
-
-// txn of a call that writes: the row that it inserts or deletes.
-func (c *call) txn() txn {
-	if c.op == opDelete {
-		return txn{key: c.key, delete: true}
-	}
-	return txn{key: c.value}
 }
 
 // event of the call c on the instance in, whose process is p or nil, that says what happened. An
@@ -675,25 +646,21 @@ func (c *call) event(in *instance, p *process, what string) Event {
 	return e
 }
 
-// callEnded with the event e, which ends the call c unless it has ended already: the checker learns
-// how a write or a delete ended, and the event is recorded. A write of the box is known to the checker
-// by the name of its commit object, so one without a commit object, as one that changed nothing or
-// failed before its commit, tells it nothing.
-func (r *run) callEnded(ctx context.Context, c *call, e Event) {
+// callEnded with the event e, which ends the call c unless it has ended already: the application
+// learns how an insert or a delete ended, and the event is recorded.
+func (r *run) callEnded(c *call, e Event) {
 	r.mu.Lock()
-	ended, commit := c.ended, c.commit
+	ended := c.ended
 	c.ended = true
 	r.mu.Unlock()
 	if ended {
 		return
 	}
-	switch {
-	case c.op == opSQL && commit != "":
-		r.check.writeEnded(ctx, txn{commit: commit}, e.What)
-	case c.op != opSQL && c.op != opRead:
-		w := c.txn()
-		r.check.writeEnded(ctx, w, e.What)
-		r.keys.ended(w.key, w.delete, e.What)
+	switch c.op {
+	case opWrite:
+		r.keys.ended(c.value, false, e.What)
+	case opDelete:
+		r.keys.ended(c.key, true, e.What)
 	}
 	r.rec.add(e)
 }
@@ -716,7 +683,7 @@ func (r *run) serveCall(ctx context.Context, p *process, c *call) {
 	p.mu.Unlock()
 	if eng == nil {
 		e.What, e.Error = "failed", "the instance has no database open"
-		r.callEnded(ctx, c, e)
+		r.callEnded(c, e)
 		return
 	}
 	conn := eng.Conn()
@@ -727,18 +694,16 @@ func (r *run) serveCall(ctx context.Context, p *process, c *call) {
 	case opDelete:
 		e.What, e.Error = r.write(ctx, conn, deleteSQL, c.key)
 	case opSQL:
-		r.boxStatement(ctx, p, conn, c, &e)
+		r.boxStatement(ctx, conn, c, &e)
 	default:
-		before := r.check.readStarted()
 		var keys []int64
 		var position format.Name
 		e.What, e.Error, keys, position = r.read(ctx, conn, c.key)
 		if e.What == "served" {
 			e.Keys, e.Position = keys, position.String()
-			r.check.readEnded(ctx, p, before, c.key, keys, position)
 		}
 	}
-	r.callEnded(ctx, c, e)
+	r.callEnded(c, e)
 }
 
 // write runs the statement, an insert or a delete, with the key as its argument, in a write
@@ -774,7 +739,7 @@ func (r *run) write(ctx context.Context, conn *engine.Conn, statement string, ke
 // read the row of the key with one select on conn, and say how the call ended, its error, and
 // what it saw: the keys, in order, and the position of the read, which the engine gives in its event
 // of the statement. A select on a database without the table is served with no rows and with the
-// error of the engine: it saw a state, which the checker checks as any other.
+// error of the engine: it saw a state, as any other read does.
 func (r *run) read(ctx context.Context, conn *engine.Conn, key int64) (string, string, []int64, format.Name) {
 	seen := &statementSeen{}
 	ctx = context.WithValue(ctx, statementKey{}, seen)
@@ -1053,25 +1018,22 @@ func (r *run) clock(p *process, a Action) {
 	switch a.Do {
 	case "shiftWall":
 		p.inst.ShiftWall(duration(a.By))
-		if a.By < 0 {
-			p.wallBackEver = true
-		}
 	case "stopWall":
 		p.inst.StopWall()
-		p.wallStopped, p.wallStoppedEver = true, true
+		p.wallStopped = true
 	case "startWall":
 		p.inst.StartWall()
 		p.wallStopped = false
 	case "stopMonotonic":
 		p.inst.StopMonotonic()
-		p.monotonicStopped, p.monotonicStoppedEver = true, true
+		p.monotonicStopped = true
 	case "startMonotonic":
 		p.inst.StartMonotonic()
 		p.monotonicStopped = false
 	case "pauseClocks":
 		p.inst.StopWall()
 		p.inst.StopMonotonic()
-		p.wallStopped, p.wallStoppedEver, p.monotonicStopped, p.monotonicStoppedEver = true, true, true, true
+		p.wallStopped, p.monotonicStopped = true, true
 	case "resumeClocks":
 		p.inst.StartWall()
 		p.inst.StartMonotonic()
@@ -1494,7 +1456,7 @@ func (r *run) storeEvent(ctx context.Context, format string, args []any) {
 		}
 		if content, version, ok := r.store.Object(e.Key); ok {
 			e.Version = string(version)
-			e.Object = r.object(ctx, e.Key, version, content)
+			e.Object = r.object(e.Key, version, content)
 			r.changed(e.Key, content)
 		}
 	case "read":
@@ -1510,9 +1472,8 @@ func (r *run) instanceOf(process string) string {
 	return strings.TrimRight(process, "0123456789")
 }
 
-// object that a write to key wrote: what a manifest or a commit object says, which the checker also
-// learns.
-func (r *run) object(ctx context.Context, key string, version store.Version, content []byte) *Object {
+// object that a write to key wrote: what a manifest or a commit object says.
+func (r *run) object(key string, version store.Version, content []byte) *Object {
 	if strings.HasSuffix(key, "/manifest.json") {
 		m, err := format.ParseManifest(content)
 		if err != nil {
@@ -1525,7 +1486,6 @@ func (r *run) object(ctx context.Context, key string, version store.Version, con
 		r.mu.Lock()
 		r.manifests[version] = mo
 		r.mu.Unlock()
-		r.check.manifest(ctx, mo)
 		return &Object{Manifest: mo}
 	}
 	name, err := format.ParseName(key[strings.LastIndexByte(key, '/')+1:])
@@ -1536,7 +1496,6 @@ func (r *run) object(ctx context.Context, key string, version store.Version, con
 	if err != nil {
 		return &Object{Error: err.Error()}
 	}
-	r.check.commit(c)
 	return &Object{Commit: c}
 }
 
@@ -1613,6 +1572,5 @@ func (r *run) summarize() *Summary {
 	r.rec.mu.Lock()
 	s := r.rec.summary
 	r.rec.mu.Unlock()
-	s.Log = r.check.logAtEnd
 	return &s
 }
