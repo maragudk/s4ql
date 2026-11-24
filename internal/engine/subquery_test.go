@@ -168,6 +168,14 @@ var subqueryWrites = []subqueryTestCall{
 	{src: "update t set w = 1 where k = (select * from u)"},
 	{src: "update t set w = 1 where (select * from u) != k"},
 	{src: "delete from t where (select * from u) <> k"},
+	// `*` with != or <> on the right, and with another operator on the left, which are SQLite's
+	// `sub-select returns 3 columns - expected 1`.
+	{src: "update t set w = 1 where k != (select * from u)"},
+	{src: "update t set w = 1 where k <> (select * from u)"},
+	{src: "delete from t where k != (select * from u)"},
+	{src: "delete from t where k <> (select * from u) returning k"},
+	{src: "update t set w = 1 where (select * from u) = k"},
+	{src: "delete from t where (select * from u) < k"},
 	{src: "delete from t where k = (select * from u) and nope = 1"},
 	{src: "delete from t where k = (select * from u) returning nope"},
 	{src: "delete from t where k = (select * from u) and w = (select * from u)"},
