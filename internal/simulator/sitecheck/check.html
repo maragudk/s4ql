@@ -559,6 +559,7 @@ async function check() {
   expect(!p.win.s4qlPage.playing && p.t === held && play.textContent.trim() === "Play", `Pause holds fake time at ${held} ms for 30 frames`);
 
   await dancer(p);
+  await soundWakes(p);
 
   await sqlBox(p);
 
@@ -804,6 +805,60 @@ async function dancer(p) {
 
   sound.click();
   expect(sound.getAttribute("aria-pressed") === "false" && fig.dataset.pose === "stand", `sound is off again, and the figure stands (${pose()})`);
+}
+
+// soundWakes checks that sound which is on comes back when the browser suspends the audio context
+// by itself, as Safari can: the figure stands at once, and the page resumes the context when its state
+// changes, at the next sound, and at the next key or click. The check holds the browser's resume
+// itself, since sitecheck's Chromium never refuses one, and lets it go for the click. It starts and
+// ends paused with sound off.
+async function soundWakes(p) {
+  const sound = p.$("#sound"), play = p.$("#play"), fig = p.$("#dancer");
+  const proto = p.win.AudioContext.prototype, resume = proto.resume;
+  let ctx = null, resumes = 0, hold = false;
+  proto.resume = function () {
+    ctx = this;
+    resumes++;
+    return hold ? Promise.resolve() : resume.call(this);
+  };
+  try {
+    sound.click();
+    await until(() => ctx && sound.dataset.audio === "running");
+    play.click();
+    await until(() => fig.dataset.pose !== "stand");
+
+    hold = true;
+    let n = resumes;
+    await ctx.suspend();
+    await until(() => sound.dataset.audio === "suspended");
+    expect(sound.getAttribute("aria-pressed") === "true" && fig.dataset.pose === "stand" && resumes > n,
+      `when the browser suspends the context while sound is on and the page plays, the figure stands at once, and the page asks to resume (${resumes - n} times; ${fig.dataset.pose})`);
+    const moves = fig.dataset.moves;
+    await p.frames(30);
+    expect(fig.dataset.pose === "stand" && fig.dataset.moves === moves, `while the context is suspended, the figure stands still for 30 frames (${fig.dataset.moves} changes of pose)`);
+    // A request that ends while the page plays is a sound, and no click.
+    n = resumes;
+    const calls = p.requests().calls;
+    await until(() => p.requests().calls > calls);
+    expect(resumes > n, `the next sound asks to resume the context (${resumes - n} times)`);
+
+    play.click();
+    await until(() => p.idle());
+    n = resumes;
+    p.win.document.body.dispatchEvent(new p.win.KeyboardEvent("keydown", { key: "Shift", bubbles: true }));
+    expect(resumes > n, `a key anywhere on the page asks to resume the context (${resumes - n} times)`);
+
+    hold = false;
+    n = resumes;
+    p.win.document.body.click();
+    const asked = expect(resumes > n, `a click anywhere on the page asks to resume the context (${resumes - n} times)`);
+    if (asked) await until(() => sound.dataset.audio === "running");
+    expect(sound.getAttribute("aria-pressed") === "true" && sound.dataset.audio === "running", `after the click, sound is on and its context runs again (${sound.dataset.audio})`);
+  } finally {
+    proto.resume = resume;
+  }
+  sound.click();
+  expect(sound.getAttribute("aria-pressed") === "false" && !p.win.s4qlPage.playing, "sound is off again, and the page is paused");
 }
 
 // sqlBox checks the box for SQL on the paused page: its line, its example, a select on barcodes, a

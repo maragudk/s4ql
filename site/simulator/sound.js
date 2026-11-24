@@ -342,6 +342,7 @@ function tell(kind, at) {
 // hear the event of the engine, and play its figure if sound is on and the event is live.
 export function hear(e, live) {
   try {
+    if (live) wake();
     const kind = classify(e);
     if (kind && on && live && out) play(kind);
     const tk = tickOf(e);
@@ -357,10 +358,18 @@ export function hear(e, live) {
 // blip plays the neutral blip of a control, if sound is on.
 export function blip() {
   try {
+    wake();
     if (on && out) play("blip");
   } catch {
     broken();
   }
+}
+
+// wake resumes the context if sound is on and the browser has suspended or interrupted it, as Safari
+// can, for instance when the output device changes. Outside a click the browser may refuse; the next
+// sound, click, or key tries again.
+function wake() {
+  if (on && out && ctx.state !== "running") ctx.resume().catch(() => {});
 }
 
 function play(kind) {
@@ -390,7 +399,8 @@ function broken() {
 // wire the toggle Sound, a button with aria-pressed, which the HTML disables until this module has
 // loaded. Its data-audio says "none" until the first click that turns sound on creates the
 // AudioContext, then the state of the context, and "unavailable" if the browser has none or it
-// fails, which also disables the toggle.
+// fails, which also disables the toggle. While sound is on, a context that the browser suspends or
+// interrupts is resumed when its state changes, and at the next sound, click, or key: see wake.
 export function wire(button) {
   if (!button) return;
   toggle = button;
@@ -407,7 +417,10 @@ export function wire(button) {
         out = player(ctx, master, tell);
         ctx.addEventListener("statechange", () => {
           if (out) button.dataset.audio = ctx.state;
+          if (ctx.state !== "running") tell(null);
+          wake();
         });
+        for (const type of ["click", "keydown"]) document.addEventListener(type, wake, true);
       }
       if (!out) return;
       on = !on;
