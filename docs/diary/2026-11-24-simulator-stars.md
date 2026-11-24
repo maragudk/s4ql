@@ -127,3 +127,53 @@ In this headless Chromium any running CSS animation, even a single opacity anima
 ### Future work
 
 None.
+
+## Step 3: Self-review
+
+**Author:** builder (simulator stars)
+
+### Prompt Context
+
+**Verbatim prompt:** (as in step 1: self-review with the code-review skill, then the automated checks)
+
+**Interpretation:** review `main...HEAD`, fix what matters, and run the checks again.
+
+**Inferred intent:** hand the lead a branch that does what the brief says.
+
+### What I did
+
+Ran the code-review skill at medium effort over `main...HEAD`. It found no bug in the sky and reported three nits:
+
+- The diary stopped at step 1. It reviewed the first commit, before step 2 was written; step 2 has the measurements and the choice of a sky that scrolls.
+- The full redraw might run often while Turbo plays, if text in the panel wraps on and off. I measured it: wrapping `ResizeObserver` in an init script of playwright (`page.js` uses none, so every call counted is the sky's), 10 s of Turbo gave 1 to 3 redraws at 390, 600, 900, 1140, and 1440 px. Not a problem; I still made `draw` set the attributes of the SVG, and the position of a twinkler, only when they change, so a redraw that moves no star paints nothing.
+- The list `CONTENT` and the elements that the `ResizeObserver` watches must follow new content on the page. A comment on `CONTENT` now says so.
+
+Then the sweep over 19 widths again (every star 10.0 px or more from content, none covered, no sideways scroll), `make site-check` (exit 0, `sitecheck: ok` twice, no `FAIL`), and `go test -tags s4ql_browser ./internal/simulator/...` (ok).
+
+### Why
+
+The second nit was a claim about cost that is easy to measure, so I measured it rather than restructure on suspicion.
+
+### What worked
+
+Wrapping a constructor in `page.addInitScript` counts a page's callbacks without touching its code.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The panel's sizes hardly change while the simulation plays; the redraws come from the status text and the first log lines.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+Nothing beyond step 2.
+
+### Future work
+
+None.

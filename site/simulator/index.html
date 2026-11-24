@@ -756,7 +756,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const CELL = 40, CHANCE = 0.34, CLEAR = 10;
   // BLINKS and GLINTS are the most stars that blink, and that glint as a plus, on the page.
   const BLINKS = 12, GLINTS = 3;
-  // CONTENT is what stars keep clear of besides the bands: everything above .panel, and .ask.
+  // CONTENT is what stars keep clear of besides the bands: everything above .panel, and .ask. Content
+  // added to the page outside these needs adding here, and to the elements that the ResizeObserver
+  // below watches if its size can change alone.
   const CONTENT = ".requests, .fork, .inst, .s3, .logs, #dancer, footer p, footer li";
   // LEVELS are the opacities of the stars that do not twinkle.
   const LEVELS = [0.26, 0.38, 0.52];
@@ -847,17 +849,19 @@ document.addEventListener("DOMContentLoaded", () => {
           if (kind === "glint") for (const c of ["a2", "a1", "c"]) el.appendChild(document.createElement("i")).className = c;
           sky.appendChild(el);
         }
-        el.style.left = x + "px";
-        el.style.top = y + "px";
+        if (el.style.left !== x + "px") el.style.left = x + "px";
+        if (el.style.top !== y + "px") el.style.top = y + "px";
         keep.set(key, el);
       }
     }
     for (const [key, el] of twinklers) if (!keep.has(key)) el.remove();
     twinklers = keep;
-    svg.setAttribute("width", W);
-    svg.setAttribute("height", H);
-    svg.setAttribute("viewBox", `0 0 ${W * dpr} ${H * dpr}`);
-    paths.forEach((path, n) => path.setAttribute("d", d[n]));
+    // Only what changed is set, so that a redraw that moves no star paints nothing.
+    const set = (el, name, value) => { if (el.getAttribute(name) !== String(value)) el.setAttribute(name, value); };
+    set(svg, "width", W);
+    set(svg, "height", H);
+    set(svg, "viewBox", `0 0 ${W * dpr} ${H * dpr}`);
+    paths.forEach((path, n) => set(path, "d", d[n]));
   };
 
   // A ResizeObserver calls draw after layout and before paint, at once and whenever the page or one
