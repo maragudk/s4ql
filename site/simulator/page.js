@@ -790,9 +790,14 @@ async function begin(e) {
   storageVersion = answer.version;
   base = 0;
   take(answer);
-  if (dropped) note(answer.t, { tier: "story", text: "What the browser held of S3 could not be read, so S3 starts empty." });
-  else if (stored) note(answer.t, { tier: "story", text: `S3 still holds ${keeper.name}: ${count(stored.objects.filter((o) => !o.key.endsWith("/manifest.json")).length)} commit objects.` });
   state = (await e.now(COMMITS)).state;
+  // The line of a stored database says who waits for the lease that its manifest names, from the
+  // state at the start.
+  if (dropped) note(answer.t, { tier: "story", text: "What the browser held of S3 could not be read, so S3 starts empty." });
+  else if (stored) {
+    const n = stored.objects.filter((o) => !o.key.endsWith("/manifest.json")).length;
+    note(answer.t, { tier: "story", text: R.storedLine(keeper.name, n, state.bucket.manifest, state.instances) });
+  }
 }
 
 // reset empties the tab's database and starts a new session at time 0, paused, with the page as at

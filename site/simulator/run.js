@@ -208,6 +208,24 @@ export function resetLine(e, first) {
   return { text: `${words} ${e.what === "failed" ? "It fails" : "Ignored"}: ${e.text}.`, tier: "you" };
 }
 
+// storedLine is the line of the log when a session starts on the tab's stored database, named name,
+// with n commit objects, the manifest that S3 holds, and the instances of the session's state: what S3
+// still holds, and who waits for the lease from before the reload. A manifest that names a lease
+// makes each instance that starts under another holder ID wait for it, because the instance cannot
+// know that the holder is gone: it takes the lease only after it has watched the manifest stand still
+// for the lease's duration and a margin, by its own monotonic clock, whatever the lease's time of
+// renewal says (acquire in internal/core/lease.go). An instance that waits for a to serve before it
+// starts does not wait for the lease. Nothing in S3 says which instance held it.
+export function storedLine(name, n, manifest, instances) {
+  const text = `S3 still holds ${name}: ${n.toLocaleString("en")} commit object${n === 1 ? "" : "s"}.`;
+  const lease = manifest && manifest.lease;
+  if (!lease) return text;
+  const waiting = (instances || []).filter((i) => i.state !== "waiting" && i.holder !== lease.holder).map((i) => i.instance);
+  if (waiting.length === 0) return text;
+  const one = waiting.length === 1;
+  return `${text} ${waiting.join(" and ")} wait${one ? "s" : ""} for the lease of ${lease.duration / 1000} s from before the reload to run out by ${one ? "its own clock" : "their own clocks"}.`;
+}
+
 // actionWords of an action event of a session, as the visitor's own words.
 function actionWords(e) {
   const i = e.instance;
