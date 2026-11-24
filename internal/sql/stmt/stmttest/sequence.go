@@ -75,8 +75,13 @@ type Sequence struct {
 	step uint64
 	// The streams of the areas that start anew at each statement, as [stepStream] says. The stream
 	// of an area that is off in the profile panics at a draw.
-	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning Rand
-	g                                                                                                          *Generator
+	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning, rSubquery Rand
+	g                                                                                                                     *Generator
+	// inner are the selects of the subqueries that the hooks of the statement that the sequence writes
+	// gave, for [Generator.Inner], by their numbers from 1.
+	inner []stmt.Select
+	// decided is set by [Sequence.Decide].
+	decided bool
 	// selected are the conditions of the WHERE of the select that the sequence writes, as
 	// [Sequence.where] gave them, for its ORDER BY.
 	selected []stmt.Condition
@@ -280,10 +285,10 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	q := &Sequence{seed: seed, profile: p, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}, indexed: map[string][]sequenceIndex{}}
 	q.rPlan, q.rTables, q.rInserts, q.rSelects, q.rChanges = q.stream(areaPlan), q.stream(areaTables), q.stream(areaInserts), q.stream(areaSelects), q.stream(areaChanges)
 	q.rIndexes, q.rDefaults, q.rArguments, q.rOthers = q.stream(areaIndexes), q.stream(areaDefaults), q.stream(areaArguments), q.stream(areaOthers)
-	q.rOrder, q.rReturning = q.stream(areaOrder), q.stream(areaReturning)
+	q.rOrder, q.rReturning, q.rSubquery = q.stream(areaOrder), q.stream(areaReturning), q.stream(areaSubquery)
 	r := q.entity(areaNames, "")
 	tableNames, columnNames := common[0], common[1]
-	for range 1 + r.IntN(2) {
+	for range max(1+r.IntN(2), p.TableNames) {
 		q.tables = append(q.tables, spellings(r, tableNames[r.IntN(len(tableNames))])...)
 	}
 	// So many names of columns that a table of the most columns lacks one of them.
@@ -329,6 +334,9 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	}
 	if p.on(areaReturning) {
 		q.g.Return = q.returning
+	}
+	if p.on(areaSubquery) {
+		q.g.Inner = func(n int) stmt.Select { return q.inner[n-1] }
 	}
 	return q, nil
 }
@@ -764,6 +772,13 @@ var inverses = map[stmt.Operator]stmt.Operator{
 // contradiction are faults, each a quarter as likely in a profile without the selects among
 // [Profile.Faults], as [Sequence.fault] says.
 func (q *Sequence) where(table stmt.Name) []stmt.Condition {
+	q.selected = q.subqueries(table, q.selectWhere(table))
+	return q.selected
+}
+
+// selectWhere gives the conditions of the WHERE of a select of table without its subqueries, as
+// [Sequence.where] says.
+func (q *Sequence) selectWhere(table stmt.Name) []stmt.Condition {
 	q.selected, q.aimed, q.aimedLimit = nil, nil, false
 	if p := q.profile; p.Aimed > 0 && len(q.indexed[table.Fold()]) > 0 && q.rOrder.IntN(p.Aimed) == 0 {
 		q.selected = q.aimedWhere(q.rOrder, table)
@@ -842,6 +857,242 @@ func (q *Sequence) returning(table stmt.Name) (bool, []string) {
 		}
 	}
 	return true, names
+}
+
+// Decide makes every subquery that the sequence writes from now on one whose ORDER BY decides its
+// first row: one with an ORDER BY ends it with the primary key of its table, and one without has an
+// ORDER BY of that key alone, so that rows that tie under the rest come in the order of the key. A
+// test that cannot see which of several first rows the engine took, as a test through database/sql
+// cannot, calls it before the first call; every other draw of the sequence stays as it is.
+func (q *Sequence) Decide() {
+	q.decided = true
+}
+
+// subqueriesOf the select, the update, or the delete s, in the order of the text, or nil.
+func subqueriesOf(s stmt.Statement) []stmt.Select {
+	switch s := s.(type) {
+	case *stmt.Select:
+		return s.Subqueries
+	case *stmt.Update:
+		return s.Subqueries
+	case *stmt.Delete:
+		return s.Subqueries
+	}
+	return nil
+}
+
+// subqueries gives the conditions cs of the WHERE of a select, an update, or a delete of table with
+// the scalar subqueries of slice 15 among them, for one statement in [Profile.Subquery], and cs
+// otherwise. One time in six there are two. Each is the value of a comparison: one time in three that
+// of a comparison of cs, in place of its value, and otherwise of a new condition at the end of cs, on
+// the key one time in two, as goqite's receive is, and else on any column of the shape, with = one
+// time in two and else any comparison. The value is on the left one time in three. Its select is the
+// one that [Sequence.innerSelect] draws for the column. One time in ten the WHERE then has one more
+// condition that is never true, a comparison with NULL or a test for NULL of the key, so that the
+// statement computes no subquery. All draws are from the stream of the area, which a profile without
+// [Profile.Subquery] has off, and nothing is drawn there.
+func (q *Sequence) subqueries(table stmt.Name, cs []stmt.Condition) []stmt.Condition {
+	p := q.profile
+	if !p.on(areaSubquery) {
+		return cs
+	}
+	r := q.rSubquery
+	if r.IntN(p.Subquery) != 0 {
+		return cs
+	}
+	shape := q.shapeOf(table)
+	key := &shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+	cs = slices.Clone(cs)
+	n := 1
+	if r.IntN(6) == 0 {
+		n = 2
+	}
+	for range n {
+		var compared []int
+		for i, c := range cs {
+			if slices.Contains(comparisons, c.Operator) && c.Value.Subquery == 0 {
+				compared = append(compared, i)
+			}
+		}
+		var c *stmt.Condition
+		if len(compared) > 0 && r.IntN(3) == 0 {
+			c = &cs[compared[r.IntN(len(compared))]]
+		} else {
+			column := key
+			if r.IntN(2) == 0 {
+				column = &shape[r.IntN(len(shape))]
+			}
+			op := stmt.OpEqual
+			if r.IntN(2) == 0 {
+				op = comparisons[r.IntN(len(comparisons))]
+			}
+			cs = append(cs, stmt.Condition{Column: stmt.Name{Raw: q.spell(r, column.Name.Value)}, Operator: op})
+			c = &cs[len(cs)-1]
+		}
+		c.ValueFirst = r.IntN(3) == 0
+		var column *stmt.Column
+		if c.Column.Raw != "" {
+			column = columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold())
+		}
+		q.inner = append(q.inner, q.innerSelect(r, table, column))
+		c.Value = stmt.Term{Subquery: len(q.inner)}
+	}
+	if r.IntN(10) == 0 {
+		never := stmt.Condition{Column: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Operator: stmt.OpIsNull}
+		if r.IntN(2) == 0 {
+			column := shape[r.IntN(len(shape))]
+			never = stmt.Condition{Column: stmt.Name{Raw: q.spell(r, column.Name.Value)}, Operator: comparisons[r.IntN(len(comparisons))], Value: stmt.Term{Value: stmt.Null{}}}
+		}
+		cs = slices.Insert(cs, r.IntN(len(cs)+1), never)
+	}
+	return cs
+}
+
+// innerSelect of a subquery that is compared with the column of the shape of table, or nil for a
+// name that the shape does not have, with the random numbers of r:
+//
+//   - Its table is that of the statement one time in two, in any spelling, and otherwise another
+//     table of the sequence, one that it created and did not drop if there is one.
+//   - Its column is * one time in eight. Otherwise, one time in twelve, a name that its table does not
+//     have and the table of the statement has, a correlated name, which s4ql refuses; one time in
+//     twelve any column of its table; and else a column of its table of the type of the column that it
+//     is compared with, INT and INTEGER being one, if it has one. Each of the two faults is a quarter
+//     as likely in a profile without the subqueries among [Profile.Faults], as [Sequence.fault] says.
+//   - Its WHERE is, one time in four of a table of which the sequence keeps an index, the one that
+//     [Sequence.aimedWhere] draws, with its ORDER BY, which is goqite's receive where two indexes
+//     begin alike, with LIMIT 1; one time in eight none; one time in eight the key equal to a value
+//     that an insert gave it, which finds one row or none; and else as [Sequence.conditions] draws
+//     one.
+//   - Its ORDER BY, but for an aimed one, is none one time in six; the key, ascending or descending,
+//     which decides the first row; its own column, ascending one time in two, where NULL comes
+//     first; the columns that [Sequence.orderColumns] draws for its WHERE, as for a select; or a
+//     column outside the key, alone, where rows tie, or with the key after it, which decides. With
+//     [Sequence.Decide], it ends with the key.
+//   - Its LIMIT is 0 one time in twelve, from 2 to 4 one time in twelve, none one time in six, and
+//     else 1.
+func (q *Sequence) innerSelect(r Rand, table stmt.Name, column *stmt.Column) stmt.Select {
+	var same, others, live []string
+	for _, raw := range q.tables {
+		fold := nameOf(raw, 0).Fold()
+		switch {
+		case fold == table.Fold():
+			same = append(same, raw)
+		case q.live[fold]:
+			live = append(live, raw)
+			others = append(others, raw)
+		default:
+			others = append(others, raw)
+		}
+	}
+	if len(live) > 0 {
+		others = live
+	}
+	if len(same) == 0 {
+		same = []string{table.Raw}
+	}
+	var sub stmt.Select
+	if len(others) == 0 || r.IntN(2) == 0 {
+		sub.Table.Raw = same[r.IntN(len(same))]
+	} else {
+		sub.Table.Raw = others[r.IntN(len(others))]
+	}
+	inner := nameOf(sub.Table.Raw, 0)
+	shape := q.shapeOf(inner)
+	key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+	outer := q.shapeOf(table)
+	var correlated []string
+	for _, c := range outer {
+		if columnOfShape(shape, c.Name.Value) == nil {
+			correlated = append(correlated, c.Name.Value)
+		}
+	}
+	// result is the fold of the column of the subquery in its table, or "".
+	result := ""
+	switch {
+	case r.IntN(8) == 0:
+	case len(correlated) > 0 && q.fault(r, areaSubquery, 12):
+		sub.Columns = []stmt.Name{{Raw: q.spell(r, correlated[r.IntN(len(correlated))])}}
+	case q.fault(r, areaSubquery, 12) || column == nil:
+		result = shape[r.IntN(len(shape))].Name.Value
+	default:
+		var alike []string
+		for _, c := range shape {
+			if kindOf(c.Type) == kindOf(column.Type) {
+				alike = append(alike, c.Name.Value)
+			}
+		}
+		if len(alike) == 0 {
+			alike = []string{shape[r.IntN(len(shape))].Name.Value}
+		}
+		result = alike[r.IntN(len(alike))]
+	}
+	switch {
+	case result != "":
+		sub.Columns = []stmt.Name{{Raw: q.spell(r, result)}}
+	case sub.Columns == nil:
+		result = shape[0].Name.Value
+	default:
+		// An ORDER BY of the column of a correlated name orders by the key.
+		result = key.Name.Value
+	}
+	// The WHERE, with the state of the select of the statement kept for its own ORDER BY.
+	selected, aimed, aimedLimit := q.selected, q.aimed, q.aimedLimit
+	defer func() { q.selected, q.aimed, q.aimedLimit = selected, aimed, aimedLimit }()
+	q.aimed = nil
+	stored := q.stored[[2]string{inner.Fold(), key.Name.Value}]
+	switch n := r.IntN(8); {
+	case n < 2 && len(q.indexed[inner.Fold()]) > 0:
+		sub.Where = q.aimedWhere(r, inner)
+	case n == 2:
+	case n == 3 && len(stored) > 0:
+		sub.Where = []stmt.Condition{{Column: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[r.IntN(len(stored))]}}}
+	default:
+		sub.Where = q.conditions(r, areaSubquery, inner)
+	}
+	var by []orderColumn
+	var named []stmt.OrderColumn
+	switch n := r.IntN(6); {
+	case q.aimed != nil:
+		by = q.aimed
+	case n == 0:
+	case n == 1:
+		by = []orderColumn{{key.Name.Value, r.IntN(2) == 0}}
+	case n == 2:
+		by = []orderColumn{{result, r.IntN(2) == 0}}
+	case n == 3:
+		q.selected = sub.Where
+		named, _ = q.orderColumns(r, inner)
+	default:
+		c := shape[r.IntN(len(shape))]
+		by = []orderColumn{{c.Name.Value, r.IntN(2) == 0}}
+		if !c.PrimaryKey && n == 4 {
+			by = append(by, orderColumn{key.Name.Value, r.IntN(2) == 0})
+		}
+	}
+	for _, c := range by {
+		named = append(named, stmt.OrderColumn{Name: stmt.Name{Raw: q.spell(r, c.fold)}, Descending: c.descending})
+	}
+	if q.decided && !slices.ContainsFunc(named, func(c stmt.OrderColumn) bool { return nameOf(c.Name.Raw, 0).Fold() == key.Name.Value }) {
+		named = append(named, stmt.OrderColumn{Name: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Descending: r.IntN(2) == 0})
+	}
+	// A column of ORDER BY once: SQLite takes a later one, and the generator writes no name twice.
+	seen := map[string]bool{}
+	for _, c := range named {
+		if fold := nameOf(c.Name.Raw, 0).Fold(); !seen[fold] {
+			seen[fold] = true
+			sub.OrderBy = append(sub.OrderBy, c)
+		}
+	}
+	switch n := r.IntN(12); {
+	case n == 0:
+		sub.Limit.Value = stmt.Integer(0)
+	case n == 1:
+		sub.Limit.Value = stmt.Integer(2 + r.IntN(3))
+	case n < 4 && q.aimed == nil:
+	default:
+		sub.Limit.Value = stmt.Integer(1)
+	}
+	return sub
 }
 
 // orderColumn is a column of an ORDER BY that a [Sequence] draws: the fold of its name, and whether
@@ -1455,12 +1706,12 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 	}
 	q.store(table, shape, list, values)
 	if byKey || newKey {
-		return set, []stmt.Condition{{Column: stmt.Name{Raw: q.spell(r, shape[key].Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[r.IntN(len(stored))]}}}
+		return set, q.subqueries(table, []stmt.Condition{{Column: stmt.Name{Raw: q.spell(r, shape[key].Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Value: stored[r.IntN(len(stored))]}}})
 	}
 	if everyRow || r.IntN(4) == 0 {
-		return set, nil
+		return set, q.subqueries(table, nil)
 	}
-	return set, q.changeConditions(table)
+	return set, q.subqueries(table, q.changeConditions(table))
 }
 
 // delete gives the conditions of a delete from table, as [Generator.Delete] gives them: none one
@@ -1468,9 +1719,9 @@ func (q *Sequence) update(table stmt.Name) ([]stmt.Assignment, []stmt.Condition)
 // one.
 func (q *Sequence) delete(table stmt.Name) []stmt.Condition {
 	if q.rChanges.IntN(5) == 0 {
-		return nil
+		return q.subqueries(table, nil)
 	}
-	return q.changeConditions(table)
+	return q.subqueries(table, q.changeConditions(table))
 }
 
 // changeConditions of the WHERE of an update or a delete of table: one time in two, if the sequence
@@ -1956,7 +2207,17 @@ func (q *Sequence) next() Call {
 		k++
 	}
 	k = q.aim(r, k, p.Aim > 0 && r.IntN(4) < p.Aim)
+	q.inner = nil
 	src, s, args := q.g.CallOf(k)
+	if p.on(areaSubquery) {
+		// An argument of the LIMIT of a subquery that s4ql refuses, as for that of a select below.
+		r := q.rSubquery
+		for _, sub := range subqueriesOf(s) {
+			if sub.Limit.Parameter > 0 && q.fault(r, areaSubquery, 3) {
+				args[sub.Limit.Parameter-1] = []any{int64(-1 - r.IntN(3)), 2.0, 1.5, "1", "x", []byte("1"), nil}[r.IntN(7)]
+			}
+		}
+	}
 	if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 && q.fault(q.rOrder, areaOrder, 2) {
 		// An argument of the LIMIT that s4ql refuses: a negative integer, a real, text, a blob, or NULL,
 		// of which SQLite takes some as a number and refuses others.
