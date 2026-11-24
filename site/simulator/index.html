@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>s4ql simulator: the storage code under faults, in your browser</title>
+<title>s4ql simulator: try the real s4ql, compiled to WebAssembly</title>
 <meta name="description" content="The storage code of s4ql, compiled to WebAssembly, runs in your browser on the official SQLite WebAssembly build, with a simulated S3 and simulated time. One instance serves, a second stands by to take over. Crash or stop either, hang or cut its connection to S3, fail its disk, or move its clocks, and watch what the code does.">
 <meta name="theme-color" content="#000000">
 <link rel="canonical" href="https://www.s4ql.com/simulator/">
@@ -16,13 +16,13 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="s4ql">
 <meta property="og:url" content="https://www.s4ql.com/simulator/">
-<meta property="og:title" content="s4ql simulator: the storage code under faults, in your browser">
+<meta property="og:title" content="s4ql simulator: try the real s4ql, compiled to WebAssembly">
 <meta property="og:description" content="The storage code of s4ql runs in your browser as WebAssembly, with a simulated S3 and simulated time. One instance serves, a second stands by to take over. Crash it, cut it off from S3, fail its disk, or move its clocks, and watch what the code does.">
 <meta property="og:image" content="https://www.s4ql.com/simulator/og.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="s4ql. The storage code, under faults. The real Go code, in your browser, with S3 and time simulated. Beside the text, a panel shows instance a serving, instance b standing by, and three commit objects as bar codes. Black and white, on a field of bars.">
+<meta property="og:image:alt" content="s4ql. Try the real s4ql, compiled to WebAssembly. In your browser, with S3 and time simulated. Beside the text, a panel shows instance a serving, instance b standing by, and three commit objects as bar codes. Black and white, on a field of bars.">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="preload" href="../fonts/commit-mono-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="modulepreload" href="run.js">
@@ -224,34 +224,26 @@ code { font-family: inherit; }
 .btn.big { min-height: 44px; padding: 10px 16px; font-size: 14px; gap: 16px; }
 .btn.play { min-width: 9.5em; justify-content: space-between; }
 
-/* Intro */
+/* The hero: the headline alone, large, with the sky around it, which keeps clear of its lines and not
+   of the whole band. */
 
-.intro { border-bottom: var(--rule); padding: 20px 0; }
-.intro .wrap {
-  display: grid;
-  grid-template-columns: minmax(0, 4fr) minmax(0, 7fr);
-  gap: 12px 56px;
-  align-items: start;
-}
+.intro { border-bottom: var(--rule); padding: clamp(48px, 6.5vw, 96px) 0; }
 h1 {
-  font-size: clamp(26px, 2.4vw, 36px);
-  line-height: 1.06;
+  width: fit-content;
+  max-width: 25ch;
+  font-size: clamp(30px, 5.6vw, 80px);
+  line-height: 1.04;
   letter-spacing: -0.035em;
   font-weight: 700;
   margin: 0;
   text-wrap: balance;
 }
-.intro p { max-width: 74ch; margin: 0 0 6px; font-size: 14px; line-height: 1.55; }
-.intro p.built { font-size: 13px; margin: 10px 0 0; }
 h2 {
   font-size: 14px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   margin: 0;
-}
-@media (max-width: 960px) {
-  .intro .wrap { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* The bar: playback, the clock, and the field of the last two fake minutes */
@@ -679,6 +671,18 @@ h2 {
   .ask { padding: 24px 0 32px; }
   .ask-head { margin-bottom: 16px; }
 }
+/* What runs here, at the foot of the page, in a band like that of SQL. Its heading and its lines are
+   as wide as their words, so that the sky keeps clear of the words and not of the whole band. */
+
+.about { border-bottom: var(--rule); padding: 32px 0 40px; }
+.about h2 { width: fit-content; font-size: 32px; line-height: 1; letter-spacing: -0.02em; text-transform: none; margin: 0 0 20px; }
+.about p { width: fit-content; max-width: 74ch; margin: 0 0 6px; font-size: 14px; line-height: 1.55; }
+.about p.built { font-size: 13px; margin: 10px 0 0; }
+
+@media (max-width: 720px) {
+  .about { padding: 24px 0 32px; }
+  .about h2 { margin-bottom: 16px; }
+}
 @media (max-width: 520px) {
   .entries li { gap: 10px; padding: 4px 16px; }
   .log-head, .commit, .entries li.empty, .commits li.empty { padding-left: 16px; padding-right: 16px; }
@@ -686,15 +690,15 @@ h2 {
   .sql-rows th:first-child, .sql-rows td:first-child { padding-left: 16px; }
 }
 
-/* The night sky, behind everything: stars of one pixel or a few, in the margins and gutters. The
-   script after #sky places them where there is no content, and the bands and boxes that hold
-   content are opaque over the sky besides. A pixel of a star is a whole number of device pixels, at
+/* The night sky, behind everything below the header: stars of one pixel or a few, in the empty space
+   around the content. The script in the head places them where there is no content, and the boxes
+   that hold dense content, the header, and the sticky bar are opaque over the sky besides. A pixel of a star is a whole number of device pixels, at
    least one, which the script gives as --p. Most stars are drawn once into one SVG; a few twinkle,
    each in an element of its own whose opacity steps, without fades, in an animation that the
    compositor runs by itself, each in its own time. The sky scrolls with the page. Under reduced
    motion the stars stand still, and in print and in forced colours there are none. */
 body { position: relative; isolation: isolate; }
-.intro, .requests, .node, .box, .s3, .logs, .ask { background: var(--void); }
+.requests, .node, .box, .s3, .logs, .ask-box { background: var(--void); }
 /* The stick figure walks in front of the sky. Each of its pixels has a black border two of its
    pixels wide, under the white ones and cut off at the edges of its box, so that a star next to it
    or inside its head is hidden and one farther off is seen apart from it, not as a stray pixel or
@@ -767,11 +771,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const CELL = 40, CHANCE = 0.34, CLEAR = 10;
   // BLINKS and GLINTS are the most stars that blink, and that glint as a plus, on the page.
   const BLINKS = 12, GLINTS = 3;
-  // CONTENT is what stars keep clear of besides the bands: everything above .panel, and .ask. Content
-  // added to the page outside these needs adding here, and to the elements that the ResizeObserver
-  // below watches if its size can change alone. The stick figure #dancer is left out: it walks along
-  // the top line of .logs in front of the sky, by a transform that changes no layout.
-  const CONTENT = ".requests, .fork, .inst, .s3, .logs, footer p, footer li";
+  // The sky is everywhere below the header. Stars keep clear of the header, of the sticky bar where it
+  // stands before it sticks, of the rules across the page of the elements RULED, of the boxes BOXES,
+  // of the words WORDS, by their boxes and their glyphs, which can reach out of their boxes where the
+  // lines are tight, and of the headings HEADINGS by the glyphs of each line alone, since a balanced
+  // heading's box is wider than its lines.
+  // Content added to the page needs adding here, and to the elements that the ResizeObserver below
+  // watches if its size can change alone. The stick figure #dancer is left out: it walks along the
+  // top line of .logs in front of the sky, by a transform that changes no layout.
+  const BOXES = "#failure, .requests, .fork, .inst, .s3, .logs, .ask-box";
+  const WORDS = ".ask-head > *, .about p, footer p, footer li";
+  const HEADINGS = "h1, .about h2";
+  const RULED = ".intro, .ask, .about";
   // LEVELS are the opacities of the stars that do not twinkle.
   const LEVELS = [0.26, 0.38, 0.52];
   // rnd is a number in [0, 1), the same for each call with the cell i, j and the draw n in this load.
@@ -806,12 +817,23 @@ document.addEventListener("DOMContentLoaded", () => {
     // out are the rectangles, from the sky's top left, where no part of a star may be.
     const out = [];
     const add = (l, t, r, b) => out.push([l - o.left - CLEAR, t - o.top - CLEAR, r - o.left + CLEAR, b - o.top + CLEAR]);
-    const panel = document.querySelector(".panel").getBoundingClientRect(), ask = document.querySelector(".ask").getBoundingClientRect();
-    add(-Infinity, -Infinity, Infinity, panel.top);
-    add(-Infinity, ask.top, Infinity, ask.bottom);
-    for (const el of document.querySelectorAll(CONTENT)) {
-      const r = el.getBoundingClientRect();
-      if (r.width || r.height) add(r.left, r.top, r.right, r.bottom);
+    add(-Infinity, -Infinity, Infinity, document.querySelector("header").getBoundingClientRect().bottom);
+    // The bar sticks to the top of the window as the page scrolls, and covers the stars that it
+    // passes. Where it stands before that is right below the hero, whatever the scroll.
+    const hero = document.querySelector(".intro").getBoundingClientRect();
+    add(-Infinity, hero.bottom, Infinity, hero.bottom + document.querySelector(".bar").offsetHeight);
+    for (const el of document.querySelectorAll(RULED)) {
+      const r = el.getBoundingClientRect(), s = getComputedStyle(el), top = parseFloat(s.borderTopWidth), bottom = parseFloat(s.borderBottomWidth);
+      if (top) add(-Infinity, r.top, Infinity, r.top + top);
+      if (bottom) add(-Infinity, r.bottom - bottom, Infinity, r.bottom);
+    }
+    const glyphs = document.createRange();
+    for (const el of document.querySelectorAll(BOXES + ", " + WORDS + ", " + HEADINGS)) {
+      const heading = el.matches(HEADINGS), r = el.getBoundingClientRect();
+      if (!heading && (r.width || r.height)) add(r.left, r.top, r.right, r.bottom);
+      if (el.matches(BOXES)) continue;
+      glyphs.selectNodeContents(el);
+      for (const g of heading ? glyphs.getClientRects() : [glyphs.getBoundingClientRect()]) if (g.width || g.height) add(g.left, g.top, g.right, g.bottom);
     }
     // The edges of the instances to S3 run below their boxes, down to S3, where the instances stand
     // side by side.
@@ -880,7 +902,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // of its parts changes size, or the sky is hidden or shown again, as for print; the device pixel
   // ratio changes on a move to another screen.
   const observer = new ResizeObserver(draw);
-  for (const el of [sky, document.body, ...document.querySelectorAll(".panel, .instances, .s3, .logs, .ask, footer")]) observer.observe(el);
+  for (const el of [sky, document.body, ...document.querySelectorAll("h1, #failure, .panel, .instances, .s3, .logs, .ask, .ask-head > *, .about, .about h2, .about p, footer")]) observer.observe(el);
   const watch = () => matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`).addEventListener("change", () => { draw(); watch(); }, { once: true });
   watch();
 });
@@ -908,12 +930,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 <section class="intro" aria-labelledby="intro-h">
   <div class="wrap">
-    <h1 id="intro-h">The storage code, under faults</h1>
-    <div>
-      <p>The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
-      <p>s4ql is built for one long-running instance per database, an app with s4ql embedded. Here requests to the app, each one SQL statement, go to one instance, and a second stands by to take over. <a href="#sql">Send one of your own</a>.</p>
-      <p class="built"><span class="caps">Built from</span> <span id="build">an unknown commit</span> of <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a> and <a href="https://github.com/maragudk/s4ql/tree/main/internal/engine"><code>internal/engine</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
-    </div>
+    <h1 id="intro-h">Try the real s4ql, compiled to WebAssembly.</h1>
   </div>
 </section>
 
@@ -1074,9 +1091,8 @@ document.addEventListener("DOMContentLoaded", () => {
     <div class="ask-head"><h2 class="letter" id="sql-h">SQL</h2><span id="sql-to"></span></div>
     <div class="ask-box">
       <form class="sql-form" id="sql-form">
-        <p class="small" id="sql-note">One statement of what s4ql supports so far, see the <a href="../#roadmap">roadmap</a>. The app's table <code>barcodes</code> is there to read; make tables of your own to write.</p>
         <label class="vh" for="sql-text">Statement</label>
-        <textarea id="sql-text" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="sql-note">select code from barcodes order by code desc limit 5</textarea>
+        <textarea id="sql-text" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off">select code from barcodes order by code desc limit 5</textarea>
         <div class="sql-run">
           <button class="btn" type="submit" id="sql-run" aria-keyshortcuts="Control+Enter Meta+Enter" disabled>Run</button>
           <span class="caps" id="sql-keys">Ctrl+Enter</span>
@@ -1087,6 +1103,15 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="sql-rows" id="sql-rows" tabindex="0" aria-label="Rows" hidden></div>
       </div>
     </div>
+  </div>
+</section>
+
+<section class="about" aria-labelledby="about-h">
+  <div class="wrap">
+    <h2 class="letter" id="about-h">What runs here</h2>
+    <p>The storage code of s4ql runs in this page: the Go code itself, unchanged, compiled to WebAssembly, with its cache on the official SQLite WebAssembly build. S3 and time are simulated.</p>
+    <p>s4ql is built for one long-running instance per database, an app with s4ql embedded. Here requests to the app, each one SQL statement, go to one instance, and a second stands by to take over. <a href="#sql">Send one of your own</a>.</p>
+    <p class="built"><span class="caps">Built from</span> <span id="build">an unknown commit</span> of <a href="https://github.com/maragudk/s4ql/tree/main/internal/core"><code>internal/core</code></a> and <a href="https://github.com/maragudk/s4ql/tree/main/internal/engine"><code>internal/engine</code></a>, run by <a href="https://github.com/maragudk/s4ql/blob/main/internal/simulator/README.md"><code>internal/simulator</code></a>.</p>
   </div>
 </section>
 
