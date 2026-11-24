@@ -902,8 +902,9 @@ func (r *recognizer) conditions(e ast.Expr) ([]Condition, int) {
 	for i := len(ands) - 1; i >= 0; i-- {
 		// SQLite gives an AND the depth of its deeper operand and one more, and refuses an expression
 		// deeper than maxDepth while it parses, whatever the database holds. A condition without a
-		// subquery is at most 3 deep, and one with a subquery is checked when it is read, so the depth
-		// of the AND is height+1 when that can be too much.
+		// subquery is at most 3 deep, so the depth of the AND is height+1 when that can be too much,
+		// and the error is at the AND. A condition with a subquery can be deeper, and the AND is
+		// checked again after it.
 		if height+1 > maxDepth {
 			r.reject("WHERE deeper than SQLite's limit")
 		}
@@ -911,6 +912,11 @@ func (r *recognizer) conditions(e ast.Expr) ([]Condition, int) {
 		c, h := r.condition(ands[i].Y)
 		conditions = append(conditions, c)
 		height = max(height, h) + 1
+		if height > maxDepth {
+			// The condition after the AND has a subquery that makes the AND too deep, which SQLite
+			// refuses once it has read the condition, at the token after it.
+			r.reject("WHERE deeper than SQLite's limit")
+		}
 	}
 	if or {
 		r.reject("OR")

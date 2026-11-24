@@ -3,6 +3,7 @@ package engine_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"maragu.dev/is"
@@ -94,15 +95,19 @@ func TestConn_subquery(t *testing.T) {
 func TestPair_subquery(t *testing.T) {
 	t.Run("should take the refusal of a statement with a subquery, also where a rule of its values would refuse it", func(t *testing.T) {
 		for _, src := range []string{"select * from t1 where v1 = (select v1 from t1)", "update t1 set v1 = 'x' where v1 = (select v1 from t1)",
-			"delete from t1 where v1 = 'x' and v1 = (select v1 from t1 where v1 = 'y') returning *", "select * from t1 where v1 = (select v1 from t1 where v1 = ?)"} {
+			"delete from t1 where v1 = 'x' and v1 = (select v1 from t1 where v1 = 'y') returning *", "select * from t1 where v1 = (select v1 from t1 where v1 = ?)",
+			"update t1 set v1 = ? where v1 = (select v1 from t1 where v1 = ?)",
+			"delete from t1 where v1 = ? and v1 = (select v1 from t1 where v1 = ?)"} {
 			for _, exec := range []bool{true, false} {
-				p := newPair(t, newMemoryInstance(t), nil)
+				// With a tally, as the generated tests and the fuzz tests keep one, which counts what a
+				// statement reaches.
+				p := newPair(t, newMemoryInstance(t), tally{})
 				for _, s := range fuzzSetUp {
 					is.Equal(t, "", p.step(stmttest.Call{Src: s, Supported: true}), s)
 				}
 				var args []any
-				if src[len(src)-2] == '?' {
-					args = []any{int64(1)}
+				for range strings.Count(src, "?") {
+					args = append(args, int64(1))
 				}
 				is.Equal(t, "", p.step(stmttest.Call{Src: src, Args: args, Query: !exec}), src)
 			}

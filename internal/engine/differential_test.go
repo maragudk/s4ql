@@ -2239,6 +2239,11 @@ func reach(t testing.TB, o *oracle, c stmttest.Call, got answer, changes int64, 
 		outcome = messageKind(got.err)
 	}
 	s, _ := stmt.Check(c.Src)
+	if s != nil && subqueried(s) {
+		// The engine refuses a statement with a subquery, of slice 15, until it runs it, and the kinds
+		// of what a statement reaches read no subquery.
+		return
+	}
 	if reachExists(t, o, s, c, got, count) {
 		return
 	}

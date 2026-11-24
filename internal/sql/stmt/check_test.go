@@ -3014,6 +3014,15 @@ func TestCheck(t *testing.T) {
 		_, err = stmt.Check(src)
 		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len("and a = 1)")), err.Error())
 		verify(t, src)
+		// A comparison of 1,000 levels on the right of an AND makes the AND too deep while SQLite parses,
+		// at the token after the comparison, also before an OR.
+		for _, after := range []string{"", " or v = 2"} {
+			src = "select * from t where v = 1 and k = " + inner(997) + after
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len(strings.TrimPrefix(after, " "))), err.Error())
+			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+			verify(t, src)
+		}
 	})
 
 	t.Run("should answer for a subquery what SQLite does with its errors, its value, and its LIMIT", func(t *testing.T) {

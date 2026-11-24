@@ -786,7 +786,11 @@ func (g *Generator) subquery(table stmt.Name, args []any) (stmt.Term, []any) {
 	}
 	g.inner = true
 	q.Where, args = g.conditions(g.randomConditions(), true, q.Table, q.Columns, args)
+	// The hook of ORDER BY and LIMIT gives those of a statement, so the subquery draws its own.
+	order := g.Order
+	g.Order = nil
 	q.OrderBy, q.Limit, args = g.order(&q, args)
+	g.Order = order
 	g.inner = false
 	q.Span.End = g.b.Len()
 	g.gap(false)
