@@ -1438,6 +1438,12 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 // is the order of the parameters too. Then it fails with "not supported" for a value of the WHERE of
 // another type than its column, as a select does, and gives the scan its access, as
 // [build.bind] says. A table without a WHERE is read as the reading says too.
+//
+// A scalar subquery of the WHERE looks its table and its names up where the walk over the WHERE
+// reaches it, as [build.walk] says, and fails a subquery of `*` of more than one column after the
+// names of the WHERE, before those of RETURNING, as [subqueries.widths] says; a correlated subquery
+// is refused after RETURNING. Its value is computed before the change reads or changes a row, as
+// [build.compute] says, so it is computed from the rows as they are before the statement.
 func (b build) change(ctx context.Context, w writer, source Node, set []Assignment, returning *Returning, isUpdate bool) (sink, error) {
 	f, filtered := source.(*Filter)
 	inner := source

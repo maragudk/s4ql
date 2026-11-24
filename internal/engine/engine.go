@@ -282,6 +282,19 @@ func (c *Conn) begin(ctx context.Context) (writeTx, error) {
 // row by row, with `string or blob too big` for a row that is longer than the limit and with
 // SQLite's error of a key that exists, for an update that gives a row the key of another.
 //
+// A select, an update, or a delete with a scalar subquery in its WHERE gives the errors of its
+// subquery where SQLite gives them: in a select, `no such table` for the table of a subquery after
+// that of the statement, and `row value misused` for a subquery of `*` of more than one column at
+// its comparison; in an update and a delete, `no such table` where the walk over the WHERE reaches
+// the subquery, and `sub-select returns N columns - expected 1` after the names of the WHERE. The
+// names of a subquery come where the subquery is in the text. A correlated subquery, one with a name
+// that its table does not have and the table of the statement has, is "not supported", after
+// SQLite's errors of the names, and so is a subquery whose column is of another type than the column
+// that it is compared with. The lengths and the types of the values of a subquery are checked where
+// it is in the text. The value of each subquery is computed once, after every check, in the
+// transaction of the statement, before the statement reads or changes a row of its own: see
+// subquery.go.
+//
 // A create table with IF NOT EXISTS whose name a table has, a create index with IF NOT EXISTS whose
 // name an index has, a drop table with IF EXISTS whose name no table has, and a drop index with IF
 // EXISTS whose name no index has, does nothing, as SQLite does: it writes nothing, is not annotated,
