@@ -278,8 +278,8 @@ returning	6	2	reached: update with RETURNING whose rows came in the reverse of t
 returning	129	43	update attempt to write a readonly database
 returning	136	45	update with a parameter attempt to write a readonly database
 subquery	8	2	delete attempt to write a readonly database
-subquery	114	=	excused: a value of another type than its column, checked against s4ql's rule
-subquery	74	24	reached: WHERE run by every path on a table with an index
+subquery	120	=	excused: a value of another type than its column, checked against s4ql's rule
+subquery	77	25	reached: WHERE run by every path on a table with an index
 subquery	472	157	reached: changed both ways
 subquery	120	40	reached: changed both ways in a read-only transaction
 subquery	13	4	reached: commit of a transaction whose statement with RETURNING gave rows
@@ -302,13 +302,13 @@ subquery	14	4	reached: select with a subquery ok in a read-only transaction
 subquery	56	18	reached: select with a subquery ok in a write transaction
 subquery	18	6	reached: select with a value on the left ok, no row found in a write transaction
 subquery	14	4	reached: subquery that the engine did not compute, of an update or a delete
-subquery	56	18	reached: subquery whose value was that of its one first row
-subquery	14	4	reached: update with RETURNING through Query attempt to write a readonly database in a read-only transaction
-subquery	31	10	reached: update with RETURNING through Query ok in a write transaction
-subquery	27	9	reached: update with a subquery attempt to write a readonly database in a read-only transaction
-subquery	72	24	reached: update with a subquery ok in a write transaction
+subquery	51	17	reached: subquery whose value was that of its one first row
+subquery	13	4	reached: update with RETURNING through Query attempt to write a readonly database in a read-only transaction
+subquery	36	12	reached: update with RETURNING through Query ok in a write transaction
+subquery	25	8	reached: update with a subquery attempt to write a readonly database in a read-only transaction
+subquery	76	25	reached: update with a subquery ok in a write transaction
 subquery	4	1	reached: update with a value on the left a value of another type in a write transaction
-subquery	4	1	reached: update with a value on the left attempt to write a readonly database in a read-only transaction
-subquery	6	2	reached: update with a value on the left ok, rows changed in a write transaction
+subquery	3	1	reached: update with a value on the left attempt to write a readonly database in a read-only transaction
+subquery	4	1	reached: update with a value on the left ok, rows changed in a write transaction
 subquery	6	2	update attempt to write a readonly database
-subquery	21	7	update with a parameter attempt to write a readonly database
+subquery	19	6	update with a parameter attempt to write a readonly database

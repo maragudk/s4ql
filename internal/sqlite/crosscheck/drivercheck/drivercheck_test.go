@@ -984,6 +984,7 @@ func (p *pair) reachSubquery(src string, s stmt.Statement, runs [][]any, got out
 		}
 		if columns != nil && goqiteReceive(s, columns, runs, out) {
 			count("goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, by an ORDER BY of two columns or more and LIMIT 1, beside a pin, that changes the row, through " + string(got.call))
+			count("goqite's receive: an update with RETURNING of the row whose key a subquery of its own table gives, by an ORDER BY of two columns or more and LIMIT 1, beside a pin, that changes the row")
 		}
 	}
 	if columns == nil || len(runs) == 0 || len(runs[0]) != s.Parameters() || argumentRefusal(runs[0]) != "" {
@@ -4644,7 +4645,9 @@ func TestGenerated(t *testing.T) {
 // open the most, of which a read-only transaction's insert is the rarest. The profile of RETURNING
 // runs 50 for the rows of RETURNING left open in a transaction, and for goqite's receive by id, an
 // update with RETURNING of several rows, and a delete with RETURNING through a prepared statement run
-// several times, each reached three to five times.
+// several times, each reached three to five times. The profile of the subqueries runs 60 for goqite's
+// receive with its subquery, and for the statements with subqueries through a prepared statement run
+// several times.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:
@@ -4664,9 +4667,9 @@ func generatedOf(p *stmttest.Profile) uint64 {
 	case stmttest.Order:
 		return 50
 	case stmttest.Subquery:
-		return 80
+		return 60
 	case stmttest.Returning:
-		return 80
+		return 50
 	case stmttest.Tables:
 		return 14
 	}

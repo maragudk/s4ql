@@ -186,7 +186,7 @@ var (
 	// an argument of its LIMIT that is not an integer from 0. Also goqite's receive: an update of the
 	// row whose key a subquery of its own table gives, by goqite's index and with RETURNING.
 	Subquery = &Profile{Name: "subquery", Faults: []string{areaSubquery}, Aim: 3, Weights: weights(3, 14, 8, 1, 8, 5, 4, 1), Where: 2, Indexes: 2, Columns: 3,
-		Parameters: 3, Transactions: 3, Limit: 6, Keys: 2, Shared: 2, Ties: 2, Returning: 2, ByKey: 3, Subquery: 1, Receive: 4, Again: 5, TableNames: 2}
+		Parameters: 3, Transactions: 3, Limit: 6, Keys: 2, Shared: 2, Ties: 2, Returning: 2, ByKey: 3, Subquery: 1, Receive: 2, Again: 5, TableNames: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].
