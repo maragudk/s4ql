@@ -20,6 +20,13 @@ Do not use human-team effort or duration ("years of work", comparisons with how 
 - **Why:** Markus said on 2026-11-10, after being told that writing our own SQL engine would be "years of work": "You are an AI. What you can do now wasn't possible a year ago, and progress is accelerating. I'm counting on 'years of work' not being true because of exponential AI progress. I want us to be ambitious for this project. My main concerns are trust in correctness, so that's what we're aiming for."
 - **How to apply:** argue from correctness, verifiability, and risk, not from how much code or calendar time a human team would need. Relay findings about other projects' effort as facts about those projects, not as estimates for this one. Scope cuts are still fine when they improve trust or remove something that does not need to exist. Do not give unmeasured time estimates.
 
+### glue and goqite are a milestone, not a specification
+
+s4ql's own design decisions take precedence over what glue and goqite happen to need.
+
+- **Why:** Markus said on 2026-11-24, when asked whether `without rowid` stays required although none of glue's tables has it: "take care not to overfit to accomodate goqite and glue. They just serve as a milestone. If anything in their design conflicts with ours, let me know, but assume that our decisions here in s4ql take precedence."
+- **How to apply:** decide what s4ql supports from its own rules: the spec, exact types, SQLite's answer or an error, and no compatibility quirks. Use glue and goqite to choose what comes next, not to decide how it works. When something in their design conflicts with s4ql's, tell Markus, and assume that they change (he owns both), not s4ql.
+
 ### Nothing is in use yet, so formats break freely
 
 Do not build an upgrade or a migration for the commit format, the manifest, or the cache while s4ql is used only in its own tests.
