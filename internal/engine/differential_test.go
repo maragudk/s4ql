@@ -4004,16 +4004,16 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"starKeyFirst", stmttest.Returning, 5, []string{"\nand SQLite\n"}, 0},
 		// The bugs of slice 15, each found by a value of a subquery that is not among SQLite's
 		// candidates, or, for ownChanges and noRowMatches, by the rows, the count of changes, or the
-		// tables that differ from SQLite's: on 2026-11-24 6 of 12, 7 of 30, 14 of 30, 16 of 30, 12 of
-		// 12, 12 of 30, 13 of 30, and 5 of 12.
-		{"lastRow", stmttest.Subquery, 2, []string{"and SQLite one of"}, 12},
-		{"firstNotNull", stmttest.Subquery, 2, []string{"and SQLite one of"}, 0},
-		{"ownChanges", stmttest.Subquery, 4, nil, 0},
-		{"keepValue", stmttest.Subquery, 5, []string{"and SQLite one of"}, 0},
+		// tables that differ from SQLite's: on 2026-11-24 10 of 12, 12 of 30, 16 of 30, 12 of 30, 12 of
+		// 12, 15 of 30, 12 of 30, and 22 of 30.
+		{"lastRow", stmttest.Subquery, 3, []string{"and SQLite one of"}, 12},
+		{"firstNotNull", stmttest.Subquery, 4, []string{"and SQLite one of"}, 0},
+		{"ownChanges", stmttest.Subquery, 5, nil, 0},
+		{"keepValue", stmttest.Subquery, 4, []string{"and SQLite one of"}, 0},
 		{"noRowMatches", stmttest.Subquery, 4, nil, 12},
-		{"swapSubqueries", stmttest.Subquery, 4, []string{"and SQLite one of"}, 0},
+		{"swapSubqueries", stmttest.Subquery, 5, []string{"and SQLite one of"}, 0},
 		{"limitZeroRow", stmttest.Subquery, 4, []string{"and SQLite one of"}, 0},
-		{"orderIgnored", stmttest.Subquery, 2, []string{"and SQLite one of"}, 0},
+		{"orderIgnored", stmttest.Subquery, 7, []string{"and SQLite one of"}, 0},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			// own is the number of the sequences that find the bug by its own failure.
