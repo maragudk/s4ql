@@ -592,8 +592,10 @@ h2 {
    px. The commit objects keep at least the width of the line under a bar code. */
 
 .logs { position: relative; display: grid; grid-template-columns: minmax(0, 3fr) minmax(440px, 2fr); border: var(--rule); margin: 48px 0 40px; }
-/* The dancer stands on the top line of the frame, near its right end, in the margin above it, and
-   dances to the sounds: see page.js. It is drawn in pixels of 2 px. */
+/* The dancer stands on the top line of the frame, in the margin above it, dances to the sounds, and
+   strolls along the line: see page.js. This is its old place, near the right end, from which a
+   transform moves it. It is drawn in pixels of 2 px. page.js has its right and its pixels as RIGHT
+   and PX, to keep it on the line: change them together. */
 .dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; pointer-events: none; }
 .logs > section { min-width: 0; }
 .logs > .objects { border-left: var(--rule); }
@@ -694,6 +696,11 @@ h2 {
    motion the stars stand still, and in print and in forced colours there are none. */
 body { position: relative; isolation: isolate; }
 .intro, .requests, .node, .box, .s3, .logs, .ask { background: var(--void); }
+/* The stick figure walks in front of the sky. Each of its pixels has a black border two of its
+   pixels wide, under the white ones and cut off at the edges of its box, so that a star next to it
+   or inside its head is hidden and one farther off is seen apart from it, not as a stray pixel or
+   an eye of the figure. */
+.dancer path { stroke: var(--void); stroke-width: 4; paint-order: stroke; }
 .sky { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
 .sky svg { position: absolute; top: 0; left: 0; display: block; }
 .sky span, .sky i { position: absolute; display: block; width: var(--p); height: var(--p); }
@@ -723,6 +730,7 @@ body { position: relative; isolation: isolate; }
 @keyframes sky-arm2 { 0% { opacity: 0; } 92% { opacity: 0.3; } 94% { opacity: 0; } }
 @media print, (forced-colors: active) {
   .sky { display: none; }
+  .dancer path { stroke: none; }
 }
 
 footer { padding: 40px 0 56px; }
@@ -762,8 +770,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const BLINKS = 12, GLINTS = 3;
   // CONTENT is what stars keep clear of besides the bands: everything above .panel, and .ask. Content
   // added to the page outside these needs adding here, and to the elements that the ResizeObserver
-  // below watches if its size can change alone.
-  const CONTENT = ".requests, .fork, .inst, .s3, .logs, #dancer, footer p, footer li";
+  // below watches if its size can change alone. The stick figure #dancer is left out: it walks along
+  // the top line of .logs in front of the sky, by a transform that changes no layout.
+  const CONTENT = ".requests, .fork, .inst, .s3, .logs, footer p, footer li";
   // LEVELS are the opacities of the stars that do not twinkle.
   const LEVELS = [0.26, 0.38, 0.52];
   // rnd is a number in [0, 1), the same for each call with the cell i, j and the draw n in this load.
