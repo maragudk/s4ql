@@ -101,3 +101,45 @@ The rule for which side a condition tests when both have a column. Choosing the 
 ### Future work
 
 The README of the pass, by a writer, and `make test` and the linter over everything.
+
+## Step 3: The README, `make test`, the linter, and the review against the brief
+
+**Author:** arithmetic-stmt builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Update `internal/sql/stmt/README.md`. [...] `make test` and the linter before you hand in. [...] Self-review inline against this brief; do not run the code-review skill."
+**Interpretation:** Have a writer define arithmetic in the README of the pass, review it, run the whole suite and the linter, and check the work against the brief.
+**Inferred intent:** A branch that the lead can merge without a second pass.
+
+### What I did
+
+A `fabrik:writer` on sonnet updated `/internal/sql/stmt/README.md` from `/docs/todo/arithmetic.md` and the code: the typed form, a section "Arithmetic" after "Subqueries", the stale names in SELECT, UPDATE, and the table of names, the depth, how it is tested, and the results. I skimmed its diff (no em dashes, the vocabulary tables still parse, as `TestCheck` and `TestAllowList` show) and committed it. Then `make test` and `make lint`.
+
+### Why
+
+The README is the precise form of what the pass supports, and the test of the vocabulary reads its tables.
+
+### What worked
+
+`make lint`: 0 issues. `make test` passed on the second run.
+
+### What didn't work
+
+The first `make test` failed in the mutation tester: `generate_test.go:204: no such mutant: stmt/recognize.go recognizer.conditionValue constant: return r.term(e), 0 => return r.term(e), 1`. `/internal/sql/mutation/equivalent.txt` named an equivalent mutant of `recognizer.conditionValue`, which `recognizer.operand` replaced. I removed the entry; the new code's equivalent mutants are for the builder of the mutation testing.
+
+### What I learned
+
+`internal/sql/mutation` checks that every equivalent mutant it lists still exists, so renaming a function of the pass breaks it.
+
+### What was tricky
+
+Nothing beyond the above.
+
+### What warrants review
+
+The review against the brief found these places where the step goes beyond or differs from the letter of the brief, for the lead: a column alone is accepted as the value of SET (`set a = b`), since the brief lists a column as an expression; columns on both sides of a comparison are accepted where one side is an expression, while a column alone on both sides stays refused; the literal NULL as an operand is refused, as the brief asks, with an open item on a NULL from a column or an argument; the name of the engine's refusal is a new one, `expression`, not the old names, which varied by form; and the parentheses around a single value, the second sign, and the limit of 100 parentheses are decisions of mine, all stricter than SQLite. The README writer noted that `parameter beyond SQLite's limit` can now occur outside a subquery too, through nested expressions.
+
+### Future work
+
+The evaluator in the engine, which removes `engine.expressionRefusal`, its panic in `engine.NewPlan`, the call of `engine.Check` in the driver's `check`, and `expressed` in the engine's tests; the generated workload, the simulation, the driver check, and mutation testing of the new code, by other builders.
