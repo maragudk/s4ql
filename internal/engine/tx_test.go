@@ -481,9 +481,11 @@ func TestConn_netEffect(t *testing.T) {
 func TestConn_differential(t *testing.T) {
 	// So many sequences of each profile, and twice as many of the mixed profile and of the profiles
 	// of the clauses of slice 10, the defaults, and the values on the left, whose statements this test
-	// counts by the kind of their transaction, and of the arithmetic, whose evaluation errors leave a
-	// transaction usable. The profile of RETURNING runs four times as many, for
-	// the order of the rows of an update and of a delete with RETURNING, each in both directions.
+	// counts by the kind of their transaction. The profile of RETURNING runs four times as many, for
+	// the order of the rows of an update and of a delete with RETURNING, each in both directions, and
+	// so does the profile of arithmetic, whose evaluation errors leave a transaction usable and must
+	// take back the rows that the statement changed before the row that failed, which about one
+	// sequence in a hundred reaches.
 	n := uint64(20)
 	if slow() {
 		n = 1
@@ -496,9 +498,9 @@ func TestConn_differential(t *testing.T) {
 		runs[p.Name], names = y, append(names, p.Name)
 		times := uint64(1)
 		switch p {
-		case stmttest.Mixed, stmttest.Exists, stmttest.Defaults, stmttest.ValueFirst, stmttest.Arithmetic:
+		case stmttest.Mixed, stmttest.Exists, stmttest.Defaults, stmttest.ValueFirst:
 			times = 2
-		case stmttest.Returning:
+		case stmttest.Returning, stmttest.Arithmetic:
 			times = 4
 		}
 		for k := range n * times {
@@ -619,6 +621,20 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		}
 		returned = returned || open == "write" && p.last.err == "" && p.last.backward != nil && len(p.last.rows) > 0
 		evaluated = evaluated || open == "write" && p.last.eval != nil
+		if s, _ := stmt.Check(c.Src); open == "write" && p.last.eval != nil {
+			// A statement that fails with an evaluation error changes nothing, also where it changed rows
+			// before the row that failed: its table in the transaction must be SQLite's.
+			if table, _ := tableWhere(s); table.Value != "" {
+				src := "select * from " + stmttest.Quote(table.Value)
+				if got, want := i.queryValues(src, nil), p.o.run(t, src); got.String() != want.String() {
+					fail("after its evaluation error in the transaction, the table holds\n%v\nand in SQLite\n%v", got, want)
+				}
+				p.count("arithmetic: table read back after an evaluation error in a write transaction")
+				if u, ok := s.(*stmt.Update); ok && p.changedBefore(u, oracleArgs(c.Args), p.last.eval) {
+					p.count("arithmetic: table read back after an update that changed a row before its evaluation error, in a write transaction")
+				}
+			}
+		}
 	}
 	if open != "" {
 		end()

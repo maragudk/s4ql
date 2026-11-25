@@ -453,6 +453,51 @@ func (p *pair) justify(s stmt.Statement, args []any, ee *expr.Error) string {
 	return stmttest.JustifyWithin(s, args, ee.Kind, ee.Op, ee.Span.Start, p.computedTerms(), access, p.rows)
 }
 
+// changedBefore reports whether the update u, with the arguments args, which failed with the
+// evaluation error ee at an operator of its SET, changed a row before the row that failed, by
+// SQLite's rows: whether its WHERE holds for a row, and the first such row in the order of the key,
+// which the update changes first, shows the quirk of no operator of SET. An update with a subquery,
+// and one of a table whose key has more than one column, are left out.
+func (p *pair) changedBefore(u *stmt.Update, args []any, ee *expr.Error) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	if ee == nil || u.Subqueries != nil {
+		return false
+	}
+	var key []string
+	_, columns := o.columns(t, u.Table.Value)
+	for _, c := range columns {
+		if c.PrimaryKey {
+			key = append(key, stmttest.Quote(c.Name))
+		}
+	}
+	if len(key) != 1 {
+		return false
+	}
+	first, firstArgs := stmttest.SelectText(&stmt.Select{Table: u.Table, Where: u.Where}, args, " order by "+key[0]+" limit 1")
+	if !p.rows(first, firstArgs) {
+		return false
+	}
+	inSet := false
+	for _, site := range stmttest.ArithmeticSites(u) {
+		if site.Set < 0 {
+			continue
+		}
+		for _, n := range stmttest.Operators(site.Root) {
+			if n.Span.Start == ee.Span.Start && n.Kind.String() == ee.Op.String() {
+				inSet = true
+			}
+			for _, kind := range stmttest.EvaluationKinds {
+				quirk, bound := stmttest.Quirk(n, kind, args)
+				if p.rows("select 1 from ("+first+") where "+quirk, append(slices.Clone(firstArgs), bound...)) {
+					return false
+				}
+			}
+		}
+	}
+	return inSet
+}
+
 // due is what evaluation error was due for the statement s, with the arguments args, which the engine
 // ran without one, or "": each expression without a column of the statement, and of a subquery that
 // it computed, is computed, and so is each expression of a condition for a row that the access reads
