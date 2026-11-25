@@ -797,12 +797,13 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		p.reachWhere(sel, runs, got, o, kind, columns, count)
 		p.reachOrder(sel, runs, got, o, kind, columns, count)
 		for i, out := range got.runs() {
-			// The rows of a QueryRow, and of a select with LIMIT and without ORDER BY, are those that
-			// s4ql's scan meets first, which vary with the direction of the scan that it draws, so NULL
-			// is counted by the rows that SQLite gives for the run, which do not. A run that failed or
-			// gave no row has none.
-			null := false
-			if out.failed == "" && len(out.rows) > 0 && i < len(runs) {
+			// The rows of a QueryRow, and of a select with LIMIT, are those that s4ql's scan meets
+			// first, among those that tie under an ORDER BY, which vary with the direction of the scan
+			// that it draws, so NULL is counted by the rows that SQLite gives for the run, which do not.
+			// The rows of every other select are SQLite's, as the comparison requires. A run that failed
+			// or gave no row has none.
+			null := out.failed == "" && out.null
+			if out.failed == "" && len(out.rows) > 0 && (got.call == callQueryRow || sel.Limited()) && i < len(runs) {
 				c := callQuery
 				if got.call == callQueryRow {
 					c = callQueryRow
@@ -1697,14 +1698,14 @@ func (p *pair) openRows(src string, args []any, compared outcome) string {
 	t.sRows, err = t.s.QueryContext(tb.Context(), src, args...)
 	if err != nil {
 		t.sRows = nil
-		return p.reopened(src, args, err)
+		return p.reopened(src, args, err, "before their first row")
 	}
 	got, found, err := nextRow(tb, t.sRows)
 	if err != nil {
 		// database/sql closes rows whose Next found no row.
 		is.NotError(tb, t.sRows.Close())
 		t.sRows = nil
-		return p.reopened(src, args, err)
+		return p.reopened(src, args, err, "with their first row")
 	}
 	t.oRows, err = t.o.QueryContext(tb.Context(), firstStatement(src), args...)
 	is.NotError(tb, err)
@@ -1819,26 +1820,57 @@ func nextRow(tb testing.TB, rows *sql.Rows) (string, bool, error) {
 
 // reopened checks the error err of s4ql's query src with the arguments args, which [pair.openRows]
 // ran again in the open transaction, before or with its first row, or of the rest of its rows, which
-// [pair.closeRows] read. The run that was compared with SQLite gave rows, but the scans of the run
-// again may read in other directions, which s4ql draws from its host: a select with LIMIT and
-// without ORDER BY, or with a subquery that reads up to its first row, may then meet a row whose
-// arithmetic fails, where the compared run did not. So the error must be an evaluation error of a
-// statement with arithmetic that SQLite's own result of its operator justifies, as [pair.justify]
-// says, on the state of the transaction, which nothing changed since; any other error fails. It
-// gives what is wrong, or "".
-func (p *pair) reopened(src string, args []any, err error) string {
+// [pair.closeRows] read, as where says. The run that was compared with SQLite gave rows, but the
+// scans of the run again may read in other directions, which s4ql draws from its host: a select with
+// LIMIT, or with a subquery, which reads up to its first row, may then meet a row whose arithmetic
+// fails, where the compared run did not. So the error must be an evaluation error of such a select
+// with arithmetic that SQLite's own result of its operator justifies, as [pair.justify] says, on the
+// state of the transaction, which nothing changed since; any other error fails, and so does one of a
+// select that reads every row in every direction. It counts each such error by where, and gives what
+// is wrong, or "".
+func (p *pair) reopened(src string, args []any, err error, where string) string {
 	tb := p.tb
 	tb.Helper()
 	text := s4qlText(tb, err)
 	s, _ := stmt.Check(src)
-	if s == nil || !stmttest.HasExpression(s) {
+	sel, ok := s.(*stmt.Select)
+	if !ok || !stmttest.HasExpression(s) || !sel.Limited() && sel.Subqueries == nil {
 		return fmt.Sprintf("%q with the arguments %#v: s4ql's query run again in the transaction, whose rows are left open, fails with %q", src, args, text)
 	}
 	if why := p.justify(s, args, text, inTx{Tx: p.tx.o, outer: p.o}); why != "" {
 		return fmt.Sprintf("%q with the arguments %#v: s4ql's query run again in the transaction, whose rows are left open, fails with %q, which %v", src, args, text, why)
 	}
 	if p.y != nil {
-		p.y["reached: rows left open that fail with an evaluation error justified by SQLite's result of its operator"]++
+		p.y["reached: rows left open that fail "+where+" with an evaluation error justified by SQLite's result of its operator"]++
+	}
+	return ""
+}
+
+// partOf reports whether the rows got, each with its scan, that s4ql's query src with the arguments
+// args gave before it failed, are rows of the select without its LIMIT on o, each no more often than
+// that select gives it, which SQLite gives in its order: what differs, or "".
+func (p *pair) partOf(src string, args []any, got []string, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	s, _ := stmt.Check(src)
+	sel, ok := s.(*stmt.Select)
+	if !ok {
+		return fmt.Sprintf("%q: s4ql's rows that were left open fail, and it is no select", src)
+	}
+	all, bound := stmttest.SelectText(sel, args, "")
+	want := run(tb, o, callQuery, all, [][]any{bound}, mattnText)
+	if want.failed != "" {
+		tb.Fatalf("%q: SQLite gives %v", all, want)
+	}
+	left := map[string]int{}
+	for _, row := range want.pairs() {
+		left[row]++
+	}
+	for _, row := range got {
+		if left[row] == 0 {
+			return fmt.Sprintf("%q with the arguments %#v: s4ql's rows that were left open, the first and then the rest until they failed, are\n%v\nwhose row\n%v\nis none of SQLite's rows of the select without its LIMIT, or one more time than they hold it:\n%v", src, args, strings.Join(got, " "), row, want.full())
+		}
+		left[row]--
 	}
 	return ""
 }
@@ -1888,8 +1920,13 @@ func (p *pair) closeRows() string {
 	is.NotError(tb, t.sRows.Close())
 	t.sRows, t.oRows, t.oAll = nil, nil, nil
 	if sErr != nil && !write {
-		// The rows of a select, which s4ql reads as they are read.
-		return p.reopened(t.opened, t.openedArgs, sErr)
+		// The rows of a select, which s4ql reads as they are read: those before the error must be
+		// SQLite's.
+		o := inTx{Tx: t.o, outer: p.o}
+		if failure := p.partOf(t.opened, t.openedArgs, got, o); failure != "" {
+			return failure
+		}
+		return p.reopened(t.opened, t.openedArgs, sErr, "in their rest")
 	}
 	if sErr != nil {
 		return fmt.Sprintf("%q: the rest of s4ql's rows that were left open fails with %v", t.opened, sErr)
@@ -4653,7 +4690,8 @@ func TestPair(t *testing.T) {
 	t.Run("should take rows left open in a transaction, of a select with LIMIT run again, that fail with a justified evaluation error in the direction that s4ql draws, before their first row or after it", func(t *testing.T) {
 		w := newWorld(t)
 		for _, pinned := range []bool{true, false} {
-			p := newPair(t, w, pinned, nil)
+			y := tally{}
+			p := newPair(t, w, pinned, y)
 			// In t, the row of 1, whose division is by zero, is the second in the order of the key and
 			// is not read in the reverse; in u, it is the first.
 			for _, src := range []string{"create table t (k int primary key) strict, without rowid", "create table u (k int primary key) strict, without rowid",
@@ -4662,9 +4700,19 @@ func TestPair(t *testing.T) {
 				_, failure := p.step(src, callExec, false)
 				is.Equal(t, "", failure, src)
 			}
-			// Each run draws the directions of the compared run and of the run again, so a few runs
-			// meet each order of the two.
-			for range 8 {
+			// Each run draws the directions of the compared run and of the run again, and one in four
+			// gives rows and then fails when it runs again: the runs go on until the rows of t have
+			// failed in their rest, and those of u before or with their first row, which 400 runs of
+			// each fail to reach about once in 10^50.
+			reached := func(where ...string) bool {
+				for _, at := range where {
+					if y["reached: rows left open that fail "+at+" with an evaluation error justified by SQLite's result of its operator"] > 0 {
+						return true
+					}
+				}
+				return false
+			}
+			for n := 0; n < 400 && (!reached("in their rest") || !reached("before their first row", "with their first row")); n++ {
 				for _, src := range []string{"select k from t where k != 10 / (k - 1) limit 2", "select k from u where k != 10 / (k - 1) limit 2"} {
 					_, failure := p.step("", callBegin, false)
 					is.Equal(t, "", failure)
@@ -4676,6 +4724,8 @@ func TestPair(t *testing.T) {
 					is.Equal(t, "", failure)
 				}
 			}
+			is.True(t, reached("in their rest"), y)
+			is.True(t, reached("before their first row", "with their first row"), y)
 			is.Equal(t, "", p.compareTables())
 			p.close()
 		}
