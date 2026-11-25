@@ -1445,6 +1445,15 @@ func TestUpdate_newRow(t *testing.T) {
 	})
 }
 
+func TestUpdate_bind(t *testing.T) {
+	t.Run("should give the internal error of a copy of a column that the table does not have, which the names of SET rule out", func(t *testing.T) {
+		u := &update{table: newFake().with("t", []string{"k", "a"}).tables["t"].ct, computed: []*expr.Bound{nil}, copied: []int{-1}}
+		set := []Assignment{{Column: stmt.Name{Value: "a"}, Value: &Arithmetic{Expression: stmt.Expression{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "z"}}}}}
+		err := u.bind(map[string]int{"k": 0, "a": 1}, set, nil)
+		is.Equal(t, "s4ql: internal error: an assignment of the column z, which the table does not have", fmt.Sprint(err))
+	})
+}
+
 func TestBuild(t *testing.T) {
 	plan := func(src string) Plan {
 		s, err := stmt.Check(src)

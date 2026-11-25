@@ -1451,3 +1451,7 @@ internal/engine/operator.go build.arithmetic condition: !fc.ValueFirst => true
 	A value written first is then bound a second time, after the tested side, to an equal bound expression; its refusals came the first time.
 internal/engine/operator.go build.arithmetic swap arguments: comparable(arithmeticClass(c.test), arithmeticClass(bound)) => comparable(arithmeticClass(bound), arithmeticClass(c.test))
 	comparable is symmetric.
+internal/engine/operator.go build.change constant: -1 => -2
+	The mark of a value that copies no column is only tested for being negative.
+internal/engine/operator.go build.change condition: filtered => true #4
+	A change without a filter has no conditions, and build.types checks none, as it does for a query without a filter.
