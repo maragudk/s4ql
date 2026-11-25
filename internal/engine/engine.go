@@ -55,6 +55,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/expr"
@@ -407,7 +408,13 @@ func (c *Conn) queryText(ctx context.Context, r *report, src string, args []*s4q
 // newReport of a statement of the text src on the connection, which counts it in the transaction of
 // the connection, if one is open.
 func (c *Conn) newReport(src string) *report {
-	r := c.e.newReport(src)
+	return c.newReportFrom(src, c.e.host.Monotonic())
+}
+
+// newReportFrom is [Conn.newReport] of a statement that started at start, on the monotonic clock of
+// the host.
+func (c *Conn) newReportFrom(src string, start time.Duration) *report {
+	r := c.e.newReportFrom(src, start)
 	if c.tx != nil {
 		c.tx.statements++
 		r.tx = c.tx.kind()

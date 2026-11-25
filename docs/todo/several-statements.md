@@ -29,3 +29,11 @@ The decisions and notes of the builders of the piece of work "several statements
   - A panic in `stmt.Split` logs the event of a statement of the whole text, as a panic of the check of `Exec` does.
   - The literal no-break spaces in the tests are ` ` escapes, and comments that named their callers say what the code does.
 - **Left, from the reviews:** the result of a text that ends in an empty statement, or with RETURNING, differs from mattn's without an error, as said above, for the lead to decide. Both reviews measured mattn's two paths of `Exec`, the one without arguments (`execNoArgs`) and the loop, and they agree; `TestSeveral` reaches only the loop, because `t.Context()` can end.
+
+## Fixes after the review
+
+- **By the builder on 2026-11-25, built,** after an independent review of the branch:
+  - The duration of a statement's event holds the split and the check of the text again. `ExecAll` reads the clock once before `stmt.Split`, and the event of the first statement, or of the error that comes before any statement runs, starts there: for a text of one statement exactly as the event of `Exec` starts before its check, and for several statements the split of the whole text is counted to the first. The event of each later statement starts when the statement does, and that of a later statement that `Split` refused when the statements before it have run, so its duration holds no check of its own. `TestConn_ExecAll_duration` in `several_internal_test.go` pins it with a clock that moves at each reading, against the reading of the clock when each event is logged.
+  - A cancel of the context between two statements, outside a transaction and in one, is tested: a logger cancels the context when it logs the event of the first statement, the second fails with `context.Canceled` exactly as it fails alone with that context, the first stays, and the third does not run.
+  - The cost of `parser.ParseAt` has no guard: the fault that the review planted was a search of the rest of the text for a NUL byte, which no count of the tokenizer would see, and a bound of time depends on the machine. It is open in [driver.md](driver.md).
+  - The paragraph on several statements in the package doc of `s4ql.go` is rewrapped.

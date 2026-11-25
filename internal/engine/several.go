@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -18,7 +19,11 @@ import (
 // text of its part of src as its text, and is counted as a statement of the transaction of the
 // connection; an error that comes before any statement runs is logged as the event of a statement
 // whose text is the whole text, and the error of a statement that Split refused as the event of a
-// statement whose text is the rest of the text from that statement on.
+// statement whose text is the rest of the text from that statement on. The duration of the event of
+// the first statement, or of the error before any statement runs, starts with the call, so that it
+// holds the split and the check of the whole text, as that of Exec holds the check of its text; the
+// event of each later statement starts when the statement does, and that of a statement that Split
+// refused when the statements before it have run.
 //
 // It gives the result of the last statement that sets SQLite's count of changes, also of one that
 // fails, or no result if none does, as sqlite3_changes counts after the statements: a statement that
@@ -33,15 +38,19 @@ import (
 // that Split read have run, the text fails with the error of the first statement that Split refused,
 // SQLite's syntax error or "not supported", if there is one. The offsets of all errors are in src.
 func (c *Conn) ExecAll(ctx context.Context, src string, args ...*s4qlpb.Value) (Result, error) {
-	parts, failed := c.split(ctx, src)
+	start := c.e.host.Monotonic()
+	parts, failed := c.split(ctx, src, start)
 	if err := before(parts, failed, len(args)); err != nil {
-		c.refuse(ctx, src, err)
+		c.refuse(ctx, src, start, err)
 		return Result{}, err
 	}
 	one := len(parts) == 1 && failed == nil
 	var res Result
 	used := 0
-	for _, p := range parts {
+	for i, p := range parts {
+		if i > 0 {
+			start = c.e.host.Monotonic()
+		}
 		n := p.Statement.Parameters()
 		take := args[used:min(len(args), used+n)]
 		var count error
@@ -52,7 +61,7 @@ func (c *Conn) ExecAll(ctx context.Context, src string, args ...*s4qlpb.Value) (
 			count = fmt.Errorf("%w: %v for a text whose statements up to the one at offset %v have %v %v", ErrArguments, len(args),
 				p.Statement.Bounds().Start, used+n, parameterNoun(used+n))
 		}
-		r, err := c.execPart(ctx, src, p, take, count)
+		r, err := c.execPart(ctx, src, p, take, count, start)
 		used += len(take)
 		if r.SetsChanges {
 			res = r
@@ -62,16 +71,16 @@ func (c *Conn) ExecAll(ctx context.Context, src string, args ...*s4qlpb.Value) (
 		}
 	}
 	if failed != nil {
-		c.refuse(ctx, src[parts[len(parts)-1].Span.End:], failed)
+		c.refuse(ctx, src[parts[len(parts)-1].Span.End:], c.e.host.Monotonic(), failed)
 		return res, failed
 	}
 	return res, nil
 }
 
-// split src with [stmt.Split], and log the event of a statement of the whole text if it panics, as
-// [Conn.Exec] logs a panic of its check.
-func (c *Conn) split(ctx context.Context, src string) ([]stmt.Part, error) {
-	r := c.e.newReport(src)
+// split src with [stmt.Split], and log the event of a statement of the whole text that started at
+// start if it panics, as [Conn.Exec] logs a panic of its check.
+func (c *Conn) split(ctx context.Context, src string, start time.Duration) ([]stmt.Part, error) {
+	r := c.e.newReportFrom(src, start)
 	defer r.panicked(ctx)
 	parts, err := stmt.Split(src)
 	// The event of each statement is its own.
@@ -135,16 +144,17 @@ func parameterNoun(n int) string {
 	return "parameters"
 }
 
-// refuse the statement of the text src with err, which comes before it runs: log its event.
-func (c *Conn) refuse(ctx context.Context, src string, err error) {
-	c.newReport(src).end(ctx, err)
+// refuse the statement of the text src that started at start with err, which comes before it runs:
+// log its event.
+func (c *Conn) refuse(ctx context.Context, src string, start time.Duration, err error) {
+	c.newReportFrom(src, start).end(ctx, err)
 }
 
-// execPart runs the statement of the part p of the text src with args, the arguments of its
-// parameters, as [Conn.Exec] runs a text of one statement, with the error count of their number, or
-// nil if it is right.
-func (c *Conn) execPart(ctx context.Context, src string, p stmt.Part, args []*s4qlpb.Value, count error) (Result, error) {
-	r := c.newReport(src[p.Span.Start:p.Span.End])
+// execPart runs the statement of the part p of the text src that started at start with args, the
+// arguments of its parameters, as [Conn.Exec] runs a text of one statement, with the error count of
+// their number, or nil if it is right.
+func (c *Conn) execPart(ctx context.Context, src string, p stmt.Part, args []*s4qlpb.Value, count error, start time.Duration) (Result, error) {
+	r := c.newReportFrom(src[p.Span.Start:p.Span.End], start)
 	// Every statement has logged its event when execPlan returns, so one without is a panic.
 	defer r.panicked(ctx)
 	r.of(p.Statement)

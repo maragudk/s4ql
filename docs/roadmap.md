@@ -12,7 +12,7 @@ A piece of work is named by its feature, such as "upserts", and no longer by a n
 | [Reading](#reading) | `select` from one table, with `where`, `order by`, `limit`, and a scalar subquery in the `where`. | Operators of s4ql's own for grouping and joining. |
 | [Writing](#writing) | `insert` of one row, `update`, `delete`, and `returning`. | `on conflict (key) do nothing` and `do update`. Several rows per `insert`. |
 | [Schema](#schema) | `strict, without rowid` tables with one key column, defaults, indexes, and `if not exists`. | `strict, without rowid` with a primary key stays required. |
-| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and one statement per text. | Several statements in one `Exec`. |
+| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and several statements in one `Exec`, with hand-written tests and a comparison with mattn (generated checks to come). | The generated checks of several statements in one `Exec`. |
 | [Limits of the core](#limits-of-the-core) | A commit that is too large fails. The rows of a `returning` are held in memory without a bound. | A limit on the memory of an operator, with a clear error. Spooling later. |
 
 ## Principles
@@ -143,11 +143,10 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - A plain `?`, directly and through prepared statements (slice 2).
 - Arguments: Go integers, a `float64` or `float32`, a `string`, a `[]byte` that is not nil, and nil, also through a `driver.Valuer` (slices 2, 4, and 6).
 - Transactions with `db.BeginTx`: a write transaction, which waits for the single writer, and a read-only one, at `sql.LevelDefault` or `sql.LevelSerializable`. A statement outside a transaction is a transaction of its own (slice 3).
-- One statement for each text.
+- Several statements in one `Exec`, built on 2026-11-25, with the notes in [todo/several-statements.md](todo/several-statements.md): they mean the same as running them one after another, inside a transaction as part of it, and outside one each committing on its own, as in SQLite and mattn's driver (agreed by Markus on 2026-11-24). `Query` and `Prepare` take one statement. Checked with hand-written tests and a comparison with mattn's driver; its generated workload, simulation with planted bugs, and mutation testing are still to come.
 
 **Decided,** with the details in [todo/driver.md](todo/driver.md):
 
-- Several statements in one `Exec` mean the same as running them one after another. Inside a transaction they are part of it. Outside one, each commits on its own, and a failure halfway leaves the earlier ones applied, as in SQLite and mattn's driver. Agreed by Markus on 2026-11-24. `Query` with several statements stays refused, as the lead decided the same day.
 - A statement while rows of the same transaction are open stays refused until an application needs it. Decided by the lead on 2026-11-24.
 - The other forms of a parameter, such as `$1` and `:name`, and Go types such as `time.Time` are details for when they are next. Decided by the lead on 2026-11-24.
 

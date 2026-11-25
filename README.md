@@ -33,9 +33,10 @@ As of 2026-11-25:
   - `if not exists` on `create table` and `create index`, and `if exists` on `drop table` and `drop index`.
   - Arguments for a plain `?`, directly and through prepared statements.
   - Transactions, also read-only ones.
+  - Several statements in one `Exec`, run one after another. `Query` and `Prepare` take one.
   - Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.
 - **How it is checked:** against SQLite with generated statements, in the engine and through `database/sql`, in a deterministic simulation with planted bugs, and with mutation testing and fuzzing. The storage is also tested against a real S3-compatible bucket in CI.
 - **Not built:** `or`, functions, and other operators in a `where`, arithmetic outside `set` and `where`, `offset`, more than one row per `insert`, and a statement while rows of the same transaction are open.
-- **Next:** what is decided next is in the [roadmap](docs/roadmap.md#at-a-glance) by area: more operators and functions, and expressions in more places, grouping and joining, `on conflict` upserts, several statements in one `Exec`, and a limit on the memory of an operator.
+- **Next:** what is decided next is in the [roadmap](docs/roadmap.md#at-a-glance) by area: more operators and functions, and expressions in more places, grouping and joining, `on conflict` upserts, and a limit on the memory of an operator.
 
 The roadmap by area, and the slices that were built with how each is checked, are in [docs/roadmap.md](docs/roadmap.md). What is open in detail is in [docs/todo.md](docs/todo.md).

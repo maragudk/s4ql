@@ -232,7 +232,13 @@ type report struct {
 
 // newReport of a statement of the text sql that starts now.
 func (e *Engine) newReport(sql string) *report {
-	return &report{e: e, start: e.host.Monotonic(), sql: sql}
+	return e.newReportFrom(sql, e.host.Monotonic())
+}
+
+// newReportFrom of a statement of the text sql that started at start, on the monotonic clock of the
+// host.
+func (e *Engine) newReportFrom(sql string, start time.Duration) *report {
+	return &report{e: e, start: start, sql: sql}
 }
 
 // of the statement s, whose kind and table it records.

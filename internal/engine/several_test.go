@@ -1,10 +1,12 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"sync"
 	"testing"
 
 	"maragu.dev/is"
@@ -24,6 +26,38 @@ func (i *instance) execAll(src string, args ...int64) (engine.Result, error) {
 		i.changes = res.Changes
 	}
 	return res, err
+}
+
+// canceling is a logger that calls cancel when it logs the event of the statement number at, from
+// 1, and counts the events of statements.
+type canceling struct {
+	mu         sync.Mutex
+	at, events int
+	cancel     func()
+}
+
+func (h *canceling) Enabled(context.Context, slog.Level) bool { return true }
+func (h *canceling) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *canceling) WithGroup(string) slog.Handler            { return h }
+
+func (h *canceling) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != engine.EventStatement {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.events++
+	if h.events == h.at {
+		h.cancel()
+	}
+	return nil
+}
+
+// count of the events of statements that h has logged.
+func (h *canceling) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.events
 }
 
 func TestConn_ExecAll(t *testing.T) {
@@ -188,6 +222,34 @@ func TestConn_ExecAll(t *testing.T) {
 			{t1},
 			{"insert into t1 (v1) values (1);", "insert into t1 (v1) values (3);", "insert into t1 (v1) values (4)"},
 		}), fmt.Sprint(logAnnotations(t, i.store)))
+	})
+
+	t.Run("should run the statement after a cancel of the context as it runs alone with that context, keep the statements before it, and run none after it", func(t *testing.T) {
+		for _, inTx := range []bool{false, true} {
+			name := fmt.Sprint("in a transaction: ", inTx)
+			// The logger cancels the context when it logs the event of the first insert, so the cancel
+			// comes between two statements, and the test waits for nothing.
+			h := &canceling{at: 2}
+			i := newInstance(t, engine.Options{Logger: slog.New(h)})
+			_, err := i.execAll(t1)
+			is.NotError(t, err, name)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			h.cancel = cancel
+			if inTx {
+				is.NotError(t, i.c.Begin(t.Context()), name)
+			}
+			_, err = i.c.ExecAll(ctx, "insert into t1 (v1) values (1); insert into t1 (v1) values (2); insert into t1 (v1) values (3)")
+			is.Equal(t, 3, h.count(), name)
+			_, alone := i.c.Exec(ctx, "insert into t1 (v1) values (2)")
+			is.Error(t, context.Canceled, alone, name)
+			is.Error(t, context.Canceled, err, name)
+			is.Equal(t, alone.Error(), err.Error(), name)
+			if inTx {
+				is.NotError(t, i.c.Commit(t.Context()), name)
+			}
+			is.Equal(t, "t1 (v1 INT): 1\n", i.state(), name)
+		}
 	})
 
 	t.Run("should log an event for each statement, with the text of its part, and one for the whole text that fails before any statement runs", func(t *testing.T) {
