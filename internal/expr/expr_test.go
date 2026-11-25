@@ -397,6 +397,29 @@ func TestProgram_Bind(t *testing.T) {
 		}
 	})
 
+	t.Run("should take an argument that is not finite, whose arithmetic gives an error that the result is not finite or a value", func(t *testing.T) {
+		e, full, err := parse("c + ? * d")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		for _, c := range []struct {
+			arg, d float64
+			at     string
+		}{
+			{math.NaN(), 1, "? * d"},
+			{math.Inf(1), 0, "? * d"},
+			{math.Inf(-1), 1, "? * d"},
+		} {
+			b, err := x.Bind([]*s4qlpb.Value{float(c.arg)})
+			is.NotError(t, err)
+			_, err = b.Eval(row(integer(0), integer(0), float(1), float(c.d)))
+			var ee *expr.Error
+			is.True(t, errors.As(err, &ee), "an *expr.Error")
+			is.True(t, errors.Is(err, expr.ErrNotFinite), err)
+			is.Equal(t, c.at, full[ee.Span.Start:ee.Span.End])
+		}
+	})
+
 	t.Run("should give an internal error for the zero Program", func(t *testing.T) {
 		_, err := (&expr.Program{}).Bind(nil)
 		is.True(t, errors.Is(err, expr.ErrInternal), err)
