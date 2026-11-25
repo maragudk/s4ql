@@ -25,7 +25,7 @@ The interface:
 | `ErrNoStatement` | The error of a text that is empty or holds only spaces, comments, and semicolons. SQLite prepares such a text into no statement and gives no error. |
 | `ErrArguments` | Matched by the error of a statement that is given another number of arguments than it has parameters. |
 | `Check(src, n) error` | The errors of the text `src` and of the number `n` of its arguments, as `Exec` gives them, without the database and without an event. |
-| `CheckAll(src, n) error` | `Check` for `ExecAll`: the errors of the whole text, of its first statement that does not check, and of the number of its arguments against the parameters of all its statements. |
+| `CheckAll(src, n) error` | `Check` for `ExecAll`: the errors that `ExecAll` gives for the text `src` and `n` arguments before any statement of the text runs, without the database and without an event. |
 | `ErrTooLarge` | Matched by the error of a commit whose commit object the store refuses as too large. The error also matches `core.ErrTooLarge`. |
 | `ErrRowsOpen` | The error of a begin, and of a statement in a transaction, while the rows of an earlier query of the connection have not ended. Matched by the error of a commit of a write transaction while a loop reads its rows. |
 | `ErrTxOpen` | The error of a begin on a connection whose transaction is open. |
@@ -62,10 +62,10 @@ A statement is its own transaction of the core, unless a transaction is open on 
 
 ## Several statements
 
-`Conn.ExecAll` runs the statements of a text one after another, as `mattn/go-sqlite3` runs them in its `Exec`; the driver's `Exec` calls it. `Conn.Exec` and `Conn.Query` stay one statement for each text. The decisions, with what mattn does, are in [several-statements.md](../../docs/todo/several-statements.md).
+`Conn.ExecAll` runs the statements of a text one after another, as `mattn/go-sqlite3` runs them in its `Exec`. `Conn.Exec` and `Conn.Query` stay one statement for each text. The decisions, with what mattn does, are in [several-statements.md](../../docs/todo/several-statements.md).
 
 - **`stmt.Split` reads the statements,** each parsed once, with its spans in the whole text, and the part of the text that it runs as. Each part then runs through the code of `Exec` after the check of its text (`Conn.execPlan`), so it is a transaction of its own, or a statement of the transaction of the connection, with its own event, whose `statement.sql` is the text of its part, and its own annotation. Nothing is wrapped around the statements: a statement that fails ends the run, and the statements before it stay.
-- **The arguments** go to the statements in order, as many to each as it has parameters. More than the statements have are refused before any statement runs, if every statement checks; a statement with too few fails after the statements before it ran. An argument that no column holds fails its statement, by its number in the call.
+- **The arguments** go to the statements in order, as many to each as it has parameters. More than the statements have are refused before any statement runs, if every statement checks; a statement with too few fails after the statements before it ran. An argument that no column holds, or whose value its statement refuses, fails its statement, and its error names it by its number among the arguments of its statement, as if the statement ran alone. `CheckAll` gives the errors that come before any statement runs.
 - **What comes before any statement runs** is logged as the event of a statement of the whole text: an error of the whole text from `stmt.Split`, `ErrNoStatement`, and too many arguments. The error of a statement that `stmt.Split` refused comes after the statements before it ran, as the event of a statement whose text is the rest of the text.
 - **The result** is that of the last statement that sets the count of changes, also of one that failed, and none if none does: SQLite's `sqlite3_changes` after the statements.
 - **Tested** in `several_test.go`, and against mattn in `TestSeveral` of `internal/sqlite/crosscheck/drivercheck`.

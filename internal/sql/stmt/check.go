@@ -55,13 +55,14 @@ func checkWhole(src string) error {
 	return nil
 }
 
-// statementAt of src: the first statement that starts at or after the offset at, as [parser.ParseAt]
-// reads it, and its tail, if s4ql supports it. Its errors are those of [Check], after the checks of
-// the whole text, with their offsets in src: SQLite's syntax error, and "not supported" for a limit
-// of the parser and for a statement that s4ql does not support. A rest without a statement gives no
-// statement and no error, with the tail at the end of the text.
+// statementAt of src, which passed [checkWhole]: the first statement that starts at or after the
+// offset at, as [parser.ParseAt] reads it, and its tail, if s4ql supports it. Its errors are those of
+// [Check] after the checks of the whole text, with their offsets in src: SQLite's syntax error, and
+// "not supported" for a limit of the parser and for a statement that s4ql does not support. A rest
+// without a statement gives no statement and no error, with the tail at the end of the text.
 func statementAt(src string, at int) (Statement, int, error) {
-	tree, tail, err := parser.ParseAt(src, at)
+	// checkWhole has refused a NUL byte.
+	tree, tail, err := parser.ParseAt(src, at, len(src))
 	if err != nil {
 		// The parser gives only errors of its own type.
 		e := err.(*parser.Error)

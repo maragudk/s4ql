@@ -609,8 +609,9 @@ func mattnText(tb testing.TB, err error) string {
 
 // firstStatement of src: the text up to the end of its first semicolon, or all of it. It is what
 // the oracle runs of a text that s4ql runs or answers with SQLite's error, which holds one statement
-// and maybe semicolons, spaces, and comments after it, since s4ql does not support a second
-// statement. mattn runs every statement of a text, and one that is only a comment too, and then gives
+// and maybe semicolons, spaces, and comments after it: Query and Prepare refuse a second statement,
+// and a text of several statements in an Exec runs as its statements, each a step of its own, as
+// [pair.several] says. mattn runs every statement of a text, and one that is only a comment too, and then gives
 // the result of the last: 0 rows affected after `insert into t1 (v1) values (1); -- c`, and no rows
 // for `select * from t1; -- c`. SQLite's sqlite3_prepare_v2 prepares the first statement, and so
 // does the engine's oracle.
@@ -1614,6 +1615,11 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 		return p.begin(src, c)
 	case callCommit, callRollback:
 		return p.end(c)
+	}
+	if c == callExec || c == callExecArgument {
+		if got, failure, ok := p.several(src, c, supported, runs); ok {
+			return got, failure
+		}
 	}
 	s, o, scope := p.where(c, src)
 	if p.tx != nil && p.tx.sRows != nil {
@@ -5164,6 +5170,51 @@ func FuzzSequence(f *testing.F) {
 	})
 }
 
+// several runs src through c, an Exec, with the arguments of runs, one run, if s4ql's Exec reads the
+// text otherwise than as one statement, as [stmt.Split] reads it, and reports whether it did, with
+// s4ql's outcome and what differs, or "". The comparison of the sequences judges one statement at a
+// time, so a text of several statements runs as its statements, each a step of its own on both sides
+// with the arguments of its parameters, until one fails, and then the rest of the text after them if
+// Split refused a statement there. [TestSeveral] compares texts of several statements in one Exec
+// with mattn's. A text that s4ql refuses as a whole for spaces that mattn trims and SQLite does not
+// take for spaces runs on s4ql's side only, and must give that refusal.
+func (p *pair) several(src string, c call, supported bool, runs [][]any) (outcome, string, bool) {
+	tb := p.tb
+	tb.Helper()
+	parts, failed := stmt.Split(src)
+	if ns, ok := errors.AsType[*stmt.NotSupportedError](failed); ok && len(parts) == 0 && strings.HasPrefix(ns.What, "space ") {
+		s, _, _ := p.where(c, src)
+		got := run(tb, s, c, src, runs, s4qlText)
+		p.y.excused("spaces that mattn trims and SQLite does not take for spaces")
+		if got.failed != "exec" || got.err != failed.Error() {
+			return got, fmt.Sprintf("%q: s4ql gives %v, and must refuse it with %v", src, got, failed), true
+		}
+		return got, "", true
+	}
+	if len(parts) == 0 || len(parts) == 1 && failed == nil {
+		return outcome{}, "", false
+	}
+	var args []any
+	if len(runs) > 0 {
+		args = runs[0]
+	}
+	var got outcome
+	var failure string
+	used := 0
+	for _, part := range parts {
+		a := args[used:min(len(args), used+part.Statement.Parameters())]
+		used += len(a)
+		got, failure = p.stepRuns(src[part.Span.Start:part.Span.End], c, supported, [][]any{a})
+		if failure != "" || got.failed != "" {
+			return got, failure, true
+		}
+	}
+	if failed != nil {
+		got, failure = p.stepRuns(src[parts[len(parts)-1].Span.End:], c, supported, [][]any{nil})
+	}
+	return got, failure, true
+}
+
 // severalText of the outcome of an Exec of a text of several statements on r: the rows affected of
 // its result, or its error. If changes, it ends with the count of changes that SQLite has on the
 // connection of r after it, as `select changes()` gives it, which only mattn's SQLite answers.
@@ -5246,13 +5297,13 @@ func TestSeveral(t *testing.T) {
 		{name: "more arguments than parameters, which mattn drops", setup: []string{t1}, src: "insert into t1 (v1) values (?); " + ins(2), args: []any{1, 9},
 			s4ql:  "failed with s4ql: wrong number of arguments: 2 for a text whose 2 statements have 1 parameter",
 			mattn: "affected 1, changes() 1", oracle: "-"},
-		{name: "a no-break space after a semicolon, which mattn's TrimSpace removes and SQLite reads as a name", setup: []string{t1}, src: ins(1) + "; " + ins(2),
+		{name: "a no-break space after a semicolon, which mattn's TrimSpace removes and SQLite reads as a name", setup: []string{t1}, src: ins(1) + ";\u00a0" + ins(2),
 			s4ql:  "failed with s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 31)",
 			mattn: "affected 1, changes() 1", oracle: "-"},
 		{name: "a vertical tab after a semicolon, which SQLite does not read as a space where a token starts", setup: []string{t1}, src: ins(1) + ";\v" + ins(2),
 			s4ql:  "failed with s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 31)",
 			mattn: "affected 1, changes() 1", oracle: "-"},
-		{name: "a no-break space at the end", setup: []string{t1}, src: ins(1) + "; " + ins(2) + " ",
+		{name: "a no-break space at the end", setup: []string{t1}, src: ins(1) + "; " + ins(2) + "\u00a0",
 			s4ql:  "failed with s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 62)",
 			mattn: "affected 1, changes() 1", oracle: "-"},
 		{name: "a block comment that the trim makes a slash", setup: []string{t1}, src: ins(1) + "; /* ",

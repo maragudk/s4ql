@@ -163,7 +163,7 @@ Each check of the meaning in the tests runs the error of each name against SQLit
 1. An error of the whole text, with no part: the checks before parsing, as in `Check`, and two refusals of the spaces that mattn removes from each tail with Go's `strings.TrimSpace`, where SQLite reads them as part of a token, a no-break space or another Unicode space as a character of a name, and a vertical tab where a token starts as an illegal token: `space after a statement that SQLite reads as part of a token` at the start of a tail, and, once a tail follows the first statement, `space at the end of the text that SQLite reads as part of a token`, which covers a space at the end of a string without its closing quote and the space of `/* ` that leaves a slash. A space at the end of a line comment, or of a block comment without its end, is no such space. Where the readings agree, the statements after the first are read from the text without the spaces at its end, as mattn hands them to SQLite.
 2. SQLite's syntax error or "not supported" of the first statement that `Check` would refuse, with the parts of the statements before it.
 
-A text without a statement gives no part and no error. `Check` is unchanged by `Split`: it reads one statement, and refuses a second.
+A text without a statement gives no part and no error. `Check` reads one statement, and refuses a second.
 
 ### The recognizer
 

@@ -96,7 +96,7 @@ func TestSplit(t *testing.T) {
 
 	t.Run("should refuse a space after a statement that SQLite reads as part of a token, which Go's TrimSpace removes, before any statement", func(t *testing.T) {
 		for src, want := range map[string]string{
-			"drop table t; drop table u":                    "s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 13)",
+			"drop table t;\u00a0drop table u":               "s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 13)",
 			"drop table t;   drop table u":                  "s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 14)",
 			"drop table t;\vdrop table u":                   "s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 13)",
 			"drop table t; drop table u;\u0085drop table w": "s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 27)",
@@ -110,12 +110,12 @@ func TestSplit(t *testing.T) {
 
 	t.Run("should refuse a space at the end of a text of more than one statement that SQLite reads as part of a token, before any statement", func(t *testing.T) {
 		for src, want := range map[string]string{
-			"drop table t; ":                  "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 13)",
-			"drop table t; drop table u  ":    "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 27)",
-			"drop table t; /* c */ ":          "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 21)",
-			"drop table t; select 'abc  ":     "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 25)",
-			"drop table t; /* ":               "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 16)",
-			"drop table t; drop table \"u \n": "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 27)",
+			"drop table t;\u00a0":               "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 13)",
+			"drop table t; drop table u \u00a0": "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 27)",
+			"drop table t; /* c */\u00a0":       "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 21)",
+			"drop table t; select 'abc  ":       "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 25)",
+			"drop table t; /* ":                 "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 16)",
+			"drop table t; drop table \"u \n":   "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 27)",
 		} {
 			parts, err := stmt.Split(src)
 			is.Equal(t, 0, len(parts), src)
@@ -127,14 +127,19 @@ func TestSplit(t *testing.T) {
 	t.Run("should take spaces that SQLite reads as spaces, and comments that end in spaces, at the end and between statements", func(t *testing.T) {
 		for _, src := range []string{
 			"drop table t; \t\r\n\f drop table u \t\r\n\f\v",
-			"drop table t; drop table u; -- c \t\v ",
-			"drop table t; drop table u; /* c  \n",
+			"drop table t; drop table u; -- c \t\v\u00a0",
+			"drop table t; drop table u; /* c \u00a0\n",
 			"drop table t; drop table u; --  ",
 			"drop table t;\ufeffdrop table u",
+			// The last statement without a semicolon, and a comment after it.
+			"drop table t; drop table u -- c \v",
+			"drop table t; drop table u -- c\u00a0",
+			"drop table t; drop table u /* c  ",
 		} {
 			parts, err := stmt.Split(src)
 			is.NotError(t, err, src)
 			is.Equal(t, 2, len(parts), src)
+			is.Equal(t, stmt.Span{Start: 13, End: len(src)}, parts[1].Span, src)
 		}
 	})
 
@@ -153,7 +158,7 @@ func TestSplit(t *testing.T) {
 	})
 
 	t.Run("should name its refusals of spaces by names of the vocabulary", func(t *testing.T) {
-		for _, src := range []string{"drop table t; drop table u", "drop table t; "} {
+		for _, src := range []string{"drop table t;\u00a0drop table u", "drop table t;\u00a0"} {
 			_, err := stmt.Split(src)
 			m := messageForm.FindStringSubmatch(err.Error())
 			is.True(t, m != nil, err.Error())

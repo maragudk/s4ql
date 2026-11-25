@@ -386,22 +386,19 @@ func (c *conn) Ping(ctx context.Context) error {
 // parameters, by position, as [engine.Conn.ExecAll] runs them: each statement takes as many of the
 // arguments as it has parameters, in order, and runs as a transaction of its own, or in the
 // transaction of the connection, if one is open. A statement that fails ends the call with its
-// error, and keeps those before it. The text is judged first, then whether each argument is one
-// that s4ql supports, as [arguments] says, and then the instance runs the statements; an argument
-// that s4ql does not support runs none of them. The result is SQLite's count of changes on the
-// connection after the last statement that ran.
+// error, and keeps those before it. What comes before any statement runs is judged first, as
+// [engine.CheckAll] judges it, then whether each argument is one that s4ql supports, as [arguments]
+// says, and then the instance runs the statements; an argument that s4ql does not support runs none
+// of them. The result is SQLite's count of changes on the connection after the last statement that
+// ran.
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	return c.exec(ctx, query, args, true)
+	return c.exec(ctx, query, args, engine.CheckAll, c.e.ExecAll)
 }
 
-// exec is [conn.ExecContext] of the text query with args, of the statements of the text if several,
-// and of its one statement otherwise, as [engine.Conn.Exec] runs it and [prepared] needs it.
-func (c *conn) exec(ctx context.Context, query string, args []driver.NamedValue, several bool) (driver.Result, error) {
-	check, run := engine.Check, c.e.Exec
-	if several {
-		check, run = engine.CheckAll, c.e.ExecAll
-	}
-	values, err := arguments(query, args, check)
+// exec the text query with args: judge it with judge, as [arguments] says, and run it with run.
+func (c *conn) exec(ctx context.Context, query string, args []driver.NamedValue, judge func(string, int) error,
+	run func(context.Context, string, ...*s4qlpb.Value) (engine.Result, error)) (driver.Result, error) {
+	values, err := arguments(query, args, judge)
 	if err != nil {
 		return nil, err
 	}
@@ -492,24 +489,24 @@ func check(query string) error {
 }
 
 // arguments of the text query: the value of each of args, in order, as [argument] gives it, after
-// the conversion of [conn.CheckNamedValue]. check is the check of the text with a number of
-// arguments that the engine makes when it runs the text: [engine.Check] for one statement, and
-// [engine.CheckAll] for the statements of [conn.ExecContext].
+// the conversion of [conn.CheckNamedValue]. judge gives the errors of the text with a number of
+// arguments that the engine gives, when it runs the text, before it runs any statement of it, such
+// as [engine.Check] and [engine.CheckAll].
 //
-// The errors come in this order, the first that holds, so that an error of the text never depends on
-// the arguments: the error of the text, as check gives it; another number of arguments than the
-// statements have parameters, an error that says both numbers; and "not supported" for the first
-// argument with a name or of a type that no column holds, which says which type. The engine makes
-// the first two checks again when it runs the text, so they are made here only for arguments that
-// are not supported, and the text is parsed once on the path where every argument is. The engine
-// then refuses an argument whose value no column holds, such as a NaN or text with the character
-// NUL, and, once it has found the table, a value of another type than its column.
-func arguments(query string, args []driver.NamedValue, check func(string, int) error) ([]*s4qlpb.Value, error) {
+// The errors come in this order, the first that holds, so that such an error of the text never
+// depends on the arguments: the error that judge gives, of the text and of the number of arguments;
+// and "not supported" for the first argument with a name or of a type that no column holds, which
+// says which type. The engine makes the checks of judge again when it runs the text, so they are
+// made here only for arguments that are not supported, and the text is parsed once on the path where
+// every argument is. The engine then refuses an argument whose value no column holds, such as a NaN
+// or text with the character NUL, and, once it has found the table, a value of another type than
+// its column.
+func arguments(query string, args []driver.NamedValue, judge func(string, int) error) ([]*s4qlpb.Value, error) {
 	values := make([]*s4qlpb.Value, 0, len(args))
 	for _, a := range args {
 		v, err := argument(a)
 		if err != nil {
-			if err := publicError(check(query, len(args))); err != nil {
+			if err := publicError(judge(query, len(args))); err != nil {
 				return nil, err
 			}
 			return nil, err
@@ -658,7 +655,7 @@ func (p *prepared) NumInput() int {
 
 // ExecContext runs the statement with args, as [conn.ExecContext] runs a text of one statement.
 func (p *prepared) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	return p.conn.exec(ctx, p.query, args, false)
+	return p.conn.exec(ctx, p.query, args, engine.Check, p.conn.e.Exec)
 }
 
 // QueryContext runs the statement with args, and gives its rows, as [conn.QueryContext] runs its text.

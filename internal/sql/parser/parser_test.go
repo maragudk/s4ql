@@ -184,7 +184,7 @@ func TestParseAll(t *testing.T) {
 func TestParseAt(t *testing.T) {
 	t.Run("should read the first statement from the offset, as Parse reads the rest of the text, with offsets and the tail in the whole text", func(t *testing.T) {
 		src := "select 1; ; select (2) ; select 3"
-		stmt, tail, err := parser.ParseAt(src, 9)
+		stmt, tail, err := parser.ParseAt(src, 9, len(src))
 		is.NotError(t, err)
 		is.Equal(t, ast.Span{Start: 12, End: 24}, stmt.Bounds())
 		is.Equal(t, 24, tail)
@@ -195,15 +195,22 @@ func TestParseAt(t *testing.T) {
 		is.Equal(t, 15, restTail)
 	})
 
+	t.Run("should end the text at the end that it is given", func(t *testing.T) {
+		stmt, tail, err := parser.ParseAt("select 1; select 2 frm t", 9, 18)
+		is.NotError(t, err)
+		is.Equal(t, ast.Span{Start: 10, End: 18}, stmt.Bounds())
+		is.Equal(t, 18, tail)
+	})
+
 	t.Run("should give an error with its offset in the whole text", func(t *testing.T) {
-		_, _, err := parser.ParseAt("select 1; select 2 frm t", 9)
+		_, _, err := parser.ParseAt("select 1; select 2 frm t", 9, 24)
 		var e *parser.Error
 		is.True(t, errors.As(err, &e))
 		is.Equal(t, parser.Error{Message: `near "t": syntax error`, Offset: 23}, *e)
 	})
 
 	t.Run("should give no statement and the end of the text as the tail for a rest without one", func(t *testing.T) {
-		stmt, tail, err := parser.ParseAt("select 1; -- c\n;", 9)
+		stmt, tail, err := parser.ParseAt("select 1; -- c\n;", 9, 16)
 		is.NotError(t, err)
 		is.True(t, stmt == nil)
 		is.Equal(t, 16, tail)

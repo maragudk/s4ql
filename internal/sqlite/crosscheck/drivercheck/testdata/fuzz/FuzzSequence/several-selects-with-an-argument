@@ -1,0 +1,4 @@
+go test fuzz v1
+string("create table t1 (v1 int primary key) strict, without rowid\x1eselect * from t1; select * from t1")
+[]byte("\x00\x05")
+bool(true)

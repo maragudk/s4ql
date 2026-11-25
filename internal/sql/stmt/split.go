@@ -15,7 +15,8 @@ type Part struct {
 	// Span of the part in the whole text: from the end of the part before it, or the start of the
 	// text, to the end of the semicolon of its statement, or, for the last part, to the end of the
 	// text. So the empty statements, spaces, and comments before a statement are in its part, and
-	// those after the last statement in the last part, and the parts cover the text.
+	// those after the last statement in the last part, and the parts of a text that [Split] reads
+	// without an error cover it.
 	Span Span
 }
 
@@ -71,6 +72,11 @@ func Split(src string) ([]Part, error) {
 		}
 		parts = append(parts, Part{Statement: s, Span: Span{Start: at, End: tail}})
 		at = tail
+		if at >= len(view) {
+			// The statement ends the view, and trimmedEnd has judged what follows it.
+			parts[len(parts)-1].Span.End = len(src)
+			return parts, nil
+		}
 		if err := trimmedStart(src, at); err != nil {
 			return nil, err
 		}

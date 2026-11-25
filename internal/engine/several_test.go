@@ -105,19 +105,58 @@ func TestConn_ExecAll(t *testing.T) {
 		is.Equal(t, "t1 (v1 INT): 1\n", i.state())
 	})
 
-	t.Run("should refuse an argument that no column holds for its statement, by its number in the call, after the statements before it", func(t *testing.T) {
+	t.Run("should refuse an argument for its statement, by its number among the arguments of its statement, after the statements before it", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
+		one := integers([]int64{1})[0]
 		nan := s4qlpb.Value_builder{Real: new(math.NaN())}.Build()
-		_, err := i.c.ExecAll(t.Context(), t1+"; insert into t1 (v1) values (?); insert into t1 (v1) values (?)", integers([]int64{1})[0], nan)
+		text := s4qlpb.Value_builder{Text: new("x")}.Build()
+		two := t1 + "; insert into t1 (v1) values (?); insert into t1 (v1) values (?)"
+		_, err := i.c.ExecAll(t.Context(), two, one, nan)
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
-		is.Equal(t, "s4ql: not supported: argument 2, which is a real that is not a number", err.Error())
+		is.Equal(t, "s4ql: not supported: argument 1, which is a real that is not a number", err.Error())
 		is.Equal(t, "t1 (v1 INT): 1\n", i.state())
+
+		_, err = i.c.ExecAll(t.Context(), "insert into t1 (v1) values (?); select * from t1 where v1 = ? limit ?", integers([]int64{2})[0], one, text)
+		is.Equal(t, "s4ql: not supported: argument 2, which is text, for LIMIT, which takes an integer from 0", err.Error())
+		_, err = i.c.ExecAll(t.Context(), "insert into t1 (v1) values (?); insert into t1 (v1) values (?)", integers([]int64{3})[0], text)
+		is.Equal(t, "s4ql: not supported: argument 1, which is text, for the column t1.v1 of type INT", err.Error())
+		is.Equal(t, "t1 (v1 INT): 1 2 3\n", i.state())
+	})
+
+	t.Run("should check a text before any statement runs as ExecAll does", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		tests := []struct {
+			src string
+			n   int
+		}{
+			{src: t1 + "; insert into t1 (v1) values (?)", n: 2},
+			{src: t1 + "; insert into t1 (v1) values (?)", n: 0},
+			{src: t1 + "; insert into t1 (v1) values (?); selec", n: 3},
+			{src: "insert into t1 (v1) values (?);", n: 2},
+			{src: "insert into t1 (v1) values (?);", n: 0},
+			{src: "selec; " + t1, n: 0},
+			{src: t1 + "; ", n: 0},
+			{src: " ; ", n: 0},
+		}
+		for _, test := range tests {
+			want := engine.CheckAll(test.src, test.n)
+			_, err := i.c.ExecAll(t.Context(), test.src, integers(make([]int64, test.n))...)
+			if want != nil {
+				is.Equal(t, want.Error(), err.Error(), test.src)
+				is.Equal(t, "", i.state(), test.src)
+				continue
+			}
+			// The statements before an error of the run ran.
+			is.True(t, err == nil || i.state() != "", test.src)
+			_, err = i.execAll("drop table if exists t1")
+			is.NotError(t, err)
+		}
 	})
 
 	t.Run("should refuse what Split refuses of the whole text, and a text without a statement, before any statement runs", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		for src, want := range map[string]string{
-			t1 + "; " + t1:           "s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 59)",
+			t1 + ";\u00a0" + t1:      "s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 59)",
 			t1 + "; drop table t1\v": "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 73)",
 			t1 + "; \x00":            "s4ql: not supported: NUL byte (at offset 60)",
 		} {

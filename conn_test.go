@@ -4250,17 +4250,25 @@ func TestExec_several(t *testing.T) {
 		is.Equal(t, "s4ql: wrong number of arguments: 1 for a text whose statements up to the one at offset 32 have 2 parameters", failed(t, err).Error())
 		is.EqualSlice(t, []int64{2, 3, 4}, values(t, db, select1))
 
-		// An argument that s4ql does not support runs nothing, after the errors of the text and of the
-		// number of arguments.
+		// An argument that s4ql does not support runs nothing, after the errors that come before any
+		// statement runs.
 		_, err = db.ExecContext(t.Context(), two, 5, true)
 		is.Equal(t, "argument 2 of type bool", notSupported(t, err))
 		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?); selec", 5, true)
-		is.Equal(t, `near "selec": syntax error`, failed(t, err).Error())
+		is.Equal(t, "argument 2 of type bool", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), two, true)
+		is.Equal(t, "argument 1 of type bool", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?); selec", true)
+		is.Equal(t, "space after a statement that SQLite reads as part of a token (at offset 31)", notSupported(t, err))
 		_, err = db.ExecContext(t.Context(), two, 5, true, 6)
 		is.Equal(t, "s4ql: wrong number of arguments: 3 for a text whose 2 statements have 2 parameters", failed(t, err).Error())
-		_, err = db.ExecContext(t.Context(), two, true)
-		is.Equal(t, "s4ql: wrong number of arguments: 1 for a text whose 2 statements have 2 parameters", failed(t, err).Error())
 		is.EqualSlice(t, []int64{2, 3, 4}, values(t, db, select1))
+
+		// More arguments than parameters run the statements before one that s4ql refuses, which may
+		// take them.
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?); selec", 5, 6)
+		is.Equal(t, `near "selec": syntax error`, failed(t, err).Error())
+		is.EqualSlice(t, []int64{2, 3, 4, 5}, values(t, db, select1))
 	})
 
 	t.Run("should give SQLite's count of changes after the last statement that sets it, also after a statement that sets none", func(t *testing.T) {
@@ -4314,9 +4322,9 @@ func TestExec_several(t *testing.T) {
 		db := w.serve(t, "a")
 		exec(t, db, t1)
 		for src, want := range map[string]string{
-			insert1 + "; insert into t1 (v1) values (2)":  "space after a statement that SQLite reads as part of a token (at offset 31)",
-			insert1 + ";\vinsert into t1 (v1) values (2)": "space after a statement that SQLite reads as part of a token (at offset 31)",
-			insert1 + "; insert into t1 (v1) values (2) ": "space at the end of the text that SQLite reads as part of a token (at offset 62)",
+			insert1 + ";\u00a0insert into t1 (v1) values (2)":  "space after a statement that SQLite reads as part of a token (at offset 31)",
+			insert1 + ";\vinsert into t1 (v1) values (2)":      "space after a statement that SQLite reads as part of a token (at offset 31)",
+			insert1 + "; insert into t1 (v1) values (2)\u00a0": "space at the end of the text that SQLite reads as part of a token (at offset 62)",
 			insert1 + "; /* ": "space at the end of the text that SQLite reads as part of a token (at offset 34)",
 		} {
 			_, err := db.ExecContext(t.Context(), src)
