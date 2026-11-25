@@ -875,14 +875,15 @@ const (
 	// The rows of s4ql must be SQLite's for the same select without the length limit. See
 	// [pair.sortTooBig].
 	excusedSortTooBig = "a sorted select that SQLite refuses for the length of what it sorts, checked against SQLite without the length limit"
-	// excusedReturningTooBig is an insert, an update, or a delete whose RETURNING names a column twice,
-	// which SQLite refuses with `string or blob too big` under a lowered length limit, where s4ql gives
-	// the rows: SQLite writes each row of RETURNING into a record of its own, which a column named
-	// twice makes longer than the row. The difference was found by the generated checks of slice 14
-	// and waits for the lead's decision in docs/todo/slice-14.md. The statement without RETURNING must
-	// succeed in SQLite under the limit, and s4ql's rows must be SQLite's without the limit. See
-	// [pair.returningTooBig].
-	excusedReturningTooBig = "a statement whose RETURNING names a column twice, which SQLite refuses for the length of a row of RETURNING, checked against SQLite without the length limit"
+	// excusedReturningTooBig is an insert, an update, or a delete with RETURNING, which SQLite refuses
+	// with `string or blob too big` under a lowered length limit, where s4ql gives the rows: SQLite
+	// writes each row of RETURNING into a record of its own, which can be longer than the row's record
+	// in the table, as where RETURNING names a column twice, or where a REAL column holds an integral
+	// value, which the table's record holds as an integer, in no byte for 0 and 1, and that of
+	// RETURNING in eight. It is the known difference of slice 14, kept, in docs/todo/slice-14.md. The
+	// statement without RETURNING must succeed in SQLite under the limit, and s4ql's rows must be
+	// SQLite's without the limit. See [pair.returningTooBig].
+	excusedReturningTooBig = "a statement with RETURNING, which SQLite refuses for the length of a row of RETURNING, checked against SQLite without the length limit"
 )
 
 // knownGap of the pass after the parser, as [stmttest.KnownGap] gives it, that the engine's answer
@@ -1318,10 +1319,10 @@ func (p *pair) sortTooBig(src string, args []any, got answer) bool {
 // returningTooBig reports whether the call of src, the statement s, with the arguments args, which
 // SQLite has just refused with `string or blob too big`, may be the known difference of slice 14
 // under a lowered length limit, and gives SQLite's answer without the limit then: an insert, an
-// update, or a delete whose RETURNING names a column twice, which SQLite refuses for the record of a
-// row of RETURNING, longer than the row, and which SQLite runs without RETURNING under the limit, in
-// a savepoint that is rolled back. The run without the limit changes SQLite's database, so the
-// caller compares its answer with the engine's in place of the refusal.
+// update, or a delete with RETURNING, which SQLite refuses for the record of a row of RETURNING,
+// longer than the row's record in the table, and which SQLite runs without RETURNING under the
+// limit, in a savepoint that is rolled back. The run without the limit changes SQLite's database,
+// so the caller compares its answer with the engine's in place of the refusal.
 func (p *pair) returningTooBig(s stmt.Statement, src string, args []any) (answer, bool) {
 	t, o := p.t, p.o
 	t.Helper()
@@ -1335,15 +1336,6 @@ func (p *pair) returningTooBig(s stmt.Statement, src string, args []any) (answer
 		r = s.Returning
 	}
 	if !r.Present() || p.i.limit == 0 || len(args) != s.Parameters() || p.longCondition(src) {
-		return answer{}, false
-	}
-	folds := map[string]bool{}
-	twice := false
-	for _, c := range r.Columns {
-		twice = twice || folds[c.Fold()]
-		folds[c.Fold()] = true
-	}
-	if !twice {
 		return answer{}, false
 	}
 	is.Equal(t, "", o.run(t, "savepoint s4ql_returning").err)
@@ -3937,6 +3929,9 @@ func flagSet(name string) bool {
 // With the flag -seed, also -seed 0, the test runs -sequences sequences from that seed, each with
 // the profile of its seed, and checks no count. With more -sequences than the default, it runs that
 // many of each profile, those of the full run among them, and checks the least numbers alone.
+//
+// A sequence that fails is reported, and the run goes on to the next one until ten have failed, so
+// that one failure does not hide another. A run in which a sequence failed checks no count.
 func TestDifferential(t *testing.T) {
 	replayed := flagSet("seed")
 	n := *sequences
@@ -3946,6 +3941,7 @@ func TestDifferential(t *testing.T) {
 	total := tally{}
 	runs := map[string]tally{}
 	var names []string
+	failed := 0
 	run := func(s uint64) {
 		p := stmttest.ProfileOf(s)
 		if runs[p.Name] == nil {
@@ -3953,7 +3949,14 @@ func TestDifferential(t *testing.T) {
 			names = append(names, p.Name)
 		}
 		restarts, limit := variantOf(s)
-		differential(t, s, *length, restarts, limit, runs[p.Name])
+		i := newInstanceDirected(t, generatedOptions(), limit, s)
+		defer i.close()
+		if failure := differentialFind(t, s, *length, restarts, runs[p.Name], i, generatedOptions()); failure != "" {
+			t.Error(failure)
+			if failed++; failed == 10 {
+				t.Fatal("ten sequences failed, and the run stops")
+			}
+		}
 	}
 	if replayed {
 		for s := range uint64(n) {
@@ -3976,6 +3979,10 @@ func TestDifferential(t *testing.T) {
 		}
 	}
 	t.Logf("%v calls ran in SQLite, and were compared with it", total[comparedWithSQLite])
+	if failed > 0 {
+		// A sequence that failed counted only some of its statements, so no count is checked or written.
+		return
+	}
 	const doc = "What each profile of TestDifferential of the engine reaches in its full run."
 	switch full := !slow() && !replayed && atDefault("length"); {
 	case full && atDefault("sequences"):

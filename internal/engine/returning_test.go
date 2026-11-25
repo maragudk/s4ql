@@ -557,7 +557,7 @@ func TestPair_returning(t *testing.T) {
 		}
 	})
 
-	t.Run("should excuse a statement whose RETURNING names a column twice, which SQLite refuses under the lowered length limit, by SQLite's answer without the limit", func(t *testing.T) {
+	t.Run("should excuse a statement whose row of RETURNING is longer than its row in the table, which SQLite refuses under the lowered length limit, by SQLite's answer without the limit", func(t *testing.T) {
 		for _, src := range []string{"delete from t where k = 1 returning b, b", "update t set k = 2 where k = 1 returning b, k, b", "insert into t (k, b) values (3, ?) returning b, b"} {
 			y := tally{}
 			p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, stmttest.LengthLimit), y)
@@ -570,6 +570,23 @@ func TestPair_returning(t *testing.T) {
 			var args []any
 			if strings.Contains(src, "?") {
 				args = []any{long}
+			}
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Args: args, Query: true, Supported: true}), src)
+			is.Equal(t, 1, y["excused: "+excusedReturningTooBig], src)
+			is.Equal(t, p.o.state(t), p.i.state(), src)
+		}
+
+		// The record of the table holds an integral value of a REAL column as an integer, 0 in no byte,
+		// and that of a row of RETURNING in eight, so SQLite refuses a row near the limit with
+		// RETURNING * too, which names no column twice, as in sequence 16832 of TestDifferential.
+		for _, src := range []string{"insert into c values (0.0, ?) returning *", "insert into c values (0.0, '" + strings.Repeat("x", 995) + "') returning *"} {
+			y := tally{}
+			p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, stmttest.LengthLimit), y)
+			c := stmttest.Call{Src: "create table c (a real not null, b text not null primary key) strict, without rowid", Supported: true}
+			is.Equal(t, "", p.step(c), c.Src)
+			var args []any
+			if strings.Contains(src, "?") {
+				args = []any{strings.Repeat("x", 995)}
 			}
 			is.Equal(t, "", p.step(stmttest.Call{Src: src, Args: args, Query: true, Supported: true}), src)
 			is.Equal(t, 1, y["excused: "+excusedReturningTooBig], src)

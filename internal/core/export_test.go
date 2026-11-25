@@ -98,12 +98,6 @@ func (r *ReadTx) SchemaReads() int {
 	return r.c.schemaReads
 }
 
-// CloseCache closes the connections of an instance that a test has crashed, as the operating system
-// closes the files of a process that has died.
-func (d *DB) CloseCache() {
-	d.closeCache()
-}
-
 // PauseUnlessChanged pauses as the lease task does, for the duration, with the count of changes of
 // the state as it was before the last change if stale, and as it is now otherwise.
 func (d *DB) PauseUnlessChanged(ctx context.Context, duration time.Duration, stale bool) error {

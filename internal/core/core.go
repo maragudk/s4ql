@@ -383,6 +383,15 @@ func (d *DB) spoolPattern() string {
 	return filepath.Base(d.path) + "-spool-*"
 }
 
+// CloseCache closes every connection of the instance to its cache, as the operating system closes
+// the files of a process that has died. Only a simulation that has crashed the instance's host may
+// call it, once nothing of the run uses the instance any more. It is not [DB.Close]: it runs no
+// task, sends nothing to the store, leaves the lease in the manifest as it is, and does not stop or
+// close the instance, which is left with closed connections that nothing may use again.
+func (d *DB) CloseCache() {
+	d.closeCache()
+}
+
 // closeCache closes every connection to the cache, also one that a call uses, ignoring errors. It
 // is for an instance that nothing uses any more.
 func (d *DB) closeCache() {
