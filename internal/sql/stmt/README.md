@@ -992,6 +992,12 @@ A test checks that every name the pass gives in any test is in these tables.
 | `subquery in a subquery` | A condition of the WHERE of a subquery has a subquery as its value, on either side of its column. The offset is that of the parenthesis of the inner subquery. |
 | `subquery of more than one column` | The select of a subquery has a second result column. SQLite gives `row value misused` when it prepares the statement, once it has found the tables. The offset is that of the second column. A `*` before another column is `* and another result column`, at the `*`. |
 | `subquery after a sign` | The value of a comparison is a subquery after a `-`. The offset is that of the parenthesis of the subquery. A `+` before a subquery is `+ sign`, at the `+`. |
+| `string in arithmetic` | An operand of `+`, `-`, `*`, or `/` is a string, as in `a + '1'`. SQLite reads the string as a number, `'abc'` as 0. A string after a `-` is `string after a sign`. |
+| `blob in arithmetic` | An operand of `+`, `-`, `*`, or `/` is a blob, as in `a * x'01'`. SQLite reads the blob as a number. A blob after a `-` is `blob after a sign`. |
+| `NULL in arithmetic` | An operand of `+`, `-`, `*`, or `/` is NULL, as in `a + null`, which SQLite gives as NULL. NULL after a sign is `NULL after a sign`. |
+| `division by zero` | The right operand of `/` is the literal 0 or 0.0, with or without a sign, or a real literal that SQLite reads as 0.0, such as `1e-400`. SQLite gives NULL. The offset is that of the literal. |
+| `expression deeper than SQLite's limit` | The value of an assignment of SET is an expression deeper than 1,000, `SQLITE_MAX_EXPR_DEPTH`. SQLite gives `Expression tree is too large (maximum depth 1000)` while it parses. The offset is that of the operator that makes it too deep, or of the token after an operand that makes it too deep. In WHERE, such an expression is `WHERE deeper than SQLite's limit`. |
+| `parentheses deeper than 100` | An expression has a 101st parenthesis open inside 100 others. SQLite has no such limit, but its parser refuses an expression nested deeper than its stack holds, with `Recursion limit`, from about 830 levels of `(1 + (1 + ...))`. The offset is that of the 101st parenthesis. |
 
 ### Names of fields
 

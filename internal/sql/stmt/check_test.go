@@ -1051,7 +1051,7 @@ var checkCases = []checkCase{
 			cond(name("d", "d", 50), stmt.OpEqual, lit(stmt.Integer(1), 54, 55)), cond(name("e", "e", 60), stmt.OpIsNull, stmt.Term{})}}},
 	{name: "a value and AND without a gap", src: "select * from t where v=1and w<-1", err: `unrecognized token: "1and"`},
 	// Only a sign makes a value of a literal: ~ is an operator of its own.
-	{name: "a bitwise not of a number on the left", src: "select * from t where ~1 < v", err: "s4ql: not supported: unary operator (at offset 22)"},
+	{name: "a bitwise not of a number on the left", src: "select * from t where ~1 < v", err: "s4ql: not supported: ~ operator (at offset 22)"},
 	{name: "a column on the right", src: "select * from t where v = w", err: "s4ql: not supported: column compared with a column (at offset 26)"},
 	{name: "a column in double quotes on the right", src: `select * from t where v = "a"`, err: "s4ql: not supported: column compared with a column (at offset 26)"},
 	{name: "a column with its table on the right", src: "select * from t where v = t.w", err: "s4ql: not supported: column compared with a column (at offset 26)"},
@@ -1068,9 +1068,6 @@ var checkCases = []checkCase{
 	{name: "a condition in parentheses", src: "select * from t where (v = 1)", err: "s4ql: not supported: parentheses (at offset 22)"},
 	{name: "a value in parentheses", src: "select * from t where v = (1)", err: "s4ql: not supported: parentheses (at offset 26)"},
 	{name: "a second condition in parentheses", src: "select * from t where v = 1 and (w = 2)", err: "s4ql: not supported: parentheses (at offset 32)"},
-	{name: "an expression on the left", src: "select * from t where v + 1 = 2", err: "s4ql: not supported: binary operator (at offset 22)"},
-	{name: "an expression on the right", src: "select * from t where v = 1 + 1", err: "s4ql: not supported: binary operator (at offset 26)"},
-	{name: "a column after a sign", src: "select * from t where -v = 1", err: "s4ql: not supported: unary operator (at offset 22)"},
 	{name: "a function on the left", src: "select * from t where lower(v) = 'a'", err: "s4ql: not supported: function call (at offset 22)"},
 	{name: "a function on the right", src: "select * from t where v = abs(1)", err: "s4ql: not supported: function call (at offset 26)"},
 	{name: "in", src: "select * from t where v in (1, 2)", err: "s4ql: not supported: IN (at offset 22)"},
@@ -1120,7 +1117,6 @@ var checkCases = []checkCase{
 	{name: "a plus sign in where", src: "select * from t where v = +1", err: "s4ql: not supported: + sign (at offset 26)"},
 	{name: "a numbered parameter in where", src: "select * from t where v = ?1", err: "s4ql: not supported: numbered parameter (at offset 26)"},
 	{name: "a named parameter in where", src: "select * from t where v = :a", err: "s4ql: not supported: named parameter (at offset 26)"},
-	{name: "a parameter after a sign in where", src: "select * from t where v = -?", err: "s4ql: not supported: parameter after a sign (at offset 27)"},
 	{name: "two signs in where", src: "select * from t where v = - -1", err: "s4ql: not supported: second sign (at offset 28)"},
 	{name: "a hex literal in where", src: "select * from t where v = 0x10", err: "s4ql: not supported: hex literal (at offset 26)"},
 	{name: "an infinite real in where", src: "select * from t where v = 1e999", err: "s4ql: not supported: infinite real number (at offset 26)"},
@@ -1219,23 +1215,19 @@ var checkCases = []checkCase{
 	{name: "a column twice in set", src: "update t set v = 1, v = 2", err: "s4ql: not supported: column named twice (at offset 20)"},
 	{name: "a column twice in set, in another case", src: "update t set v = 1, w = 2, V = 3", err: "s4ql: not supported: column named twice (at offset 27)"},
 	{name: "a column twice in set, once in double quotes", src: `update t set "v" = 1, v = 2`, err: "s4ql: not supported: column named twice (at offset 22)"},
-	{name: "an expression in set", src: "update t set v = v + 1", err: "s4ql: not supported: binary operator (at offset 17)"},
-	{name: "a column as the value in set", src: "update t set v = w", err: "s4ql: not supported: column reference (at offset 17)"},
-	{name: "a name in double quotes as the value in set", src: `update t set v = "a"`, err: "s4ql: not supported: column reference (at offset 17)"},
 	{name: "a value in parentheses in set", src: "update t set v = (1)", err: "s4ql: not supported: parentheses (at offset 17)"},
 	{name: "a function in set", src: "update t set v = abs(1)", err: "s4ql: not supported: function call (at offset 17)"},
 	{name: "a subquery in set", src: "update t set v = (select 1)", err: "s4ql: not supported: subquery (at offset 17)"},
 	{name: "a plus sign in set", src: "update t set v = +1", err: "s4ql: not supported: + sign (at offset 17)"},
 	{name: "a numbered parameter in set", src: "update t set v = ?1", err: "s4ql: not supported: numbered parameter (at offset 17)"},
 	{name: "a named parameter in set", src: "update t set v = :a", err: "s4ql: not supported: named parameter (at offset 17)"},
-	{name: "a parameter after a sign in set", src: "update t set v = -?", err: "s4ql: not supported: parameter after a sign (at offset 18)"},
 	{name: "true in set", src: "update t set v = true", err: "s4ql: not supported: TRUE or FALSE (at offset 17)"},
 	{name: "a hex literal in set", src: "update t set v = 0x10", err: "s4ql: not supported: hex literal (at offset 17)"},
 	{name: "an infinite real in set", src: "update t set v = -1e999", err: "s4ql: not supported: infinite real number (at offset 18)"},
 	{name: "the current time in set", src: "update t set v = current_time", err: "s4ql: not supported: current date or time (at offset 17)"},
 	{name: "null after a sign in set", src: "update t set v = -null", err: "s4ql: not supported: NULL after a sign (at offset 18)"},
 	{name: "update from", src: "update t set v = 1 from u", err: "s4ql: not supported: FROM clause (at offset 19)"},
-	{name: "update from with a column of the other table", src: "update t set v = u.v from u where t.w = u.w", err: "s4ql: not supported: column reference (at offset 17)"},
+	{name: "update from with a column of the other table", src: "update t set v = u.v from u where t.w = u.w", err: "s4ql: not supported: column with the name of a table (at offset 17)"},
 	{name: "update from with a literal and where", src: "update t set v = 1 from u where w = 1", err: "s4ql: not supported: FROM clause (at offset 19)"},
 	{name: "set of a list of columns", src: "update t set (v, w) = (1, 2)", err: "s4ql: not supported: SET of a list of columns (at offset 13)"},
 	{name: "set of a list of one column", src: "update t set (v) = 1", err: "s4ql: not supported: SET of a list of columns (at offset 13)"},
@@ -1568,10 +1560,9 @@ var checkCases = []checkCase{
 	{name: "a hex integer on the left", src: "select * from t where 0x10 < v", err: "s4ql: not supported: hex literal (at offset 22)"},
 	{name: "true on the left", src: "select * from t where true = v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
 	{name: "false on the left", src: "select * from t where FALSE < v", err: "s4ql: not supported: TRUE or FALSE (at offset 22)"},
-	{name: "a parameter after a sign on the left", src: "select * from t where -? < v", err: "s4ql: not supported: parameter after a sign (at offset 23)"},
 	{name: "null after a minus on the left", src: "select * from t where -null = v", err: "s4ql: not supported: NULL after a sign (at offset 23)"},
 	{name: "null after a plus on the left", src: "select * from t where +null = v", err: "s4ql: not supported: NULL after a sign (at offset 22)"},
-	{name: "two signs on the left", src: "select * from t where - -5 = v", err: "s4ql: not supported: unary operator (at offset 22)"},
+	{name: "two signs on the left", src: "select * from t where - -5 = v", err: "s4ql: not supported: second sign (at offset 24)"},
 	{name: "a string after a sign on the left", src: "select * from t where -'x' = v", err: "s4ql: not supported: string after a sign (at offset 23)"},
 	{name: "a blob after a sign on the left", src: "select * from t where - x'00' = v", err: "s4ql: not supported: blob after a sign (at offset 24)"},
 	{name: "a number with a digit separator on the left", src: "select * from t where 1_000 = v", err: "s4ql: not supported: number with a digit separator (at offset 22)"},
@@ -1588,10 +1579,7 @@ var checkCases = []checkCase{
 	{name: "a column in brackets on the right of a value", src: "select * from t where 5 < [v]", err: "s4ql: not supported: name in brackets (at offset 26)"},
 	{name: "a column in backticks on the right of a value", src: "select * from t where 5 < `v`", err: "s4ql: not supported: name in backticks (at offset 26)"},
 	{name: "an empty name on the right of a value", src: `select * from t where 5 < ""`, err: "s4ql: not supported: empty name (at offset 26)"},
-	{name: "an expression on the right of a value", src: "select * from t where 5 < v + 1", err: "s4ql: not supported: binary operator (at offset 26)"},
-	{name: "an expression on the left of a column", src: "select * from t where 5 + 1 < v", err: "s4ql: not supported: binary operator (at offset 22)"},
 	{name: "a function on the right of a value", src: "select * from t where 5 < abs(v)", err: "s4ql: not supported: function call (at offset 26)"},
-	{name: "a column after a sign on the right of a value", src: "select * from t where 5 < -v", err: "s4ql: not supported: unary operator (at offset 26)"},
 	{name: "two comparisons in a row", src: "select * from t where 5 < v < 10", err: "s4ql: not supported: binary operator (at offset 22)"},
 	{name: "a collation on a value on the left", src: "select * from t where 'a' collate nocase < v", err: "s4ql: not supported: COLLATE (at offset 22)"},
 	{name: "a collation on a column on the right", src: "select * from t where 'a' < v collate nocase", err: "s4ql: not supported: COLLATE (at offset 28)"},
@@ -1959,6 +1947,156 @@ var checkCases = []checkCase{
 	{name: "a subquery with a closing parenthesis too many", src: "select * from t where k = (select k from u))", err: `near ")": syntax error`},
 	{name: "empty parentheses as a value", src: "select * from t where k = ()", err: `near ")": syntax error`},
 	{name: "a subquery of select alone", src: "select * from t where k = (select)", err: `near ")": syntax error`},
+
+	// Arithmetic: +, -, *, and / on literals, parameters, and columns, in SET and on either side of a
+	// comparison of WHERE.
+	{name: "an expression with a column in set", src: "update t set v = v + 1", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 22}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprAdd, 17, 22, ec("v", 17), ev(stmt.Integer(1), 21, 22)), 17, 22))}}},
+	{name: "an expression without a column in set", src: "update t set v = 1 + 2", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 22}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprAdd, 17, 22, ev(stmt.Integer(1), 17, 18), ev(stmt.Integer(2), 21, 22)), 17, 22))}}},
+	{name: "a column as the value in set", src: "update t set v = w", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 18}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(ec("w", 17), 17, 18))}}},
+	{name: "a name in double quotes as the value in set", src: `update t set v = "a b"`, want: &stmt.Update{Span: stmt.Span{Start: 0, End: 22}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(stmt.Expression{Kind: stmt.ExprColumn, Column: name(`"a b"`, "a b", 17), Span: stmt.Span{Start: 17, End: 22}}, 17, 22))}}},
+	{name: "a column in double quotes in an expression in set", src: `update t set "v" = "a b" * 2`, want: &stmt.Update{Span: stmt.Span{Start: 0, End: 28}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name(`"v"`, "v", 13), ex(eop(stmt.ExprMultiply, 19, 28, stmt.Expression{Kind: stmt.ExprColumn, Column: name(`"a b"`, "a b", 19), Span: stmt.Span{Start: 19, End: 24}},
+			ev(stmt.Integer(2), 27, 28)), 19, 28))}}},
+	{name: "a parameter after a sign in set", src: "update t set v = -?", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 19}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eneg(17, 19, ep(1, 18)), 17, 19))}}},
+	{name: "a negated column times a number in set", src: "update t set v = -w * 2", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 23}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprMultiply, 17, 23, eneg(17, 19, ec("w", 18)), ev(stmt.Integer(2), 22, 23)), 17, 23))}}},
+	{name: "divisions, which group to the left", src: "update t set v = 8 / 2 / 2", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 26}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprDivide, 17, 26, eop(stmt.ExprDivide, 17, 22, ev(stmt.Integer(8), 17, 18), ev(stmt.Integer(2), 21, 22)),
+			ev(stmt.Integer(2), 25, 26)), 17, 26))}}},
+	{name: "a column minus a negative number", src: "update t set v = a - -5", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 23}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprSubtract, 17, 23, ec("a", 17), ev(stmt.Integer(-5), 21, 23)), 17, 23))}}},
+	{name: "a column minus a negative number on the next line", src: "update t set v = a -\n-5", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 23}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprSubtract, 17, 23, ec("a", 17), ev(stmt.Integer(-5), 21, 23)), 17, 23))}}},
+	{name: "a column and a comment of --", src: "update t set v = v--5", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 18}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(ec("v", 17), 17, 18))}}},
+	{name: "the least integer of 64 bits in an expression", src: "update t set v = -9223372036854775808 - a", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 41}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprSubtract, 17, 41, ev(stmt.Integer(math.MinInt64), 17, 37), ec("a", 40)), 17, 41))}}},
+	{name: "the least integer of 64 bits as the right operand", src: "update t set v = v * -9223372036854775808", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 41}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprMultiply, 17, 41, ec("v", 17), ev(stmt.Integer(math.MinInt64), 21, 41)), 17, 41))}}},
+	{name: "an integer with leading zeros in an expression", src: "update t set v = v + 007", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 24}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprAdd, 17, 24, ec("v", 17), ev(stmt.Integer(7), 21, 24)), 17, 24))}}},
+	{name: "reals in an expression", src: "update t set v = 1.5 * a + .5e1", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprAdd, 17, 31, eop(stmt.ExprMultiply, 17, 24, ev(stmt.Real(1.5), 17, 20), ec("a", 23)), ev(stmt.Real(5), 27, 31)), 17, 31))}}},
+	{name: "comments around an operator", src: "update t set v=v/**/+/* c */1", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 29}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprAdd, 15, 29, ec("v", 15), ev(stmt.Integer(1), 28, 29)), 15, 29))}}},
+	{name: "a comment between a sign and its number", src: "update t set v = - /* c */ 5 * a", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 32}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprMultiply, 17, 32, ev(stmt.Integer(-5), 17, 28), ec("a", 31)), 17, 32))}}},
+	{name: "an expression in parentheses in set", src: "update t set v = (v + 1)", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 24}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprAdd, 18, 23, ec("v", 18), ev(stmt.Integer(1), 22, 23)), 17, 24))}}},
+	{name: "multiplication before addition", src: "select * from t where v = 1 + 2 * 3", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 35}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, ex(eop(stmt.ExprAdd, 26, 35, ev(stmt.Integer(1), 26, 27),
+			eop(stmt.ExprMultiply, 30, 35, ev(stmt.Integer(2), 30, 31), ev(stmt.Integer(3), 34, 35))), 26, 35))}}},
+	{name: "subtractions, which group to the left", src: "select * from t where v = 1 - 2 - 3", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 35}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, ex(eop(stmt.ExprSubtract, 26, 35, eop(stmt.ExprSubtract, 26, 31, ev(stmt.Integer(1), 26, 27), ev(stmt.Integer(2), 30, 31)),
+			ev(stmt.Integer(3), 34, 35)), 26, 35))}}},
+	{name: "parentheses that group a subtraction first", src: "select * from t where v = (1 - 2) * 3", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 37}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, ex(eop(stmt.ExprMultiply, 26, 37, eop(stmt.ExprSubtract, 27, 32, ev(stmt.Integer(1), 27, 28), ev(stmt.Integer(2), 31, 32)),
+			ev(stmt.Integer(3), 36, 37)), 26, 37))}}},
+	{name: "parentheses that group an addition with a column", src: "select * from t where v = 2 * (3 + k)", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 37}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, ex(eop(stmt.ExprMultiply, 26, 37, ev(stmt.Integer(2), 26, 27),
+			eop(stmt.ExprAdd, 31, 36, ev(stmt.Integer(3), 31, 32), ec("k", 35))), 26, 37))}}},
+	{name: "a negation of parentheses", src: "select * from t where v > -(k - 1)", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 34}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpGreater, ex(eneg(26, 34, eop(stmt.ExprSubtract, 28, 33, ec("k", 28), ev(stmt.Integer(1), 32, 33))), 26, 34))}}},
+	{name: "an expression on the left", src: "select * from t where v + 1 = 2", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condExpr(eop(stmt.ExprAdd, 22, 27, ec("v", 22), ev(stmt.Integer(1), 26, 27)), stmt.OpEqual, lit(stmt.Integer(2), 30, 31), false)}}},
+	{name: "an expression on the right of a value", src: "select * from t where 5 < v + 1", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condExpr(eop(stmt.ExprAdd, 26, 31, ec("v", 26), ev(stmt.Integer(1), 30, 31)), stmt.OpGreater, lit(stmt.Integer(5), 22, 23), true)}}},
+	{name: "an expression without a column on the left of a column", src: "select * from t where 5 + 1 < v", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condFirst(name("v", "v", 30), stmt.OpGreater, ex(eop(stmt.ExprAdd, 22, 27, ev(stmt.Integer(5), 22, 23), ev(stmt.Integer(1), 26, 27)), 22, 27))}}},
+	{name: "a column after a sign", src: "select * from t where -v = 1", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 28}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condExpr(eneg(22, 24, ec("v", 23)), stmt.OpEqual, lit(stmt.Integer(1), 27, 28), false)}}},
+	{name: "a parameter after a sign in where", src: "select * from t where v = -?", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 28}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, ex(eneg(26, 28, ep(1, 27)), 26, 28))}}},
+	{name: "a parameter after a sign on the left", src: "select * from t where -? < v", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 28}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condFirst(name("v", "v", 27), stmt.OpGreater, ex(eneg(22, 24, ep(1, 23)), 22, 24))}}},
+	{name: "a column compared with an expression with a column", src: "select * from t where a = b + 1", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("a", "a", 22), stmt.OpEqual, ex(eop(stmt.ExprAdd, 26, 31, ec("b", 26), ev(stmt.Integer(1), 30, 31)), 26, 31))}}},
+	{name: "an expression with a column compared with a column", src: "select * from t where a + 1 = b", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condFirst(name("b", "b", 30), stmt.OpEqual, ex(eop(stmt.ExprAdd, 22, 27, ec("a", 22), ev(stmt.Integer(1), 26, 27)), 22, 27))}}},
+	{name: "two expressions with columns", src: "select * from t where a * 2 < b * 3", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 35}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condExpr(eop(stmt.ExprMultiply, 22, 27, ec("a", 22), ev(stmt.Integer(2), 26, 27)), stmt.OpLess,
+			ex(eop(stmt.ExprMultiply, 30, 35, ec("b", 30), ev(stmt.Integer(3), 34, 35)), 30, 35), false)}}},
+	{name: "an expression in parentheses on the left and a second condition", src: "select * from t where (k + 1) * 2 = ? and v = 1", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 47}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condExpr(eop(stmt.ExprMultiply, 22, 33, eop(stmt.ExprAdd, 23, 28, ec("k", 23), ev(stmt.Integer(1), 27, 28)), ev(stmt.Integer(2), 32, 33)), stmt.OpEqual, param(1, 36), false),
+			cond(name("v", "v", 42), stmt.OpEqual, lit(stmt.Integer(1), 46, 47))}}},
+	{name: "an expression in a delete", src: "delete from t where k * 2 > ?", want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 29}, Table: name("t", "t", 12),
+		Where: []stmt.Condition{condExpr(eop(stmt.ExprMultiply, 20, 25, ec("k", 20), ev(stmt.Integer(2), 24, 25)), stmt.OpGreater, param(1, 28), false)}}},
+	{name: "an expression in the where of a subquery", src: "select * from t where k = (select k from u where x + 1 = 2)", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 59}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("k", "k", 22), stmt.OpEqual, sub(1, 26, 59))},
+		Subqueries: []stmt.Select{{Span: stmt.Span{Start: 27, End: 58}, Table: name("u", "u", 41), Columns: []stmt.Name{name("k", "k", 34)},
+			Where: []stmt.Condition{condExpr(eop(stmt.ExprAdd, 49, 54, ec("x", 49), ev(stmt.Integer(1), 53, 54)), stmt.OpEqual, lit(stmt.Integer(2), 57, 58), false)}}}}},
+	{name: "the parameters of expressions in the order of the text", src: "update t set v = ? + 1 where ? * k < ? and k = (select k from u where x - ? = ?)", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 80}, Table: name("t", "t", 7),
+		Set:   []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprAdd, 17, 22, ep(1, 17), ev(stmt.Integer(1), 21, 22)), 17, 22))},
+		Where: []stmt.Condition{condExpr(eop(stmt.ExprMultiply, 29, 34, ep(2, 29), ec("k", 33)), stmt.OpLess, param(3, 37), false), cond(name("k", "k", 43), stmt.OpEqual, sub(1, 47, 80))},
+		Subqueries: []stmt.Select{{Span: stmt.Span{Start: 48, End: 79}, Table: name("u", "u", 62), Columns: []stmt.Name{name("k", "k", 55)},
+			Where: []stmt.Condition{condExpr(eop(stmt.ExprSubtract, 70, 75, ec("x", 70), ep(4, 74)), stmt.OpEqual, param(5, 78), false)}}}}},
+
+	// Arithmetic that is not supported.
+	{name: "the remainder", src: "update t set v = v % 2", err: "s4ql: not supported: binary operator (at offset 17)"},
+	{name: "the remainder as an operand", src: "update t set v = v + 1 % 2", err: "s4ql: not supported: binary operator (at offset 21)"},
+	{name: "a concatenation", src: "update t set v = v || 'a'", err: "s4ql: not supported: binary operator (at offset 17)"},
+	{name: "a bitwise and", src: "update t set v = v & 1", err: "s4ql: not supported: binary operator (at offset 17)"},
+	{name: "a comparison inside a comparison", src: "select * from t where v = 1 + 2 = 3", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "a string in arithmetic", src: "update t set v = v + 'a'", err: "s4ql: not supported: string in arithmetic (at offset 21)"},
+	{name: "a string on the left in arithmetic", src: "update t set v = '1' * v", err: "s4ql: not supported: string in arithmetic (at offset 17)"},
+	{name: "a blob in arithmetic", src: "update t set v = v + x'01'", err: "s4ql: not supported: blob in arithmetic (at offset 21)"},
+	{name: "NULL in arithmetic", src: "update t set v = v + null", err: "s4ql: not supported: NULL in arithmetic (at offset 21)"},
+	{name: "NULL on the left in arithmetic in where", src: "select * from t where v = null - k", err: "s4ql: not supported: NULL in arithmetic (at offset 26)"},
+	{name: "a string after a sign in arithmetic", src: "update t set v = v - -'a'", err: "s4ql: not supported: string after a sign (at offset 22)"},
+	{name: "NULL after a sign in arithmetic", src: "update t set v = v - -null", err: "s4ql: not supported: NULL after a sign (at offset 22)"},
+	{name: "a + sign in arithmetic", src: "update t set v = v + +1", err: "s4ql: not supported: + sign (at offset 21)"},
+	{name: "a + sign before a column", src: "update t set v = +v", err: "s4ql: not supported: + sign (at offset 17)"},
+	{name: "a second sign before a column", src: "update t set v = - -v", err: "s4ql: not supported: second sign (at offset 19)"},
+	{name: "a bitwise not after a sign", src: "update t set v = -~v", err: "s4ql: not supported: ~ operator (at offset 18)"},
+	{name: "a bitwise not of a column", src: "update t set v = ~v", err: "s4ql: not supported: ~ operator (at offset 17)"},
+	{name: "a division by zero", src: "update t set v = v / 0", err: "s4ql: not supported: division by zero (at offset 21)"},
+	{name: "a division by zeros", src: "update t set v = v / 000", err: "s4ql: not supported: division by zero (at offset 21)"},
+	{name: "a division by a real zero", src: "update t set v = v / 0.0", err: "s4ql: not supported: division by zero (at offset 21)"},
+	{name: "a division by a negative zero", src: "update t set v = v / -0", err: "s4ql: not supported: division by zero (at offset 21)"},
+	{name: "a division by a negative real zero", src: "update t set v = v / -0.0", err: "s4ql: not supported: division by zero (at offset 21)"},
+	{name: "a division by a real that SQLite reads as zero", src: "select * from t where v = k / 1e-400", err: "s4ql: not supported: division by zero (at offset 30)"},
+	{name: "a division by zero in parentheses", src: "update t set v = v / (0)", err: "s4ql: not supported: parentheses (at offset 21)"},
+	{name: "an integer outside 64 bits as the right operand of a minus", src: "update t set v = v - 9223372036854775808", err: "s4ql: not supported: integer outside 64 bits (at offset 21)"},
+	{name: "an integer outside 64 bits after a sign in arithmetic", src: "update t set v = -9223372036854775809 * v", err: "s4ql: not supported: integer outside 64 bits (at offset 18)"},
+	{name: "an infinite real in arithmetic", src: "update t set v = v + 1e999", err: "s4ql: not supported: infinite real number (at offset 21)"},
+	{name: "a hex literal in arithmetic", src: "update t set v = v + 0x10", err: "s4ql: not supported: hex literal (at offset 21)"},
+	{name: "a numbered parameter in arithmetic", src: "update t set v = v + ?1", err: "s4ql: not supported: numbered parameter (at offset 21)"},
+	{name: "a named parameter in arithmetic", src: "update t set v = v + :a", err: "s4ql: not supported: named parameter (at offset 21)"},
+	{name: "TRUE in arithmetic", src: "update t set v = v + true", err: "s4ql: not supported: TRUE or FALSE (at offset 21)"},
+	{name: "a column with the name of its table in arithmetic", src: "update t set v = t.v + 1", err: "s4ql: not supported: column with the name of a table (at offset 17)"},
+	{name: "a literal in parentheses in set", src: "update t set v = (1)", err: "s4ql: not supported: parentheses (at offset 17)"},
+	{name: "a negative literal in parentheses", src: "update t set v = (-1)", err: "s4ql: not supported: parentheses (at offset 17)"},
+	{name: "a column in parentheses in set", src: "update t set v = (w)", err: "s4ql: not supported: parentheses (at offset 17)"},
+	{name: "a parameter in parentheses in arithmetic", src: "update t set v = v * (?)", err: "s4ql: not supported: parentheses (at offset 21)"},
+	{name: "parentheses around parentheses", src: "update t set v = ((v + 1))", err: "s4ql: not supported: parentheses (at offset 17)"},
+	{name: "a column in parentheses on the left", src: "select * from t where (v) = 1", err: "s4ql: not supported: parentheses (at offset 22)"},
+	{name: "a column in parentheses compared with a column", src: "select * from t where v = (w)", err: "s4ql: not supported: parentheses (at offset 26)"},
+	{name: "a subquery in arithmetic", src: "update t set v = v + (select k from u)", err: "s4ql: not supported: subquery (at offset 21)"},
+	{name: "a subquery in arithmetic in where", src: "select * from t where v = (select k from u) + 1", err: "s4ql: not supported: subquery (at offset 26)"},
+	{name: "a function in arithmetic", src: "update t set v = v + abs(v)", err: "s4ql: not supported: function call (at offset 21)"},
+	{name: "a function in set", src: "update t set v = abs(v)", err: "s4ql: not supported: function call (at offset 17)"},
+	{name: "a cast in set", src: "update t set v = cast(v as int)", err: "s4ql: not supported: CAST (at offset 17)"},
+	{name: "a case in set", src: "update t set v = case when v then 1 end", err: "s4ql: not supported: CASE (at offset 17)"},
+	{name: "a collate in arithmetic", src: "update t set v = v + 1 collate nocase", err: "s4ql: not supported: COLLATE (at offset 21)"},
+	{name: "the current date in arithmetic", src: "update t set v = current_date + 1", err: "s4ql: not supported: current date or time (at offset 17)"},
+	{name: "an expression without a column compared with a value", src: "select * from t where 1 + 1 = 2", err: "s4ql: not supported: value compared with a value (at offset 30)"},
+	{name: "a value compared with an expression without a column", src: "select * from t where 1 = 2 * 3", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "two expressions with parameters and no column", src: "select * from t where ? * 2 = 1 + ?", err: "s4ql: not supported: value compared with a value (at offset 30)"},
+	{name: "a negated parameter compared with a parameter", src: "select * from t where -? = ?", err: "s4ql: not supported: value compared with a value (at offset 27)"},
+	{name: "an expression tested for NULL", src: "select * from t where v + 1 is null", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "an expression in the select list", src: "select v + 1 from t", err: "s4ql: not supported: result column other than a column or * (at offset 7)"},
+	{name: "an expression in values", src: "insert into t values (1 + 1)", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "an expression in order by", src: "select * from t order by v + 1", err: "s4ql: not supported: ordering term other than a column (at offset 25)"},
+	{name: "an expression in limit", src: "select * from t limit 1 + 1", err: "s4ql: not supported: LIMIT of an expression (at offset 22)"},
+	{name: "an expression in returning", src: "update t set v = 1 returning v + 1", err: "s4ql: not supported: result column other than a column or * (at offset 29)"},
+	{name: "an expression in a default", src: "create table t (k int primary key default (1 + 1)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 42)"},
+	{name: "an operator without a right operand", src: "update t set v = v +", err: "incomplete input"},
+	{name: "two operators", src: "update t set v = v * * 2", err: `near "*": syntax error`},
 }
 
 // sub is the value of a condition that is the subquery k of its statement, in parentheses at
@@ -2017,6 +2155,42 @@ func lit(v stmt.Value, start, end int) stmt.Term {
 // param is a value of an INSERT that is the parameter of the number n, at the offset at.
 func param(n, at int) stmt.Term {
 	return stmt.Term{Parameter: n, Span: stmt.Span{Start: at, End: at + 1}}
+}
+
+// ev is a literal of an expression, of the value v, at [start, end).
+func ev(v stmt.Value, start, end int) stmt.Expression {
+	return stmt.Expression{Kind: stmt.ExprValue, Value: v, Span: stmt.Span{Start: start, End: end}}
+}
+
+// ep is a parameter of an expression, of the number n, at the offset at.
+func ep(n, at int) stmt.Expression {
+	return stmt.Expression{Kind: stmt.ExprParameter, Parameter: n, Span: stmt.Span{Start: at, End: at + 1}}
+}
+
+// ec is a column of an expression, of the bare name raw at the offset at.
+func ec(raw string, at int) stmt.Expression {
+	return stmt.Expression{Kind: stmt.ExprColumn, Column: name(raw, raw, at), Span: stmt.Span{Start: at, End: at + len(raw)}}
+}
+
+// eneg is the negation of x, at [start, end).
+func eneg(start, end int, x stmt.Expression) stmt.Expression {
+	return stmt.Expression{Kind: stmt.ExprNegate, Operands: []stmt.Expression{x}, Span: stmt.Span{Start: start, End: end}}
+}
+
+// eop is the operator of the kind of x and y, at [start, end).
+func eop(kind stmt.ExpressionKind, start, end int, x, y stmt.Expression) stmt.Expression {
+	return stmt.Expression{Kind: kind, Operands: []stmt.Expression{x, y}, Span: stmt.Span{Start: start, End: end}}
+}
+
+// ex is the value of the expression e, at [start, end) with the parentheses around it.
+func ex(e stmt.Expression, start, end int) stmt.Term {
+	return stmt.Term{Expression: e, Span: stmt.Span{Start: start, End: end}}
+}
+
+// condExpr is a condition of a WHERE on the expression e, with the operator op and the value v, whose
+// text writes the value on the left if valueFirst, with the operator swapped.
+func condExpr(e stmt.Expression, op stmt.Operator, v stmt.Term, valueFirst bool) stmt.Condition {
+	return stmt.Condition{Expression: e, Operator: op, Value: v, ValueFirst: valueFirst}
 }
 
 // manyColumns is the case of a CREATE TABLE of n columns, c0 to c{n-1}, of which c0 is the primary
