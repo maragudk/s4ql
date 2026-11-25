@@ -2059,6 +2059,7 @@ var checkCases = []checkCase{
 	{name: "a string after a sign in arithmetic", src: "update t set v = v - -'a'", err: "s4ql: not supported: string after a sign (at offset 22)"},
 	{name: "NULL after a sign in arithmetic", src: "update t set v = v - -null", err: "s4ql: not supported: NULL after a sign (at offset 22)"},
 	{name: "a + sign in arithmetic", src: "update t set v = v + +1", err: "s4ql: not supported: + sign (at offset 21)"},
+	{name: "NULL after a + sign in arithmetic", src: "update t set v = v + +null", err: "s4ql: not supported: NULL after a sign (at offset 21)"},
 	{name: "a + sign before a column", src: "update t set v = +v", err: "s4ql: not supported: + sign (at offset 17)"},
 	{name: "a second sign before a column", src: "update t set v = - -v", err: "s4ql: not supported: second sign (at offset 19)"},
 	{name: "a bitwise not after a sign", src: "update t set v = -~v", err: "s4ql: not supported: ~ operator (at offset 18)"},
