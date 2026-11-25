@@ -874,6 +874,10 @@ func TestFilter(t *testing.T) {
 			is.True(t, errors.Is(err, ErrInternal), c.name)
 			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err), c.name)
 		}
+		// A filter without a projection checks the types of its values as a select does.
+		_, err := buildQuery(t.Context(), fakeTx{newTable()}, &Query{Root: &Filter{Source: scanT, Conditions: []Condition{{Column: k, Operator: stmt.OpEqual, Value: &Text{Value: "a"}}}}}, nil, 1_000_000_000, reading{})
+		is.True(t, errors.Is(err, stmt.ErrNotSupported))
+		is.Equal(t, "s4ql: not supported: a string literal compared with the column t.k of type INT", fmt.Sprint(err))
 		text := s4qlpb.Value_builder{Text: new("a")}.Build()
 		// A comparison that fails gives 0, the zero value, with its error.
 		n, err := compare(integer(1), text)

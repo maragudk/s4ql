@@ -1405,3 +1405,23 @@ internal/engine/operator.go condition.computed condition: !c.valueFirst => true
 	A value written first is then computed a second time, after the tested side; the evaluation is pure, and an error of it came the first time.
 internal/engine/operator.go update.newRow boolean: false => true
 	The check of NOT NULL then runs also for an update of plain values, where update.check has refused every such NULL before the update reads a row.
+internal/engine/operator.go update.newRow remove statement: return row, nil => #2
+	The check of NOT NULL then runs also for an update of plain values, where update.check has refused every such NULL before the update reads a row.
+internal/engine/operator.go update.newRow condition: position == u.key => false
+	The column of the primary key is never Nullable in a plan, so the check of Nullable after it refuses the NULL key as well.
+internal/engine/operator.go update.run condition: errors.Is(err, expr.ErrEvaluation) => true
+	Only with the planted bug evalStops, which then also stops and succeeds at every other error of a new row, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go update.run condition: errors.Is(err, expr.ErrEvaluation) => !errors.Is(err, expr.ErrEvaluation)
+	Only with the planted bug evalStops, which then stops and succeeds at the other errors of a new row, NOT NULL among them, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go update.run condition: err != nil => false #3
+	The comparison of the new key with the old cannot fail: update.check gives the new key the class of the key column, and only the planted bug copyAcross copies another class into it, which its other symptoms find.
+internal/engine/operator.go update.run remove statement: return err => #3
+	As the mutant above: the comparison of the new key with the old cannot fail outside the planted bug copyAcross.
+internal/engine/operator.go update.run swap arguments: errors.Is(err, errStopped) => errors.Is(errStopped, err)
+	changeRows gives the error of the change as it is, so the error is errStopped itself or no errStopped, and errors.Is answers the same both ways.
+internal/engine/operator.go build.walk constant: -1 => -2
+	The position of a condition that tests an expression is never read as a position: the expression has its own columns, and the checks test only that it is negative.
+internal/engine/operator.go build.walk constant: -1 => -0
+	A condition that tests an expression reads its tested side from the expression, never at its position, and serves no access; only the planted bug noRowMatches reads it, which then tests the column at 0 for NOT NULL, as it does for -1.
+internal/engine/operator.go build.walk condition: !c.ValueFirst => true
+	The names of an expression of the value written first are then looked up a second time, after the column; they were all found the first time.
