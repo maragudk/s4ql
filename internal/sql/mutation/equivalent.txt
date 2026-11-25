@@ -1321,3 +1321,81 @@ internal/engine/tx.go Conn.writeIn condition: err != nil => true #5
 	The planted bug outsideTx then changes nothing and gives no error, a write that is lost, which the tests of the planted bugs find.
 internal/engine/tx.go Conn.writeIn operator: err != nil => err == nil #5
 	As the mutant above where the read transaction begins, which it does in every run of the planted bugs.
+
+# Arithmetic in the engine, internal/engine, of pull requests #154 and #156.
+
+# The classes of the rule of exact types: text and blobs are only ever compared for equality and
+# refused alike beside arithmetic, so swapping or merging their classes changes no outcome.
+internal/engine/expression.go columnClass swap cases: case s4qlpb.Type_TYPE_TEXT: return classText case s4qlpb.Type_TYPE_BLOB: return classBlob => case s4qlpb.Type_TYPE_TEXT: return classBlob case s4qlpb.Type_TYPE_BLOB: return classText
+	The class of a column is compared only with that of another column, where the swap is one to one, and by meetsArithmetic, which refuses both classes alike; no message names the class of a column.
+internal/engine/expression.go columnClass neighbour: return classAny => return classInteger
+	Every column of a table has one of the five types, which the storage formats check, so the default is never reached.
+internal/engine/expression.go valueClass swap cases: case s4qlpb.Value_Text_case: return classText case s4qlpb.Value_Blob_case: return classBlob => case s4qlpb.Value_Text_case: return classBlob case s4qlpb.Value_Blob_case: return classText
+	The class of a plain value is read only by meetsArithmetic, which refuses text and blobs alike.
+internal/engine/expression.go valueClass neighbour: return classText => return classBlob
+	As the swap above: meetsArithmetic refuses a value of either class alike.
+internal/engine/expression.go valueClass neighbour: return classBlob => return classText
+	As the swap above: meetsArithmetic refuses a value of either class alike.
+internal/engine/expression.go meetsArithmetic swap arguments: comparable(c, a) => comparable(a, c)
+	comparable is symmetric.
+
+# The bounds of the access.
+internal/engine/operator.go bounds condition: !slices.ContainsFunc(conditions, condition.perRow) => false
+	Without the shortcut the loop gives a copy of the same conditions in the same order, which the access only reads.
+internal/engine/operator.go bounds remove statement: return conditions =>
+	As the mutant above: the loop after it gives the same conditions.
+
+# The planted bug errorSkipsRow, in condition.holds.
+internal/engine/operator.go condition.holds condition: errors.Is(err, expr.ErrEvaluation) => true
+	Only with the planted bug errorSkipsRow, which then also leaves out a row whose condition fails with an internal error, which no run of the planted bugs meets; the bug is found as before.
+internal/engine/operator.go condition.holds condition: err != nil => true
+	errors.Is of a nil error is false, so the condition is the same.
+internal/engine/operator.go condition.holds boolean: false => true
+	Only with the planted bug errorSkipsRow, which then keeps a row whose condition fails in place of leaving it out, another wrong answer, which the tests of the planted bugs find.
+
+# The planted bug nullCompares in a comparison of two columns of the row, as in `a = b`, in
+# condition.holds. Every mutant of the line changes the comparison only with the planted bug, which is
+# then true of other rows, or of none of them, in this path; the tests of the planted bugs find it by
+# the comparisons of arithmetic, which condition.computed plants it in too.
+internal/engine/operator.go condition.holds condition: c.nullCompares && (v.HasNull() || c.value.HasNull()) && c.op != stmt.OpIsNull && c.op != stmt.OpIsNotNull => false
+	The planted bug nullCompares left out of a comparison of two columns, which its comparisons of arithmetic find.
+internal/engine/operator.go condition.holds condition: c.nullCompares && (v.HasNull() || c.value.HasNull()) && c.op != stmt.OpIsNull => false
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds condition: c.nullCompares && (v.HasNull() || c.value.HasNull()) => false
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds condition: c.nullCompares => false
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds remove statement: return true, nil =>
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds condition: (v.HasNull() || c.value.HasNull()) => false
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds condition: c.op != stmt.OpIsNotNull => true
+	A comparison of two columns is never a test for NULL, so the condition is the same.
+internal/engine/operator.go condition.holds condition: c.op != stmt.OpIsNull => true
+	A comparison of two columns is never a test for NULL, so the condition is the same.
+internal/engine/operator.go condition.holds condition: c.op != stmt.OpIsNotNull => false
+	nullCompares left out of a comparison of two columns, which is never a test for NULL.
+internal/engine/operator.go condition.holds condition: c.op != stmt.OpIsNull => false
+	nullCompares left out of a comparison of two columns, which is never a test for NULL.
+internal/engine/operator.go condition.holds operator: c.op != stmt.OpIsNull => c.op == stmt.OpIsNull
+	nullCompares left out of a comparison of two columns, which is never a test for NULL.
+internal/engine/operator.go condition.holds operator: c.op != stmt.OpIsNotNull => c.op == stmt.OpIsNotNull
+	nullCompares left out of a comparison of two columns, which is never a test for NULL.
+internal/engine/operator.go condition.holds condition: (v.HasNull() || c.value.HasNull()) => true
+	The planted bug nullCompares then makes every comparison of two columns true, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds condition: (v.HasNull() || c.value.HasNull()) => !(v.HasNull() || c.value.HasNull())
+	The planted bug nullCompares then makes a comparison of two columns that are not NULL true, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds operator: v.HasNull() || c.value.HasNull() => v.HasNull() && c.value.HasNull()
+	The planted bug nullCompares then only where both columns are NULL, which its tests find as before.
+internal/engine/operator.go condition.holds condition: v.HasNull() => true
+	The planted bug nullCompares then makes every comparison of two columns true, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds condition: v.HasNull() => false
+	The planted bug nullCompares then only where the second column is NULL, which its tests find as before.
+internal/engine/operator.go condition.holds condition: v.HasNull() => !v.HasNull()
+	The planted bug nullCompares then true where the first column is not NULL, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds condition: c.value.HasNull() => true
+	The planted bug nullCompares then makes every comparison of two columns true, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds condition: c.value.HasNull() => false
+	The planted bug nullCompares then only where the first column is NULL, which its tests find as before.
+internal/engine/operator.go condition.holds condition: c.value.HasNull() => !c.value.HasNull()
+	The planted bug nullCompares then true where the second column is not NULL, another wrong answer, which the tests of the planted bugs find.

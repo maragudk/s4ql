@@ -890,6 +890,9 @@ func TestFilter(t *testing.T) {
 			{c: condition{position: 1, op: stmt.OpIsNull}, err: "a condition of the column at 1 of a row of 1 values"},
 			{c: condition{position: 0, op: stmt.OpEqual, value: text}, err: "a comparison of a value of kind integer with one of kind text"},
 			{c: condition{position: 0, op: stmt.Operator(99), value: integer(1)}, err: "a condition with the operator 99"},
+			// A comparison of two columns of the row, as in `a = b`, whose second column the row does not have.
+			{c: condition{position: 0, op: stmt.OpEqual, paired: true, pair: 1}, err: "a condition of the column at 1 of a row of 1 values"},
+			{c: condition{position: 0, op: stmt.OpEqual, paired: true, pair: -1}, err: "a condition of the column at -1 of a row of 1 values"},
 		} {
 			ok, err := c.c.holds([]*s4qlpb.Value{integer(1)})
 			is.True(t, !ok, c.err)
