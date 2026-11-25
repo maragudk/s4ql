@@ -45,3 +45,53 @@ The brief asks for the scope of slices 14 and 15, by whole declaration.
 ### Future work
 
 - The survivors of the run.
+
+## Step 2: The first survivors, and the stop of the run
+
+**Author:** mutation-arithmetic-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (the coordinator, mid-run) "Stop your mutation run now: the machine's main disk is down to 5 GB free, because macOS's `fseventsd` has grown to 51 GB of swap under the file activity of the mutation runs. Kill the runner and its test processes cleanly (only your own, under `/Volumes/990/s4ql/mutation-arithmetic-engine/`), keep its results so far and whatever lets the run resume where it stopped, commit what is committable, and note in the diary which mutants are done. Treat any mutant that was in flight when you stop as not run. Do not restart anything and start no test runs until I message you again."
+**Interpretation:** Stop the runner and my own waiting loops, keep `out1/` and `tree/`, and record where the run stands.
+**Inferred intent:** Free the machine without losing the two hours of results.
+
+### What I did
+
+- Before the stop: the run gave its results at about 2.4 a minute, at a load of 14 to 25 with another run beside it; the planning took 3 min 28 s, the hand-written stage 77 s, and the 16 mutants of `Conn.write` that time out each take its limit of 6 min 25 s.
+- `scripts/surv.sh` lists the survivors of a `results.jsonl` that `equivalent.txt` of the worktree does not hold; `scripts/emit/` (a copy of the tool's `generate.go` with a `main`, built as `emit.bin`), `scripts/mut.sh`, and `scripts/many.sh` run `go test -overlay` of the worktree against one mutant by its key; `killed_new.txt` holds the survivors that a new test kills, each checked so.
+- Survivors closed so far: 10 of `leftmostOffset`, the offset of `row value misused` for a subquery of `*` on the right of an expression that a select's condition tests. The cases of `TestEngine_subquery` held no expression whose first leaf is a negative literal or 0; eight new `pin` cases compare the offset with SQLite's, for `k + 1`, `5 - k`, `0 * k`, `-5 + k`, `-5 * k * 2`, `2.5 * k`, `-2.5 * k`, and `-0.0 + k`. And 6 of `argumentLengths`, its internal error for a parameter that the arguments do not have, which no statement gives: `TestArgumentLengths` in the new `/internal/engine/expression_internal_test.go`.
+- Stopped the runner (the background task of `run.sh`) at 19:43, after 2 h 6 min, and my three loops that waited on the count of results. No runner, `go test`, or test binary of mine is left.
+
+### Where the run stands
+
+- 288 of the 2,488 mutants have a result in `/Volumes/990/s4ql/mutation-arithmetic-engine/out1/results.jsonl`: all 178 of `engine.go` (`Conn.write` and `ran`), and 110 of `expression.go`, from `missingName` into `bindArithmetic`, in the order of the file. 169 killed, 16 timed out, 72 not compiled, 31 survived. Of the 31, 11 are in `equivalent.txt` already (those of `Conn.write` from earlier rounds), 16 are killed by the new tests, and 4 are open: `argumentLengths swap arguments` of its internal error, which the exact message of `TestArgumentLengths` should kill but was not checked before the stop, and three of the internal error of `bindArithmetic` for a column that the table does not have (its removal and two swaps of its arguments).
+- The mutants that were in flight have no result, and count as not run. The run resumes where it stopped with the same command, `scripts/run.sh /Volumes/990/s4ql/mutation-arithmetic-engine/sel.txt /Volumes/990/s4ql/mutation-arithmetic-engine/out1`: the tool skips every mutant with a result, and the copy `tree/`, whose fingerprint `out1/` holds, is unchanged.
+
+### Why
+
+The coordinator stopped every run for the main disk, at 4 GB free when I checked.
+
+### What worked
+
+- A planted fault's exact `file:line` in `-run`, and the keys of `results.jsonl` with `jq`, to pick what to check by hand.
+
+### What didn't work
+
+- Waiting with a foreground `until` loop: after 180 s the harness moves it to the background, and twice I then started a second copy by mistake, which I stopped.
+
+### What I learned
+
+- The case `v < 0` of `leftmostOffset` was reached by no test: the subtests of `row value misused` had only expressions that start with a column.
+
+### What was tricky
+
+- Nothing beyond the slow run.
+
+### What warrants review
+
+- The eight new `pin` cases in `/internal/engine/subquery_test.go`, which compare their offsets with SQLite's.
+
+### Future work
+
+- Resume the run when the coordinator allows it; check the four open survivors above.
