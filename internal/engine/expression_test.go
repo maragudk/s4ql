@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -126,6 +127,9 @@ func expressionColumns(e stmt.Expression) []stmt.Name {
 const (
 	excusedArithmeticType = "arithmetic refused by the rule of exact types"
 	excusedEvaluation     = "evaluation error that SQLite's result of its operator justifies"
+	// modeledDue is the kind of a select with arithmetic whose due errors [pair.due] decides by the
+	// range of the model's access.
+	modeledDue = "arithmetic of a select whose due errors the model's access decides"
 )
 
 // checkArithmetic of the call c of the statement s with arithmetic, with the arguments args as SQLite
@@ -479,10 +483,11 @@ func quirk(n stmt.Expression, kind error, args []any) (string, []any) {
 // quirkRows of the operator n of the site of the statement s, with the arguments args, of the kind:
 // whether SQLite shows the quirk of n, as [quirk] says, for a row that the conditions before the site
 // in the order of the text hold for, where the site is a condition, or that every condition holds
-// for, where it is an assignment of SET; also those that may serve the access, if must. An expression
-// without a column has one value, which needs no row. A subquery of the statement has the value of
-// computed, where the engine computed them.
-func (p *pair) quirkRows(s stmt.Statement, site arithmeticSite, n stmt.Expression, kind error, args []any, must bool) bool {
+// for, where it is an assignment of SET; and, if access.must, that the access reads: the range of
+// the model's access, access.conditions, where access.modeled, and otherwise every condition that
+// may serve the access. An expression without a column has one value, which needs no row. A
+// subquery of the statement has the value of computed, where the engine computed them.
+func (p *pair) quirkRows(s stmt.Statement, site arithmeticSite, n stmt.Expression, kind error, args []any, access accessGuard) bool {
 	t, o := p.t, p.o
 	t.Helper()
 	condition, bound := quirk(n, kind, args)
@@ -496,10 +501,14 @@ func (p *pair) quirkRows(s stmt.Statement, site arithmeticSite, n stmt.Expressio
 	}
 	var guard []stmt.Condition
 	if site.set < 0 {
-		if must {
-			for _, c := range where {
-				if !c.Expression.Present() && !c.Value.Expression.HasColumn() {
-					guard = append(guard, c)
+		if access.must {
+			if access.modeled && site.sub == 0 {
+				guard = slices.Clone(access.conditions)
+			} else {
+				for _, c := range where {
+					if !c.Expression.Present() && !c.Value.Expression.HasColumn() {
+						guard = append(guard, c)
+					}
 				}
 			}
 		}
@@ -527,6 +536,134 @@ func (p *pair) quirkRows(s stmt.Statement, site arithmeticSite, n stmt.Expressio
 		t.Fatalf("%q: SQLite gives %v", found+condition, a.err)
 	}
 	return len(a.rows) > 0
+}
+
+// accessGuard of [pair.quirkRows]: whether a row must be one that the access reads, and, where
+// modeled, the conditions of the range of the model's access, as [pair.modelGuard] gives them.
+type accessGuard struct {
+	must, modeled bool
+	conditions    []stmt.Condition
+}
+
+// modelGuard of the select s with arithmetic, with the arguments args, which the engine ran without
+// an error: the conditions that hold for a row that the model's access reads, as
+// [stmttest.ChosenAccess] chooses it, and true; or nil and false where the pair has no model's
+// access for s, as for a statement that is no select, one with a subquery or a LIMIT, or one that
+// the model does not take. The model chooses from the conditions that may serve the access, as the
+// rule of the engine says: those that are not computed for each row, each value of arithmetic as the
+// value that SQLite gives it.
+func (p *pair) modelGuard(s stmt.Statement, args []any) ([]stmt.Condition, bool) {
+	t, o := p.t, p.o
+	t.Helper()
+	sel, ok := s.(*stmt.Select)
+	if !ok || sel.Subqueries != nil || sel.Limited() {
+		return nil, false
+	}
+	reduced := *sel
+	reduced.Where = nil
+	for _, c := range sel.Where {
+		if c.Expression.Present() || c.Value.Expression.HasColumn() {
+			continue
+		}
+		switch {
+		case c.Value.Expression.Present():
+			text, bound := stmttest.ExpressionText(c.Value.Expression, args)
+			a := o.run(t, "select "+text, bound...)
+			if a.err != "" || len(a.rows) != 1 {
+				return nil, false
+			}
+			v, ok := literalOf(a.rows[0])
+			if !ok {
+				return nil, false
+			}
+			c.Value = v
+		case c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull:
+			c.Value = literalTerm(stmttest.BoundValue(c.Value, args))
+		}
+		reduced.Where = append(reduced.Where, c)
+	}
+	table, columns := o.columns(t, sel.Table.Value)
+	_, indexes := o.tableIndexes(t, table, columns)
+	a, ok := stmttest.ChosenAccess(columns, indexes, &reduced, nil)
+	if !ok {
+		return nil, false
+	}
+	var primary []int
+	for i, c := range columns {
+		if c.PrimaryKey {
+			primary = append(primary, i)
+		}
+	}
+	key := primary
+	if a.Index != "" {
+		i := slices.IndexFunc(indexes, func(i stmttest.TableIndex) bool { return i.Name == a.Index })
+		if i < 0 {
+			return nil, false
+		}
+		key = nil
+		for _, c := range indexes[i].Columns {
+			key = append(key, c.Position)
+		}
+		for _, position := range primary {
+			if !slices.Contains(key, position) {
+				key = append(key, position)
+			}
+		}
+	}
+	name := func(position int) stmt.Name { return stmt.Name{Value: columns[position].Name} }
+	var guard []stmt.Condition
+	switch {
+	case a.None:
+		// The key is never NULL.
+		return []stmt.Condition{{Column: name(primary[0]), Operator: stmt.OpIsNull}}, true
+	case a.Full:
+		return nil, true
+	}
+	for i, pin := range a.Pins {
+		if pin == nil {
+			guard = append(guard, stmt.Condition{Column: name(key[i]), Operator: stmt.OpIsNull})
+			continue
+		}
+		guard = append(guard, stmt.Condition{Column: name(key[i]), Operator: stmt.OpEqual, Value: literalTerm(pin)})
+	}
+	if a.Lower != nil {
+		op := map[bool]stmt.Operator{true: stmt.OpGreater, false: stmt.OpGreaterOrEqual}[a.LowerOpen]
+		guard = append(guard, stmt.Condition{Column: name(key[len(a.Pins)]), Operator: op, Value: literalTerm(a.Lower)})
+	}
+	if a.Upper != nil {
+		op := map[bool]stmt.Operator{true: stmt.OpLess, false: stmt.OpLessOrEqual}[a.UpperOpen]
+		guard = append(guard, stmt.Condition{Column: name(key[len(a.Pins)]), Operator: op, Value: literalTerm(a.Upper)})
+	}
+	return guard, true
+}
+
+// literalTerm of the value v as SQLite binds it, as a literal of the statement pass.
+func literalTerm(v any) stmt.Term {
+	switch v := v.(type) {
+	case int64:
+		return stmt.Term{Value: stmt.Integer(v)}
+	case float64:
+		return stmt.Term{Value: stmt.Real(v)}
+	case string:
+		return stmt.Term{Value: stmt.Text(v)}
+	case []byte:
+		return stmt.Term{Value: stmt.Blob(v)}
+	}
+	return stmt.Term{Value: stmt.Null{}}
+}
+
+// literalOf the text of a value of a row of an answer of SQLite: the literal of its integer, its
+// real, or NULL, and true, or false for another text.
+func literalOf(text string) (stmt.Term, bool) {
+	if text == "null" {
+		return stmt.Term{Value: stmt.Null{}}, true
+	}
+	if f, ok := strings.CutPrefix(text, "real "); ok {
+		r, err := strconv.ParseFloat(f, 64)
+		return stmt.Term{Value: stmt.Real(r)}, err == nil
+	}
+	i, err := strconv.ParseInt(text, 10, 64)
+	return stmt.Term{Value: stmt.Integer(i)}, err == nil
 }
 
 // valueTerm of the value v, as a literal of the statement pass.
@@ -559,7 +696,7 @@ func (p *pair) justify(s stmt.Statement, args []any, ee *expr.Error) string {
 			if n.Span != ee.Span || n.Kind != ee.Op {
 				continue
 			}
-			if p.quirkRows(s, site, n, ee.Kind, args, false) {
+			if p.quirkRows(s, site, n, ee.Kind, args, accessGuard{}) {
 				return ""
 			}
 			return "SQLite's result of its operator justifies for no row that the rule may evaluate"
@@ -570,14 +707,20 @@ func (p *pair) justify(s stmt.Statement, args []any, ee *expr.Error) string {
 
 // due is what evaluation error was due for the statement s, with the arguments args, which the engine
 // ran without one, or "": each expression without a column of the statement, and of a subquery that
-// it computed, is computed, and so is each expression of a condition for a row that every condition
-// that may serve the access and every condition before it hold for, and each of SET for a row that
-// the WHERE holds for, so SQLite's result of none of their operators may show a quirk there, as
-// [pair.quirkRows] says. A subquery reads only up to its first row, and a select with LIMIT only up to
-// its last, which their order decides, so neither has a due error for a row.
+// it computed, is computed, and so is each expression of a condition for a row that the access reads
+// and that every condition before it holds for, and each of SET for a row that the WHERE holds for,
+// so SQLite's result of none of their operators may show a quirk there, as [pair.quirkRows] says.
+// The rows that the access reads are those of the model's access for a select, as [pair.modelGuard]
+// gives it, and otherwise those that every condition that may serve the access holds for. A subquery
+// reads only up to its first row, and a select with LIMIT only up to its last, which their order
+// decides, so neither has a due error for a row.
 func (p *pair) due(s stmt.Statement, args []any) string {
 	sel, isSelect := s.(*stmt.Select)
 	computed := !subqueried(s) || p.computed != nil
+	access := accessGuard{must: true}
+	if access.conditions, access.modeled = p.modelGuard(s, args); access.modeled {
+		p.count(modeledDue)
+	}
 	for _, site := range arithmeticSites(s) {
 		switch {
 		case !site.root.HasColumn() && site.sub > 0 && !computed:
@@ -587,7 +730,7 @@ func (p *pair) due(s stmt.Statement, args []any) string {
 		}
 		for _, n := range operators(site.root) {
 			for _, kind := range evaluationKinds {
-				if p.quirkRows(s, site, n, kind, args, true) {
+				if p.quirkRows(s, site, n, kind, args, access) {
 					return fmt.Sprintf("SQLite shows the quirk of %v of %v at offset %v for a row that the rule evaluates", kind, n.Kind, n.Span.Start)
 				}
 			}
@@ -596,18 +739,23 @@ func (p *pair) due(s stmt.Statement, args []any) string {
 	return ""
 }
 
-// arithmeticSetUp is the table of the differential tests of arithmetic: a column of each type, an
-// index on an INT and one on a REAL column, and rows with the edges of each type and NULL.
-var arithmeticSetUp = []stmttest.Call{
-	{Src: "create table n (k int primary key, i int, j integer, r real, s text, b blob, u int not null) strict, without rowid", Supported: true},
-	{Src: "create index n_i on n (i)", Supported: true},
-	{Src: "create index n_r on n (r desc)", Supported: true},
+// arithmeticRows of the table n of [arithmeticSetUp], with the edges of each type and NULL.
+var arithmeticRows = []stmttest.Call{
 	{Src: "insert into n values (1, 0, 10, 0.5, 'a', x'01', 1)", Supported: true},
 	{Src: "insert into n values (2, 1, 20, -2.5, 'b', x'02', 2)", Supported: true},
 	{Src: "insert into n values (3, -1, null, 1e308, 'c', null, 3)", Supported: true},
 	{Src: "insert into n values (4, 9223372036854775807, 30, null, null, x'04', 4)", Supported: true},
 	{Src: "insert into n values (5, -9223372036854775808, 40, 2.0, 'e', x'05', 5)", Supported: true},
 	{Src: "insert into n values (6, null, 50, -0.0, 'f', x'06', 6)", Supported: true},
+}
+
+// arithmeticSetUp is the table n of the differential tests of arithmetic: a column of each type, an
+// index on an INT and one on a REAL column, and [arithmeticRows]; and the tables of [keyChanges].
+var arithmeticSetUp = slices.Concat([]stmttest.Call{
+	{Src: "create table n (k int primary key, i int, j integer, r real, s text, b blob, u int not null) strict, without rowid", Supported: true},
+	{Src: "create index n_i on n (i)", Supported: true},
+	{Src: "create index n_r on n (r desc)", Supported: true},
+}, arithmeticRows, []stmttest.Call{
 	// The tables of [keyChanges]: an integer key and a real one, each with an index that runs with the
 	// key and one that runs against it.
 	{Src: "create table m (k int primary key, a int, b int) strict, without rowid", Supported: true},
@@ -624,7 +772,7 @@ var arithmeticSetUp = []stmttest.Call{
 	{Src: "insert into q values (2.0, 20.0, -2.0)", Supported: true},
 	{Src: "insert into q values (3.0, 30.0, -3.0)", Supported: true},
 	{Src: "insert into q values (4.0, 40.0, -4.0)", Supported: true},
-}
+})
 
 // keyChanges are calls of [arithmeticCases] that change the key with arithmetic or a copy of a
 // column, on the tables m, of an integer key, and q, of a real one, of [arithmeticSetUp]: each SET
@@ -714,6 +862,9 @@ var arithmeticCases = slices.Concat([]stmttest.Call{
 	{Src: "update n set j = i where k = 1 returning j"},
 	{Src: "update n set r = j"},
 
+	// The rows again, as the updates before set i to NULL on every row.
+	{Src: "delete from n"},
+}, arithmeticRows, []stmttest.Call{
 	// Overflow, division by zero, and a result that is not finite: in SET, in a constant, and in WHERE,
 	// guarded and unguarded, with and without an index, with a LIMIT.
 	{Src: "update n set i = i + 1"},
@@ -831,18 +982,22 @@ func TestPair_arithmetic(t *testing.T) {
 				log = append(log, "-- "+c.Src)
 				continue
 			}
-			for _, query := range []bool{false, true} {
+			// A read runs through Exec and through Query. A write runs once, as each call is one, through
+			// Query where it has RETURNING, so that its rows are compared, and through Exec otherwise.
+			ways := []bool{false, true}
+			switch s, _ := stmt.Check(c.Src); s := s.(type) {
+			case *stmt.Update:
+				ways = []bool{s.Returning.Present()}
+			case *stmt.Delete:
+				ways = []bool{s.Returning.Present()}
+			case *stmt.Insert:
+				ways = []bool{s.Returning.Present()}
+			}
+			for _, query := range ways {
 				c.Query = query
 				log = append(log, fmt.Sprintf("%v -- with %#v, as a query: %v", c.Src, c.Args, query))
 				if failure := p.step(c); failure != "" {
 					t.Fatalf("after\n%v\n%v", strings.Join(log[:len(log)-1], "\n"), failure)
-				}
-				// A write that succeeded through Exec writes again through Query, so each is a call of its
-				// own, but a read, which may be run twice.
-				if s, _ := stmt.Check(c.Src); s != nil {
-					if _, ok := s.(*stmt.Select); !ok {
-						break
-					}
 				}
 			}
 		}
@@ -863,7 +1018,7 @@ func TestPair_arithmetic(t *testing.T) {
 			}
 			y := tally{}
 			run(t, newPair(t, i, y), i, arithmeticCases)
-			for _, kind := range []string{"excused: " + excusedArithmeticType, "excused: " + excusedEvaluation, comparedWithSQLite} {
+			for _, kind := range []string{"excused: " + excusedArithmeticType, "excused: " + excusedEvaluation, comparedWithSQLite, "reached: " + modeledDue} {
 				is.True(t, y[kind] > 0, kind)
 			}
 		}
@@ -883,7 +1038,7 @@ func TestPair_arithmetic(t *testing.T) {
 			run(t, newPair(t, i, y), i, arithmeticCalls(rand.New(rand.NewPCG(seed, 0xa1)), 40))
 		}
 		t.Log(y)
-		for _, kind := range []string{"excused: " + excusedArithmeticType, "excused: " + excusedEvaluation, comparedWithSQLite} {
+		for _, kind := range []string{"excused: " + excusedArithmeticType, "excused: " + excusedEvaluation, comparedWithSQLite, "reached: " + modeledDue} {
 			is.True(t, y[kind] > 0, kind)
 		}
 	})
