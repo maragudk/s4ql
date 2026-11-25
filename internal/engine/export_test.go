@@ -410,3 +410,8 @@ const (
 
 // FromCore is [fromCore].
 var FromCore = fromCore
+
+// ExpressionRefusal of the statement s, as [expressionRefusal] gives it.
+func ExpressionRefusal(s stmt.Statement) error {
+	return expressionRefusal(s)
+}

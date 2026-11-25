@@ -3,13 +3,22 @@ package engine_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
+
+// expressed reports whether s is a statement with an arithmetic expression, which the pass supports
+// and the engine refuses as not supported until it evaluates it, in [engine.Check] and in every run:
+// the differential tests take that refusal for a text that is not supported.
+func expressed(s stmt.Statement) bool {
+	return engine.ExpressionRefusal(s) != nil
+}
 
 func TestCheck_expression(t *testing.T) {
 	t.Run("should refuse a statement with an arithmetic expression as not supported, at its first expression", func(t *testing.T) {
@@ -74,5 +83,24 @@ func TestConn_expression(t *testing.T) {
 		is.Equal(t, "", got.err)
 		is.Equal(t, 1, len(got.rows))
 		is.Equal(t, `1,2`, got.rows[0])
+	})
+}
+
+func TestPair_expression(t *testing.T) {
+	t.Run("should take the refusal of a statement with an expression, also where a rule of its values would refuse it", func(t *testing.T) {
+		for _, src := range []string{"update t1 set v1 = v1 + 1", "update t1 set v1 = 'x' where v1 = 1 + 1", "select * from t1 where v1 * 2 = 'x'",
+			"delete from t1 where v1 = 'x' and -v1 = ? returning *", "select * from t1 where v1 = (select v1 from t1 where v1 - 1 = ?)"} {
+			for _, exec := range []bool{true, false} {
+				p := newPair(t, newMemoryInstance(t), nil)
+				for _, s := range fuzzSetUp {
+					is.Equal(t, "", p.step(stmttest.Call{Src: s, Supported: true}), s)
+				}
+				var args []any
+				if strings.Contains(src, "?") {
+					args = []any{int64(1)}
+				}
+				is.Equal(t, "", p.step(stmttest.Call{Src: src, Args: args, Query: !exec}), src)
+			}
+		}
 	})
 }
