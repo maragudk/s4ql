@@ -2937,8 +2937,10 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// leaves the insert and the delete, whose net effect is nothing, so the commit object holds
 		// neither, and the insert that its caller was told of is not in the log. In the profile of the
 		// transactions, one turn of a caller in two is a transaction: 198 of 200 seeds find the bug,
-		// each by its own violation.
-		{"keepFailed", defaultWorkload, "default", stmttest.Transactions, []string{"whose statements that succeeded and write are", "fails in SQLite", "is not in the log"}},
+		// each by its own violation. What the failed statement changed also shows to the later
+		// statements of its transaction, which then give other rows than SQLite's, as in seed 20456 of
+		// 1000.
+		{"keepFailed", defaultWorkload, "default", stmttest.Transactions, []string{"whose statements that succeeded and write are", "fails in SQLite", "is not in the log", "which began at commit"}},
 		// A read-only transaction that moves on to the newest state reads rows that were committed after
 		// its beginning, and its later statements report the newer state. When its read of the newest
 		// state fails, the transaction keeps the read that the bug ended, whose end then fails. The bug
@@ -3015,8 +3017,10 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// SQLite, which runs the statement and does nothing; and the rows that the table lost make later
 		// statements differ. One create in two of the profile of the clauses of slice 10 says IF NOT
 		// EXISTS, of tables that are there and that are not: 183 of 200 seeds find the bug, 106 of them
-		// by its own violation.
-		{"replaceExisting", defaultWorkload, "default", stmttest.Exists, []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
+		// by its own violation. The table of the statement can have other types than SQLite's, so a
+		// value that the engine stores is of another type than SQLite's column, as in seeds 769 and
+		// 7557 of 1000.
+		{"replaceExisting", defaultWorkload, "default", stmttest.Exists, []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value", "stores a value of another type than its column"}},
 		// An insert that leaves out a column with a default and stores NULL there: a query of the row
 		// gives other rows than in SQLite, which runs the statements of the log, and so does the replay
 		// of the log into an empty cache, which writes its rows; where the column does not take NULL, the
@@ -3093,8 +3097,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		{"outsideTx", hammerWorkload, "hammer", stmttest.Subquery, append(subqueryFinds("gives the subquery"), "the storage core refused a call that the engine had checked")},
 		// The values of two subqueries swapped: 150 seeds, 147 of them by their own violation. The others
 		// find that a value of another type than its column, which the swap gave a condition after the
-		// check of the types, reaches the storage, which refuses it.
-		{"swapSubqueries", hammerWorkload, "hammer", stmttest.Subquery, append(subqueryFinds("gives the subquery"), "the storage core refused a call that the engine had checked")},
+		// check of the types, reaches the storage, which refuses it, or the engine's own comparison,
+		// which fails as an internal error, as in seed 10252 of 1000.
+		{"swapSubqueries", hammerWorkload, "hammer", stmttest.Subquery, append(subqueryFinds("gives the subquery"), "the storage core refused a call that the engine had checked", "internal error: a comparison of a value of kind")},
 		// The first row of a subquery with LIMIT 0: 138 seeds, all by their own violation.
 		{"limitZeroRow", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
 		// The first row of the access of the conditions alone, and not of the ORDER BY: 174 seeds, all by

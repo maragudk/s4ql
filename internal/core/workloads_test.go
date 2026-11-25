@@ -816,7 +816,10 @@ var plantedBugs = []plantedBug{
 	{
 		// A renewal is in flight together with a commit only if it is sent while callers commit,
 		// which they do every few seconds, so that a renewal is seldom due after 20 seconds. So the
-		// lease is renewed a second after the last renewal.
+		// lease is renewed a second after the last renewal. A renewal whose outcome is unknown sends
+		// its manifest again, from the version that it reads under the lock; under the bug, a commit's
+		// swap can land while the earlier send is out, and the resend then swaps the manifest without
+		// that commit over it, as seed 411 of 1000 does.
 		bug:  "renewOutsideLock",
 		name: "a renewal that swaps the manifest outside the lock",
 		workload: plant(func() workload {
@@ -824,7 +827,7 @@ var plantedBugs = []plantedBug{
 			w.options.RenewAfter = time.Second
 			return w
 		}(), "renewOutsideLock"),
-		symptoms: []string{"lost the lease", "and the transaction began at", "the head of the log went back"},
+		symptoms: []string{"lost the lease", "and the transaction began at", "the head of the log went back", "was acknowledged, and the log does not have it"},
 	},
 	{
 		// Without faults, a commit never fails, so the cache is ahead of the log only while a commit
