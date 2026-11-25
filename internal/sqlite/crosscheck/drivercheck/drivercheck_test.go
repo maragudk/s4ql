@@ -412,7 +412,7 @@ func read(tb testing.TB, o outcome, rows *sql.Rows, errText func(testing.TB, err
 	}
 	if err := rows.Err(); err != nil {
 		o.failed, o.err = "rows", errText(tb, err)
-		o.columns, o.types, o.rows, o.scans = "", "", nil, nil
+		o.columns, o.types, o.rows, o.scans, o.null = "", "", nil, nil, false
 	}
 	return o
 }
@@ -558,16 +558,18 @@ func s4qlText(tb testing.TB, err error) string {
 		return err.Error()
 	}
 	if errors.Is(err, s4ql.ErrEvaluation) {
-		// An evaluation error of arithmetic matches its kind, one of three, and no other sentinel, and
-		// its message names the kind, the operator, and the offset of its node.
-		kinds := 0
-		for _, kind := range []error{s4ql.ErrOverflow, s4ql.ErrDivisionByZero, s4ql.ErrNotFinite} {
-			if errors.Is(err, kind) {
-				kinds++
-			}
+		// An evaluation error of arithmetic matches the kind that its message names, which is the kind
+		// that [stmttest.Justify] judges, and no other kind and no other sentinel; its message names
+		// the kind, the operator, and the offset of its node. The message of a kind starts with that
+		// of its sentinel, as "s4ql: integer overflow in + (at offset 42)" with that of
+		// [s4ql.ErrOverflow].
+		if _, ok := stmttest.EvaluationOf(err.Error()); !ok || errors.Is(err, s4ql.ErrNotSupported) {
+			tb.Fatalf("s4ql gives the evaluation error %q, whose message names no kind of evaluation error, or which matches ErrNotSupported", err)
 		}
-		if _, ok := stmttest.EvaluationOf(err.Error()); kinds != 1 || !ok || errors.Is(err, s4ql.ErrNotSupported) {
-			tb.Fatalf("s4ql gives the evaluation error %q, which matches %v of its kinds", err, kinds)
+		for _, kind := range []error{s4ql.ErrOverflow, s4ql.ErrDivisionByZero, s4ql.ErrNotFinite} {
+			if named := strings.HasPrefix(err.Error(), kind.Error()+" in "); errors.Is(err, kind) != named {
+				tb.Fatalf("s4ql gives the evaluation error %q, which matches %v: %v, where its message names that kind: %v", err, kind, errors.Is(err, kind), named)
+			}
 		}
 		return err.Error()
 	}
@@ -794,12 +796,19 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 		}
 		p.reachWhere(sel, runs, got, o, kind, columns, count)
 		p.reachOrder(sel, runs, got, o, kind, columns, count)
-		for _, out := range got.runs() {
-			null := out.null
-			if got.call == callQueryRow && out.failed == "" {
-				// The row of a QueryRow is the one that s4ql's scan meets first, which varies with the
-				// direction of the scan, so the count is by the row that SQLite gives, which does not.
-				null = run(tb, o, callQueryRow, firstStatement(src), runs, mattnText).null
+		for i, out := range got.runs() {
+			// The rows of a QueryRow, and of a select with LIMIT, are those that s4ql's scan meets
+			// first, among those that tie under an ORDER BY, which vary with the direction of the scan
+			// that it draws, so NULL is counted by the rows that SQLite gives for the run, which do not.
+			// The rows of every other select are SQLite's, as the comparison requires. A run that failed
+			// or gave no row has none.
+			null := out.failed == "" && out.null
+			if out.failed == "" && len(out.rows) > 0 && (got.call == callQueryRow || sel.Limited()) && i < len(runs) {
+				c := callQuery
+				if got.call == callQueryRow {
+					c = callQueryRow
+				}
+				null = run(tb, o, c, firstStatement(src), runs[i:i+1], mattnText).null
 			}
 			if null {
 				count(map[bool]string{true: "select * with NULL ", false: "select of names with NULL "}[sel.Columns == nil] + kind(out))
@@ -1375,13 +1384,15 @@ func (y tally) excused(kind string) {
 // statement has parameters.
 const wrongArguments = "s4ql: wrong number of arguments: "
 
-// messageKind of an error's text: its message without the names.
+// messageKind of an error's text: its message without the names, and for an evaluation error of
+// arithmetic its kind, without the operator and the offset.
 func messageKind(err string) string {
 	for _, kind := range []string{
 		"already exists", "no such table", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name",
 		"too many columns on", "UNIQUE constraint failed", "NOT NULL constraint failed", "syntax error", "incomplete input", "no rows",
 		"wrong number of arguments", "attempt to write a readonly database", "there is already a table named", "there is already an index named",
 		"no such index", "row value misused", "sub-select returns",
+		"s4ql: integer overflow", "s4ql: division by zero", "s4ql: real result that is not finite",
 	} {
 		if strings.Contains(err, kind) {
 			return kind
@@ -1616,8 +1627,8 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	p.y.add(scope, src, got, runs)
 	p.reach(src, runs, got, o)
 	failure := p.compare(src, c, supported, runs, got, o)
-	if failure == "" && got.failed == "" {
-		failure = p.compareChanged(src, s, o)
+	if failure == "" {
+		failure = p.compareChanged(src, got, s, o)
 	}
 	if failure == "" && p.tx != nil && scope == p.tx.kind() {
 		p.note(src, got)
@@ -1677,17 +1688,27 @@ func (p *pair) note(src string, got outcome) {
 // query, which was compared with SQLite's before, so its rows are the rows that SQLite gives. The
 // two first rows need not be the same row, since each side reads in an order of its own: both sides
 // must have a first row or neither, and s4ql's, with its scan, must be one of the rows of compared.
-// [pair.closeRows] reads the rest.
+// [pair.closeRows] reads the rest. s4ql's query may fail instead, before its first row or with it,
+// as [pair.reopened] says, and is then not run in SQLite, and no rows are left open.
 func (p *pair) openRows(src string, args []any, compared outcome) string {
 	tb := p.tb
 	tb.Helper()
 	t := p.tx
 	var err error
 	t.sRows, err = t.s.QueryContext(tb.Context(), src, args...)
-	is.NotError(tb, err)
+	if err != nil {
+		t.sRows = nil
+		return p.reopened(src, args, err, "before their first row")
+	}
+	got, found, err := nextRow(tb, t.sRows)
+	if err != nil {
+		// database/sql closes rows whose Next found no row.
+		is.NotError(tb, t.sRows.Close())
+		t.sRows = nil
+		return p.reopened(src, args, err, "with their first row")
+	}
 	t.oRows, err = t.o.QueryContext(tb.Context(), firstStatement(src), args...)
 	is.NotError(tb, err)
-	got, found := firstRow(tb, t.sRows)
 	want, wanted := firstRow(tb, t.oRows)
 	t.opened, t.sFirst, t.oFirst = src, got, want
 	if !found || !wanted {
@@ -1756,8 +1777,8 @@ func (p *pair) openWrite(src string, supported bool, runs [][]any, s, o runner, 
 	p.reach(src, runs, got, o)
 	if rows == nil {
 		failure := p.compare(src, callQueryOpen, supported, runs, got, o)
-		if failure == "" && got.failed == "" {
-			failure = p.compareChanged(src, s, o)
+		if failure == "" {
+			failure = p.compareChanged(src, got, s, o)
 		}
 		if failure == "" {
 			p.note(src, got)
@@ -1783,11 +1804,75 @@ func (p *pair) openWrite(src string, supported bool, runs [][]any, s, o runner, 
 // and as [outcome.pairs] has them, and whether the rows have one.
 func firstRow(tb testing.TB, rows *sql.Rows) (string, bool) {
 	tb.Helper()
+	row, found, err := nextRow(tb, rows)
+	is.NotError(tb, err)
+	return row, found
+}
+
+// nextRow of rows, as [firstRow] gives it, or the error of their Next.
+func nextRow(tb testing.TB, rows *sql.Rows) (string, bool, error) {
+	tb.Helper()
 	if !rows.Next() {
-		is.NotError(tb, rows.Err())
-		return "", false
+		return "", false, rows.Err()
 	}
-	return pairText(typedRow(tb, rows)), true
+	return pairText(typedRow(tb, rows)), true, nil
+}
+
+// reopened checks the error err of s4ql's query src with the arguments args, which [pair.openRows]
+// ran again in the open transaction, before or with its first row, or of the rest of its rows, which
+// [pair.closeRows] read, as where says. The run that was compared with SQLite gave rows, but the
+// scans of the run again may read in other directions, which s4ql draws from its host: a select with
+// LIMIT, or with a subquery, which reads up to its first row, may then meet a row whose arithmetic
+// fails, where the compared run did not. So the error must be an evaluation error of such a select
+// with arithmetic that SQLite's own result of its operator justifies, as [pair.justify] says, on the
+// state of the transaction, which nothing changed since; any other error fails, and so does one of a
+// select that reads every row in every direction. It counts each such error by where, and gives what
+// is wrong, or "".
+func (p *pair) reopened(src string, args []any, err error, where string) string {
+	tb := p.tb
+	tb.Helper()
+	text := s4qlText(tb, err)
+	s, _ := stmt.Check(src)
+	sel, ok := s.(*stmt.Select)
+	if !ok || !stmttest.HasExpression(s) || !sel.Limited() && sel.Subqueries == nil {
+		return fmt.Sprintf("%q with the arguments %#v: s4ql's query run again in the transaction, whose rows are left open, fails with %q", src, args, text)
+	}
+	if why := p.justify(s, args, text, inTx{Tx: p.tx.o, outer: p.o}); why != "" {
+		return fmt.Sprintf("%q with the arguments %#v: s4ql's query run again in the transaction, whose rows are left open, fails with %q, which %v", src, args, text, why)
+	}
+	if p.y != nil {
+		p.y["reached: rows left open that fail "+where+" with an evaluation error justified by SQLite's result of its operator"]++
+	}
+	return ""
+}
+
+// partOf reports whether the rows got, each with its scan, that s4ql's query src with the arguments
+// args gave before it failed, are rows of the select without its LIMIT on o, each no more often than
+// that select gives it, which SQLite gives in its order: what differs, or "".
+func (p *pair) partOf(src string, args []any, got []string, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	s, _ := stmt.Check(src)
+	sel, ok := s.(*stmt.Select)
+	if !ok {
+		return fmt.Sprintf("%q: s4ql's rows that were left open fail, and it is no select", src)
+	}
+	all, bound := stmttest.SelectText(sel, args, "")
+	want := run(tb, o, callQuery, all, [][]any{bound}, mattnText)
+	if want.failed != "" {
+		tb.Fatalf("%q: SQLite gives %v", all, want)
+	}
+	left := map[string]int{}
+	for _, row := range want.pairs() {
+		left[row]++
+	}
+	for _, row := range got {
+		if left[row] == 0 {
+			return fmt.Sprintf("%q with the arguments %#v: s4ql's rows that were left open, the first and then the rest until they failed, are\n%v\nwhose row\n%v\nis none of SQLite's rows of the select without its LIMIT, or one more time than they hold it:\n%v", src, args, strings.Join(got, " "), row, want.full())
+		}
+		left[row]--
+	}
+	return ""
 }
 
 // typedRow that the Next of rows found: its text and the text of its scan, as [readRow] gives them.
@@ -1807,8 +1892,9 @@ func typedRow(tb testing.TB, rows *sql.Rows) (row, scan string) {
 // rest of each. The first row of each side and its rest, each row with its scan, must be the same
 // rows the same number of times, in any order, or, for a select with ORDER BY or LIMIT, as
 // [pair.orderedDiffers] says: the calls between the first row and the rest changed nothing, since
-// s4ql refuses a statement of the transaction while its rows are open. It gives what differs, or "",
-// also where no rows are open.
+// s4ql refuses a statement of the transaction while its rows are open. The rest of s4ql's rows of a
+// select may fail instead, as [pair.reopened] says, and are then not compared. It gives what
+// differs, or "", also where no rows are open.
 func (p *pair) closeRows() string {
 	tb := p.tb
 	tb.Helper()
@@ -1833,6 +1919,15 @@ func (p *pair) closeRows() string {
 	}
 	is.NotError(tb, t.sRows.Close())
 	t.sRows, t.oRows, t.oAll = nil, nil, nil
+	if sErr != nil && !write {
+		// The rows of a select, which s4ql reads as they are read: those before the error must be
+		// SQLite's.
+		o := inTx{Tx: t.o, outer: p.o}
+		if failure := p.partOf(t.opened, t.openedArgs, got, o); failure != "" {
+			return failure
+		}
+		return p.reopened(t.opened, t.openedArgs, sErr, "in their rest")
+	}
 	if sErr != nil {
 		return fmt.Sprintf("%q: the rest of s4ql's rows that were left open fails with %v", t.opened, sErr)
 	}
@@ -1844,7 +1939,7 @@ func (p *pair) closeRows() string {
 		if !slices.Equal(got, want) {
 			return fmt.Sprintf("%q: s4ql's rows of RETURNING that were left open, the first and then the rest, are\n%v\nand SQLite's\n%v", t.opened, strings.Join(got, " "), strings.Join(want, " "))
 		}
-		return p.compareChanged(t.opened, inTx{Tx: t.s, outer: p.s}, inTx{Tx: t.o, outer: p.o})
+		return p.compareChanged(t.opened, outcome{}, inTx{Tx: t.s, outer: p.s}, inTx{Tx: t.o, outer: p.o})
 	}
 	if sel := orderedSelect(t.opened); sel != nil {
 		if failure := p.orderedDiffers(sel, t.openedArgs, got, want, true, inTx{Tx: t.o, outer: p.o}); failure != "" {
@@ -2082,6 +2177,10 @@ func (p *pair) finish() string {
 func (p *pair) compare(src string, c call, supported bool, runs [][]any, got outcome, o runner) string {
 	tb := p.tb
 	tb.Helper()
+	if s, err := stmt.Check(src); err == nil && s != nil && stmttest.HasExpression(s) && slices.ContainsFunc(got.runs(), evaluated) {
+		// Also where another run is refused.
+		return p.checkEvaluation(src, c, s, runs, got, o)
+	}
 	if got.notSupported() {
 		return p.checkNotSupported(src, c, supported, runs, got, o)
 	}
@@ -2102,9 +2201,6 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 			if !reaches(src, args) {
 				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, args, got)
 			}
-		}
-		if stmttest.HasExpression(s) && slices.ContainsFunc(got.runs(), evaluated) {
-			return p.checkEvaluation(src, c, s, runs, got, o)
 		}
 	}
 
@@ -2780,8 +2876,10 @@ func evaluated(r outcome) bool {
 // changed nothing, and must be justified by SQLite's own result of the operator that failed, as
 // [stmttest.Justify] says, on the state of o, and not in a read-only transaction for an update or a
 // delete, which computes nothing; it is not run in SQLite. Every other run, of a prepared statement
-// run several times, runs in SQLite, in its order, and must give what s4ql gave. It gives what
-// differs, or "".
+// run several times, is refused as [pair.checkRefused] says, since the engine gives its refusals and
+// its evaluation errors in an order of its own and a run with other arguments may meet a refusal
+// first, and is not run in SQLite either; or runs in SQLite, in its order, and must give what s4ql
+// gave. It gives what differs, or "".
 func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]any, got outcome, o runner) string {
 	tb := p.tb
 	tb.Helper()
@@ -2789,20 +2887,22 @@ func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]an
 		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
 	}
 	_, isSelect := s.(*stmt.Select)
-	rows := func(q string, args []any) bool {
-		rs, err := o.QueryContext(tb.Context(), q, args...)
-		is.NotError(tb, err)
-		defer func() { is.NotError(tb, rs.Close()) }()
-		found := rs.Next()
-		is.NotError(tb, rs.Err())
-		return found
-	}
 	var outs []outcome
 	for i, r := range got.runs() {
 		r.call, r.next = "", nil
 		if !evaluated(r) {
 			if c != callPrepareExecRuns {
 				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v", src, runs, got)
+			}
+			if r.notSupported() {
+				if failure := p.checkRefused(src, s, runs[i:i+1], r, o); failure != "" {
+					return failure
+				}
+				outs = append(outs, r)
+				continue
+			}
+			if !reaches(src, runs[i]) {
+				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, runs[i], got)
 			}
 			var w outcome
 			if res, err := o.ExecContext(tb.Context(), firstStatement(src), runs[i]...); err != nil {
@@ -2813,15 +2913,17 @@ func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]an
 			outs = append(outs, w)
 			continue
 		}
+		if !reaches(src, runs[i]) {
+			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, runs[i], got)
+		}
 		if p.tx != nil && p.tx.readOnly && !isSelect {
 			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v in a read-only transaction, which computes nothing for a write", src, runs[i], r)
 		}
-		e, _ := stmttest.EvaluationOf(r.err)
-		if why := stmttest.Justify(s, boundArgs(runs[i]), e.Kind, e.Op, e.Span.Start, nil, rows); why != "" {
+		if why := p.justify(s, runs[i], r.err, o); why != "" {
 			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %q, which %v", src, runs[i], r.err, why)
 		}
 		if p.y != nil {
-			p.y["reached: evaluation error justified by SQLite's result of its operator: "+e.Kind.Error()]++
+			p.y["reached: evaluation error justified by SQLite's result of its operator: "+messageKind(r.err)]++
 		}
 		outs = append(outs, r)
 	}
@@ -2832,6 +2934,28 @@ func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]an
 	}
 	p.y.excused(excusedEvaluation)
 	return ""
+}
+
+// justify the error text of s4ql's run of the statement s with arithmetic, with the arguments args,
+// on o, where the statement runs, as SQLite has the tables that the statement saw: what is wrong
+// with it, or "" for an evaluation error that SQLite's own result of its operator justifies, as
+// [stmttest.Justify] says.
+func (p *pair) justify(s stmt.Statement, args []any, text string, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	e, ok := stmttest.EvaluationOf(text)
+	if !ok {
+		return "is no evaluation error"
+	}
+	rows := func(q string, args []any) bool {
+		rs, err := o.QueryContext(tb.Context(), q, args...)
+		is.NotError(tb, err)
+		defer func() { is.NotError(tb, rs.Close()) }()
+		found := rs.Next()
+		is.NotError(tb, rs.Err())
+		return found
+	}
+	return stmttest.Justify(s, boundArgs(args), e.Kind, e.Op, e.Span.Start, nil, rows)
 }
 
 // subqueriesIn the select, the update, or the delete s: its scalar subqueries, of slice 15, in the
@@ -3333,10 +3457,13 @@ func (p *pair) tables() []string {
 }
 
 // compareChanged reads back the table of src, if it holds an update or a delete, after the statement
-// succeeded on s4ql's runner s and SQLite's o, through a query of it on each, in the transaction where
-// the statement ran, if it ran in one, and gives what differs, or "". It counts each such read under
-// "reached: table read back after an update or a delete".
-func (p *pair) compareChanged(src string, s, o runner) string {
+// ran on s4ql's runner s and SQLite's o, with s4ql's outcome got, whose outcomes were compared, through
+// a query of it on each, in the transaction where the statement ran, if it ran in one, and gives what
+// differs, or "". A run that failed changed nothing, on either side, also one that s4ql failed with
+// an evaluation error after it had changed rows, and that did not run in SQLite. It counts each such
+// read under "reached: table read back after an update or a delete", and once more by a run that
+// failed with an evaluation error, in a transaction or not.
+func (p *pair) compareChanged(src string, got outcome, s, o runner) string {
 	tb := p.tb
 	tb.Helper()
 	var table stmt.Name
@@ -3350,11 +3477,16 @@ func (p *pair) compareChanged(src string, s, o runner) string {
 	}
 	if p.y != nil {
 		p.y["reached: table read back after an update or a delete"]++
+		if slices.ContainsFunc(got.runs(), evaluated) {
+			// Every update and delete runs in the open transaction, if there is one, also beside it.
+			p.y[map[bool]string{false: "reached: table read back after an evaluation error of an update or a delete, outside a transaction",
+				true: "reached: table read back after an evaluation error of an update or a delete, in a transaction"}[p.tx != nil]]++
+		}
 	}
 	q := "select * from " + stmttest.Quote(table.Value)
-	got, want := run(tb, s, callQuery, q, nil, s4qlText), run(tb, o, callQuery, q, nil, mattnText)
-	if got.full() != want.full() {
-		return fmt.Sprintf("%q: after it, the table holds in s4ql\n%v\nand in SQLite\n%v", src, got.full(), want.full())
+	held, want := run(tb, s, callQuery, q, nil, s4qlText), run(tb, o, callQuery, q, nil, mattnText)
+	if held.full() != want.full() {
+		return fmt.Sprintf("%q: after it, the table holds in s4ql\n%v\nand in SQLite\n%v", src, held.full(), want.full())
 	}
 	return ""
 }
@@ -3474,6 +3606,15 @@ var sequences = map[string][]step{
 		{callExec, "update t2 set r2 = r2 * 10", "exec: exec failed with s4ql: real result that is not finite in * (at offset 19)"},
 		{callExec, "update t2 set i2 = s2", "exec: exec failed with s4ql: not supported: the column t2.s2 of type TEXT for the column t2.i2 of type INT"},
 		{callExec, "update t2 set r2 = i2", "exec: exec failed with s4ql: not supported: the column t2.i2 of type INT for the column t2.r2 of type REAL"},
+		// In a transaction, an update or a delete that fails with an evaluation error after it changed
+		// a row, in the direction that the engine draws, changes nothing either, and the transaction
+		// stays open: the table is read back after each.
+		{callBegin, "", "begin"},
+		{callExec, "update t2 set i2 = i2 + 1", "exec: exec failed with s4ql: integer overflow in + (at offset 19)"},
+		{callExec, "update t2 set r2 = r2 * 10", "exec: exec failed with s4ql: real result that is not finite in * (at offset 19)"},
+		{callExec, "delete from t2 where 10 / (v2 - 3) < 0", "exec: exec failed with s4ql: division by zero in / (at offset 21)"},
+		{callQuery, "select * from t2", `query: columns "v2,s2,i2,r2" of types "INT,TEXT,INT,REAL", rows ["int64:1" "string:a" "int64:1" "float64:0.5"] ["int64:2" "string:b" "<nil>:<nil>" "float64:1e+308"] ["int64:3" "string:c" "int64:9223372036854775807" "float64:-2.5"]`},
+		{callCommit, "", "commit"},
 		{callExec, "update t2 set i2 = v2 * 2, v2 = v2 + 10 where v2 < 3", "exec: 2 affected, last insert id 0"},
 		{callPrepareExecRuns, "update t2 set i2 = i2 + 4611686018427387904 * ? where v2 = 11", "prepare, exec several times: 1 affected, last insert id 0; then: exec failed with s4ql: integer overflow in * (at offset 24); then: exec failed with s4ql: integer overflow in + (at offset 19)"},
 		{callExec, "delete from t2 where -i2 < -100", "exec: 2 affected, last insert id 0"},
@@ -4546,6 +4687,50 @@ func TestPair(t *testing.T) {
 		}
 	})
 
+	t.Run("should take rows left open in a transaction, of a select with LIMIT run again, that fail with a justified evaluation error in the direction that s4ql draws, before their first row or after it", func(t *testing.T) {
+		w := newWorld(t)
+		for _, pinned := range []bool{true, false} {
+			y := tally{}
+			p := newPair(t, w, pinned, y)
+			// In t, the row of 1, whose division is by zero, is the second in the order of the key and
+			// is not read in the reverse; in u, it is the first.
+			for _, src := range []string{"create table t (k int primary key) strict, without rowid", "create table u (k int primary key) strict, without rowid",
+				"insert into t values (0)", "insert into t values (1)", "insert into t values (2)", "insert into t values (3)",
+				"insert into u values (1)", "insert into u values (2)", "insert into u values (3)"} {
+				_, failure := p.step(src, callExec, false)
+				is.Equal(t, "", failure, src)
+			}
+			// Each run draws the directions of the compared run and of the run again, and one in four
+			// gives rows and then fails when it runs again: the runs go on until the rows of t have
+			// failed in their rest, and those of u before or with their first row, which 400 runs of
+			// each fail to reach about once in 10^50.
+			reached := func(where ...string) bool {
+				for _, at := range where {
+					if y["reached: rows left open that fail "+at+" with an evaluation error justified by SQLite's result of its operator"] > 0 {
+						return true
+					}
+				}
+				return false
+			}
+			for n := 0; n < 400 && (!reached("in their rest") || !reached("before their first row", "with their first row")); n++ {
+				for _, src := range []string{"select k from t where k != 10 / (k - 1) limit 2", "select k from u where k != 10 / (k - 1) limit 2"} {
+					_, failure := p.step("", callBegin, false)
+					is.Equal(t, "", failure)
+					got, failure := p.step(src, callQueryOpen, false)
+					is.Equal(t, "", failure, src)
+					is.True(t, got.failed == "" || got.err == "s4ql: division by zero in / (at offset 27)", src, got.String())
+					is.Equal(t, "", p.closeRows(), src)
+					_, failure = p.step("", callCommit, false)
+					is.Equal(t, "", failure)
+				}
+			}
+			is.True(t, reached("in their rest"), y)
+			is.True(t, reached("before their first row", "with their first row"), y)
+			is.Equal(t, "", p.compareTables())
+			p.close()
+		}
+	})
+
 	t.Run("should take each refusal of a scalar subquery that SQLite runs by s4ql's rule, under the excuse of its class, after the errors of the names", func(t *testing.T) {
 		w := newWorld(t)
 		for _, pinned := range []bool{true, false} {
@@ -4831,6 +5016,17 @@ func TestGenerated(t *testing.T) {
 			total[kind] += count
 		}
 	}
+	// An update whose SET fails with an evaluation error on a row after it changed another is rare in
+	// the profile of arithmetic: about 15 sequences in 1,000 write one outside a transaction and 7 in
+	// one, the first at the 202nd and the 233rd. The 400 first sequences hold 4 and 3, so the profile
+	// runs up to 400, and [pair.compareChanged] reads each table back. The sequences after those of
+	// [generatedOf] are compared as every other, and not counted: s4ql draws the directions of its
+	// scans from its host, a statement with arithmetic fails on a row or not by which rows a scan meets
+	// first, and the rest of its sequence then differs, its calls and its tables, so that the counts
+	// of 400 sequences, the excuses among them, differ by a few between two runs.
+	for k := generatedOf(stmttest.Arithmetic); k < 400; k++ {
+		generated(t, w, stmttest.Arithmetic.Seed(k), length, nil)
+	}
 	t.Logf("%v calls ran in SQLite, and were compared with it", total[comparedWithSQLite])
 	// On the one sequence of all areas, before the profiles, 250 sequences ran 8,487 calls in SQLite.
 	is.True(t, total[comparedWithSQLite] >= 8487, "the calls that run in SQLite are not fewer than before the profiles")
@@ -4881,7 +5077,8 @@ func TestGenerated(t *testing.T) {
 // several times, each reached three to five times. The profile of the subqueries runs 60 for goqite's
 // receive with its subquery, and for the statements with subqueries through a prepared statement run
 // several times. The profile of arithmetic runs 40 for its evaluation errors of each kind, in SET and
-// in WHERE, and for its refusals of types, each reached in a few sequences in ten. The profile of the
+// in WHERE, and for its refusals of types, each reached in a few sequences in ten; [TestGenerated]
+// runs more of it, which it does not count. The profile of the
 // values on the left runs 70 for a value on the left of != in a select that finds rows, which
 // [TestGenerated] requires once: since the fixes after the review of the workload of arithmetic of
 // 2026-11-25, mixed no longer reaches it.

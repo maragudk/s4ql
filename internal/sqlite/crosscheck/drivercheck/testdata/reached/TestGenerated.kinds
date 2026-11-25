@@ -5,7 +5,15 @@
 # its total then. A total below its number fails the test, and so does a kind that no run
 # reaches three times.
 # The texts that the test excuses from the comparison, the kinds that begin with "excused: ", are
-# pinned exactly and are not listed here.
+# pinned exactly and are not listed here, but for that of an evaluation error, below.
+# Some counts of the profile of arithmetic vary by one or two between two runs, and stay floors:
+# s4ql draws the directions of its scans from its host, and a select with LIMIT and without ORDER BY,
+# or with a subquery, whose arithmetic fails on a row fails or gives rows by which rows its scans
+# meet first. Five runs on 2026-11-25 varied in "select ok", "select ok with rows", "reached:
+# select of names ok", "reached: WHERE that gives some rows of a table", "reached: LIMIT that
+# cuts", "reached: LIMIT by an argument ok", the evaluation errors justified of a division by zero
+# and of a real result that is not finite, and the excuse of an evaluation error, and in nothing
+# else.
 
 # Each kind of statement by its outcome, and each call, with arguments and without.
 1	createtable ok
@@ -231,9 +239,11 @@
 7	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
 9	reached: insert with NULL in the key: NOT NULL constraint failed
 5	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
-# "insert of NULL beside a value of another type NOT NULL constraint failed" is not required here
-# since the generated checks of arithmetic of 2026-11-25, after which the mixed profile, the one that
-# reached it three times, reaches it once: TestDifferential of the engine requires it.
+# An insert of NULL beside a value of another type in a column that does not take NULL left this
+# file with the generated checks of arithmetic of 2026-11-25, when the mixed profile reached it once;
+# since the fixes after the review of the workload of arithmetic that day it reaches it three times,
+# of 7 in all: required at a third.
+2	reached: insert of NULL beside a value of another type NOT NULL constraint failed
 3	reached: insert of NULL beside a value of another type a value of another type
 6	reached: select * with NULL ok
 4	reached: select of names with NULL ok
@@ -548,3 +558,8 @@
 # The excuse of an evaluation error, which is not pinned exactly since the fixes after the review of
 # the workload of arithmetic of 2026-11-25: a third of its total that day, 45.
 15	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
+# The fixes after the review of the driver check of 2026-11-25: an update or a delete that failed
+# with an evaluation error, whose table is read back, outside a transaction and in one, at a third
+# of their totals that day, 14 and 7.
+4	reached: table read back after an evaluation error of an update or a delete, outside a transaction
+2	reached: table read back after an evaluation error of an update or a delete, in a transaction

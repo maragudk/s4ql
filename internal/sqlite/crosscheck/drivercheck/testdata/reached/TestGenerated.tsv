@@ -207,6 +207,7 @@ mixed	19	6	reached: insert into TEXT UNIQUE constraint failed
 mixed	11	3	reached: insert into TEXT a value of another type
 mixed	18	6	reached: insert into TEXT attempt to write a readonly database
 mixed	62	20	reached: insert into TEXT ok
+mixed	3	1	reached: insert of NULL beside a value of another type NOT NULL constraint failed
 mixed	8	2	reached: insert of NULL beside a value of another type a value of another type
 mixed	10	3	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed
 mixed	4	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
@@ -275,7 +276,7 @@ mixed	4	1	reached: subquery compared by >= on either side ok
 mixed	35	11	reached: subquery of the table of its statement ok
 mixed	21	7	reached: subquery that finds no row
 mixed	12	4	reached: subquery whose first row has a value
-mixed	169	56	reached: table read back after an update or a delete
+mixed	792	264	reached: table read back after an update or a delete
 mixed	6	2	reached: update WHERE that reads a get of one key ok, rows changed
 mixed	4	1	reached: update WHERE that reads no row ok, no row found
 mixed	7	2	reached: update WHERE with a column in double quotes that the table does not have no such column
@@ -820,7 +821,7 @@ changes	4	1	reached: select * with NULL ok
 changes	4	1	reached: select of a name that the table does not have no such column
 changes	13	4	reached: select of names ok
 changes	3	1	reached: select of names with NULL ok
-changes	94	31	reached: table read back after an update or a delete
+changes	226	75	reached: table read back after an update or a delete
 changes	3	1	reached: update WHERE that reads a get of one key ok, rows changed
 changes	5	1	reached: update WHERE that reads no row ok, no row found
 changes	3	1	reached: update WHERE with a column in double quotes that the table does not have no such column
@@ -989,7 +990,7 @@ indexes	17	5	reached: select * of 2 columns ok
 indexes	31	10	reached: select * of 3 columns ok
 indexes	3	1	reached: select * with NULL ok
 indexes	47	15	reached: select of names ok
-indexes	72	24	reached: table read back after an update or a delete
+indexes	105	35	reached: table read back after an update or a delete
 indexes	4	1	reached: update WHERE that reads a get of one key ok, rows changed
 indexes	6	2	reached: update WHERE with a value of another type a value of another type
 indexes	26	8	reached: update with WHERE ok, no row found
@@ -1204,7 +1205,7 @@ exists	16	5	reached: select * of 2 columns ok
 exists	13	4	reached: select * of 3 columns ok
 exists	5	1	reached: select of a name that the table does not have no such column
 exists	40	13	reached: select of names ok
-exists	71	23	reached: table read back after an update or a delete
+exists	130	43	reached: table read back after an update or a delete
 exists	3	1	reached: update WHERE with a value of another type a value of another type
 exists	3	1	reached: update with WHERE attempt to write a readonly database
 exists	15	5	reached: update with WHERE ok, no row found
@@ -1428,7 +1429,7 @@ defaults	25	8	reached: select * with NULL ok
 defaults	6	2	reached: select of a name that the table does not have no such column
 defaults	178	59	reached: select of names ok
 defaults	17	5	reached: select of names with NULL ok
-defaults	35	11	reached: table read back after an update or a delete
+defaults	80	26	reached: table read back after an update or a delete
 defaults	5	1	reached: update WHERE that reads a get of one key ok, rows changed
 defaults	3	1	reached: update WHERE that reads no row ok, no row found
 defaults	6	2	reached: update WHERE with a value of another type a value of another type
@@ -1702,7 +1703,7 @@ valuefirst	8	2	reached: select * with NULL ok
 valuefirst	27	9	reached: select of a name that the table does not have no such column
 valuefirst	135	45	reached: select of names ok
 valuefirst	5	1	reached: select of names with NULL ok
-valuefirst	388	129	reached: table read back after an update or a delete
+valuefirst	880	293	reached: table read back after an update or a delete
 valuefirst	39	13	reached: update WHERE that reads a get of one key ok, rows changed
 valuefirst	5	1	reached: update WHERE that reads a scan of every row ok, rows changed
 valuefirst	9	3	reached: update WHERE that reads no row ok, no row found
@@ -1963,7 +1964,7 @@ transactions	5	1	reached: select * with NULL ok
 transactions	6	2	reached: select of a name that the table does not have no such column
 transactions	92	30	reached: select of names ok
 transactions	6	2	reached: select of names with NULL ok
-transactions	145	48	reached: table read back after an update or a delete
+transactions	296	98	reached: table read back after an update or a delete
 transactions	12	4	reached: update WHERE that reads a get of one key ok, rows changed
 transactions	3	1	reached: update WHERE that reads a scan of every row ok, rows changed
 transactions	9	3	reached: update WHERE that reads no row ok, no row found
@@ -2191,7 +2192,7 @@ arguments	14	4	reached: select * of 3 columns ok
 arguments	4	1	reached: select * with NULL ok
 arguments	15	5	reached: select of a name that the table does not have no such column
 arguments	39	13	reached: select of names ok
-arguments	65	21	reached: table read back after an update or a delete
+arguments	272	90	reached: table read back after an update or a delete
 arguments	3	1	reached: update WHERE that reads a get of one key ok, rows changed
 arguments	3	1	reached: update with WHERE attempt to write a readonly database
 arguments	25	8	reached: update with WHERE ok, no row found
@@ -2432,11 +2433,11 @@ order	250	83	reached: literal real
 order	8	2	reached: literal real -0.0
 order	211	70	reached: literal text
 order	226	75	reached: select * of 3 columns ok
-order	56	18	reached: select * with NULL ok
+order	57	19	reached: select * with NULL ok
 order	13	4	reached: select of a name that the table does not have no such column
 order	237	79	reached: select of names ok
 order	34	11	reached: select of names with NULL ok
-order	59	19	reached: table read back after an update or a delete
+order	98	32	reached: table read back after an update or a delete
 order	6	2	reached: update WHERE that reads a get of one key ok, rows changed
 order	3	1	reached: update WHERE that reads a scan of every row ok, rows changed
 order	5	1	reached: update WHERE that reads no row ok, no row found
@@ -2696,7 +2697,7 @@ returning	8	2	reached: select * with NULL ok
 returning	3	1	reached: select of a name that the table does not have no such column
 returning	91	30	reached: select of names ok
 returning	5	1	reached: select of names with NULL ok
-returning	354	118	reached: table read back after an update or a delete
+returning	787	262	reached: table read back after an update or a delete
 returning	63	21	reached: update WHERE that reads a get of one key ok, rows changed
 returning	6	2	reached: update WHERE that reads no row ok, no row found
 returning	44	14	reached: update WHERE with a value of another type a value of another type
@@ -2977,7 +2978,7 @@ subquery	538	179	reached: subquery that finds no row
 subquery	30	10	reached: subquery whose first row has NULL
 subquery	240	80	reached: subquery whose first row has a value
 subquery	43	14	reached: subquery whose first two rows tie under its ORDER BY but for the key
-subquery	392	130	reached: table read back after an update or a delete
+subquery	991	330	reached: table read back after an update or a delete
 subquery	8	2	reached: update WHERE with a value of another type a value of another type
 subquery	72	24	reached: update with RETURNING * ok
 subquery	85	28	reached: update with RETURNING of a name twice ok
@@ -3099,7 +3100,7 @@ arithmetic	19	=	excused: a statement while the rows of the transaction are open,
 arithmetic	3	=	excused: a statement with a subquery with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked to fail on its names
 arithmetic	1	=	excused: a subquery of a column of another type than the column that it is compared with, checked against s4ql's rule
 arithmetic	50	=	excused: a value of another type than its column, checked against s4ql's rule
-arithmetic	41	13	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
+arithmetic	40	13	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
 arithmetic	18	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
 arithmetic	93	=	excused: arithmetic refused by the rules of its types, checked against s4ql's rules
 arithmetic	24	8	insert UNIQUE constraint failed
@@ -3127,7 +3128,7 @@ arithmetic	4	1	reached: IS NOT NULL on the key ok
 arithmetic	4	1	reached: IS NULL on another column ok
 arithmetic	7	2	reached: IS NULL on the key ok
 arithmetic	33	11	reached: LIMIT by an argument ok
-arithmetic	7	2	reached: LIMIT that cuts
+arithmetic	8	2	reached: LIMIT that cuts
 arithmetic	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
 arithmetic	18	6	reached: NULL argument into a column that takes NULL ok
 arithmetic	10	3	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
@@ -3146,7 +3147,7 @@ arithmetic	4	1	reached: SET with argument nil ok, no row found
 arithmetic	6	2	reached: SET with literal null ok, rows changed
 arithmetic	4	1	reached: WHERE that gives every row of a table with rows
 arithmetic	32	10	reached: WHERE that gives no row of a table with rows
-arithmetic	12	4	reached: WHERE that gives some rows of a table
+arithmetic	13	4	reached: WHERE that gives some rows of a table
 arithmetic	5	1	reached: WHERE that reads a get of one key ok
 arithmetic	9	3	reached: WHERE that reads a scan between two bounds ok
 arithmetic	3	1	reached: WHERE that reads a scan between two bounds that hold no key ok
@@ -3198,7 +3199,7 @@ arithmetic	9	3	reached: delete without WHERE ok, no row found
 arithmetic	9	3	reached: delete without WHERE ok, rows changed
 arithmetic	14	4	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
 arithmetic	23	7	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
-arithmetic	7	2	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite
+arithmetic	6	2	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite
 arithmetic	11	3	reached: insert into BLOB UNIQUE constraint failed
 arithmetic	11	3	reached: insert into BLOB a value of another type
 arithmetic	4	1	reached: insert into BLOB attempt to write a readonly database
@@ -3250,9 +3251,9 @@ arithmetic	60	20	reached: literal real
 arithmetic	12	4	reached: literal real -0.0
 arithmetic	152	50	reached: literal text
 arithmetic	94	31	reached: select * of 3 columns ok
-arithmetic	8	2	reached: select * with NULL ok
-arithmetic	100	33	reached: select of names ok
-arithmetic	8	2	reached: select of names with NULL ok
+arithmetic	7	2	reached: select * with NULL ok
+arithmetic	101	33	reached: select of names ok
+arithmetic	7	2	reached: select of names with NULL ok
 arithmetic	5	1	reached: select with a subquery through prepare, query ok
 arithmetic	8	2	reached: select with a subquery through query ok
 arithmetic	7	2	reached: select with a subquery: subquery of several rows
@@ -3269,7 +3270,9 @@ arithmetic	58	19	reached: subquery of the table of its statement ok
 arithmetic	26	8	reached: subquery that finds no row
 arithmetic	4	1	reached: subquery whose first row has NULL
 arithmetic	26	8	reached: subquery whose first row has a value
-arithmetic	219	73	reached: table read back after an update or a delete
+arithmetic	7	2	reached: table read back after an evaluation error of an update or a delete, in a transaction
+arithmetic	13	4	reached: table read back after an evaluation error of an update or a delete, outside a transaction
+arithmetic	461	153	reached: table read back after an update or a delete
 arithmetic	23	7	reached: update WHERE that reads a get of one key ok, rows changed
 arithmetic	8	2	reached: update WHERE with a value of another type a value of another type
 arithmetic	11	3	reached: update with RETURNING * ok
@@ -3315,8 +3318,8 @@ arithmetic	4	1	read-only transaction: rows left open
 arithmetic	4	1	read-only transaction: select ok with rows
 arithmetic	11	3	select no rows
 arithmetic	19	6	select no such table
-arithmetic	87	29	select ok
-arithmetic	22	7	select ok with rows
+arithmetic	88	29	select ok
+arithmetic	23	7	select ok with rows
 arithmetic	90	30	write transaction begin ok
 arithmetic	5	1	write transaction commit ok after a create table
 arithmetic	5	1	write transaction commit ok after a drop table
