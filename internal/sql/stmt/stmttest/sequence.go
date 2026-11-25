@@ -75,8 +75,8 @@ type Sequence struct {
 	step uint64
 	// The streams of the areas that start anew at each statement, as [stepStream] says. The stream
 	// of an area that is off in the profile panics at a draw.
-	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning, rSubquery Rand
-	g                                                                                                                     *Generator
+	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning, rSubquery, rArithmetic Rand
+	g                                                                                                                                  *Generator
 	// inner are the selects of the subqueries that the hooks of the statement that the sequence writes
 	// gave, for [Generator.Inner], by their numbers from 1.
 	inner []stmt.Select
@@ -85,6 +85,10 @@ type Sequence struct {
 	// received is set by [Sequence.receive] for the RETURNING of its update, which goqite's receive
 	// has, and [Sequence.returning] clears it.
 	received bool
+	// failingRow is set by [Sequence.arithmeticCondition] for a select whose WHERE has a value that
+	// fails for some rows, for the LIMIT that [Sequence.order] then gives it, and the hook of the WHERE
+	// clears it first.
+	failingRow bool
 	// again is the last call of a select, an update, or a delete with a subquery, for
 	// [Profile.Again], or nil, and limits are the numbers from 1 of the parameters of its LIMITs, of
 	// the select and of its subqueries.
@@ -293,7 +297,7 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	q := &Sequence{seed: seed, profile: p, spelled: map[string][]string{}, shapes: map[string][]stmt.Column{}, stored: map[[2]string][]stmt.Value{}, indexed: map[string][]sequenceIndex{}}
 	q.rPlan, q.rTables, q.rInserts, q.rSelects, q.rChanges = q.stream(areaPlan), q.stream(areaTables), q.stream(areaInserts), q.stream(areaSelects), q.stream(areaChanges)
 	q.rIndexes, q.rDefaults, q.rArguments, q.rOthers = q.stream(areaIndexes), q.stream(areaDefaults), q.stream(areaArguments), q.stream(areaOthers)
-	q.rOrder, q.rReturning, q.rSubquery = q.stream(areaOrder), q.stream(areaReturning), q.stream(areaSubquery)
+	q.rOrder, q.rReturning, q.rSubquery, q.rArithmetic = q.stream(areaOrder), q.stream(areaReturning), q.stream(areaSubquery), q.stream(areaArithmetic)
 	r := q.entity(areaNames, "")
 	tableNames, columnNames := common[0], common[1]
 	for range max(1+r.IntN(2), p.TableNames) {
@@ -345,6 +349,9 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	}
 	if p.on(areaSubquery) {
 		q.g.Inner = func(n int) stmt.Select { return q.inner[n-1] }
+	}
+	if p.on(areaArithmetic) {
+		q.arithmeticHooks()
 	}
 	return q, nil
 }
@@ -836,8 +843,10 @@ func (q *Sequence) selectWhere(table stmt.Name) []stmt.Condition {
 // [Sequence.orderColumns] draws it, and a LIMIT for one select in [Profile.Limit], and for every
 // select whose ORDER BY is aimed at an index beside one of a range: 0 one time in eight, from 1 to 4
 // one time in two, from 6 to 105 one time in four, which is mostly above the number of rows of a
-// table of the sequence, and else the largest integer of 64 bits. With [Profile.SubqueryLimit], a
-// select with subqueries and without a LIMIT then gets one of 1 or from 2 to 4.
+// table of the sequence, and else the largest integer of 64 bits. A select without a LIMIT whose
+// WHERE [Sequence.arithmeticCondition] or [Sequence.failingWhere] gave a value that fails for some
+// rows gets one of 1 or 2 three times in four. With [Profile.SubqueryLimit], a select with subqueries and without a LIMIT then gets
+// one of 1 or from 2 to 4.
 func (q *Sequence) order(table stmt.Name) ([]stmt.OrderColumn, stmt.Term) {
 	r, p := q.rOrder, q.profile
 	var columns []stmt.OrderColumn
@@ -863,6 +872,11 @@ func (q *Sequence) order(table stmt.Name) ([]stmt.OrderColumn, stmt.Term) {
 		default:
 			limit.Value = stmt.Integer(math.MaxInt64)
 		}
+	}
+	if q.failingRow && limit.Value == nil && r.IntN(4) != 0 {
+		// A LIMIT for a select whose WHERE fails for some rows, so that the rows that it reads, and the
+		// direction that the engine draws, decide whether it fails.
+		limit.Value = stmt.Integer(1 + r.IntN(2))
 	}
 	if p.SubqueryLimit > 0 && limit.Value == nil && slices.ContainsFunc(q.selected, func(c stmt.Condition) bool { return c.Value.Subquery > 0 }) && r.IntN(p.SubqueryLimit) == 0 {
 		limit.Value = stmt.Integer(1)
@@ -2413,6 +2427,12 @@ func (q *Sequence) next() Call {
 		}
 		return c
 	}
+	if p.on(areaArithmetic) && q.rArithmetic.IntN(8*p.Arithmetic) == 0 {
+		// A text that the statement pass refuses for its arithmetic.
+		r := q.rArithmetic
+		form := ArithmeticRefused[r.IntN(len(ArithmeticRefused))]
+		return Call{Src: fmt.Sprintf(form, q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))]), Query: r.IntN(2) == 0}
+	}
 	if p.Others > 0 && q.rOthers.IntN(p.Others) == 0 {
 		r := q.rOthers
 		form := Others[r.IntN(len(Others))]
@@ -2482,3 +2502,525 @@ func (q *Sequence) next() Call {
 	}
 	return c
 }
+
+// The classes of the values of arithmetic, by the rule of exact types: INT and INTEGER hold one.
+const (
+	classInteger = "integer"
+	classReal    = "real"
+	classText    = "text"
+	classBlob    = "blob"
+)
+
+// classOf the values of the column c of a shape, or of the value v where c is nil, for a column that
+// the shape does not have: an integer for NULL and every other value.
+func classOf(c *stmt.Column, v stmt.Value) string {
+	t := stmt.TypeInt
+	switch {
+	case c != nil:
+		t = c.Type
+	case v != nil:
+		switch v.(type) {
+		case stmt.Real:
+			t = stmt.TypeReal
+		case stmt.Text:
+			t = stmt.TypeText
+		case stmt.Blob:
+			t = stmt.TypeBlob
+		}
+	}
+	switch kindOf(t) {
+	case stmt.TypeReal:
+		return classReal
+	case stmt.TypeText:
+		return classText
+	case stmt.TypeBlob:
+		return classBlob
+	}
+	return classInteger
+}
+
+// columnNode, valueNode, and operatorNode are the nodes of the trees of arithmetic that the hooks of a
+// sequence give the generator.
+func columnNode(raw string) stmt.Expression {
+	return stmt.Expression{Kind: stmt.ExprColumn, Column: stmt.Name{Raw: raw}}
+}
+
+func valueNode(v stmt.Value) stmt.Expression {
+	return stmt.Expression{Kind: stmt.ExprValue, Value: v}
+}
+
+func operatorNode(k stmt.ExpressionKind, operands ...stmt.Expression) stmt.Expression {
+	return stmt.Expression{Kind: k, Operands: operands}
+}
+
+// arithmeticHooks wrap the hooks of the WHERE of a select, of an update, and of a delete, so that their
+// conditions and assignments, and the WHERE of their subqueries, have arithmetic, as
+// [Sequence.arithmeticWhere] and [Sequence.arithmeticSet] draw it. The assignments are drawn first,
+// then the conditions of the statement, and then those of each subquery in the order of the text.
+func (q *Sequence) arithmeticHooks() {
+	where, update, del := q.g.Where, q.g.Update, q.g.Delete
+	q.g.Where = func(table stmt.Name) []stmt.Condition {
+		q.failingRow = false
+		cs := where(table)
+		switch r := q.rArithmetic; {
+		case r.IntN(2*q.profile.Arithmetic) == 0:
+			cs = q.failingWhere(table, cs)
+		case r.IntN(3*q.profile.Arithmetic) == 0:
+			cs = q.keyWhere(table, cs)
+		}
+		cs = q.arithmeticWhere(table, cs)
+		q.arithmeticInner()
+		return cs
+	}
+	q.g.Update = func(table stmt.Name) ([]stmt.Assignment, []stmt.Condition) {
+		set, cs := update(table)
+		set, cs = q.arithmeticSet(table, set), q.arithmeticWhere(table, cs)
+		q.arithmeticInner()
+		return set, cs
+	}
+	q.g.Delete = func(table stmt.Name) []stmt.Condition {
+		cs := q.arithmeticWhere(table, del(table))
+		q.arithmeticInner()
+		return cs
+	}
+}
+
+// failingWhere of a select of table, in place of the conditions cs, for one select in
+// 2*[Profile.Arithmetic]: a WHERE of one comparison of a column x of the shape of a class of numbers,
+// the key one time in two, with a number divided by x minus a value that an insert gave x, as
+// `x != 10 / (x - 3)`, which holds for most rows and fails for the row of the value, or for a real
+// one time in two x times 1e308, which fails for the rows above 1.8 in size; or cs where the
+// sequence keeps no such value. A LIMIT, as [Sequence.order] gives one then, makes the rows that the
+// select reads, and the direction that the engine draws, decide whether it fails.
+func (q *Sequence) failingWhere(table stmt.Name, cs []stmt.Condition) []stmt.Condition {
+	r := q.rArithmetic
+	shape := q.shapeOf(table)
+	var numbers []stmt.Column
+	for _, c := range shape {
+		if class := classOf(&c, nil); class == classInteger || class == classReal {
+			numbers = append(numbers, c)
+		}
+	}
+	if len(numbers) == 0 {
+		return cs
+	}
+	x := numbers[r.IntN(len(numbers))]
+	for _, c := range numbers {
+		if c.PrimaryKey && r.IntN(2) == 0 {
+			x = c
+		}
+	}
+	class := classOf(&x, nil)
+	var stored []stmt.Value
+	for _, v := range q.stored[[2]string{table.Fold(), x.Name.Value}] {
+		if classOf(nil, v) == class && v != stmt.Value(stmt.Null{}) {
+			stored = append(stored, v)
+		}
+	}
+	if len(stored) == 0 {
+		return cs
+	}
+	ten := stmt.Value(stmt.Integer(10))
+	if class == classReal {
+		ten = stmt.Real(10)
+	}
+	e := operatorNode(stmt.ExprDivide, valueNode(ten), operatorNode(stmt.ExprSubtract, columnNode(q.spell(r, x.Name.Value)), valueNode(stored[r.IntN(len(stored))])))
+	if class == classReal && r.IntN(2) == 0 {
+		// Infinite where x is above 1.8 in size.
+		e = operatorNode(stmt.ExprMultiply, columnNode(q.spell(r, x.Name.Value)), valueNode(stmt.Real(1e308)))
+	}
+	op := []stmt.Operator{stmt.OpNotEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpGreater}[r.IntN(4)]
+	q.failingRow = true
+	return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(r, x.Name.Value)}, Operator: op, Value: stmt.Term{Expression: e}}}
+}
+
+// keyWhere of a select of table, in place of the conditions cs, for one select in
+// 3*[Profile.Arithmetic] of those that [Sequence.failingWhere] leaves: the key equal to an expression
+// without a column whose value is one that an insert gave the key, as [Sequence.constantOf] draws it,
+// which gets the row of the key, or one time in three the key between two such expressions; or cs
+// where the sequence keeps no such value, or the key is of no class of numbers.
+func (q *Sequence) keyWhere(table stmt.Name, cs []stmt.Condition) []stmt.Condition {
+	r := q.rArithmetic
+	shape := q.shapeOf(table)
+	key := shape[slices.IndexFunc(shape, func(c stmt.Column) bool { return c.PrimaryKey })]
+	class := classOf(&key, nil)
+	var stored []stmt.Value
+	for _, v := range q.stored[[2]string{table.Fold(), key.Name.Value}] {
+		if classOf(nil, v) == class && v != stmt.Value(stmt.Null{}) {
+			stored = append(stored, v)
+		}
+	}
+	if len(stored) == 0 || class != classInteger && class != classReal {
+		return cs
+	}
+	at := func(op stmt.Operator) stmt.Condition {
+		return stmt.Condition{Column: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Operator: op, Value: stmt.Term{Expression: q.constantOf(r, stored[r.IntN(len(stored))], class)}}
+	}
+	if r.IntN(3) == 0 {
+		return []stmt.Condition{at([]stmt.Operator{stmt.OpGreater, stmt.OpGreaterOrEqual}[r.IntN(2)]), at([]stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual}[r.IntN(2)])}
+	}
+	return []stmt.Condition{at(stmt.OpEqual)}
+}
+
+// arithmeticInner gives the WHERE of each subquery that the hooks of the statement gave arithmetic, as
+// [Sequence.arithmeticWhere] draws it for the table of the subquery.
+func (q *Sequence) arithmeticInner() {
+	for i := range q.inner {
+		q.inner[i].Where = q.arithmeticWhere(nameOf(q.inner[i].Table.Raw, 0), q.inner[i].Where)
+	}
+}
+
+// arithmeticWhere gives the conditions cs of a WHERE of table, of a select, an update, a delete, or a
+// subquery, with one comparison in [Profile.Arithmetic] that is not a test for NULL and has no
+// subquery as its value made one of arithmetic, as [Sequence.arithmeticCondition] draws it. The
+// others are as they were.
+func (q *Sequence) arithmeticWhere(table stmt.Name, cs []stmt.Condition) []stmt.Condition {
+	r, p := q.rArithmetic, q.profile
+	if len(cs) == 0 {
+		return cs
+	}
+	shape := q.shapeOf(table)
+	cs = slices.Clone(cs)
+	for i, c := range cs {
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || c.Value.Subquery > 0 || c.Expression.Present() || c.Value.Expression.Present() {
+			continue
+		}
+		if r.IntN(p.Arithmetic) == 0 {
+			cs[i] = q.arithmeticCondition(r, shape, c)
+		}
+	}
+	return cs
+}
+
+// arithmeticCondition gives the comparison c, of a column of the shape or of a name that the shape
+// does not have, with arithmetic, drawn from r. A comparison of a TEXT or a BLOB column stays as it
+// is, but as a fault of the area, since s4ql refuses arithmetic there. Otherwise, of the class of the
+// column, as [classOf] gives it:
+//
+//   - one time in four, the value is an expression without a column whose value is that of c, as
+//     [Sequence.constantOf] draws it, so that the condition serves the key or an index as c would;
+//   - one time in six, the comparison tests the column in an expression, `c + d`, `c - d`, `1 * c`,
+//     or `-c`, against a value that keeps it true of the same rows where nothing overflows, which
+//     serves nothing;
+//   - one time in twelve, the value is another column, as [Sequence.otherColumn] gives it;
+//   - one time in twelve, the value is an expression of another column and a number;
+//   - one time in four, the value is one that fails for every row, for some, or for none, as
+//     [Sequence.failing] draws it;
+//   - one time in twelve, both sides are a column times a number;
+//   - and otherwise, as a fault of the area one time in two, the value of c plus a number of the
+//     other class of numbers, and else a value as for the first case.
+func (q *Sequence) arithmeticCondition(r Rand, shape []stmt.Column, c stmt.Condition) stmt.Condition {
+	column := columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold())
+	class := classOf(column, c.Value.Value)
+	if (class == classText || class == classBlob) && !q.fault(r, areaArithmetic, 6) {
+		return c
+	}
+	v := c.Value.Value
+	raw := c.Column.Raw
+	switch n := r.IntN(12); {
+	case n < 3:
+		c.Value = stmt.Term{Expression: q.constantOf(r, v, class)}
+	case n < 5:
+		d := q.small(r, class)
+		var tested, value stmt.Expression
+		switch r.IntN(4) {
+		case 0:
+			tested, value = operatorNode(stmt.ExprAdd, columnNode(raw), valueNode(d)), operatorNode(stmt.ExprAdd, valueNode(v), valueNode(d))
+		case 1:
+			tested, value = operatorNode(stmt.ExprSubtract, columnNode(raw), valueNode(d)), operatorNode(stmt.ExprSubtract, valueNode(v), valueNode(d))
+		case 2:
+			tested, value = operatorNode(stmt.ExprMultiply, valueNode(q.one(class)), columnNode(raw)), q.constantOf(r, v, class)
+		default:
+			tested, value = operatorNode(stmt.ExprNegate, columnNode(raw)), operatorNode(stmt.ExprNegate, valueNode(v))
+			c.Operator = map[stmt.Operator]stmt.Operator{stmt.OpLess: stmt.OpGreater, stmt.OpGreater: stmt.OpLess,
+				stmt.OpLessOrEqual: stmt.OpGreaterOrEqual, stmt.OpGreaterOrEqual: stmt.OpLessOrEqual, stmt.OpEqual: stmt.OpEqual, stmt.OpNotEqual: stmt.OpNotEqual}[c.Operator]
+		}
+		c.Column, c.Expression, c.Value = stmt.Name{}, tested, stmt.Term{Expression: value}
+	case n < 6:
+		c.Value, c.ValueFirst = stmt.Term{Expression: columnNode(q.otherColumn(r, shape, class))}, false
+	case n < 7:
+		k := []stmt.ExpressionKind{stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply}[r.IntN(3)]
+		c.Value = stmt.Term{Expression: q.nested(r, operatorNode(k, columnNode(q.otherColumn(r, shape, class)), valueNode(q.small(r, class))), class)}
+	case n < 10:
+		c.Value = stmt.Term{Expression: q.failing(r, shape, class, raw)}
+		q.failingRow = q.failingRow || c.Value.Expression.HasColumn()
+	case n < 11:
+		c.Column, c.Expression = stmt.Name{}, operatorNode(stmt.ExprMultiply, columnNode(raw), valueNode(q.small(r, class)))
+		c.Value, c.ValueFirst = stmt.Term{Expression: operatorNode(stmt.ExprMultiply, columnNode(q.otherColumn(r, shape, class)), valueNode(q.small(r, class)))}, false
+	default:
+		if q.fault(r, areaArithmetic, 2) {
+			c.Value = stmt.Term{Expression: operatorNode(stmt.ExprAdd, valueNode(v), valueNode(q.small(r, otherClass(class))))}
+		} else {
+			c.Value = stmt.Term{Expression: q.constantOf(r, v, class)}
+		}
+	}
+	return c
+}
+
+// otherClass of numbers than class: a real for an integer, and an integer for every other.
+func otherClass(class string) string {
+	if class == classInteger {
+		return classReal
+	}
+	return classInteger
+}
+
+// arithmeticSet gives the assignments set of an update of table with one in [Profile.Arithmetic]
+// given arithmetic, drawn from the stream of the area. An assignment of a TEXT or a BLOB column stays
+// as it is, but as a fault of the area. Otherwise, of the class of the column, as [classOf] gives it:
+// three times in ten the column that it sets and a number, as `n = n + 1`, also of the key, which the
+// update then computes; one time in ten another column and a number, and one time in ten another
+// column alone, as [Sequence.otherColumn] gives it; one time in ten an expression without a column
+// equal to its value, as [Sequence.constantOf] draws it; two times in ten a value that fails for every
+// row, for some, or for none, as [Sequence.failing] draws it; one time in ten an expression of the
+// column and another, three operators deep; and otherwise the column and a number, of the other class
+// as a fault of the area one time in two. An assignment after the first is, one time in three of
+// those, a column that the SET sets before and a number, which reads the value of the row before the
+// statement.
+func (q *Sequence) arithmeticSet(table stmt.Name, set []stmt.Assignment) []stmt.Assignment {
+	r, p := q.rArithmetic, q.profile
+	shape := q.shapeOf(table)
+	set = slices.Clone(set)
+	for i, a := range set {
+		if a.Value.Expression.Present() || r.IntN(p.Arithmetic) != 0 {
+			continue
+		}
+		column := columnOfShape(shape, nameOf(a.Column.Raw, 0).Fold())
+		class := classOf(column, a.Value.Value)
+		if (class == classText || class == classBlob) && !q.fault(r, areaArithmetic, 6) {
+			continue
+		}
+		self := a.Column.Raw
+		if column != nil {
+			self = q.spell(r, column.Name.Value)
+		}
+		k := []stmt.ExpressionKind{stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide}[r.IntN(4)]
+		var e stmt.Expression
+		switch n := r.IntN(10); {
+		case i > 0 && r.IntN(3) == 0:
+			// A column that the SET sets before, whose value before the statement the assignment reads.
+			e = operatorNode(k, columnNode(set[r.IntN(i)].Column.Raw), valueNode(q.small(r, class)))
+		case n < 3:
+			e = q.nested(r, operatorNode(k, columnNode(self), valueNode(q.small(r, class))), class)
+		case n < 4:
+			e = operatorNode(k, columnNode(q.otherColumn(r, shape, class)), valueNode(q.small(r, class)))
+		case n < 5:
+			e = columnNode(q.otherColumn(r, shape, class))
+		case n < 6:
+			e = q.constantOf(r, a.Value.Value, class)
+		case n < 8:
+			e = q.failing(r, shape, class, self)
+		case n < 9:
+			sum := operatorNode(stmt.ExprAdd, columnNode(self), columnNode(q.otherColumn(r, shape, class)))
+			e = operatorNode(stmt.ExprSubtract, operatorNode(stmt.ExprMultiply, sum, valueNode(q.small(r, class))), operatorNode(stmt.ExprDivide, columnNode(self), valueNode(q.small(r, class))))
+		default:
+			other := class
+			if q.fault(r, areaArithmetic, 2) {
+				other = otherClass(class)
+			}
+			e = operatorNode(k, columnNode(self), valueNode(q.small(r, other)))
+		}
+		set[i].Value = stmt.Term{Expression: e}
+	}
+	return set
+}
+
+// small number of the class at random from r: 1, 2, 3, or -1 for an integer, and 0.5, 2.0, -1.5, or
+// 1.0 for a real, as for every other class.
+func (q *Sequence) small(r Rand, class string) stmt.Value {
+	if class == classReal {
+		return stmt.Real([]float64{0.5, 2, -1.5, 1}[r.IntN(4)])
+	}
+	return stmt.Integer([]int64{1, 2, 3, -1}[r.IntN(4)])
+}
+
+// one of the class: 1, or 1.0 for a real.
+func (q *Sequence) one(class string) stmt.Value {
+	if class == classReal {
+		return stmt.Real(1)
+	}
+	return stmt.Integer(1)
+}
+
+// nested e, of the class, one time in four in another operator that keeps its value but where it
+// overflows: times 1, divided by 1, or, if e is no negation, negated and then times -1.
+func (q *Sequence) nested(r Rand, e stmt.Expression, class string) stmt.Expression {
+	if r.IntN(4) != 0 {
+		return e
+	}
+	minus := stmt.Value(stmt.Integer(-1))
+	if class == classReal {
+		minus = stmt.Real(-1)
+	}
+	switch n := r.IntN(3); {
+	case n == 0:
+		return operatorNode(stmt.ExprMultiply, e, valueNode(q.one(class)))
+	case n == 1 || e.Kind == stmt.ExprNegate:
+		return operatorNode(stmt.ExprDivide, e, valueNode(q.one(class)))
+	}
+	return operatorNode(stmt.ExprMultiply, operatorNode(stmt.ExprNegate, e), valueNode(minus))
+}
+
+// constantOf the value v, for a column of the class: an expression without a column whose value is v,
+// where v is an integer or a real: v and a number added and taken away, or the other way, v times
+// one, v divided by one, or the negation of -v, as [Sequence.nested] may nest it; and for NULL, text,
+// or a blob, which the generator writes as a ?, v plus a number of the class, which is NULL for NULL
+// and refused for the others.
+func (q *Sequence) constantOf(r Rand, v stmt.Value, class string) stmt.Expression {
+	var e stmt.Expression
+	switch v := v.(type) {
+	case stmt.Integer:
+		d := stmt.Integer(1 + r.IntN(3))
+		switch n := r.IntN(5); {
+		case n == 0 && v > math.MinInt64+3:
+			e = operatorNode(stmt.ExprAdd, valueNode(v-d), valueNode(d))
+		case n == 1 && v < math.MaxInt64-3:
+			e = operatorNode(stmt.ExprSubtract, valueNode(v+d), valueNode(d))
+		case n == 2 && v != math.MinInt64:
+			e = operatorNode(stmt.ExprNegate, valueNode(-v))
+		case n == 3:
+			e = operatorNode(stmt.ExprDivide, valueNode(v), valueNode(stmt.Integer(1)))
+		default:
+			e = operatorNode(stmt.ExprMultiply, valueNode(v), valueNode(stmt.Integer(1)))
+		}
+	case stmt.Real:
+		switch r.IntN(4) {
+		case 0:
+			e = operatorNode(stmt.ExprAdd, valueNode(v), valueNode(stmt.Real(0)))
+		case 1:
+			e = operatorNode(stmt.ExprNegate, valueNode(-v))
+		case 2:
+			e = operatorNode(stmt.ExprDivide, valueNode(v), valueNode(stmt.Real(1)))
+		default:
+			e = operatorNode(stmt.ExprMultiply, valueNode(stmt.Real(1)), valueNode(v))
+		}
+	default:
+		return operatorNode(stmt.ExprAdd, valueNode(v), valueNode(q.small(r, class)))
+	}
+	return q.nested(r, e, class)
+}
+
+// otherColumn of the shape at random of the class, the raw text of a spelling of its name: one time
+// in six, as a fault of the area, any column of the shape, and otherwise one of the class, or any if
+// none is.
+func (q *Sequence) otherColumn(r Rand, shape []stmt.Column, class string) string {
+	var of []stmt.Column
+	for _, c := range shape {
+		if classOf(&c, nil) == class {
+			of = append(of, c)
+		}
+	}
+	if len(of) == 0 || q.fault(r, areaArithmetic, 6) {
+		of = shape
+	}
+	return q.spell(r, of[r.IntN(len(of))].Name.Value)
+}
+
+// failing value of the class, for a comparison or an assignment whose column has the raw text raw: one
+// time in three an expression without a column that fails whatever the rows are, of an integer
+// overflow, a division by zero, or a real result that is not finite; and otherwise an expression of
+// raw, or one time in two of another column, as [Sequence.otherColumn] gives it, that fails for the
+// rows whose value is large, or for the row of a value that an insert gave the column, and not for
+// the others.
+func (q *Sequence) failing(r Rand, shape []stmt.Column, class, raw string) stmt.Expression {
+	if r.IntN(2) == 0 {
+		raw = q.otherColumn(r, shape, class)
+	}
+	x := columnNode(raw)
+	fold := nameOf(raw, 0).Fold()
+	var stored []stmt.Value
+	for _, vs := range q.storedOf(fold) {
+		if classOf(nil, vs) == class && vs != stmt.Value(stmt.Null{}) {
+			stored = append(stored, vs)
+		}
+	}
+	at := func(zero stmt.Value) stmt.Value {
+		if len(stored) == 0 {
+			return zero
+		}
+		return stored[r.IntN(len(stored))]
+	}
+	if class == classReal {
+		switch r.IntN(9) {
+		case 0:
+			return operatorNode(stmt.ExprMultiply, valueNode(stmt.Real(1e308)), valueNode(stmt.Real(10)))
+		case 1:
+			return operatorNode(stmt.ExprSubtract, valueNode(stmt.Real(-math.MaxFloat64)), valueNode(stmt.Real(1e308)))
+		case 2:
+			return operatorNode(stmt.ExprDivide, valueNode(stmt.Real(2.5)), operatorNode(stmt.ExprSubtract, valueNode(stmt.Real(0.5)), valueNode(stmt.Real(0.5))))
+		case 3:
+			return operatorNode(stmt.ExprDivide, valueNode(stmt.Real(1)), valueNode(stmt.Real(0)))
+		case 4, 5:
+			return operatorNode(stmt.ExprMultiply, x, valueNode(stmt.Real(1e308)))
+		case 6:
+			return operatorNode(stmt.ExprDivide, x, valueNode(stmt.Real(1e-300)))
+		}
+		return operatorNode(stmt.ExprDivide, valueNode(stmt.Real(1.5)), operatorNode(stmt.ExprSubtract, x, valueNode(at(stmt.Real(0)))))
+	}
+	switch r.IntN(10) {
+	case 0:
+		return operatorNode(stmt.ExprAdd, valueNode(stmt.Integer(math.MaxInt64)), valueNode(stmt.Integer(1+r.IntN(3))))
+	case 1:
+		return operatorNode(stmt.ExprNegate, valueNode(stmt.Integer(math.MinInt64)))
+	case 2:
+		return operatorNode(stmt.ExprDivide, valueNode(stmt.Integer(7)), operatorNode(stmt.ExprSubtract, valueNode(stmt.Integer(2)), valueNode(stmt.Integer(2))))
+	case 3:
+		return operatorNode(stmt.ExprDivide, valueNode(stmt.Integer(math.MinInt64)), valueNode(stmt.Integer(-1)))
+	case 4:
+		return operatorNode(stmt.ExprAdd, x, valueNode(stmt.Integer(math.MaxInt64)))
+	case 5:
+		return operatorNode(stmt.ExprSubtract, x, valueNode(stmt.Integer(math.MaxInt64)))
+	case 6:
+		return operatorNode(stmt.ExprMultiply, x, valueNode(stmt.Integer(4611686018427387904)))
+	case 7:
+		return operatorNode(stmt.ExprNegate, x)
+	}
+	return operatorNode(stmt.ExprDivide, valueNode(stmt.Integer(10)), operatorNode(stmt.ExprSubtract, x, valueNode(at(stmt.Integer(0)))))
+}
+
+// storedOf the column of the fold: the values that the sequence keeps for it, of every table, in the
+// order of the names of the tables, as [Sequence.store] kept them.
+func (q *Sequence) storedOf(fold string) []stmt.Value {
+	var keys [][2]string
+	for k := range q.stored {
+		if k[1] == fold {
+			keys = append(keys, k)
+		}
+	}
+	slices.SortFunc(keys, func(a, b [2]string) int { return strings.Compare(a[0], b[0]) })
+	var vs []stmt.Value
+	for _, k := range keys {
+		vs = append(vs, q.stored[k]...)
+	}
+	return vs
+}
+
+// ArithmeticRefused are texts that the statement pass refuses for their arithmetic, with %[1]v for the
+// name of a table and %[2]v for that of a column, each the refusal of the text that its comment names:
+// a string, a blob, and NULL as operands, a division by a literal zero and by a real that SQLite reads
+// as zero, an integer literal outside 64 bits, a second sign, a + sign, ~, a binary operator that is
+// not arithmetic, a function, parentheses around a single value, more than 100 open at once,
+// arithmetic in a select list, in an ORDER BY, and before IS, and two sides without a column.
+var ArithmeticRefused = []string{
+	"select * from %[1]v where %[2]v = 'a' + 1",                      // string in arithmetic
+	"update %[1]v set %[2]v = x'01' * %[2]v",                         // blob in arithmetic
+	"delete from %[1]v where %[2]v < null - 1",                       // NULL in arithmetic
+	"select * from %[1]v where %[2]v = 1 / 0",                        // division by zero
+	"update %[1]v set %[2]v = %[2]v / -0.0",                          // division by zero
+	"select * from %[1]v where %[2]v > %[2]v / 1e-400",               // division by zero
+	"update %[1]v set %[2]v = %[2]v - 9223372036854775808",           // integer outside 64 bits
+	"select * from %[1]v where %[2]v = - -%[2]v",                     // second sign
+	"update %[1]v set %[2]v = +%[2]v",                                // + sign
+	"select * from %[1]v where %[2]v = ~1 + %[2]v",                   // ~ operator
+	"delete from %[1]v where %[2]v = %[2]v %% 2",                     // binary operator
+	"update %[1]v set %[2]v = abs(%[2]v) + 1",                        // function call
+	"select * from %[1]v where %[2]v = (1) + %[2]v",                  // parentheses
+	"select * from %[1]v where %[2]v = " + deepParentheses + "%[2]v", // parentheses deeper than 100
+	"select %[2]v + 1 from %[1]v",                                    // result column other than a column or *
+	"select * from %[1]v order by %[2]v * 2",                         // ordering term other than a column
+	"select * from %[1]v where %[2]v + 1 is null",                    // binary operator before IS
+	"select * from %[1]v where 1 + 1 = 2 * 2",                        // value compared with a value
+}
+
+// deepParentheses opens 101 parentheses of arithmetic, each around 1 + and the next, and closes them.
+var deepParentheses = strings.Repeat("(1 + ", 101) + "1" + strings.Repeat(")", 101) + " + "

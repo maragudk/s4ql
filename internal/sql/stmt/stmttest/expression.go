@@ -1,6 +1,8 @@
 package stmttest
 
 import (
+	"fmt"
+	"math"
 	"strings"
 
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -186,6 +188,133 @@ func (g *Generator) operand(parent stmt.ExpressionKind, left bool, depth, column
 	}
 	g.b.WriteString(text)
 	return stmt.Expression{Kind: stmt.ExprValue, Value: value, Span: stmt.Span{Start: start, End: g.b.Len()}}, args
+}
+
+// givenTerm of arithmetic that a hook gives, the value of an assignment or of a comparison, after the
+// arguments args, as [Generator.given] writes it, one time in six in parentheses if it is an
+// operator. A column alone is the term of the column, and a value alone a plain value, as
+// [Generator.term] writes it, since neither is an expression of the statement pass. It gives the term
+// and the arguments with those of its parameters.
+func (g *Generator) givenTerm(e stmt.Expression, args []any) (stmt.Term, []any) {
+	start := g.b.Len()
+	switch e.Kind {
+	case stmt.ExprValue:
+		return g.term(e.Value, args)
+	case stmt.ExprColumn:
+		x := g.givenColumn(e.Column.Raw)
+		return stmt.Term{Expression: x, Span: x.Span}, args
+	}
+	paren := g.r.IntN(6) == 0
+	if paren {
+		g.openParen()
+		g.gap(false)
+	}
+	x, args := g.given(e, 0, false, args)
+	if paren {
+		g.gap(false)
+		g.punct(")")
+	}
+	return stmt.Term{Expression: x, Span: stmt.Span{Start: start, End: g.b.Len()}}, args
+}
+
+// given writes the expression e that a hook gives, an operand of an operator of the kind parent, on
+// its left if left, or 0 at the top, after the arguments args: its columns by the raw text of their
+// names, and its values, of [stmt.ExprValue], as literals, or one time in [Generator.Parameters] as a
+// ?, and always as a ? where a literal would be refused or read otherwise: NULL, text, and a blob,
+// which the pass refuses in arithmetic as literals and s4ql refuses as arguments by their types; a
+// value after a negation, which would be a negative literal; and a zero or a subnormal on the right
+// of a division, which the pass refuses or SQLite reads as zero. An operator is in parentheses where
+// SQLite would otherwise group it with another, and one time in four elsewhere, but at the top. A
+// negation of a negation, which the pass refuses as a second sign, and a parameter, whose argument
+// it does not know, panic. It gives the typed form of what it writes and the arguments with those of
+// its parameters.
+func (g *Generator) given(e stmt.Expression, parent stmt.ExpressionKind, left bool, args []any) (stmt.Expression, []any) {
+	start := g.b.Len()
+	switch e.Kind {
+	case stmt.ExprColumn:
+		return g.givenColumn(e.Column.Raw), args
+	case stmt.ExprValue:
+		return g.givenValue(e.Value, parent, left, args)
+	case stmt.ExprNegate:
+		g.open = false
+		g.punct("-")
+		g.gap(false)
+		x := e.Operands[0]
+		var y stmt.Expression
+		switch x.Kind {
+		case stmt.ExprNegate:
+			panic("stmttest: a negation of a negation, which the statement pass refuses as a second sign")
+		case stmt.ExprColumn, stmt.ExprValue:
+			y, args = g.given(x, stmt.ExprNegate, false, args)
+		default:
+			g.openParen()
+			g.gap(false)
+			y, args = g.given(x, 0, false, args)
+			g.gap(false)
+			g.punct(")")
+		}
+		return stmt.Expression{Kind: stmt.ExprNegate, Operands: []stmt.Expression{y}, Span: stmt.Span{Start: start, End: g.b.Len()}}, args
+	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
+		x, args := g.givenOperand(e.Kind, true, e.Operands[0], args)
+		g.operatorText(e.Kind.String())
+		y, args := g.givenOperand(e.Kind, false, e.Operands[1], args)
+		return stmt.Expression{Kind: e.Kind, Operands: []stmt.Expression{x, y}, Span: stmt.Span{Start: start, End: g.b.Len()}}, args
+	}
+	panic(fmt.Sprintf("stmttest: an expression of the kind %v that a hook gives", e.Kind))
+}
+
+// givenOperand e of a binary operator of the kind parent, on its left if left, as [Generator.given]
+// writes it.
+func (g *Generator) givenOperand(parent stmt.ExpressionKind, left bool, e stmt.Expression, args []any) (stmt.Expression, []any) {
+	if len(e.Operands) == 0 {
+		return g.given(e, parent, left, args)
+	}
+	needed := e.Kind != stmt.ExprNegate && (precedence(e.Kind) < precedence(parent) || !left && precedence(e.Kind) == precedence(parent))
+	paren := needed || g.r.IntN(4) == 0
+	if paren {
+		g.openParen()
+		g.gap(false)
+	}
+	x, args := g.given(e, 0, false, args)
+	if paren {
+		g.gap(false)
+		g.punct(")")
+	}
+	return x, args
+}
+
+// givenValue v of an expression, an operand of an operator of the kind parent, on its left if left, as
+// [Generator.given] writes it.
+func (g *Generator) givenValue(v stmt.Value, parent stmt.ExpressionKind, left bool, args []any) (stmt.Expression, []any) {
+	at := g.b.Len()
+	g.open = false
+	param := parent == stmt.ExprNegate
+	switch v := v.(type) {
+	case stmt.Null, stmt.Text, stmt.Blob:
+		param = true
+	case stmt.Integer:
+		param = param || parent == stmt.ExprDivide && !left && v == 0
+	case stmt.Real:
+		param = param || parent == stmt.ExprDivide && !left && math.Abs(float64(v)) < 0x1p-1022
+	}
+	if param || g.Parameters > 0 && g.params.IntN(g.Parameters) == 0 {
+		g.punct("?")
+		return stmt.Expression{Kind: stmt.ExprParameter, Parameter: len(args) + 1, Span: stmt.Span{Start: at, End: at + 1}}, append(args, Argument(v))
+	}
+	text, value := Literal(g.r, v)
+	g.b.WriteString(text)
+	return stmt.Expression{Kind: stmt.ExprValue, Value: value, Span: stmt.Span{Start: at, End: g.b.Len()}}, args
+}
+
+// givenColumn of an expression, of the raw name, in double quotes where it is a keyword that starts a
+// select after an opening parenthesis, which names the same column.
+func (g *Generator) givenColumn(raw string) stmt.Expression {
+	if g.open && raw[0] != '"' && selectStart[strings.ToLower(raw)] {
+		raw = Quote(raw)
+	}
+	g.open = false
+	n := g.write(raw)
+	return stmt.Expression{Kind: stmt.ExprColumn, Column: n, Span: stmt.Span{Start: n.Offset, End: g.b.Len()}}
 }
 
 // column of an expression, of the raw name, which is drawn again from the pool of [SelectColumn]

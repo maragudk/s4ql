@@ -26,6 +26,7 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -667,6 +668,11 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 		}
 	case errors.As(err, &se):
 		a.state, a.answer = sqliteFailed, answer{err: fmt.Sprint(se.Code, "/", se.ExtendedCode, ": ", se.Message)}
+	case errors.Is(err, expr.ErrEvaluation):
+		// An evaluation error of arithmetic does nothing, and [run.arithmetic] checks it against SQLite's
+		// result of its operator on the state that the statement saw.
+		a.state, a.answer = skipped, answer{err: evaluationError, message: err.Error()}
+		a.answer.eval, _ = errors.AsType[*expr.Error](err)
 	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, engine.ErrNoStatement), errors.Is(err, engine.ErrArguments):
 		a.state, a.answer = skipped, answer{err: "not supported", message: err.Error()}
 		switch {
@@ -681,11 +687,13 @@ func (r *run) statement(ctx context.Context, n *node, c *engine.Conn, gen int, c
 		kind, failure := checkArguments(call, a.answer)
 		s, _ := stmt.Check(a.src)
 		supported := call.Supported || s != nil
-		if kind == "" && supported && a.answer.err == "not supported" && (typeRefusal(a.src, a.answer.message) || strings.Contains(a.answer.message, ", for LIMIT, which takes ") || subqueryRefused(s, a.answer.message)) {
+		if kind == "" && supported && a.answer.err == "not supported" && (typeRefusal(a.src, a.answer.message) || strings.Contains(a.answer.message, ", for LIMIT, which takes ") || subqueryRefused(s, a.answer.message) ||
+			s != nil && expressed(s) && stmttest.ArithmeticRefusal(a.answer.message)) {
 			// The refusal of a value of another type than its column, after the insert or the select
 			// found its table and its columns, or of an argument of LIMIT, of slice 13, after those, or of
 			// a scalar subquery, of slice 15, as [subqueryRefused] says, which [run.verify] checks against
-			// SQLite on the state that it saw, by [typeRule].
+			// SQLite on the state that it saw, by [typeRule], or of the types of arithmetic, which it
+			// checks by [run.arithmetic].
 			kind, a.typeRefused = excusedType, true
 		}
 		if kind == "" && (supported || a.answer.err == wrongArguments) {
@@ -777,6 +785,29 @@ func subqueryKinds(a *attempt, s stmt.Statement, kind string) []string {
 		kinds = append(kinds, "statements with subqueries whose outcome is unknown")
 	case failed:
 		kinds = append(kinds, "statements with subqueries that failed: "+a.reason)
+	}
+	return kinds
+}
+
+// arithmeticKinds of the attempt a of a statement with arithmetic, a select, an update, or a
+// delete, which kind names in the plural, for [tallyOf]: the statement by how it ended, of its own or
+// in a transaction, an evaluation error by its kind, a refusal of its types, and an update or a delete
+// that changed rows.
+func arithmeticKinds(a *attempt, kind string) []string {
+	in := map[bool]string{true: " of their own", false: " in a transaction"}[a.tx == nil]
+	kinds := []string{"statements with arithmetic"}
+	switch {
+	case a.state == succeeded:
+		kinds = append(kinds, kind+" with arithmetic that succeeded"+in)
+		if !a.unchanged && a.write {
+			kinds = append(kinds, kind+" with arithmetic that changed rows"+in)
+		}
+	case a.answer.eval != nil:
+		kinds = append(kinds, "statements with arithmetic that failed: "+a.answer.eval.Kind.Error()+in)
+	case a.typeRefused:
+		kinds = append(kinds, "statements with arithmetic refused for its types"+in)
+	case a.state == sqliteFailed:
+		kinds = append(kinds, "statements with arithmetic with SQLite's error")
 	}
 	return kinds
 }
@@ -1739,11 +1770,11 @@ func (r *run) verify(ctx context.Context) {
 	empty := newOracle(r.t)
 	defer empty.close()
 	for _, a := range r.order {
-		if a.state == skipped && a.answer.err == "not supported" {
-			if m := syntaxOfNotSupported(r.t, empty, a.src); m != "" {
+		if a.state == skipped && (a.answer.err == "not supported" || a.answer.err == evaluationError) {
+			if m := syntaxOfNotSupported(r.t, empty, a.src); a.answer.err == "not supported" && m != "" {
 				r.violate(ctx, "the engine does not support the statement %v, %q, and SQLite gives %v", a.id, a.src, m)
 			}
-			if a.typeRefused && a.tx == nil {
+			if (a.typeRefused || a.answer.err == evaluationError) && a.tx == nil {
 				if at, ok := index[a.position]; ok {
 					refused[at] = append(refused[at], a)
 				} else {
@@ -1833,6 +1864,12 @@ func (r *run) verify(ctx context.Context) {
 			if _, _, failure := r.flattened(o, a, a.src, oracleValues(a.args), "refused of their own"); failure != "" {
 				r.violate(ctx, "the statement %v at commit %v: %v", a.id, k, failure)
 			}
+			if s, _ := stmt.Check(a.src); s != nil && expressed(s) {
+				if failure := r.arithmetic(o, a, false); failure != "" {
+					r.violate(ctx, "the statement %v, %q, at commit %v: %v", a.id, a.src, k, failure)
+				}
+				continue
+			}
 			if want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...); a.answer.message != want {
 				r.violate(ctx, "the statement %v, %q, at commit %v gives %q, and the rule for the type of a value %q", a.id, a.src, k, a.answer.message, want)
 			}
@@ -1843,6 +1880,12 @@ func (r *run) verify(ctx context.Context) {
 				// convert or refuse otherwise.
 				if want := typeRule(r.t, o, note, oracleValues(log[k].params[i])); want != "" {
 					r.violate(ctx, "commit %v, %q, stores a value of another type than its column: %v", k+1, note, want)
+				}
+				if s, _ := stmt.Check(note); s != nil && expressed(s) {
+					if refusals := arithmeticRefusals(r.t, o, s, oracleValues(log[k].params[i]), false); len(refusals) > 0 {
+						r.violate(ctx, "commit %v, %q, has arithmetic that the rules of its types refuse: %q", k+1, note, refusals)
+					}
+					r.event("writes with arithmetic in the log")
 				}
 				var of *attempt
 				if m := idPattern.FindStringSubmatch(note); m != nil {
@@ -1983,12 +2026,21 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		}
 		before, beforeState := o.tables(r.t), o.state(r.t)
 		for _, a := range tx.stmts {
-			if a.typeRefused {
+			if a.typeRefused || a.answer.err == evaluationError {
 				// A read-only transaction refuses an insert before it looks at its value, and runs a
 				// select. The values that the engine computed must be among SQLite's candidates, as for
 				// a statement of its own that was refused.
 				if _, _, failure := r.flattened(o, a, a.src, oracleValues(a.args), "refused in a transaction"); failure != "" {
 					r.violate(ctx, "the statement %v of the transaction %v (%v), which began at commit %v: %v", a.id, tx.id, kind, at, failure)
+				}
+				if s, _ := stmt.Check(a.src); s != nil && expressed(s) {
+					// A statement of arithmetic that was refused or failed did nothing, and the transaction
+					// goes on with the state before it.
+					if failure := r.arithmetic(o, a, tx.readOnly); failure != "" {
+						r.violate(ctx, "the statement %v, %q, of the transaction %v (%v), which began at commit %v: %v", a.id, a.src, tx.id, kind, at, failure)
+					}
+					r.event("statements with arithmetic refused or failed in a transaction, checked by the rules")
+					continue
 				}
 				want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...)
 				if tx.readOnly {
@@ -2005,6 +2057,11 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			if want := typeRule(r.t, o, a.src, oracleValues(a.args), r.computed(a)...); a.state == succeeded && want != "" {
 				// The check of the log does not see an insert of a transaction that did not commit.
 				r.violate(ctx, "the statement %v, %q, of the transaction %v (%v) succeeded, and stores a value of another type than its column: %v", a.id, a.src, tx.id, kind, want)
+			}
+			if st, _ := stmt.Check(a.src); a.state == succeeded && st != nil && expressed(st) {
+				if refusals := arithmeticRefusals(r.t, o, st, oracleValues(a.args), tx.readOnly); len(refusals) > 0 {
+					r.violate(ctx, "the statement %v, %q, of the transaction %v (%v) succeeded, and the rules of the types of arithmetic refuse it: %q", a.id, a.src, tx.id, kind, refusals)
+				}
 			}
 			var stateBefore string
 			if a.nothing {
@@ -2075,6 +2132,51 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		}
 	}
 	return nothing
+}
+
+// arithmetic checks the attempt a of a statement with arithmetic, which s4ql refused for its types or
+// which failed with an evaluation error, on the database of o, the state that it saw, in a read-only
+// transaction if readOnly, against s4ql's rules for arithmetic: a refusal must be one of
+// [arithmeticRefusals], and an evaluation error must be justified by SQLite's own result of its
+// operator, as [stmttest.Justify] says, with the values that the engine computed for its
+// subqueries, and never of an update or a delete in a read-only transaction, which computes nothing.
+// It gives what is wrong, or "".
+func (r *run) arithmetic(o *oracle, a *attempt, readOnly bool) string {
+	s, _ := stmt.Check(a.src)
+	args := oracleValues(a.args)
+	if s == nil || len(args) != s.Parameters() {
+		return fmt.Sprintf("gives %q, and has another number of arguments than parameters", a.answer.message)
+	}
+	if err := o.prepare(r.t, a.src); err != nil {
+		return fmt.Sprintf("gives %q, and SQLite gives %v", a.answer.message, sqliteText(r.t, err))
+	}
+	if a.answer.err != evaluationError {
+		if refusals := arithmeticRefusals(r.t, o, s, args, readOnly); !slices.Contains(refusals, a.answer.message) {
+			return fmt.Sprintf("gives %q, and the rules of the types of arithmetic %q", a.answer.message, refusals)
+		}
+		r.event("statements with arithmetic refused by the rules of its types")
+		return ""
+	}
+	ee := a.answer.eval
+	if _, isSelect := s.(*stmt.Select); readOnly && !isSelect || ee == nil {
+		return fmt.Sprintf("gives %q in a read-only transaction, which computes nothing for a write", a.answer.message)
+	}
+	var computed []stmt.Term
+	for _, v := range r.computed(a) {
+		computed = append(computed, valueTerm(v))
+	}
+	rows := func(src string, args []any) bool {
+		got := o.run(r.t, src, args...)
+		if got.err != "" {
+			r.t.Fatalf("%q: SQLite gives %v", src, got.err)
+		}
+		return len(got.rows) > 0
+	}
+	if why := stmttest.Justify(s, args, ee.Kind, ee.Op, ee.Span.Start, computed, rows); why != "" {
+		return fmt.Sprintf("gives %q, which %v", a.answer.message, why)
+	}
+	r.event("evaluation errors that SQLite's result of their operator justifies")
+	return ""
 }
 
 // computed are the values that the engine computed for the subqueries of the attempt a, as its hook
@@ -2594,6 +2696,11 @@ func tallyOf(s simulation) map[string]int {
 				counts[what]++
 			}
 		}
+		if s != nil && expressed(s) {
+			for _, what := range arithmeticKinds(a, kind) {
+				counts[what]++
+			}
+		}
 		if hasValueFirst(s) {
 			counts["statements with a value on the left"]++
 			switch {
@@ -2725,10 +2832,12 @@ type simEnvironment struct {
 // environment adds to what the environment reaches, and takes nothing from another cell.
 var simEnvironments = []simEnvironment{
 	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 34}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 6}, {stmttest.Subquery, 8}}, 0.07},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 6}, {stmttest.Subquery, 8},
+		{stmttest.Arithmetic, 8}}, 0.07},
 	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
 	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
-		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 16}, {stmttest.Subquery, 20}}, 0.06},
+		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 16}, {stmttest.Subquery, 20},
+		{stmttest.Arithmetic, 12}}, 0.06},
 }
 
 // TestSimulation runs each environment of [simEnvironments], the default, the idle, and the hammer

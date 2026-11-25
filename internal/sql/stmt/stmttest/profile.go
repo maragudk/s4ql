@@ -132,6 +132,12 @@ type Profile struct {
 	// TableNames is the least number of names of tables of the sequence, or 0 for one or two, so that
 	// a subquery reads another table than its statement as often as its own.
 	TableNames int
+	// Arithmetic, if not 0, makes one comparison in Arithmetic of a WHERE, of a select, an update, a
+	// delete, and a subquery, and one assignment in Arithmetic of the SET of an update, have the
+	// arithmetic of the piece of work arithmetic, as [Sequence.arithmeticWhere] and
+	// [Sequence.arithmeticSet] draw it, and one call in 8*Arithmetic a text of [ArithmeticRefused],
+	// which the statement pass refuses for its arithmetic; the area of the arithmetic is off with 0.
+	Arithmetic int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
@@ -144,7 +150,7 @@ const Slots = 32
 var (
 	// Mixed has every area on, with the odds of each as a statement of several features meets them.
 	Mixed = &Profile{Name: "mixed", Faults: allFaults, Weights: weights(4, 10, 5, 1, 3, 2, 3, 1), Others: 12, Where: 2, Indexes: 1, Exists: 3, Defaults: 1,
-		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4, Returning: 5, Subquery: 8}
+		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4, Returning: 5, Subquery: 8, Arithmetic: 8}
 	// Tables weighs the tables themselves, of slices 1, 4, 5, and 6: their columns, types, and keys,
 	// the columns that take NULL, the lists and the faults of an insert, whole reals for a column of
 	// integers, and a select of all rows.
@@ -193,15 +199,29 @@ var (
 	// row whose key a subquery of its own table gives, by goqite's index and with RETURNING.
 	Subquery = &Profile{Name: "subquery", Faults: []string{areaSubquery}, Aim: 3, Weights: weights(5, 14, 8, 1, 12, 7, 4, 1), Where: 2, Indexes: 2, Columns: 3,
 		Parameters: 3, Transactions: 3, Limit: 6, Keys: 2, Shared: 2, Ties: 1, Returning: 2, ByKey: 3, Subquery: 1, SubqueryLimit: 1, Receive: 2, Again: 5, TableNames: 2}
+	// Arithmetic weighs the arithmetic of the piece of work arithmetic: +, -, *, /, and the negation of
+	// integers and reals, nested and in parentheses, with literals, parameters, and NULL, in the SET of
+	// an update, with a column and without one, also the column that it sets, as `n = n + 1`, and its
+	// key, and on either side of a comparison of a WHERE of a select, an update, and a delete: a value
+	// without a column that serves the key or an index as a ? does, an expression of a column that
+	// serves nothing, a column compared with a column, and two expressions of columns. Its values reach
+	// each error of the evaluation, an integer overflow, a division by zero, and a real result that is
+	// not finite, for every row, for some rows, and for none, with a LIMIT whose direction decides
+	// which, and its faults the refusals of the types: an expression of another type than its column,
+	// a TEXT or BLOB column in arithmetic, and an argument that is text or a blob. Its texts of
+	// [ArithmeticRefused] are those that the statement pass refuses. Its test begins transactions more
+	// often, where a statement that fails leaves the transaction usable.
+	Arithmetic = &Profile{Name: "arithmetic", Faults: []string{areaArithmetic}, Aim: 3, Weights: weights(3, 12, 12, 1, 11, 4, 4, 1), Where: 3, Indexes: 2, Columns: 2,
+		Parameters: 3, Transactions: 3, Order: 1, Limit: 2, Keys: 2, Returning: 4, ByKey: 4, NewKey: 6, Arithmetic: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].
-var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder, areaReturning, areaSubquery}
+var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder, areaReturning, areaSubquery, areaArithmetic}
 
 // Profiles, each at the slot of its place in the list. A profile is added at the end, and none is
 // taken out or moved, since the seeds of each profile are those of its slot: see [Profile.Seed].
 var Profiles = func() []*Profile {
-	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order, Returning, Subquery}
+	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order, Returning, Subquery, Arithmetic}
 	if len(ps) > Slots {
 		panic("stmttest: more profiles than slots")
 	}
@@ -271,6 +291,9 @@ const (
 	// areaSubquery draws whether a select, an update, or a delete has a scalar subquery, and its
 	// select.
 	areaSubquery = "subquery"
+	// areaArithmetic draws whether a comparison of a WHERE or an assignment of SET has arithmetic, its
+	// expressions, and the texts of [ArithmeticRefused].
+	areaArithmetic = "arithmetic"
 	// areaOthers draws the texts of [Others].
 	areaOthers = "others"
 	// areaText draws how a statement is written: its gaps, the case of its keywords, the spelling of
@@ -305,6 +328,8 @@ func (p *Profile) on(area string) bool {
 		return p.Returning > 0
 	case areaSubquery:
 		return p.Subquery > 0
+	case areaArithmetic:
+		return p.Arithmetic > 0
 	}
 	return true
 }

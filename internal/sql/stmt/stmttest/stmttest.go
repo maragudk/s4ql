@@ -211,7 +211,11 @@ type Generator struct {
 	// conditions at random, or nil for a select without WHERE: the raw text of the name of the column
 	// of each, its operator, and, for a comparison, its value as Value.Value. The generator writes an
 	// operator in any of its spellings, and with [Generator.Parameters] a value as a ? now and then,
-	// with the value as its argument, as for an insert.
+	// with the value as its argument, as for an insert. A condition may test an arithmetic expression,
+	// its Expression, in place of its column, and its value may be one, Value.Expression, each a tree
+	// of columns by the raw text of their names, values, negations, and binary operators, which the
+	// generator writes as [Generator.given] says; a comparison whose two sides have a column keeps them
+	// on their sides, where neither is a column alone, or the column alone on the left.
 	Where func(table stmt.Name) []stmt.Condition
 	// Changes, if not 0, makes the generator write the UPDATE and DELETE of slice 8 among the
 	// statements of a kind at random: one in Changes is an update or a delete, each one time in two.
@@ -224,7 +228,8 @@ type Generator struct {
 	Changes int
 	// Update, if not nil, gives the assignments of an update of the table, in place of assignments at
 	// random, one or more, each with the raw text of the name of its column and its value as
-	// Value.Value, and the conditions of its WHERE, as [Generator.Where] gives them, or nil for an
+	// Value.Value or an arithmetic expression as Value.Expression, as [Generator.Where] takes one, and
+	// the conditions of its WHERE, as [Generator.Where] gives them, or nil for an
 	// update without WHERE. The generator writes = or == in each assignment, and with
 	// [Generator.Parameters] a value as a ? now and then, with the value as its argument, as for an
 	// insert, the ? of the assignments before those of the conditions.
@@ -725,9 +730,17 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.N
 			c = g.condition(columns, conditions)
 		}
 		test := c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull
-		// With Expression, a comparison at random tests an expression of its column.
+		// With Expression, a comparison at random tests an expression of its column, and a hook can
+		// give one.
 		subject := !test && random && g.Expression > 0 && g.r.IntN(g.Expression) == 0
-		if !test && (c.ValueFirst || g.ValueFirst > 0 && g.turned.IntN(g.ValueFirst) == 0) {
+		given := !random && c.Expression.Present()
+		turn := !test && (c.ValueFirst || g.ValueFirst > 0 && g.turned.IntN(g.ValueFirst) == 0)
+		if !random && c.Value.Expression.HasColumn() && (given || c.Value.Expression.Kind == stmt.ExprColumn) {
+			// The pass tests the left side of two that both have a column, where neither or both are a
+			// column alone, so such a comparison keeps its sides.
+			turn = false
+		}
+		if turn {
 			// The value on the left, the operator swapped, and the column on the right, which reads as
 			// the condition c.
 			w := stmt.Condition{Operator: c.Operator, ValueFirst: true}
@@ -735,18 +748,24 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.N
 			g.gap(false)
 			g.punct(g.spelling(c.Operator.Swapped()))
 			g.gap(false)
-			if subject {
+			switch {
+			case subject:
 				w.Expression, args = g.subjectOf(c.Column.Raw, args)
-			} else {
+			case given:
+				w.Expression, args = g.given(c.Expression, 0, false, args)
+			default:
 				w.Column = g.write(c.Column.Raw)
 			}
 			conditions = append(conditions, w)
 			continue
 		}
 		w := stmt.Condition{Operator: c.Operator}
-		if subject {
+		switch {
+		case subject:
 			w.Expression, args = g.subjectOf(c.Column.Raw, args)
-		} else {
+		case given:
+			w.Expression, args = g.given(c.Expression, 0, false, args)
+		default:
 			w.Column = g.write(c.Column.Raw)
 		}
 		var spellings []string
@@ -797,6 +816,8 @@ func (g *Generator) conditionValue(random bool, table stmt.Name, given stmt.Term
 			return g.expressionTerm(anyColumn, false, args)
 		}
 		return g.expressionTerm(noColumn, false, args)
+	case !random && given.Expression.Present():
+		return g.givenTerm(given.Expression, args)
 	}
 	return g.term(given.Value, args)
 }
@@ -926,9 +947,12 @@ func (g *Generator) update(c *stmt.Update) []any {
 			g.punct("=")
 		}
 		g.gap(false)
-		if g.Update == nil && g.Expression > 0 && g.r.IntN(g.Expression) == 0 {
+		switch {
+		case g.Update == nil && g.Expression > 0 && g.r.IntN(g.Expression) == 0:
 			w.Value, args = g.expressionTerm(anyColumn, true, args)
-		} else {
+		case a.Value.Expression.Present():
+			w.Value, args = g.givenTerm(a.Value.Expression, args)
+		default:
 			w.Value, args = g.term(a.Value.Value, args)
 		}
 		c.Set = append(c.Set, w)

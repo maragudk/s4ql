@@ -96,3 +96,32 @@
 5	reached: delete with a subquery attempt to write a readonly database in a read-only transaction
 21	reached: subquery whose value was that of its one first row
 5	reached: subquery that the engine did not compute, of an update or a delete
+# The generated checks of arithmetic, of 2026-11-25: a third of the total that day of the cases of
+# pair.reachOfArithmetic, and of a write transaction that stays usable after an evaluation error.
+10	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
+4	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
+1	reached: arithmetic: constant expression that serves a bound of an index
+6	reached: arithmetic: constant expression that serves a bound of the key
+4	reached: arithmetic: constant expression that serves a get of one key
+17	reached: arithmetic: evaluation error in a write transaction
+9	reached: arithmetic: s4ql: division by zero in WHERE
+6	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
+3	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
+3	reached: arithmetic: s4ql: integer overflow in SET
+1	reached: arithmetic: s4ql: integer overflow in SET of an expression with a column
+2	reached: arithmetic: s4ql: integer overflow in SET of an expression without a column
+7	reached: arithmetic: s4ql: integer overflow in WHERE
+1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
+5	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
+1	reached: arithmetic: s4ql: real result that is not finite in SET
+5	reached: arithmetic: s4ql: real result that is not finite in WHERE
+4	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression with a column
+1	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression without a column
+9	reached: arithmetic: select with LIMIT that failed on a row
+1	reached: arithmetic: select with LIMIT that gave rows where a row that it did not read fails
+3	reached: arithmetic: update that computes its key from its row that changed rows
+10	reached: arithmetic: update that sets a column from itself that changed rows
+7	reached: commit of a transaction with an evaluation error
+4	reached: roll back of a transaction with an evaluation error
+42	reached: select with arithmetic read by the access that the model chooses
+14	reached: statement that succeeded in a write transaction after an evaluation error in it

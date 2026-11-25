@@ -231,7 +231,9 @@
 7	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
 9	reached: insert with NULL in the key: NOT NULL constraint failed
 5	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
-1	reached: insert of NULL beside a value of another type NOT NULL constraint failed
+# "insert of NULL beside a value of another type NOT NULL constraint failed" is not required here
+# since the generated checks of arithmetic of 2026-11-25, after which the mixed profile, the one that
+# reached it three times, reaches it once: TestDifferential of the engine requires it.
 3	reached: insert of NULL beside a value of another type a value of another type
 6	reached: select * with NULL ok
 4	reached: select of names with NULL ok
