@@ -490,6 +490,22 @@ func TestBound_Eval_allocations(t *testing.T) {
 			is.Equal(t, 0.0, allocations)
 		}
 	})
+
+	t.Run("should allocate nothing to bind an expression without a parameter", func(t *testing.T) {
+		e, _, err := parse("(a + 3) / (b - 1) + -c * 2.5 - d / 7")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		var b expr.Bound
+		allocations := testing.AllocsPerRun(100, func() {
+			b, err = x.Bind(nil)
+		})
+		is.NotError(t, err)
+		is.Equal(t, expr.TypeReal, b.Type())
+		if !asanEnabled {
+			is.Equal(t, 0.0, allocations)
+		}
+	})
 }
 
 func BenchmarkBound_Eval(b *testing.B) {
