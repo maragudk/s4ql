@@ -1579,6 +1579,9 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	case callCommit, callRollback:
 		return p.end(c)
 	}
+	if st, _ := stmt.Check(src); stmttest.HasExpression(st) {
+		return p.leaveOut(c)
+	}
 	s, o, scope := p.where(c, src)
 	if p.tx != nil && p.tx.sRows != nil {
 		return p.whileRowsOpen(src, c, supported, runs, s, o, scope)
@@ -1601,6 +1604,24 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 		}
 	}
 	return got, failure
+}
+
+// leftOutExpression is the error of the outcome of a call that [pair.leaveOut] leaves out.
+const leftOutExpression = "a statement with an arithmetic expression or a column alone, which the driver check has no rules for yet"
+
+// leaveOut the call c of a statement with an arithmetic expression or a column alone, as
+// [stmttest.HasExpression] reports it, which the statement pass takes since the engine step of
+// arithmetic: it runs on neither side, so the two keep the same state, and its outcome is the failed
+// step "left out" with [leftOutExpression], which the tally counts under "left out: " and the text of
+// the outcome shows. s4ql computes such a statement, or refuses it, by rules of its own, as an
+// evaluation error or by the classes of the rule of exact types, which the rules of this check do not
+// have, and which the differential pair of the engine checks against SQLite. The driver's generated
+// checks of arithmetic are open in docs/todo/generated-workload.md; they replace this.
+func (p *pair) leaveOut(c call) (outcome, string) {
+	if p.y != nil {
+		p.y["left out: "+leftOutExpression]++
+	}
+	return outcome{call: c, failed: "left out", err: leftOutExpression}, ""
 }
 
 // where the call c of src runs: s4ql's and SQLite's, and the scope that the tally counts it in. It is
@@ -3260,6 +3281,22 @@ const (
 // sequences written by hand, which cover every statement of slice 1, every error that an
 // application can get from it, and each call.
 var sequences = map[string][]step{
+	// The statement pass takes these since the engine step of arithmetic; the check leaves them out, as
+	// [pair.leaveOut] says, where `select * from t2 where v2 = s2` made stmttest.WhereRule panic.
+	"a column compared with a column, and arithmetic, which the check leaves out": {
+		{callExec, "create table t2 (v2 int primary key, s2 text, i2 int) strict, without rowid", "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t2 values (1, 'a', 1)", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select * from t2 where v2 = s2", "query: left out failed with " + leftOutExpression},
+		{callQueryRow, "select * from t2 where v2 = i2", "query row: left out failed with " + leftOutExpression},
+		{callPrepareQuery, "select * from t2 where v2 + 1 = 2", "prepare, query: left out failed with " + leftOutExpression},
+		{callQuery, "select * from t2 where v2 / (v2 - v2) = 1", "query: left out failed with " + leftOutExpression},
+		{callQuery, "select * from t2 where v2 = (select v2 from t2 where i2 * 2 = 2)", "query: left out failed with " + leftOutExpression},
+		{callExec, "update t2 set i2 = i2 + 1", "exec: left out failed with " + leftOutExpression},
+		{callExec, "update t2 set i2 = s2", "exec: left out failed with " + leftOutExpression},
+		{callExec, "delete from t2 where -i2 < 0", "exec: left out failed with " + leftOutExpression},
+		{callQuery, "select * from t2", `query: columns "v2,s2,i2" of types "INT,TEXT,INT", rows ["int64:1" "string:a" "int64:1"]`},
+		{callExec, "drop table t2", "exec: 1 affected, last insert id 0"},
+	},
 	"the example of slice 1": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
 		{callQuery, "select * from t1", `query: columns "v1" of types "INT", rows `},

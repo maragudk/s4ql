@@ -4579,7 +4579,8 @@ func FuzzSQL_core(f *testing.F) {
 }
 
 // fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of a sequence of
-// the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], and every 500th text of the corpus.
+// the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], every 500th text of the corpus,
+// and texts with arithmetic.
 func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 	add := shardedAdd(f)
 	q := newSequence(f, stmttest.Mixed.Seed(1))
@@ -4599,6 +4600,21 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		if i%500 == 0 {
 			add(e.SQL, i%1000 == 0)
 		}
+	}
+	// Arithmetic and a column compared with or set to a column, which the statement pass takes since
+	// the engine step of arithmetic, and which the pair judges by the rules of expression_test.go.
+	for i, src := range []string{
+		"select * from t1 where v1 = v1",
+		"select * from t1 where v1 + 1 = 2",
+		"select * from t1 where 2 > -v1",
+		"select * from t1 where v1 * 9223372036854775807 > 0",
+		"select * from t1 where v1 = (select v1 from t1 where v1 * 2 = 2)",
+		"update t1 set v1 = v1 + 10 returning *",
+		"update t1 set v1 = v1",
+		"delete from t1 where v1 / (v1 - v1) = 1",
+		`select * from "foo BAR" where "bar""X" - 7 = 0`,
+	} {
+		add(src, i%2 == 1)
 	}
 	f.Fuzz(func(t *testing.T, src string, exec bool) {
 		i := newInstance(t)

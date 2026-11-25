@@ -113,3 +113,55 @@ The guard on `u.bind` in `build.change` of `/internal/engine/operator.go`, and t
 ### Future work
 
 None beyond the open items of the todos.
+
+## Step 3: the panic of the driver check, and the fuzz targets
+
+**Author:** arithmetic-engine-review (builder)
+
+### Prompt Context
+
+**Verbatim prompt:** "One more thing before this branch lands: fix the panic you recorded, `stmttest.WhereRule` panicking in `ValueKind` on `where v1 = s1` in the fuzz path of `internal/sqlite/crosscheck/drivercheck`. ... Make it sound, not silent: either `WhereRule` handles a column compared with a column, or the driver check's fuzz path leaves out statements with expressions and column comparisons in one clearly named place until the driver's generated checks for arithmetic are built ... Add the reproducing input as a pinned case ... Check the other fuzz targets that read generated or fuzzed statements for the same class of panic on arithmetic and on `a = b` (run each for about 30 seconds: `FuzzGenerate`, `FuzzCheck`, `FuzzSQL_core`, and the driver check's fuzz target), and fix what you find in test code. Your decision on the error order in a read-only transaction is confirmed."
+
+**Interpretation:** leave such statements out of the driver check in one named place, visibly; make the shared rules fail loudly and clearly for them; pin the input; run the four targets.
+
+**Inferred intent:** that CI's and the nightly's fuzz jobs cannot crash on what the statement pass now takes, without the driver check pretending to judge arithmetic.
+
+### What I did
+
+A sequence in `sequences` of `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`, which is a case of `TestSequences` and a seed of `FuzzSequence`, reproduced the panic: `panic: stmttest: a literal of type <nil>` from `ValueKind` < `WhereRule` < `ConditionRule` < `pair.typeRefusal` < `pair.checkRefused`, for `select * from t2 where v2 = s2`.
+
+I chose to leave such statements out rather than teach `WhereRule` the column comparison: the driver check would still need the rules of arithmetic, and a copy of a column in SET would need NOT NULL per row. So:
+
+- `stmttest.HasExpression` in `/internal/sql/stmt/stmttest/rule.go` names the class, a statement with an arithmetic expression or a column alone in SET, in its WHERE, or in a subquery's WHERE. `WhereRule` and `UpdateRule` (and so `ConditionRule` and `DeleteRule`) panic for one with a message that names `HasExpression`; `ChosenAccess`, `KeyAccess`, and `WhereCases` give nothing for one. `TestHasExpression` pins both.
+- `pair.leaveOut` in the driver check runs such a statement on neither side, as the first thing of `pair.stepRuns` after a begin or an end, with the outcome "left out failed with ..." and a count under "left out: ". The sequence pins the outcome of each of its nine left-out calls, and that the rows are unchanged after them.
+- Nine texts with arithmetic and with `v1 = v1` are seeds of `FuzzSQL` and `FuzzSQL_core` in `/internal/engine/differential_test.go`, so their seed runs pin the engine's pair on them.
+
+Fuzz runs, 30 s each: `FuzzGenerate` of `stmt` (144,102 execs), `FuzzCheck` of `stmt` (1,444,847), `FuzzSQL_core` (943), and `FuzzSequence` (695), all without a failure. The last two run few inputs in 30 s, which is why the seeds above pin the classes directly.
+
+### Why
+
+A panic in a fuzz target ends the run without saying what differs, and the driver check has no rules to judge arithmetic yet; leaving it out in one place, counted and shown in the outcome, is the sound choice until the next step builds those rules.
+
+### What worked
+
+The `sequences` map is both a pinned test and a fuzz seed, so one entry reproduced the panic and now guards against it.
+
+### What didn't work
+
+My first `TestHasExpression` expected `WhereRule` to panic for `select * from t where k = (select k from t where k * 2 = 2)`, whose own WHERE has no expression: `rule_test.go:281: Not true`. The test now checks the panic only for a statement without a subquery. The first expected outcome of `select * from t2` had the columns written as `"v2", "s2", "i2"`; the check writes them as `"v2,s2,i2"`.
+
+### What I learned
+
+The engine's pair never reached the shared rules with such a statement, since `expressed` routes it to `checkArithmetic` first; only the driver check, which has no such routing, did.
+
+### What was tricky
+
+Where to leave out: before `pair.whileRowsOpen` and `pair.openWrite`, which also run a statement, so the check is at the top of `pair.stepRuns`.
+
+### What warrants review
+
+`pair.leaveOut` and its place in `pair.stepRuns`, and that every caller of the shared rules outside the engine's `checkArithmetic` path is behind `HasExpression`.
+
+### Future work
+
+The driver's generated checks of arithmetic replace `pair.leaveOut`; the open item is in `/docs/todo/generated-workload.md`.
