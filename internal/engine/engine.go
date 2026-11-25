@@ -57,6 +57,7 @@ import (
 	"sync/atomic"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
@@ -533,7 +534,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	n, err := s.run(ctx)
 	if err != nil {
-		return failed, nil, err
+		return ran(failed, err), nil, err
 	}
 	annotated := args
 	if e.bugs.annotateNext {
@@ -665,6 +666,17 @@ func checked(failed Result, err error) Result {
 		return failed
 	}
 	return Result{}
+}
+
+// ran is the result of a statement whose sink's run failed with err, where failed is the result of a
+// statement that fails after it has started to write: failed, but for an evaluation error of
+// arithmetic, which is s4ql's own and not SQLite's, and leaves the count of changes, as "not
+// supported" does.
+func ran(failed Result, err error) Result {
+	if errors.Is(err, expr.ErrEvaluation) {
+		return Result{}
+	}
+	return failed
 }
 
 // checkOutside is the planted bug that checks an insert in a read transaction before its write

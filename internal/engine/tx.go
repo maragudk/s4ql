@@ -388,7 +388,7 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	}
 	n, err := s.run(ctx)
 	if err != nil {
-		return failed, nil, err
+		return ran(failed, err), nil, err
 	}
 	if err := w.annotate(ctx, sql, args); err != nil {
 		return failed, nil, err

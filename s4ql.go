@@ -183,6 +183,9 @@
 //   - SQLite's error, as an [*Error], with SQLite's result code, extended result code, and message.
 //   - An error that matches [ErrNotSupported], for SQL that SQLite accepts and s4ql does not support.
 //     It carries no result code, and its message starts with "s4ql: not supported: ".
+//   - An error that matches [ErrEvaluation], and [ErrOverflow], [ErrDivisionByZero], or
+//     [ErrNotFinite], for arithmetic whose value SQLite gives and s4ql refuses: an integer overflow,
+//     a division by zero, or a real result that is not finite. It carries no result code either.
 //   - An error that matches [ErrNotServing], [ErrOutcomeUnknown], or [ErrStopped], for the state of
 //     the instance.
 //   - An error that matches [ErrTooLarge], for a commit that is larger than the object store takes.
