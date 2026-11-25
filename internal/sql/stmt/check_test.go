@@ -3327,6 +3327,22 @@ func TestCheck(t *testing.T) {
 		is.Equal(t, fmt.Sprintf("s4ql: not supported: expression deeper than SQLite's limit (at offset %v)", len(src)), err.Error())
 		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
 		verify(t, src)
+		// A negation is one level more than its operand, here a chain of * in parentheses, which add
+		// none, and is refused after the parenthesis.
+		negated := func(n int) string {
+			return "update t set v = -(1" + strings.Repeat(" * 1", n) + ")"
+		}
+		src = negated(998)
+		_, err = stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		o, _ = verify(t, src)
+		is.Equal(t, supported, o)
+		src = negated(999)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: expression deeper than SQLite's limit (at offset %v)", len(src)), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
 
 		// In a subquery, SQLite counts the levels of the WHERE of the statement and those of the WHERE
 		// of the subquery together, once it has found the tables, as for a subquery of conditions.
