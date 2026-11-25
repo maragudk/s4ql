@@ -4848,9 +4848,13 @@ func TestGenerated(t *testing.T) {
 		}
 	}
 
+	// The excuses are pinned exactly, since they tell how much of the test escapes the comparison with
+	// SQLite, but for that of an evaluation error: a scalar subquery reads up to its first row in the
+	// direction that s4ql draws from its host, and its WHERE with arithmetic fails on a row or not by
+	// which rows it reads, so its count may differ by a few between two runs.
 	path := filepath.Join("testdata", "reached", t.Name())
 	reached := stmttest.Reached{Kinds: path + ".kinds", Counts: path + ".tsv", Doc: "What each profile of TestGenerated of the driver check reaches.",
-		Exact: func(kind string) bool { return strings.HasPrefix(kind, "excused: ") }}
+		Exact: func(kind string) bool { return strings.HasPrefix(kind, "excused: ") && kind != "excused: "+excusedEvaluation }}
 	failures, err := reached.Check(names, runs)
 	is.NotError(t, err)
 	for _, failure := range failures {

@@ -45,7 +45,6 @@ mixed	162	=	excused: a value of another type than its column, checked against s4
 mixed	8	=	excused: already exists after the start of a table, accepted
 mixed	2	=	excused: an argument of the LIMIT of a subquery that is no integer from 0, checked against s4ql's rule
 mixed	194	=	excused: an argument that s4ql does not support, checked against s4ql's rule
-mixed	6	=	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
 mixed	46	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
 mixed	26	=	excused: arithmetic refused by the rules of its types, checked against s4ql's rules
 mixed	298	=	excused: the wrong number of arguments, checked against s4ql's rule
@@ -2954,7 +2953,7 @@ subquery	197	65	reached: literal real
 subquery	7	2	reached: literal real -0.0
 subquery	193	64	reached: literal text
 subquery	114	38	reached: select * of 3 columns ok
-subquery	8	2	reached: select * with NULL ok
+subquery	9	3	reached: select * with NULL ok
 subquery	102	34	reached: select of names ok
 subquery	7	2	reached: select with a subquery through prepare, exec several times ok
 subquery	47	15	reached: select with a subquery through prepare, query ok
@@ -3099,7 +3098,6 @@ arithmetic	19	=	excused: a statement while the rows of the transaction are open,
 arithmetic	3	=	excused: a statement with a subquery with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked to fail on its names
 arithmetic	1	=	excused: a subquery of a column of another type than the column that it is compared with, checked against s4ql's rule
 arithmetic	50	=	excused: a value of another type than its column, checked against s4ql's rule
-arithmetic	39	=	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
 arithmetic	18	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
 arithmetic	93	=	excused: arithmetic refused by the rules of its types, checked against s4ql's rules
 arithmetic	24	8	insert UNIQUE constraint failed
@@ -3126,8 +3124,8 @@ arithmetic	5	1	reached: IS NOT NULL on another column ok
 arithmetic	4	1	reached: IS NOT NULL on the key ok
 arithmetic	4	1	reached: IS NULL on another column ok
 arithmetic	7	2	reached: IS NULL on the key ok
-arithmetic	34	11	reached: LIMIT by an argument ok
-arithmetic	9	3	reached: LIMIT that cuts
+arithmetic	33	11	reached: LIMIT by an argument ok
+arithmetic	8	2	reached: LIMIT that cuts
 arithmetic	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
 arithmetic	18	6	reached: NULL argument into a column that takes NULL ok
 arithmetic	10	3	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
@@ -3146,7 +3144,7 @@ arithmetic	4	1	reached: SET with argument nil ok, no row found
 arithmetic	6	2	reached: SET with literal null ok, rows changed
 arithmetic	4	1	reached: WHERE that gives every row of a table with rows
 arithmetic	32	10	reached: WHERE that gives no row of a table with rows
-arithmetic	14	4	reached: WHERE that gives some rows of a table
+arithmetic	13	4	reached: WHERE that gives some rows of a table
 arithmetic	5	1	reached: WHERE that reads a get of one key ok
 arithmetic	9	3	reached: WHERE that reads a scan between two bounds ok
 arithmetic	3	1	reached: WHERE that reads a scan between two bounds that hold no key ok
@@ -3196,7 +3194,7 @@ arithmetic	3	1	reached: delete with a subquery through exec ok
 arithmetic	5	1	reached: delete with a subquery through prepare, exec several times ok
 arithmetic	9	3	reached: delete without WHERE ok, no row found
 arithmetic	9	3	reached: delete without WHERE ok, rows changed
-arithmetic	13	4	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
+arithmetic	14	4	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
 arithmetic	23	7	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
 arithmetic	6	2	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite
 arithmetic	11	3	reached: insert into BLOB UNIQUE constraint failed
@@ -3250,8 +3248,8 @@ arithmetic	60	20	reached: literal real
 arithmetic	12	4	reached: literal real -0.0
 arithmetic	152	50	reached: literal text
 arithmetic	94	31	reached: select * of 3 columns ok
-arithmetic	6	2	reached: select * with NULL ok
-arithmetic	102	34	reached: select of names ok
+arithmetic	8	2	reached: select * with NULL ok
+arithmetic	101	33	reached: select of names ok
 arithmetic	7	2	reached: select of names with NULL ok
 arithmetic	5	1	reached: select with a subquery through prepare, query ok
 arithmetic	8	2	reached: select with a subquery through query ok
