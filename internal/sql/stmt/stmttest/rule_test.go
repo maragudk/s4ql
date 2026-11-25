@@ -279,7 +279,7 @@ func TestHasExpression(t *testing.T) {
 			is.True(t, !chosen)
 			is.Equal(t, "", stmttest.KeyAccess(columns, sel, []any{int64(1)}[:sel.Parameters()]))
 			defer func() {
-				is.True(t, strings.Contains(fmt.Sprint(recover()), "see HasExpression"))
+				is.True(t, strings.Contains(fmt.Sprint(recover()), "see ArithmeticRefusals"))
 			}()
 			stmttest.WhereRule("t", columns, sel.Where, []any{int64(1)}[:sel.Parameters()])
 		})

@@ -350,6 +350,7 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	planted.replaceExisting = c.e.bugs.replaceExisting
 	planted.nullDefault = c.e.bugs.nullDefault
 	planted.oldValues, planted.deleteNone, planted.starKeyFirst = c.e.bugs.oldValues, c.e.bugs.deleteNone, c.e.bugs.starKeyFirst
+	planted.setFromNew, planted.evalStops, planted.copyAcross, planted.copySelf = c.e.bugs.setFromNew, c.e.bugs.evalStops, c.e.bugs.copyAcross, c.e.bugs.copySelf
 	order := c.e.order(p)
 	how := c.e.reading(false)
 	if c.e.bugs.outsideTx {

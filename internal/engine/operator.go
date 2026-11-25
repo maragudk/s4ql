@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"math"
@@ -210,12 +211,15 @@ type condition struct {
 	// `a = b`, in place of value.
 	paired bool
 	pair   int
+	// bugs planted in the conditions of arithmetic, for the tests of this package: see [bugs].
+	nullCompares, errorSkipsRow, unserved bool
 }
 
 // perRow reports whether the condition has a side that is computed for each row, or compares two
 // columns of the row.
 func (c condition) perRow() bool {
-	return c.test != nil || c.per != nil || c.paired
+	// With the planted bug constantsServeNothing, unserved is set for a constant.
+	return c.test != nil || c.per != nil || c.paired || c.unserved
 }
 
 // bounds of the conditions: those that may serve the access, which are those that compare a column
@@ -277,7 +281,12 @@ func (f *filter) holds(row []*s4qlpb.Value) (bool, error) {
 // test for NULL is always true or false.
 func (c condition) holds(row []*s4qlpb.Value) (bool, error) {
 	if c.test != nil || c.per != nil {
-		return c.computed(row)
+		ok, err := c.computed(row)
+		if err != nil && c.errorSkipsRow && errors.Is(err, expr.ErrEvaluation) {
+			// The planted bug: the row is left out.
+			return false, nil
+		}
+		return ok, err
 	}
 	if c.position < 0 || c.position >= len(row) {
 		return false, internalError("a condition of the column at %v of a row of %v values", c.position, len(row))
@@ -288,6 +297,10 @@ func (c condition) holds(row []*s4qlpb.Value) (bool, error) {
 			return false, internalError("a condition of the column at %v of a row of %v values", c.pair, len(row))
 		}
 		c.value = row[c.pair]
+		if c.nullCompares && (v.HasNull() || c.value.HasNull()) && c.op != stmt.OpIsNull && c.op != stmt.OpIsNotNull {
+			// The planted bug.
+			return true, nil
+		}
 	}
 	switch c.op {
 	case stmt.OpIsNull:
@@ -354,7 +367,8 @@ func (c condition) computed(row []*s4qlpb.Value) (bool, error) {
 		}
 	}
 	if tested.class == classAny || value.class == classAny {
-		return false, nil
+		// With the planted bug nullCompares, true.
+		return c.nullCompares, nil
 	}
 	n, err := compareNumbers(tested, value)
 	if err != nil {
@@ -687,7 +701,8 @@ func (u *update) check(ctx context.Context) error {
 		into := columnClass(columns[position].GetType())
 		switch {
 		case u.copied[i] >= 0:
-			if columnClass(columns[u.copied[i]].GetType()) != into {
+			// With the planted bug copyAcross, a copy is never refused.
+			if columnClass(columns[u.copied[i]].GetType()) != into && !u.bugs.copyAcross {
 				return fmt.Errorf("%w: %v for %v", stmt.ErrNotSupported, columnName(u.table, u.copied[i]), columnName(u.table, position))
 			}
 		case u.computed[i] != nil:
@@ -720,6 +735,10 @@ func (u *update) perRow() bool {
 func (u *update) newRow(old []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	row := slices.Clone(old)
 	perRow := false
+	if u.bugs.setFromNew {
+		// The planted bug: each value from the row as the assignments before it left it.
+		old = row
+	}
 	for i, position := range u.positions {
 		switch {
 		case u.values[i] != nil:
@@ -729,6 +748,10 @@ func (u *update) newRow(old []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 				return nil, internalError("a copy of the column at %v of a row of %v values", u.copied[i], len(old))
 			}
 			row[position], perRow = old[u.copied[i]], true
+			if u.bugs.copySelf {
+				// The planted bug.
+				row[position] = old[position]
+			}
 		case u.computed[i] != nil:
 			v, err := u.computed[i].Eval(old)
 			if err != nil {
@@ -754,7 +777,7 @@ func (u *update) newRow(old []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 
 func (u *update) run(ctx context.Context) (int64, error) {
 	name := u.table.GetTable()
-	return changeRows(ctx, u.w, name, u.key, u.src, u.bugs, func(key []*s4qlpb.Value) error {
+	n, err := changeRows(ctx, u.w, name, u.key, u.src, u.bugs, func(key []*s4qlpb.Value) error {
 		old, err := u.w.get(ctx, name, key)
 		if err != nil {
 			return err
@@ -764,6 +787,10 @@ func (u *update) run(ctx context.Context) (int64, error) {
 		}
 		row, err := u.newRow(old)
 		if err != nil {
+			if u.bugs.evalStops && errors.Is(err, expr.ErrEvaluation) {
+				// The planted bug: the update stops here and succeeds.
+				return errStopped
+			}
 			return err
 		}
 		same, err := compare(row[u.key], old[u.key])
@@ -801,7 +828,14 @@ func (u *update) run(ctx context.Context) (int64, error) {
 		u.ret.add(given)
 		return nil
 	})
+	if errors.Is(err, errStopped) {
+		return n, nil
+	}
+	return n, err
 }
+
+// errStopped ends an update with the planted bug evalStops, which then succeeds.
+var errStopped = errors.New("stopped by the planted bug evalStops")
 
 // remove deletes each row of its source, the rows that the statement finds, as for an [update], as
 // [changeRows] says.
@@ -1424,6 +1458,8 @@ func (b build) types(f *Filter, s *scan, conditions []condition) error {
 // condition c, and refuses a value whose class is not that of the side that it is compared with.
 func (b build) arithmetic(fc Condition, t *s4qlpb.CreateTable, c *condition, value *Arithmetic) error {
 	var err error
+	c.nullCompares, c.errorSkipsRow = b.how.bugs.nullCompares, b.how.bugs.errorSkipsRow
+	defer func() { c.unserved = b.how.bugs.constantsServeNothing && c.constant != nil }()
 	bindValue := func() error {
 		if value == nil {
 			return nil

@@ -470,6 +470,41 @@ func TestGenerator_ValueFirst(t *testing.T) {
 			is.True(t, !where[1].ValueFirst && !where[2].ValueFirst, src)
 		}
 	})
+
+	t.Run("should keep the sides of a comparison of two sides with a column, where neither or both are a column alone, and turn the others, with ValueFirst", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(17, 18)), pools)
+		g.Parameters, g.ValueFirst = 2, 1
+		column := func(raw string) stmt.Expression { return stmt.Expression{Kind: stmt.ExprColumn, Column: stmt.Name{Raw: raw}} }
+		value := func(v stmt.Value) stmt.Expression { return stmt.Expression{Kind: stmt.ExprValue, Value: v} }
+		add := func(a, b stmt.Expression) stmt.Expression { return stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{a, b}} }
+		g.Where = func(stmt.Name) []stmt.Condition {
+			return []stmt.Condition{
+				// Kept: an expression of a column compared with an expression of a column.
+				{Expression: add(column("a"), value(stmt.Integer(1))), Operator: stmt.OpLess, Value: stmt.Term{Expression: add(column("b"), value(stmt.Integer(2)))}},
+				// Kept: a column compared with a column alone.
+				{Column: stmt.Name{Raw: "a"}, Operator: stmt.OpGreater, Value: stmt.Term{Expression: column("b")}},
+				// Turned: an expression of a column compared with a value.
+				{Expression: add(column("a"), value(stmt.Integer(1))), Operator: stmt.OpLessOrEqual, Value: stmt.Term{Value: stmt.Integer(5)}},
+				// Turned: a column compared with an expression without a column.
+				{Column: stmt.Name{Raw: "a"}, Operator: stmt.OpGreaterOrEqual, Value: stmt.Term{Expression: add(value(stmt.Integer(1)), value(stmt.Integer(2)))}},
+				// Turned: an expression of a column compared with an expression without a column.
+				{Expression: add(column("a"), value(stmt.Integer(1))), Operator: stmt.OpNotEqual, Value: stmt.Term{Expression: add(value(stmt.Integer(1)), value(stmt.Integer(2)))}},
+			}
+		}
+		for range 50 {
+			src, s, _ := g.CallOf(stmttest.KindSelect)
+			got, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+			where := s.(*stmt.Select).Where
+			is.Equal(t, 5, len(where), src)
+			is.True(t, !where[0].ValueFirst && where[0].Expression.Present() && where[0].Operator == stmt.OpLess, src)
+			is.True(t, !where[1].ValueFirst && where[1].Column.Value == "a" && where[1].Operator == stmt.OpGreater, src)
+			is.True(t, where[2].ValueFirst && where[2].Expression.Present() && where[2].Operator == stmt.OpLessOrEqual, src)
+			is.True(t, where[3].ValueFirst && where[3].Column.Value == "a" && where[3].Operator == stmt.OpGreaterOrEqual, src)
+			is.True(t, where[4].ValueFirst && where[4].Expression.Present() && where[4].Operator == stmt.OpNotEqual, src)
+		}
+	})
 }
 
 func TestGenerator_OrderBy(t *testing.T) {

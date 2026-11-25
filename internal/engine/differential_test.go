@@ -1032,6 +1032,10 @@ type pair struct {
 	rnd *rand.Rand
 	// inTx is set while the statements run in a transaction.
 	inTx bool
+	// evaluatedInTx is set after a statement with arithmetic failed with an evaluation error in the
+	// write transaction that is open, until a later statement of it succeeds, for
+	// [pair.reachOfArithmetic].
+	evaluatedInTx bool
 	// allPaths is set for a pair whose [pair.everyPath] runs each WHERE by every candidate, and not by
 	// [pathSample] of them.
 	allPaths bool
@@ -1263,8 +1267,8 @@ func (p *pair) step(c stmttest.Call) string {
 		if failure := p.checkOrder(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
-		// The access of a select with arithmetic is that of its conditions without an expression with a
-		// column, which the rules of stmttest do not tell apart; the engine's own tests pin it.
+		// The access of a select with arithmetic is that of its conditions that are not computed for
+		// each row, which checkAccess compares with the model's choice for its reduced select.
 		if failure := p.checkAccess(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
@@ -1558,7 +1562,7 @@ func (p *pair) checkReturned(s stmt.Statement, got answer, inOrder []string) str
 func (p *pair) checkAccess(s *stmt.Select, args []any, got answer) string {
 	t, o := p.t, p.o
 	t.Helper()
-	if got.access == nil || expressed(s) || p.i.e == nil || p.i.e.Forced() {
+	if got.access == nil || p.i.e == nil || p.i.e.Forced() {
 		return ""
 	}
 	table, columns := o.columns(t, s.Table.Value)
@@ -1566,12 +1570,27 @@ func (p *pair) checkAccess(s *stmt.Select, args []any, got answer) string {
 		return ""
 	}
 	_, indexes := o.tableIndexes(t, table, columns)
-	want, ok := stmttest.ChosenAccess(columns, indexes, s, args)
+	chosen, chosenArgs := s, args
+	if expressed(s) {
+		// The access of a select with arithmetic is that of its conditions that are not computed for
+		// each row, each constant with its value, as [pair.reducedSelect] gives them.
+		reduced, ok := p.reducedSelect(s, args, true)
+		if !ok {
+			return ""
+		}
+		chosen, chosenArgs = reduced, nil
+	}
+	want, ok := stmttest.ChosenAccess(columns, indexes, chosen, chosenArgs)
 	if !ok {
 		return ""
 	}
 	if a := accessOf(*got.access); !a.Same(want) {
 		return fmt.Sprintf("the run reads the rows by %v, and the model chooses %v", a, want)
+	}
+	if expressed(s) {
+		p.count("select with arithmetic read by the access that the model chooses")
+		p.reachServed(s, args, columns, indexes, want)
+		return ""
 	}
 	p.count("select read by the access that the model chooses")
 	return ""
@@ -2257,10 +2276,19 @@ func (p *pair) count(kind string) {
 // "reached: ", on the database of SQLite before the call, as [reach] says.
 func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
+	// A write transaction stays usable after an evaluation error of a statement of it: a later
+	// statement of it succeeds, and the state at its end is SQLite's.
+	if !p.inTx {
+		p.evaluatedInTx = false
+	}
+	if p.inTx && p.evaluatedInTx && got.err == "" {
+		p.count("statement that succeeded in a write transaction after an evaluation error in it")
+		p.evaluatedInTx = false
+	}
 	if s, _ := stmt.Check(c.Src); p.y != nil && s != nil && expressed(s) {
-		// What a statement with arithmetic reaches is counted as arithmetic, by [reachArithmetic], also in
-		// its subqueries.
-		reachArithmetic(s, got, p.count)
+		// What a statement with arithmetic reaches is counted as arithmetic, by [pair.reachOfArithmetic],
+		// also in its subqueries.
+		p.reachOfArithmetic(c, s, got)
 		return
 	}
 	if p.y != nil {
@@ -3649,11 +3677,13 @@ func byteLength(v any) int {
 // arguments than parameters, an insert that leaves a column without a value, which gets SQLite's
 // `NOT NULL constraint failed` first, and a statement whose every value has the type of its column.
 // For a statement with subqueries, values are those that the engine computed for them, or nil, as
-// [subqueryRule] says.
+// [subqueryRule] says. It is "" for a statement with arithmetic, whose rules [arithmeticRefusals]
+// gives, since they come in an order that is the engine's own.
 func typeRule(t testing.TB, o *oracle, src string, args []any, values ...*s4qlpb.Value) string {
 	t.Helper()
 	s, _ := stmt.Check(src)
-	if s == nil || len(args) != s.Parameters() {
+	if s == nil || len(args) != s.Parameters() || expressed(s) {
+		// A statement with arithmetic has rules of its own: see [arithmeticRefusals].
 		return ""
 	}
 	if subqueried(s) {
@@ -3743,6 +3773,10 @@ func limitRefused(s stmt.Statement, args []any) bool {
 func readOnlyRule(t testing.TB, o *oracle, src string, args []any) string {
 	t.Helper()
 	s, _ := stmt.Check(src)
+	if s != nil && expressed(s) {
+		// A statement with arithmetic has rules of its own: see [arithmeticRefusals].
+		return ""
+	}
 	if s != nil && subqueried(s) {
 		return subqueryRule(t, o, src, s, args, true, nil)
 	}
@@ -3852,8 +3886,8 @@ func variantOf(seed uint64) (restarts bool, limit int) {
 }
 
 // sequencesOf the profile p in a test that runs n sequences of each profile: n, twice as many of
-// the profiles of the updates and deletes, the indexes, the clauses of slice 10, and the values on
-// the left, whose kinds of outcome are the most and the rarest, and five times as many of the mixed
+// the profiles of the updates and deletes, the indexes, the clauses of slice 10, the values on the
+// left, the ORDER BY, the RETURNING, the subqueries, and the arithmetic, whose kinds of outcome are the most and the rarest, and five times as many of the mixed
 // profile. The mixed profile is the only one in which every area meets the others, such as a default
 // with an index or a clause of slice 10 with a value on the left, and no tally of a focused profile
 // counts what only such a meeting reaches. With the default n, it runs 200 sequences, two thirds of
@@ -3862,7 +3896,7 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic:
 		n *= 2
 	}
 	return uint64(n)
@@ -4082,6 +4116,16 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"swapSubqueries", stmttest.Subquery, 1, []string{"and SQLite one of"}, 12},
 		{"limitZeroRow", stmttest.Subquery, 4, []string{"and SQLite one of"}, 0},
 		{"orderIgnored", stmttest.Subquery, 2, []string{"and SQLite one of"}, 12},
+		// The bugs of arithmetic, on the profile of arithmetic, each found by any difference from SQLite
+		// or from s4ql's rules for arithmetic but constantsServeNothing, whose rows and errors are
+		// SQLite's and which [pair.checkAccess] finds: on 2026-11-25 10, 6, 5, 10, 4, 15, and 4 of 30.
+		{"setFromNew", stmttest.Arithmetic, 3, nil, 0},
+		{"nullCompares", stmttest.Arithmetic, 2, nil, 0},
+		{"evalStops", stmttest.Arithmetic, 1, nil, 0},
+		{"errorSkipsRow", stmttest.Arithmetic, 3, nil, 0},
+		{"copyAcross", stmttest.Arithmetic, 1, nil, 0},
+		{"constantsServeNothing", stmttest.Arithmetic, 5, []string{"and the model chooses"}, 0},
+		{"copySelf", stmttest.Arithmetic, 1, nil, 0},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			// own is the number of the sequences that find the bug by its own failure.

@@ -2,6 +2,7 @@ package stmttest
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -549,6 +550,125 @@ func TestSequence_subqueries(t *testing.T) {
 					is.True(t, slices.ContainsFunc(sub.OrderBy, func(c stmt.OrderColumn) bool { return c.Name.Fold() == key.Name.Value }), "an ORDER BY with the key")
 				}
 			}
+		}
+	})
+}
+
+func TestSequence_arithmetic(t *testing.T) {
+	// countsOf the statements with arithmetic of 10 sequences of the profile p, which must each be the
+	// statement that the pass gives for its text, by what their arithmetic has and where.
+	countsOf := func(t *testing.T, p *Profile) map[string]int {
+		counts := map[string]int{}
+		count := func(e stmt.Expression, where string) {
+			if !e.Present() {
+				return
+			}
+			switch {
+			case e.Kind == stmt.ExprColumn:
+				counts["a column alone in "+where]++
+			case e.HasColumn():
+				counts["an expression with a column in "+where]++
+			default:
+				counts["an expression without a column in "+where]++
+			}
+			var walk func(e stmt.Expression)
+			walk = func(e stmt.Expression) {
+				counts[fmt.Sprint("a node ", e.Kind)]++
+				if e.Kind == stmt.ExprNegate {
+					counts["a negation"]++
+				}
+				for _, o := range e.Operands {
+					walk(o)
+				}
+			}
+			walk(e)
+		}
+		for k := range uint64(10) {
+			q, err := newSequence(p.Seed(k), p)
+			is.NotError(t, err)
+			for range 100 {
+				c := q.Next()
+				if !c.Supported && p == Arithmetic {
+					counts["a text that the pass refuses"]++
+					_, err := stmt.Check(c.Src)
+					is.True(t, errors.Is(err, stmt.ErrNotSupported), c.Src)
+				}
+			}
+			for i := range 300 {
+				q.step++
+				q.inner = nil
+				kind := []Kind{KindSelect, KindUpdate, KindDelete}[i%3]
+				src, s, args := q.g.CallOf(kind)
+				got, err := stmt.Check(src)
+				is.NotError(t, err, src)
+				is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+				is.Equal(t, got.Parameters(), len(args), src)
+				if HasExpression(got) {
+					counts["a statement with arithmetic"]++
+				}
+				if u, ok := got.(*stmt.Update); ok {
+					for _, a := range u.Set {
+						count(a.Value.Expression, "SET")
+						if a.Value.Expression.HasColumn() && slices.ContainsFunc(expressionNames(a.Value.Expression), func(n stmt.Name) bool { return n.Fold() == a.Column.Fold() }) {
+							counts["the column that SET sets in its value"]++
+						}
+					}
+				}
+				var where []stmt.Condition
+				switch s := got.(type) {
+				case *stmt.Select:
+					where = s.Where
+				case *stmt.Update:
+					where = s.Where
+				case *stmt.Delete:
+					where = s.Where
+				}
+				for _, sub := range subqueriesOf(got) {
+					for _, c := range sub.Where {
+						count(c.Expression, "a subquery")
+						count(c.Value.Expression, "a subquery")
+					}
+				}
+				for _, c := range where {
+					count(c.Expression, "a tested side")
+					count(c.Value.Expression, "a value")
+					switch {
+					case !c.Expression.Present():
+					case c.Value.Subquery > 0:
+						counts["a tested side with a subquery"]++
+					case !c.Value.Expression.Present() && c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull:
+						counts["a tested side with a plain value"]++
+					}
+				}
+			}
+		}
+		t.Log(counts)
+		return counts
+	}
+
+	t.Run("should write arithmetic in SET and on either side of a comparison, which the pass reads as the generator typed it", func(t *testing.T) {
+		counts := countsOf(t, Arithmetic)
+		for _, kind := range []string{"a statement with arithmetic", "a text that the pass refuses",
+			"a column alone in SET", "an expression with a column in SET", "an expression without a column in SET", "the column that SET sets in its value",
+			"a column alone in a value", "an expression with a column in a value", "an expression without a column in a value",
+			"an expression with a column in a tested side", "a negation", "a node +", "a node -", "a node *", "a node /", "a node parameter",
+			"a tested side with a plain value", "a tested side with a subquery", "an expression with a column in a subquery", "an expression without a column in a subquery"} {
+			is.True(t, counts[kind] >= 10, kind)
+		}
+	})
+
+	t.Run("should compare a tested side with a plain value and with a subquery in mixed too", func(t *testing.T) {
+		counts := countsOf(t, Mixed)
+		for _, kind := range []string{"a statement with arithmetic", "a tested side with a plain value", "a tested side with a subquery"} {
+			is.True(t, counts[kind] >= 3, kind)
+		}
+	})
+
+	t.Run("should refuse each text of ArithmeticRefused in the pass", func(t *testing.T) {
+		for _, form := range ArithmeticRefused {
+			src := fmt.Sprintf(form, "t", "a")
+			_, err := stmt.Check(src)
+			is.True(t, errors.Is(err, stmt.ErrNotSupported), src)
 		}
 	})
 }

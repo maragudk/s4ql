@@ -144,6 +144,28 @@ type bugs struct {
 	// that its conditions alone choose, read forward or backward as the engine draws it, and not of the
 	// first row of its ORDER BY.
 	orderIgnored bool
+	// setFromNew makes an update compute each value of its SET from the row as the assignments before
+	// it in the order of the text left it, and not from the row as it was before the statement, also a
+	// column alone that it copies.
+	setFromNew bool
+	// nullCompares makes a comparison that is computed for each row, of arithmetic or of a column with
+	// a column, true where a side is NULL, where it is neither true nor false.
+	nullCompares bool
+	// evalStops makes an update whose SET fails with an evaluation error on a row stop there and
+	// succeed, with the rows that it changed before that row, and their count.
+	evalStops bool
+	// errorSkipsRow makes a comparison that is computed for each row, and fails with an evaluation
+	// error on a row, false for that row, so that the statement leaves the row out and goes on.
+	errorSkipsRow bool
+	// copyAcross makes an update copy a column alone into a column of another class, as `set r = i` of
+	// an INT column into a REAL one, where s4ql refuses it, and stores the value as it is.
+	copyAcross bool
+	// constantsServeNothing makes a comparison with an expression without a column serve no access, as
+	// one that is computed for each row, so that a statement reads more rows than the rules choose.
+	constantsServeNothing bool
+	// copySelf makes an update that copies a column alone, as `set a = b`, give the column the value
+	// that it had, and not that of the column that it names.
+	copySelf bool
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.

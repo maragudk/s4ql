@@ -103,7 +103,8 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 // names. SQLite looks the select list up first, in its order, and then the conditions, in the order
 // of the text: the first comparison of a column that the table does not have gives the error. A test
 // for NULL of such a column does not stop SQLite, which goes on with the error of that column: a
-// later such test replaces it, and the next comparison ends the walk with it. Then come the columns
+// later such test replaces it, and the next comparison ends the walk with it. A comparison with
+// arithmetic or a column alone looks its names up in the order of the text. Then come the columns
 // of the ORDER BY, of slice 13, in their order.
 func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 	for _, name := range s.Columns {
@@ -113,16 +114,18 @@ func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 	}
 	var missing *stmt.Name
 	for i, c := range s.Where {
-		found := ColumnOf(columns, c.Column) >= 0
+		names := conditionNames(c)
+		slices.SortStableFunc(names, func(a, b stmt.Name) int { return a.Offset - b.Offset })
+		at := slices.IndexFunc(names, func(n stmt.Name) bool { return ColumnOf(columns, n) < 0 })
 		switch {
 		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
-			if !found {
+			if ColumnOf(columns, c.Column) < 0 {
 				missing = &s.Where[i].Column
 			}
 		case missing != nil:
 			return *missing, true
-		case !found:
-			return c.Column, true
+		case at >= 0:
+			return names[at], true
 		}
 	}
 	if missing != nil {
@@ -159,11 +162,11 @@ func ConditionRule(table string, columns []TableColumn, s *stmt.Select, args []a
 // `NOT NULL constraint failed` first when the update finds a row. The rule is "" where every value
 // has the type of its column, and where SQLite gives its own error first: for a column of SET, and
 // then of WHERE, that the table does not have, and for another number of arguments than parameters.
-// It panics for an update with an expression, which [HasExpression] reports, as it has no rule for
-// one.
+// It panics for an update with arithmetic or a column alone, which [HasExpression] reports, whose
+// refusals the engine gives in an order of its own: [ArithmeticRefusals] gives each that may come.
 func UpdateRule(table string, columns []TableColumn, u *stmt.Update, args []any, found func() bool) string {
 	if HasExpression(u) {
-		panic("stmttest: UpdateRule of an update with an arithmetic expression or a column alone, which the rules of this package do not take: see HasExpression")
+		panic("stmttest: UpdateRule of an update with an arithmetic expression or a column alone, whose refusals come in the engine's own order: see ArithmeticRefusals")
 	}
 	if len(args) != u.Parameters() {
 		return ""
@@ -204,11 +207,13 @@ func UpdateRule(table string, columns []TableColumn, u *stmt.Update, args []any,
 
 // HasExpression reports whether the statement s has an arithmetic expression or a column alone, as
 // in `where a = b` or `set a = b`: as the value of an assignment of its SET, or as either side of a
-// condition of its WHERE or of the WHERE of one of its scalar subqueries. The statement pass takes
-// them since the engine step of arithmetic. The rules of this package do not: [WhereRule],
-// [ConditionRule], [UpdateRule], and [DeleteRule] panic for such a statement, and [ChosenAccess]
-// gives no access for it. The engine computes or refuses it by rules of its own, which the
-// differential pair of the engine checks.
+// condition of its WHERE or of the WHERE of one of its scalar subqueries. The engine gives the
+// refusals of the types of such a statement in an order of its own, so the rules of this package
+// that give one refusal, [WhereRule], [ConditionRule], [UpdateRule], and [DeleteRule], panic for it,
+// and [ArithmeticRefusals] gives every refusal that may come instead; [Justify] judges its evaluation
+// errors. [ChosenAccess], [KeyAccess], and [WhereCases] give nothing for it: its access is that of the
+// select of its conditions that are not computed for each row, each constant with the value that
+// SQLite gives it, which a caller that runs SQLite builds and gives [ChosenAccess].
 func HasExpression(s stmt.Statement) bool {
 	var where []stmt.Condition
 	var subqueries []stmt.Select
@@ -410,10 +415,11 @@ func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs
 // supported" for the first condition, in the order of the text, whose value is of another type than
 // its column, as [ConditionRule] gives it, or "". A scalar subquery, of slice 15, has the type of the
 // column of its table, which the conditions do not hold, so the rule passes over it. It panics for a
-// condition with an expression, which [HasExpression] reports, as it has no rule for one.
+// condition with arithmetic or a column alone, which [HasExpression] reports: see
+// [ArithmeticRefusals].
 func WhereRule(table string, columns []TableColumn, where []stmt.Condition, args []any) string {
 	if slices.ContainsFunc(where, conditionExpressed) {
-		panic("stmttest: WhereRule of a condition with an arithmetic expression or a column alone, which the rules of this package do not take: see HasExpression")
+		panic("stmttest: WhereRule of a condition with an arithmetic expression or a column alone, whose refusals come in the engine's own order: see ArithmeticRefusals")
 	}
 	for _, c := range where {
 		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || c.Value.Subquery > 0 {
@@ -792,6 +798,7 @@ func SelectOf(s stmt.Statement, args []any) (*stmt.Select, []any) {
 	case *stmt.Update:
 		table, where = s.Table, s.Where
 		for _, a := range s.Set {
+			offset += len(expressionParameters(a.Value.Expression))
 			if a.Value.Parameter > 0 {
 				offset++
 			}
@@ -806,18 +813,13 @@ func SelectOf(s stmt.Statement, args []any) (*stmt.Select, []any) {
 	}
 	sel := &stmt.Select{Table: table}
 	for _, c := range where {
-		if c.Value.Parameter > 0 {
-			c.Value.Parameter -= offset
-		}
-		sel.Where = append(sel.Where, c)
+		sel.Where = append(sel.Where, renumbered(c, offset))
 	}
 	for _, q := range subqueriesOf(s) {
 		// The parameters of a subquery come after those of SET too.
 		q.Where = slices.Clone(q.Where)
 		for i := range q.Where {
-			if q.Where[i].Value.Parameter > 0 {
-				q.Where[i].Value.Parameter -= offset
-			}
+			q.Where[i] = renumbered(q.Where[i], offset)
 		}
 		if q.Limit.Parameter > 0 {
 			q.Limit.Parameter -= offset
@@ -827,6 +829,42 @@ func SelectOf(s stmt.Statement, args []any) (*stmt.Select, []any) {
 	return sel, args[offset:]
 }
 
+// renumbered condition c, whose parameters, also those of its arithmetic, come offset earlier.
+func renumbered(c stmt.Condition, offset int) stmt.Condition {
+	if c.Value.Parameter > 0 {
+		c.Value.Parameter -= offset
+	}
+	c.Expression, c.Value.Expression = renumberedExpression(c.Expression, offset), renumberedExpression(c.Value.Expression, offset)
+	return c
+}
+
+// renumberedExpression e, whose parameters come offset earlier.
+func renumberedExpression(e stmt.Expression, offset int) stmt.Expression {
+	if e.Kind == stmt.ExprParameter {
+		e.Parameter -= offset
+	}
+	if len(e.Operands) > 0 {
+		operands := make([]stmt.Expression, len(e.Operands))
+		for i, o := range e.Operands {
+			operands[i] = renumberedExpression(o, offset)
+		}
+		e.Operands = operands
+	}
+	return e
+}
+
+// expressionParameters of the expression e: its parameters, in the order of the text.
+func expressionParameters(e stmt.Expression) []int {
+	if e.Kind == stmt.ExprParameter {
+		return []int{e.Parameter}
+	}
+	var ps []int
+	for _, o := range e.Operands {
+		ps = append(ps, expressionParameters(o)...)
+	}
+	return ps
+}
+
 // SetCases of the update u of the table of the columns, in the order of the table, with the arguments
 // args as for [TypeRule], for a count of what a test reaches of slice 8. For a column of SET that the
 // table does not have: "SET of a column that the table does not have", also "in double quotes" for
@@ -834,8 +872,9 @@ func SelectOf(s stmt.Statement, args []any) (*stmt.Select, []any) {
 // key" if it sets the key; "SET of every column" if it sets each; "SET of NULL for a column that
 // does not take it" for the key or a column with NOT NULL; with as many arguments as parameters, the
 // value of each, a literal by its kind, as [LiteralKind] names it, after "SET with literal ", or an
-// argument, as [ArgumentKind] names it, after "SET with argument "; and "SET with a value of another
-// type" for a value that is not NULL of another type than its column.
+// argument, as [ArgumentKind] names it, after "SET with argument ", or "SET with arithmetic or a
+// column alone"; and "SET with a value of another type" for a plain value that is not NULL of
+// another type than its column.
 func SetCases(columns []TableColumn, u *stmt.Update, args []any) []string {
 	var cases []string
 	for _, a := range u.Set {
@@ -853,6 +892,10 @@ func SetCases(columns []TableColumn, u *stmt.Update, args []any) []string {
 		c := columns[ColumnOf(columns, a.Column)]
 		key = key || c.PrimaryKey
 		switch {
+		case a.Value.Expression.Present():
+			// Arithmetic or a column alone, whose type and NULL the rows decide.
+			cases = append(cases, "SET with arithmetic or a column alone")
+			continue
 		case a.Value.Parameter == 0:
 			cases = append(cases, "SET with literal "+LiteralKind(a.Value.Value))
 		case argsOK:

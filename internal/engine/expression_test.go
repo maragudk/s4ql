@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -174,7 +175,7 @@ func (p *pair) checkArithmetic(c stmttest.Call, s stmt.Statement, args []any, go
 		if len(refusals) > 0 {
 			return "", fmt.Sprintf("%q with the arguments %#v: the engine gives %v, and the rules refuse it with one of %q", c.Src, args, got, refusals)
 		}
-		if due := p.due(s, args); due != "" {
+		if due := p.due(s, args, readEvery(s, args, c.Query, got)); due != "" {
 			return "", fmt.Sprintf("%q with the arguments %#v: the engine gives %v, and %v", c.Src, args, got, due)
 		}
 	}
@@ -183,359 +184,64 @@ func (p *pair) checkArithmetic(c stmttest.Call, s stmt.Statement, args []any, go
 
 // arithmeticRefusals of the select, the update, or the delete s with arithmetic, which SQLite
 // prepares, with the arguments args as SQLite binds them, on the database of o: every "not supported"
-// that s4ql's rules give for it, whatever their order. They are the refusals of the values of its
-// conditions and of those of its subqueries that are of another class than what they are compared
-// with, by the rule of exact types, an operand of arithmetic that is a column of type TEXT or BLOB
-// or an argument that is text or a blob, a correlated subquery, an argument of LIMIT that is not an
-// integer from 0, and, but in a read-only transaction, which refuses the write first, the values of
-// SET of another class than their columns.
+// that s4ql's rules give for it, whatever their order, as [stmttest.ArithmeticRefusals] gives them.
 func arithmeticRefusals(t testing.TB, o *oracle, s stmt.Statement, args []any, readOnly bool) []string {
 	t.Helper()
-	table, where := tableWhere(s)
-	subs := subqueriesIn(s)
+	table, _ := tableWhere(s)
 	name, columns := o.columns(t, table.Value)
-	refusals := whereRefusals(t, o, name, columns, where, subs, args)
-	for _, q := range subs {
-		inner, innerColumns := o.columns(t, q.Table.Value)
-		refusals = append(refusals, whereRefusals(t, o, inner, innerColumns, q.Where, nil, args)...)
-		if rule := limitRule(&q, args); rule != "" {
-			refusals = append(refusals, rule)
-		}
-	}
-	if rule := correlatedRule(t, o, where, subs); rule != "" {
-		refusals = append(refusals, rule)
-	}
-	switch s := s.(type) {
-	case *stmt.Select:
-		if rule := limitRule(s, args); rule != "" {
-			refusals = append(refusals, rule)
-		}
-	case *stmt.Update:
-		if !readOnly {
-			refusals = append(refusals, setRefusals(name, columns, s.Set, args)...)
-		}
-	}
-	return refusals
+	return stmttest.ArithmeticRefusals(name, columns, s, args, readOnly, func(name string) (string, []stmttest.TableColumn) { return o.columns(t, name) })
 }
 
-// whereRefusals of the conditions where, of the table of the name, as the table stores it, and of the
-// columns, whose subqueries are subs, with the arguments args, on the database of o, as
-// [arithmeticRefusals] gives them. A condition with a column that the table does not have, a
-// correlated one, is left to [correlatedRule].
-func whereRefusals(t testing.TB, o *oracle, name string, columns []stmttest.TableColumn, where []stmt.Condition, subs []stmt.Select, args []any) []string {
-	t.Helper()
-	var refusals []string
-	for _, c := range where {
-		if slices.ContainsFunc(conditionColumns(c), func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 }) {
-			continue
-		}
-		var tested, testedName string
-		if c.Expression.Present() {
-			var refused []string
-			tested, refused = expressionClass(c.Expression, columns, args)
-			refusals = append(refusals, refused...)
-			testedName = "an expression of type " + tested
-		} else {
-			position := stmttest.ColumnOf(columns, c.Column)
-			tested, testedName = columnClass(columns[position].Type), columnNamed(name, columns[position])
-		}
-		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
-			continue
-		}
-		var value, valueName string
-		switch v := c.Value; {
-		case v.Expression.Kind == stmt.ExprColumn && !c.Expression.Present():
-			position := stmttest.ColumnOf(columns, v.Expression.Column)
-			value, valueName = columnClass(columns[position].Type), columnNamed(name, columns[position])
-			if value != tested {
-				refusals = append(refusals, fmt.Sprintf("s4ql: not supported: %v compared with %v", valueName, testedName))
-			}
-			continue
-		case v.Expression.Present():
-			var refused []string
-			value, refused = expressionClass(v.Expression, columns, args)
-			refusals = append(refusals, refused...)
-			valueName = "an expression of type " + value
-		case v.Subquery > 0:
-			q := subs[v.Subquery-1]
-			inner, innerColumns := o.columns(t, q.Table.Value)
-			position := 0
-			if q.Columns != nil {
-				position = stmttest.ColumnOf(innerColumns, q.Columns[0])
-			}
-			if position < 0 || len(innerColumns) == 0 {
-				continue
-			}
-			value, valueName = columnClass(innerColumns[position].Type), fmt.Sprint("subquery ", v.Subquery, ", of ", columnNamed(inner, innerColumns[position]), ",")
-		default:
-			value, valueName = argumentClass(stmttest.BoundValue(v, args)), plainName(v, args)
-		}
-		arithmetic := c.Expression.Present() || c.Value.Expression.Present()
-		if !matches(value, tested) || arithmetic && !numeric(value, tested) {
-			refusals = append(refusals, fmt.Sprintf("s4ql: not supported: %v compared with %v", valueName, testedName))
-		}
+// computedTerms of the values that the engine computed for the subqueries of the statement of the
+// pair, as literals, or nil where it computed none.
+func (p *pair) computedTerms() []stmt.Term {
+	if p.computed == nil {
+		return nil
 	}
-	return refusals
+	var terms []stmt.Term
+	for _, v := range p.computed {
+		terms = append(terms, valueTerm(v))
+	}
+	return terms
 }
 
-// numeric reports whether no class of the classes is text or a blob, which arithmetic never meets.
-func numeric(classes ...string) bool {
-	return !slices.Contains(classes, "text") && !slices.Contains(classes, "blob")
-}
-
-// setRefusals of the assignments set of an update of the table of the name and of the columns, with
-// the arguments args, as [arithmeticRefusals] gives them.
-func setRefusals(name string, columns []stmttest.TableColumn, set []stmt.Assignment, args []any) []string {
-	var refusals []string
-	for _, a := range set {
-		position := stmttest.ColumnOf(columns, a.Column)
-		if position < 0 {
-			continue
-		}
-		into := columnNamed(name, columns[position])
-		var value, valueName string
-		switch v := a.Value; {
-		case v.Expression.Kind == stmt.ExprColumn:
-			from := stmttest.ColumnOf(columns, v.Expression.Column)
-			value, valueName = columnClass(columns[from].Type), columnNamed(name, columns[from])
-			if value != columnClass(columns[position].Type) {
-				refusals = append(refusals, fmt.Sprintf("s4ql: not supported: %v for %v", valueName, into))
-			}
-			continue
-		case v.Expression.Present():
-			var refused []string
-			value, refused = expressionClass(v.Expression, columns, args)
-			refusals = append(refusals, refused...)
-			valueName = "an expression of type " + value
-		default:
-			value, valueName = argumentClass(stmttest.BoundValue(v, args)), plainName(v, args)
-		}
-		if !matches(value, columnClass(columns[position].Type)) || a.Value.Expression.Present() && !numeric(columnClass(columns[position].Type)) {
-			refusals = append(refusals, fmt.Sprintf("s4ql: not supported: %v for %v", valueName, into))
-		}
+// rows reports whether SQLite gives a row for the query src with the arguments args, which must not
+// fail.
+func (p *pair) rows(src string, args []any) bool {
+	p.t.Helper()
+	a := p.o.run(p.t, src, args...)
+	if a.err != "" {
+		p.t.Fatalf("%q: SQLite gives %v", src, a.err)
 	}
-	return refusals
-}
-
-// expressionClass of the arithmetic expression e over the columns, with the arguments args: the
-// class of its values, "integer", "real", or "null" where an argument that is NULL makes every value
-// NULL, as the evaluator types it, and the refusals of its operands: each column of type TEXT or
-// BLOB, and each argument that is text or a blob, at its offset.
-func expressionClass(e stmt.Expression, columns []stmttest.TableColumn, args []any) (string, []string) {
-	switch e.Kind {
-	case stmt.ExprValue:
-		return argumentClass(stmttest.BoundValue(stmt.Term{Value: e.Value}, args)), nil
-	case stmt.ExprParameter:
-		switch args[e.Parameter-1].(type) {
-		case string:
-			return "", []string{fmt.Sprintf("s4ql: not supported: argument %v in arithmetic, which is text (at offset %v)", e.Parameter, e.Span.Start)}
-		case []byte:
-			return "", []string{fmt.Sprintf("s4ql: not supported: argument %v in arithmetic, which is a blob (at offset %v)", e.Parameter, e.Span.Start)}
-		}
-		return argumentClass(args[e.Parameter-1]), nil
-	case stmt.ExprColumn:
-		typ := columns[stmttest.ColumnOf(columns, e.Column)].Type
-		if c := columnClass(typ); c == "text" || c == "blob" {
-			return "", []string{fmt.Sprintf("s4ql: not supported: column of type %v in arithmetic (at offset %v)", typ, e.Span.Start)}
-		}
-		return columnClass(typ), nil
-	case stmt.ExprNegate:
-		return expressionClass(e.Operands[0], columns, args)
-	}
-	left, refusals := expressionClass(e.Operands[0], columns, args)
-	right, more := expressionClass(e.Operands[1], columns, args)
-	switch {
-	case left == "null" || right == "null":
-		return "null", append(refusals, more...)
-	case left == "real" || right == "real":
-		return "real", append(refusals, more...)
-	}
-	return "integer", append(refusals, more...)
-}
-
-// columnClass of a column of the declared type typ: one for INT and INTEGER.
-func columnClass(typ string) string {
-	switch typ {
-	case "INT", "INTEGER":
-		return "integer"
-	}
-	return strings.ToLower(typ)
-}
-
-// argumentClass of a value as SQLite binds it.
-func argumentClass(v any) string {
-	switch v.(type) {
-	case int64:
-		return "integer"
-	case float64:
-		return "real"
-	case string:
-		return "text"
-	case []byte:
-		return "blob"
-	}
-	return "null"
-}
-
-// matches reports whether values of the classes a and b meet by the rule of exact types: where they
-// are one class, or either is that of NULL.
-func matches(a, b string) bool {
-	return a == b || a == "null" || b == "null"
-}
-
-// columnNamed of the column of the table of the name, as the engine names it in a message.
-func columnNamed(table string, c stmttest.TableColumn) string {
-	return fmt.Sprintf("the column %v.%v of type %v", table, c.Name, c.Type)
-}
-
-// plainName of the literal or the parameter t, with the arguments args, as the engine names it in a
-// message.
-func plainName(t stmt.Term, args []any) string {
-	switch t.Value.(type) {
-	case stmt.Integer:
-		return "an integer literal"
-	case stmt.Real:
-		return "a real literal"
-	case stmt.Text:
-		return "a string literal"
-	case stmt.Blob:
-		return "a blob literal"
-	}
-	kind := map[string]string{"integer": "an integer", "real": "a real", "text": "text", "blob": "a blob"}[argumentClass(args[t.Parameter-1])]
-	return fmt.Sprintf("argument %v, which is %v,", t.Parameter, kind)
-}
-
-// arithmeticSite of an arithmetic expression that the evaluator computes, in a statement: its tree,
-// root, and where it is: the assignment of SET at the index set, or the condition at the index where
-// of the WHERE of the statement, if sub is 0, or of its subquery of the number sub.
-type arithmeticSite struct {
-	set, where, sub int
-	root            stmt.Expression
-}
-
-// arithmeticSites of the statement s, in the order of the text, but a column alone, which is copied or
-// compared without the evaluator.
-func arithmeticSites(s stmt.Statement) []arithmeticSite {
-	var sites []arithmeticSite
-	add := func(e stmt.Expression, site arithmeticSite) {
-		if e.Present() && e.Kind != stmt.ExprColumn {
-			site.root = e
-			sites = append(sites, site)
-		}
-	}
-	if u, ok := s.(*stmt.Update); ok {
-		for i, a := range u.Set {
-			add(a.Value.Expression, arithmeticSite{set: i, where: -1})
-		}
-	}
-	_, where := tableWhere(s)
-	for j, c := range where {
-		add(c.Expression, arithmeticSite{set: -1, where: j})
-		add(c.Value.Expression, arithmeticSite{set: -1, where: j})
-	}
-	for k, q := range subqueriesIn(s) {
-		for j, c := range q.Where {
-			add(c.Expression, arithmeticSite{set: -1, where: j, sub: k + 1})
-			add(c.Value.Expression, arithmeticSite{set: -1, where: j, sub: k + 1})
-		}
-	}
-	return sites
-}
-
-// operators of the expression e: its nodes that compute, the negations and the binary operators.
-func operators(e stmt.Expression) []stmt.Expression {
-	var ops []stmt.Expression
-	if len(e.Operands) > 0 {
-		ops = append(ops, e)
-	}
-	for _, o := range e.Operands {
-		ops = append(ops, operators(o)...)
-	}
-	return ops
-}
-
-// evaluationKinds are the kinds of an evaluation error, each as [quirk] tests it.
-var evaluationKinds = []error{expr.ErrOverflow, expr.ErrDivisionByZero, expr.ErrNotFinite}
-
-// quirk of the operator n of arithmetic, with the arguments args: a condition that SQLite makes true
-// where its own result of n alone, on its operands, is the quirk of the kind that s4ql refuses: a real
-// from two integers for an overflow, NULL from two operands that are not NULL for a division by zero,
-// and an infinity for a real result that is not finite; and the arguments of its parameters.
-func quirk(n stmt.Expression, kind error, args []any) (string, []any) {
-	left, leftArgs := stmttest.ExpressionText(n.Operands[0], args)
-	if n.Kind == stmt.ExprNegate {
-		if kind != expr.ErrOverflow {
-			return "0", nil
-		}
-		return "typeof(" + left + ") = 'integer' and typeof(-(" + left + ")) = 'real'", append(slices.Clone(leftArgs), leftArgs...)
-	}
-	right, rightArgs := stmttest.ExpressionText(n.Operands[1], args)
-	value, valueArgs := "("+left+" "+n.Kind.String()+" "+right+")", append(slices.Clone(leftArgs), rightArgs...)
-	switch kind {
-	case expr.ErrOverflow:
-		return "typeof(" + left + ") = 'integer' and typeof(" + right + ") = 'integer' and typeof(" + value + ") = 'real'", slices.Concat(leftArgs, rightArgs, valueArgs)
-	case expr.ErrDivisionByZero:
-		return left + " is not null and " + right + " is not null and " + value + " is null", slices.Concat(leftArgs, rightArgs, valueArgs)
-	}
-	return value + " in (9e999, -9e999)", valueArgs
+	return len(a.rows) > 0
 }
 
 // quirkRows of the operator n of the site of the statement s, with the arguments args, of the kind:
-// whether SQLite shows the quirk of n, as [quirk] says, for a row that the conditions before the site
-// in the order of the text hold for, where the site is a condition, or that every condition holds
-// for, where it is an assignment of SET; and, if access.must, that the access reads: the range of
-// the model's access, access.conditions, where access.modeled, and otherwise every condition that
-// may serve the access. An expression without a column has one value, which needs no row. A
-// subquery of the statement has the value of computed, where the engine computed them.
-func (p *pair) quirkRows(s stmt.Statement, site arithmeticSite, n stmt.Expression, kind error, args []any, access accessGuard) bool {
-	t, o := p.t, p.o
-	t.Helper()
-	condition, bound := quirk(n, kind, args)
-	if !site.root.HasColumn() {
-		return len(o.run(t, "select 1 where "+condition, bound...).rows) > 0
-	}
-	table, where := tableWhere(s)
-	subs := subqueriesIn(s)
-	if site.sub > 0 {
-		table, where, subs = subs[site.sub-1].Table, subs[site.sub-1].Where, nil
+// whether SQLite shows the quirk of n, as [stmttest.QuirkQuery] says, for a row that the conditions
+// of [stmttest.SiteGuard] hold for, and, if access.must, that the access reads: the range of the
+// model's access, access.conditions, where access.modeled, and otherwise every condition that may
+// serve the access. A subquery of the statement has the value that the engine computed, where it
+// computed them.
+func (p *pair) quirkRows(s stmt.Statement, site stmttest.ArithmeticSite, n stmt.Expression, kind error, args []any, access accessGuard) bool {
+	p.t.Helper()
+	_, where := tableWhere(s)
+	if site.Sub > 0 {
+		where = subqueriesIn(s)[site.Sub-1].Where
 	}
 	var guard []stmt.Condition
-	if site.set < 0 {
-		if access.must {
-			if access.modeled && site.sub == 0 {
-				guard = slices.Clone(access.conditions)
-			} else {
-				for _, c := range where {
-					if !c.Expression.Present() && !c.Value.Expression.HasColumn() {
-						guard = append(guard, c)
-					}
+	if site.Set < 0 && access.must {
+		if access.modeled && site.Sub == 0 {
+			guard = slices.Clone(access.conditions)
+		} else {
+			for _, c := range where {
+				if !c.Expression.Present() && !c.Value.Expression.HasColumn() {
+					guard = append(guard, c)
 				}
 			}
 		}
-		guard = append(guard, where[:site.where]...)
-	} else {
-		guard = where
 	}
-	if p.computed != nil && site.sub == 0 {
-		guard = slices.Clone(guard)
-		for i, c := range guard {
-			if c.Value.Subquery > 0 {
-				guard[i].Value = valueTerm(p.computed[c.Value.Subquery-1])
-			}
-		}
-	}
-	found, foundArgs := stmttest.FoundQuery(table, guard, subs, args)
-	found = strings.TrimSuffix(found, " limit 1")
-	if len(guard) == 0 {
-		found += " where "
-	} else {
-		found += " and "
-	}
-	a := o.run(t, found+condition+" limit 1", append(foundArgs, bound...)...)
-	if a.err != "" {
-		t.Fatalf("%q: SQLite gives %v", found+condition, a.err)
-	}
-	return len(a.rows) > 0
+	guard = append(guard, stmttest.SiteGuard(s, site)...)
+	return p.rows(stmttest.QuirkQuery(s, site, n, kind, guard, p.computedTerms(), args))
 }
 
 // accessGuard of [pair.quirkRows]: whether a row must be one that the access reads, and, where
@@ -553,38 +259,48 @@ type accessGuard struct {
 // rule of the engine says: those that are not computed for each row, each value of arithmetic as the
 // value that SQLite gives it.
 func (p *pair) modelGuard(s stmt.Statement, args []any) ([]stmt.Condition, bool) {
-	t, o := p.t, p.o
-	t.Helper()
 	sel, ok := s.(*stmt.Select)
 	if !ok || sel.Subqueries != nil || sel.Limited() {
 		return nil, false
 	}
-	reduced := *sel
-	reduced.Where = nil
-	for _, c := range sel.Where {
-		if c.Expression.Present() || c.Value.Expression.HasColumn() {
-			continue
-		}
-		switch {
-		case c.Value.Expression.Present():
-			text, bound := stmttest.ExpressionText(c.Value.Expression, args)
-			a := o.run(t, "select "+text, bound...)
-			if a.err != "" || len(a.rows) != 1 {
-				return nil, false
-			}
-			v, ok := literalOf(a.rows[0])
-			if !ok {
-				return nil, false
-			}
-			c.Value = v
-		case c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull:
-			c.Value = literalTerm(stmttest.BoundValue(c.Value, args))
-		}
-		reduced.Where = append(reduced.Where, c)
+	return p.accessRange(sel, args)
+}
+
+// writeGuard of the update or the delete s with arithmetic, with the arguments args, which the
+// instance of the pair ran by the rules: the conditions that hold for a row that the model's access
+// reads, as [pair.accessRange] gives them for the select of its WHERE, since a write finds its rows
+// as a select without ORDER BY and LIMIT does, and true; or nil and false for another statement, one
+// with a subquery, whose access depends on its value, and an instance that reads every row.
+func (p *pair) writeGuard(s stmt.Statement, args []any) ([]stmt.Condition, bool) {
+	switch s.(type) {
+	case *stmt.Update, *stmt.Delete:
+	default:
+		return nil, false
+	}
+	if subqueried(s) || p.i.e.ScansAll() {
+		return nil, false
+	}
+	sel, selArgs := stmttest.SelectOf(s, args)
+	if sel == nil {
+		return nil, false
+	}
+	return p.accessRange(sel, selArgs)
+}
+
+// accessRange of the select s with arithmetic and without subqueries, with the arguments args: the
+// conditions that hold for a row that the model's access reads, as [stmttest.ChosenAccess] chooses it
+// from the conditions that may serve the access, as [pair.reducedSelect] gives them, and true; or
+// nil and false where the model does not take it.
+func (p *pair) accessRange(sel *stmt.Select, args []any) ([]stmt.Condition, bool) {
+	t, o := p.t, p.o
+	t.Helper()
+	reduced, ok := p.reducedSelect(sel, args, true)
+	if !ok {
+		return nil, false
 	}
 	table, columns := o.columns(t, sel.Table.Value)
 	_, indexes := o.tableIndexes(t, table, columns)
-	a, ok := stmttest.ChosenAccess(columns, indexes, &reduced, nil)
+	a, ok := stmttest.ChosenAccess(columns, indexes, reduced, nil)
 	if !ok {
 		return nil, false
 	}
@@ -637,6 +353,44 @@ func (p *pair) modelGuard(s stmt.Statement, args []any) ([]stmt.Condition, bool)
 	return guard, true
 }
 
+// reducedSelect of the select s with arithmetic and without subqueries, with the arguments args: the
+// select of the conditions of s that may serve the access, as the rule of the engine says, those that
+// are not computed for each row, in their order, and its ORDER BY and LIMIT, with no parameter: each
+// value a literal, and, if constants, each expression without a column the literal of the value that
+// SQLite gives it, or without those conditions otherwise. It reports false where SQLite gives an
+// expression no value of one row.
+func (p *pair) reducedSelect(s *stmt.Select, args []any, constants bool) (*stmt.Select, bool) {
+	t, o := p.t, p.o
+	t.Helper()
+	reduced := *s
+	reduced.Where = nil
+	if s.Limit.Parameter > 0 {
+		reduced.Limit = literalTerm(args[s.Limit.Parameter-1])
+	}
+	for _, c := range s.Where {
+		if c.Expression.Present() || c.Value.Expression.HasColumn() || !constants && c.Value.Expression.Present() {
+			continue
+		}
+		switch {
+		case c.Value.Expression.Present():
+			text, bound := stmttest.ExpressionText(c.Value.Expression, args)
+			a := o.run(t, "select "+text, bound...)
+			if a.err != "" || len(a.rows) != 1 {
+				return nil, false
+			}
+			v, ok := literalOf(a.rows[0])
+			if !ok {
+				return nil, false
+			}
+			c.Value = v
+		case c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull:
+			c.Value = literalTerm(stmttest.BoundValue(c.Value, args))
+		}
+		reduced.Where = append(reduced.Where, c)
+	}
+	return &reduced, true
+}
+
 // literalTerm of the value v as SQLite binds it, as a literal of the statement pass.
 func literalTerm(v any) stmt.Term {
 	switch v := v.(type) {
@@ -682,27 +436,66 @@ func valueTerm(v *s4qlpb.Value) stmt.Term {
 }
 
 // justify the evaluation error ee of the engine for the statement s with the arguments args: what is
-// wrong with it, or "". Its operator must be one of the statement, at its span, and SQLite's result of
-// that operator alone must show the quirk of its kind for a row that the documented rule may evaluate:
-// one that the conditions before it in the order of the text hold for, or, for SET, one that the
-// WHERE holds for, as [pair.quirkRows] says. A row that a condition after it rules out, as a bound of
-// the access may, is such a row too: the rule does not decide it.
+// wrong with it, or "", as [stmttest.Justify] says, with the values that the engine computed for the
+// subqueries of s. For an update or a delete that the instance ran, a row of its WHERE must be one
+// that the model's access reads too, as [pair.writeGuard] gives it, where it gives one, so that a
+// write that reads rows outside its access fails here. A select needs no such guard, since
+// [pair.checkAccess] compares its access with the model's.
 func (p *pair) justify(s stmt.Statement, args []any, ee *expr.Error) string {
 	if ee == nil {
 		return "is no *expr.Error"
 	}
-	for _, site := range arithmeticSites(s) {
-		for _, n := range operators(site.root) {
-			if n.Span != ee.Span || n.Kind != ee.Op {
-				continue
-			}
-			if p.quirkRows(s, site, n, ee.Kind, args, accessGuard{}) {
-				return ""
-			}
-			return "SQLite's result of its operator justifies for no row that the rule may evaluate"
+	// An access that reads every row gives no condition, and so no guard.
+	access, ok := p.writeGuard(s, args)
+	if ok {
+		p.count("arithmetic of a write whose evaluation error the model's access judges")
+	}
+	return stmttest.JustifyWithin(s, args, ee.Kind, ee.Op, ee.Span.Start, p.computedTerms(), access, p.rows)
+}
+
+// changedBefore reports whether the update u, with the arguments args, which failed with the
+// evaluation error ee at an operator of its SET, changed a row before the row that failed, by
+// SQLite's rows: whether its WHERE holds for a row, and the first such row in the order of the key,
+// which the update changes first, shows the quirk of no operator of SET. An update with a subquery,
+// and one of a table whose key has more than one column, are left out.
+func (p *pair) changedBefore(u *stmt.Update, args []any, ee *expr.Error) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	if ee == nil || u.Subqueries != nil {
+		return false
+	}
+	var key []string
+	_, columns := o.columns(t, u.Table.Value)
+	for _, c := range columns {
+		if c.PrimaryKey {
+			key = append(key, stmttest.Quote(c.Name))
 		}
 	}
-	return "is at no operator of the statement"
+	if len(key) != 1 {
+		return false
+	}
+	first, firstArgs := stmttest.SelectText(&stmt.Select{Table: u.Table, Where: u.Where}, args, " order by "+key[0]+" limit 1")
+	if !p.rows(first, firstArgs) {
+		return false
+	}
+	inSet := false
+	for _, site := range stmttest.ArithmeticSites(u) {
+		if site.Set < 0 {
+			continue
+		}
+		for _, n := range stmttest.Operators(site.Root) {
+			if n.Span.Start == ee.Span.Start && n.Kind.String() == ee.Op.String() {
+				inSet = true
+			}
+			for _, kind := range stmttest.EvaluationKinds {
+				quirk, bound := stmttest.Quirk(n, kind, args)
+				if p.rows("select 1 from ("+first+") where "+quirk, append(slices.Clone(firstArgs), bound...)) {
+					return false
+				}
+			}
+		}
+	}
+	return inSet
 }
 
 // due is what evaluation error was due for the statement s, with the arguments args, which the engine
@@ -713,23 +506,36 @@ func (p *pair) justify(s stmt.Statement, args []any, ee *expr.Error) string {
 // The rows that the access reads are those of the model's access for a select, as [pair.modelGuard]
 // gives it, and otherwise those that every condition that may serve the access holds for. A subquery
 // reads only up to its first row, and a select with LIMIT only up to its last, which their order
-// decides, so neither has a due error for a row.
-func (p *pair) due(s stmt.Statement, args []any) string {
+// decides, so neither has a due error for a row, but a select with LIMIT that read every row of its
+// access, as everyRow reports, which it does where it gave fewer rows than its LIMIT: its rows are
+// those of the range of the model's access, as [pair.accessRange] gives it, where the model takes
+// it. A subquery with LIMIT 0 gives NULL and computes nothing, also no expression without a column.
+func (p *pair) due(s stmt.Statement, args []any, everyRow bool) string {
 	sel, isSelect := s.(*stmt.Select)
+	limited := isSelect && sel.Limited() && !everyRow
 	computed := !subqueried(s) || p.computed != nil
+	subs := subqueriesIn(s)
 	access := accessGuard{must: true}
-	if access.conditions, access.modeled = p.modelGuard(s, args); access.modeled {
-		p.count(modeledDue)
+	switch {
+	case isSelect && sel.Limited() && everyRow:
+		p.count("arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides")
+		if sel.Subqueries == nil {
+			access.conditions, access.modeled = p.accessRange(sel, args)
+		}
+	default:
+		if access.conditions, access.modeled = p.modelGuard(s, args); access.modeled {
+			p.count(modeledDue)
+		}
 	}
-	for _, site := range arithmeticSites(s) {
+	for _, site := range stmttest.ArithmeticSites(s) {
 		switch {
-		case !site.root.HasColumn() && site.sub > 0 && !computed:
+		case !site.Root.HasColumn() && site.Sub > 0 && (!computed || limitZero(subs[site.Sub-1].Limit, args)):
 			continue
-		case site.root.HasColumn() && (site.sub > 0 || !computed || isSelect && sel.Limited()):
+		case site.Root.HasColumn() && (site.Sub > 0 || !computed || limited):
 			continue
 		}
-		for _, n := range operators(site.root) {
-			for _, kind := range evaluationKinds {
+		for _, n := range stmttest.Operators(site.Root) {
+			for _, kind := range stmttest.EvaluationKinds {
 				if p.quirkRows(s, site, n, kind, args, access) {
 					return fmt.Sprintf("SQLite shows the quirk of %v of %v at offset %v for a row that the rule evaluates", kind, n.Kind, n.Span.Start)
 				}
@@ -737,6 +543,24 @@ func (p *pair) due(s stmt.Statement, args []any) string {
 		}
 	}
 	return ""
+}
+
+// readEvery reports whether the select s with LIMIT, with the arguments args, whose answer of the
+// engine is got, through Query if query, read every row of its access: whether it gave fewer rows
+// than its LIMIT, which stops the reading only once it has given its last row.
+func readEvery(s stmt.Statement, args []any, query bool, got answer) bool {
+	sel, ok := s.(*stmt.Select)
+	if !ok || !sel.Limited() || !query || got.err != "" {
+		return false
+	}
+	n, ok := stmttest.BoundValue(sel.Limit, args).(int64)
+	return ok && int64(len(got.rows)) < n
+}
+
+// limitZero reports whether the term of a LIMIT, with the arguments args, is the integer 0; a LIMIT
+// that the select does not have is not.
+func limitZero(limit stmt.Term, args []any) bool {
+	return (limit.Value != nil || limit.Parameter > 0) && stmttest.BoundValue(limit, args) == any(int64(0))
 }
 
 // arithmeticRows of the table n of [arithmeticSetUp], with the edges of each type and NULL.
@@ -1189,16 +1013,204 @@ func reachArithmetic(s stmt.Statement, got answer, count func(string)) {
 		outcome = messageKind(got.err)
 	}
 	kind := strings.ToLower(strings.TrimPrefix(fmt.Sprintf("%T", s), "*stmt."))
-	for _, site := range arithmeticSites(s) {
+	for _, site := range stmttest.ArithmeticSites(s) {
 		where := "WHERE"
 		switch {
-		case site.set >= 0:
+		case site.Set >= 0:
 			where = "SET"
-		case site.sub > 0:
+		case site.Sub > 0:
 			where = "a subquery"
 		}
-		constant := map[bool]string{true: "with a column", false: "without a column"}[site.root.HasColumn()]
+		constant := map[bool]string{true: "with a column", false: "without a column"}[site.Root.HasColumn()]
 		count(fmt.Sprint("arithmetic ", constant, " in ", where, " of a ", kind, ", ", outcome))
+	}
+}
+
+// reachOfArithmetic counts what the call c of the statement s with arithmetic, whose answer of the
+// engine is got, reaches, on the database of SQLite before the call: what [reachArithmetic] counts,
+// and the cases of the generated checks of arithmetic, each under "arithmetic: ". An evaluation error
+// by its kind, where it is, in SET, in WHERE, or in a subquery, whether its expression has a column,
+// and in a write transaction, which [pair.reach] follows. A select with LIMIT that failed on a row, and
+// one that gave its rows where a row that it did not read would fail, as SQLite's quirk shows. A
+// condition computed for each row that rules a row out that the others of its select hold for. An
+// update that sets a column from itself, one whose SET reads a column that it sets before, and one
+// that computes its key from its row, each by whether it changed rows or broke the key. And what
+// [reachCompared] counts.
+func (p *pair) reachOfArithmetic(c stmttest.Call, s stmt.Statement, got answer) {
+	t, o := p.t, p.o
+	t.Helper()
+	reachArithmetic(s, got, p.count)
+	args := oracleArgs(c.Args)
+	if len(args) != s.Parameters() || o.prepare(t, c.Src) != nil {
+		return
+	}
+	reachCompared(s, got, p.count)
+	if ee := got.eval; ee != nil {
+		for _, site := range stmttest.ArithmeticSites(s) {
+			if !slices.ContainsFunc(stmttest.Operators(site.Root), func(n stmt.Expression) bool { return n.Span == ee.Span && n.Kind == ee.Op }) {
+				continue
+			}
+			where := "WHERE"
+			switch {
+			case site.Set >= 0:
+				where = "SET"
+			case site.Sub > 0:
+				where = "a subquery"
+			}
+			constant := map[bool]string{true: "with a column", false: "without a column"}[site.Root.HasColumn()]
+			p.count(fmt.Sprint("arithmetic: ", ee.Kind.Error(), " in ", where))
+			p.count(fmt.Sprint("arithmetic: ", ee.Kind.Error(), " in ", where, " of an expression ", constant))
+			if sel, ok := s.(*stmt.Select); ok && sel.Limited() && site.Root.HasColumn() && site.Sub == 0 {
+				p.count("arithmetic: select with LIMIT that failed on a row")
+			}
+			break
+		}
+		if p.inTx && !p.readOnly {
+			p.count("arithmetic: evaluation error in a write transaction")
+			p.evaluatedInTx = true
+		}
+		return
+	}
+	if got.err != "" {
+		return
+	}
+	switch s := s.(type) {
+	case *stmt.Select:
+		if s.Subqueries != nil || !c.Query {
+			return
+		}
+		// A row that the LIMIT kept the select from reading is one of the range of the model's access
+		// that the conditions before the site hold for.
+		access := accessGuard{must: true}
+		if s.Limited() && len(got.rows) > 0 {
+			access.conditions, access.modeled = p.accessRange(s, args)
+		}
+		if access.modeled {
+			for _, site := range stmttest.ArithmeticSites(s) {
+				if !site.Root.HasColumn() {
+					continue
+				}
+				if slices.ContainsFunc(stmttest.Operators(site.Root), func(n stmt.Expression) bool {
+					return slices.ContainsFunc(stmttest.EvaluationKinds, func(kind error) bool { return p.quirkRows(s, site, n, kind, args, access) })
+				}) {
+					p.count("arithmetic: select with LIMIT that gave rows where a row that it did not read fails")
+					break
+				}
+			}
+		}
+		for i, c := range s.Where {
+			if !c.Expression.Present() && !c.Value.Expression.HasColumn() {
+				continue
+			}
+			others := slices.Concat(s.Where[:i], s.Where[i+1:])
+			all, allArgs := stmttest.FoundQuery(s.Table, others, nil, args)
+			one, oneArgs := stmttest.FoundQuery(s.Table, slices.Concat(others, []stmt.Condition{c}), nil, args)
+			if all := o.run(t, all, allArgs...); len(all.rows) > 0 {
+				what := "rules out every row that the others hold for"
+				if len(o.run(t, one, oneArgs...).rows) > 0 {
+					what = "holds for a row that the others hold for"
+				}
+				p.count("arithmetic: condition computed for each row that " + what)
+			}
+		}
+	case *stmt.Update:
+		outcome := "that changed rows"
+		switch {
+		case got.err == "" && p.i.changes == 0:
+			return
+		case strings.Contains(got.err, "UNIQUE constraint failed"):
+			outcome = "that broke the key"
+		}
+		_, columns := o.columns(t, s.Table.Value)
+		for i, a := range s.Set {
+			names := expressionColumns(a.Value.Expression)
+			if a.Value.Expression.Kind == stmt.ExprColumn && a.Value.Expression.Column.Fold() != a.Column.Fold() {
+				p.count("arithmetic: update that copies another column alone " + outcome)
+			}
+			if slices.ContainsFunc(names, func(n stmt.Name) bool { return n.Fold() == a.Column.Fold() }) && a.Value.Expression.Kind != stmt.ExprColumn {
+				p.count("arithmetic: update that sets a column from itself " + outcome)
+				if position := stmttest.ColumnOf(columns, a.Column); position >= 0 && columns[position].PrimaryKey {
+					p.count("arithmetic: update that computes its key from its row " + outcome)
+				}
+			}
+			if slices.ContainsFunc(s.Set[:i], func(b stmt.Assignment) bool {
+				return slices.ContainsFunc(names, func(n stmt.Name) bool { return n.Fold() == b.Column.Fold() })
+			}) {
+				p.count("arithmetic: update whose SET reads a column that it sets before " + outcome)
+			}
+		}
+	}
+}
+
+// classRefusals are the refusals of the classes of arithmetic that [reachCompared] counts, by the
+// kind that it counts each as.
+var classRefusals = []struct {
+	pattern *regexp.Regexp
+	kind    string
+}{
+	{regexp.MustCompile(`^s4ql: not supported: (an? [a-z]+ literal|argument \d+, which is [a-z ]+,) compared with an expression of type [a-z]+$`), "a plain value compared with an expression"},
+	{regexp.MustCompile(`^s4ql: not supported: subquery \d+, of the column .+, compared with an expression of type [a-z]+$`), "a subquery compared with an expression"},
+	{regexp.MustCompile(`^s4ql: not supported: an expression of type null compared with the column .+ of type (TEXT|BLOB)$`), "an expression of type null compared with a TEXT or BLOB column"},
+	{regexp.MustCompile(`^s4ql: not supported: an expression of type null for the column .+ of type (TEXT|BLOB)$`), "an expression of type null for a TEXT or BLOB column"},
+	{regexp.MustCompile(`^s4ql: not supported: an expression of type integer for the column .+ of type REAL$`), "an expression of type integer for a REAL column"},
+}
+
+// reachCompared counts with count, under "arithmetic: ", the comparisons of the statement s with
+// arithmetic, which SQLite prepares, whose answer of the engine is got, of an expression that a
+// condition tests, of the WHERE of the statement or of a subquery, with a plain value, a literal or a
+// ?, and with a subquery, by whether the engine gave no error, and the refusals of the classes of
+// [classRefusals] that the engine gave.
+func reachCompared(s stmt.Statement, got answer, count func(string)) {
+	if got.err == "not supported" {
+		for _, r := range classRefusals {
+			if r.pattern.MatchString(got.message) {
+				count("arithmetic: refused " + r.kind)
+			}
+		}
+	}
+	if got.err != "" {
+		return
+	}
+	_, where := tableWhere(s)
+	for _, q := range subqueriesIn(s) {
+		where = append(slices.Clone(where), q.Where...)
+	}
+	for _, c := range where {
+		switch {
+		case !c.Expression.Present() || c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+		case c.Value.Subquery > 0:
+			count("arithmetic: expression compared with a subquery, ok")
+		case !c.Value.Expression.Present():
+			count("arithmetic: expression compared with a plain value, ok")
+		}
+	}
+}
+
+// reachServed counts how the constants of the select s with arithmetic serve its access, which is
+// want, as [pair.checkAccess] checked it, on the table of the columns and of the indexes: where the
+// model chooses another access without the conditions whose value is an expression without a column,
+// by whether want gets one key, pins columns of an index, or bounds the key or an index.
+func (p *pair) reachServed(s *stmt.Select, args []any, columns []stmttest.TableColumn, indexes []stmttest.TableIndex, want stmttest.Access) {
+	without, ok := p.reducedSelect(s, args, false)
+	if !ok {
+		return
+	}
+	if other, ok := stmttest.ChosenAccess(columns, indexes, without, nil); !ok || other.Same(want) {
+		return
+	}
+	of := "the key"
+	if want.Index != "" {
+		of = "an index"
+	}
+	switch {
+	case want.None:
+		p.count("arithmetic: constant expression that makes the access read no row")
+	case want.Get:
+		p.count("arithmetic: constant expression that serves a get of one key")
+	case want.Lower != nil || want.Upper != nil:
+		p.count("arithmetic: constant expression that serves a bound of " + of)
+	case len(want.Pins) > 0:
+		p.count("arithmetic: constant expression that serves the pins of " + of)
 	}
 }
 
@@ -1501,6 +1513,23 @@ func TestEngine_arithmetic(t *testing.T) {
 		}
 	})
 
+	t.Run("should compute the values of SET of each row in the order of the text", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		setUp(t, i)
+		// In the row of k = 1, a is 10 and b is 0, so a / b fails with a division by zero and a +
+		// 9223372036854775807 with an overflow: the assignment that comes first in the text fails.
+		for _, c := range []struct{ src, want string }{
+			{"update t set a = a / b, b = a + 9223372036854775807", "s4ql: division by zero in / (at offset 17)"},
+			{"update t set b = a + 9223372036854775807, a = a / b", "s4ql: integer overflow in + (at offset 17)"},
+			{"update t set n = a / b, r = r * 1e308, a = a + 9223372036854775807 where k = 1", "s4ql: division by zero in / (at offset 17)"},
+			{"update t set a = a + 9223372036854775807, n = a / b, r = r * 1e308 where k = 1", "s4ql: integer overflow in + (at offset 17)"},
+			{"update t set r = r * 1e308 * 10, a = a / b where k = 1", "s4ql: real result that is not finite in * (at offset 17)"},
+			{"update t set a = a / b, r = r * 1e308 * 10 where k = 1", "s4ql: division by zero in / (at offset 17)"},
+		} {
+			is.Equal(t, c.want, i.execValues(c.src, nil).message, c.src)
+		}
+	})
+
 	t.Run("should give SQLite's attempt to write a readonly database for an update or a delete in a read-only transaction, and compute no constant there", func(t *testing.T) {
 		d := newDuo(t, 0,
 			"create table t (k int primary key, a int, s text) strict, without rowid",
@@ -1564,6 +1593,9 @@ func TestEngine_arithmetic(t *testing.T) {
 		is.Equal(t, "", i.execValues("update t set n = n + 1 where k = 1", nil).err)
 		is.Equal(t, evaluationError, i.execValues("update t set a = a / (k - 1)", nil).err)
 		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
+		// One that fails on its last row, in the order of the key, takes back the rows before it.
+		is.Equal(t, "s4ql: division by zero in / (at offset 17)", i.execValues("update t set n = n / (k - 4)", nil).message)
+		is.Equal(t, `columns "k INT, n INT", rows ["1,11" "2,20" "3,30" "4,4"]`, i.queryValues("select k, n from t", nil).String())
 		is.NotError(t, i.c.Commit(t.Context()))
 		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
 	})

@@ -482,7 +482,10 @@ func TestConn_differential(t *testing.T) {
 	// So many sequences of each profile, and twice as many of the mixed profile and of the profiles
 	// of the clauses of slice 10, the defaults, and the values on the left, whose statements this test
 	// counts by the kind of their transaction. The profile of RETURNING runs four times as many, for
-	// the order of the rows of an update and of a delete with RETURNING, each in both directions.
+	// the order of the rows of an update and of a delete with RETURNING, each in both directions, and
+	// so does the profile of arithmetic, whose evaluation errors leave a transaction usable and must
+	// take back the rows that the statement changed before the row that failed, which about one
+	// sequence in a hundred reaches.
 	n := uint64(20)
 	if slow() {
 		n = 1
@@ -497,7 +500,7 @@ func TestConn_differential(t *testing.T) {
 		switch p {
 		case stmttest.Mixed, stmttest.Exists, stmttest.Defaults, stmttest.ValueFirst:
 			times = 2
-		case stmttest.Returning:
+		case stmttest.Returning, stmttest.Arithmetic:
 			times = 4
 		}
 		for k := range n * times {
@@ -545,7 +548,8 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 	// reports whether an update or a delete of the transaction changed rows.
 	// indexed reports whether a create index or a drop index of the transaction succeeded, and
 	// returned whether a statement with RETURNING of the transaction gave rows through Query.
-	open, changed, indexed, returned := "", false, false, false
+	// evaluated reports whether a statement of the write transaction failed with an evaluation error.
+	open, changed, indexed, returned, evaluated := "", false, false, false, false
 	end := func() {
 		t.Helper()
 		commit := r.IntN(3) > 0
@@ -569,7 +573,10 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		if returned && y != nil {
 			y["reached: "+map[bool]string{true: "commit", false: "roll back"}[commit]+" of a transaction whose statement with RETURNING gave rows"]++
 		}
-		open, changed, indexed, returned, p.wrote = "", false, false, false, false
+		if evaluated && y != nil {
+			y["reached: "+map[bool]string{true: "commit", false: "roll back"}[commit]+" of a transaction with an evaluation error"]++
+		}
+		open, changed, indexed, returned, evaluated, p.wrote = "", false, false, false, false, false
 		want := p.o.state(t)
 		if got := i.state(); got != want {
 			fail("after the end of the transaction the engine holds\n%v\nand SQLite\n%v", got, want)
@@ -613,6 +620,21 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 			indexed = indexed || open == "write" && p.last.err == ""
 		}
 		returned = returned || open == "write" && p.last.err == "" && p.last.backward != nil && len(p.last.rows) > 0
+		evaluated = evaluated || open == "write" && p.last.eval != nil
+		if s, _ := stmt.Check(c.Src); open == "write" && p.last.eval != nil {
+			// A statement that fails with an evaluation error changes nothing, also where it changed rows
+			// before the row that failed: its table in the transaction must be SQLite's.
+			if table, _ := tableWhere(s); table.Value != "" {
+				src := "select * from " + stmttest.Quote(table.Value)
+				if got, want := i.queryValues(src, nil), p.o.run(t, src); got.String() != want.String() {
+					fail("after its evaluation error in the transaction, the table holds\n%v\nand in SQLite\n%v", got, want)
+				}
+				p.count("arithmetic: table read back after an evaluation error in a write transaction")
+				if u, ok := s.(*stmt.Update); ok && p.changedBefore(u, oracleArgs(c.Args), p.last.eval) {
+					p.count("arithmetic: table read back after an update that changed a row before its evaluation error, in a write transaction")
+				}
+			}
+		}
 	}
 	if open != "" {
 		end()
