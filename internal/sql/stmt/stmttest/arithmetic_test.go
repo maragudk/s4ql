@@ -2,7 +2,6 @@ package stmttest_test
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"maragu.dev/is"
@@ -50,6 +49,21 @@ func TestArithmeticRefusals(t *testing.T) {
 		{"select * from t where k = (select k from u where k + 1 = 2 limit ?)", []any{-1.5}, false, []string{"s4ql: not supported: argument 1, which is a real, for LIMIT, which takes an integer from 0"}},
 		{"select * from t where k + 0 = 1 limit ?", []any{"x"}, false, []string{"s4ql: not supported: argument 1, which is text, for LIMIT, which takes an integer from 0"}},
 		{"select * from t where k = (select k from u where x + 1 = 2)", nil, false, []string{"s4ql: not supported: correlated subquery (at offset 49)"}},
+		{"select * from t where k = -s", nil, false, []string{"s4ql: not supported: column of type TEXT in arithmetic (at offset 27)"}},
+		{"select * from t where r = s + 1", nil, false, []string{"s4ql: not supported: column of type TEXT in arithmetic (at offset 26)"}},
+		{"select * from t where -b < 1", nil, false, []string{"s4ql: not supported: column of type BLOB in arithmetic (at offset 23)"}},
+		{"select * from t where k + ? = (select r from u)", []any{"a"}, false, []string{"s4ql: not supported: argument 1 in arithmetic, which is text (at offset 26)"}},
+		{"update t set r = -s", nil, false, []string{"s4ql: not supported: column of type TEXT in arithmetic (at offset 18)"}},
+		{"update t set k = ? * 2", []any{[]byte{1}}, false, []string{"s4ql: not supported: argument 1 in arithmetic, which is a blob (at offset 17)"}},
+		{"select * from t where k + 1 = 5.5", nil, false, []string{"s4ql: not supported: a real literal compared with an expression of type integer"}},
+		{"select * from t where 'a' = r * 2", nil, false, []string{"s4ql: not supported: a string literal compared with an expression of type real"}},
+		{"select * from t where k + ? = ?", []any{nil, int64(1)}, false, nil},
+		{"select * from t where k + ? = ?", []any{nil, "a"}, false, []string{"s4ql: not supported: argument 2, which is text, compared with an expression of type null"}},
+		{"select * from t where k * 1 = (select r from u)", nil, false, []string{"s4ql: not supported: subquery 1, of the column u.r of type REAL, compared with an expression of type integer"}},
+		{"select * from t where k * 1 = (select s from u)", nil, false, []string{"s4ql: not supported: subquery 1, of the column u.s of type TEXT, compared with an expression of type integer"}},
+		{"select * from t where s = ? + 1", []any{nil}, false, []string{"s4ql: not supported: an expression of type null compared with the column t.s of type TEXT"}},
+		{"update t set b = ? + 1", []any{nil}, false, []string{"s4ql: not supported: an expression of type null for the column t.b of type BLOB"}},
+		{"update t set r = ? + 1", []any{nil}, false, nil},
 	}
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("should give %q for %q with %v", test.want, test.src, test.args), func(t *testing.T) {
@@ -59,9 +73,7 @@ func TestArithmeticRefusals(t *testing.T) {
 			got := stmttest.ArithmeticRefusals("t", arithmeticColumns, s, test.args, test.readOnly, arithmeticColumnsOf)
 			is.Equal(t, fmt.Sprintf("%q", test.want), fmt.Sprintf("%q", got))
 			for _, refusal := range got {
-				if !strings.Contains(refusal, "LIMIT") && !strings.Contains(refusal, "correlated") {
-					is.True(t, stmttest.ArithmeticRefusal(refusal), refusal)
-				}
+				is.True(t, stmttest.ArithmeticRefusal(refusal), refusal)
 			}
 		})
 	}

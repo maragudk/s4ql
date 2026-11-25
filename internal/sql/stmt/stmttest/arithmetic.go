@@ -84,7 +84,9 @@ func plainName(t stmt.Term, args []any) string {
 // s4ql's rules give for it, whatever their order, which is the engine's own. They are the refusals of
 // the values of its conditions and of those of its subqueries that are of another class than what
 // they are compared with, by the rule of exact types, of an operand of arithmetic that is a column of
-// type TEXT or BLOB or an argument that is text or a blob, of a correlated subquery, as
+// type TEXT or BLOB or an argument that is text or a blob, which s4ql refuses as it binds the
+// expression, so that a condition or an assignment with such an operand has no refusal of the class
+// of its expression, of a correlated subquery, as
 // [CorrelatedRefusal] gives it, of an argument of a LIMIT, of the select or of a subquery, that is no
 // integer from 0, as [LimitRefusal] gives it, and, but in a read-only transaction, which refuses the
 // write first, of the values of SET of another class than their columns. columnsOf gives the name
@@ -195,10 +197,13 @@ func whereRefusals(name string, columns []TableColumn, where []stmt.Condition, s
 			continue
 		}
 		var tested, testedName string
+		// operands is false where an operand of the arithmetic of the condition is refused, before its
+		// class is compared.
+		operands := true
 		if c.Expression.Present() {
 			var refused []string
 			tested, refused = expressionClass(c.Expression, columns, args)
-			refusals = append(refusals, refused...)
+			refusals, operands = append(refusals, refused...), len(refused) == 0
 			testedName = "an expression of type " + tested
 		} else {
 			position := ColumnOf(columns, c.Column)
@@ -219,7 +224,7 @@ func whereRefusals(name string, columns []TableColumn, where []stmt.Condition, s
 		case v.Expression.Present():
 			var refused []string
 			value, refused = expressionClass(v.Expression, columns, args)
-			refusals = append(refusals, refused...)
+			refusals, operands = append(refusals, refused...), operands && len(refused) == 0
 			valueName = "an expression of type " + value
 		case v.Subquery > 0:
 			q := subs[v.Subquery-1]
@@ -236,6 +241,9 @@ func whereRefusals(name string, columns []TableColumn, where []stmt.Condition, s
 			value, valueName = ArgumentClass(BoundValue(v, args)), plainName(v, args)
 		}
 		arithmetic := c.Expression.Present() || c.Value.Expression.Present()
+		if !operands {
+			continue
+		}
 		if !meets(value, tested) || arithmetic && !numeric(value, tested) {
 			refusals = append(refusals, fmt.Sprintf("s4ql: not supported: %v compared with %v", valueName, testedName))
 		}
@@ -266,6 +274,9 @@ func setRefusals(name string, columns []TableColumn, set []stmt.Assignment, args
 			var refused []string
 			value, refused = expressionClass(v.Expression, columns, args)
 			refusals = append(refusals, refused...)
+			if len(refused) > 0 {
+				continue
+			}
 			valueName = "an expression of type " + value
 		default:
 			value, valueName = ArgumentClass(BoundValue(v, args)), plainName(v, args)
@@ -280,7 +291,8 @@ func setRefusals(name string, columns []TableColumn, set []stmt.Assignment, args
 // expressionClass of the arithmetic expression e over the columns, with the arguments args: the
 // class of its values, "integer", "real", or "null" where an argument that is NULL makes every value
 // NULL, as the documents of the evaluator type it, and the refusals of its operands: each column of
-// type TEXT or BLOB, and each argument that is text or a blob, at its offset.
+// type TEXT or BLOB, and each argument that is text or a blob, at its offset. Where there are
+// refusals, the expression has no class, and the class is "".
 func expressionClass(e stmt.Expression, columns []TableColumn, args []any) (string, []string) {
 	switch e.Kind {
 	case stmt.ExprValue:
@@ -305,6 +317,8 @@ func expressionClass(e stmt.Expression, columns []TableColumn, args []any) (stri
 	left, refusals := expressionClass(e.Operands[0], columns, args)
 	right, more := expressionClass(e.Operands[1], columns, args)
 	switch {
+	case len(refusals) > 0 || len(more) > 0:
+		return "", append(refusals, more...)
 	case left == "null" || right == "null":
 		return "null", append(refusals, more...)
 	case left == "real" || right == "real":
@@ -336,10 +350,11 @@ func expressionNames(e stmt.Expression) []stmt.Name {
 	return names
 }
 
-// ArithmeticRefusal reports whether message is a refusal that [ArithmeticRefusals] may give.
+// ArithmeticRefusal reports whether message is of a kind of refusal that [ArithmeticRefusals] may
+// give: of an operand of arithmetic, of a class, of a correlated subquery, or of an argument of LIMIT.
 func ArithmeticRefusal(message string) bool {
 	for _, part := range []string{" in arithmetic (at offset ", " in arithmetic, which is ", " compared with an expression of type ", "s4ql: not supported: an expression of type ",
-		" compared with the column ", " for the column "} {
+		" compared with the column ", " for the column ", "s4ql: not supported: correlated subquery (at offset ", ", for LIMIT, which takes an integer from 0"} {
 		if strings.Contains(message, part) {
 			return true
 		}
