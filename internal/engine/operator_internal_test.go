@@ -781,6 +781,18 @@ func TestFilter(t *testing.T) {
 		is.Equal(t, "i = 2", accessText(scanOf(q).access))
 	})
 
+	t.Run("should read a subquery of a reading without an engine forward, by the path of the zero value", func(t *testing.T) {
+		// The fake scans t in the order of k, so a subquery that reads forward gives 1 first, and one
+		// that reads backward 4.
+		s, err := stmt.Check("select * from t where k = (select k from t)")
+		is.NotError(t, err)
+		q, err := buildQuery(t.Context(), fakeTx{newTable()}, NewPlan(s).(*Query), nil, 1_000_000_000, reading{})
+		is.NotError(t, err)
+		rows, err := collect(t.Context(), q)
+		is.NotError(t, err)
+		is.Equal(t, "[10,1]", fmt.Sprint(rows))
+	})
+
 	t.Run("should pass on an error of the read of the indexes of the table of a select, an update, and a delete that the indexes decide, and scan nothing", func(t *testing.T) {
 		for _, src := range []string{"select * from t where w > 0", "update t set w = 1 where w > 0", "delete from t where w > 0"} {
 			f := newTable()
@@ -853,6 +865,7 @@ func TestFilter(t *testing.T) {
 			{name: "a test for NULL with a value", root: &Filter{Source: scanT, Conditions: []Condition{{Column: k, Operator: stmt.OpIsNull, Value: &Integer{Value: 1}}}}, err: "a test for NULL with a value"},
 			{name: "a comparison without a value", root: &Filter{Source: scanT, Conditions: []Condition{{Column: k, Operator: stmt.OpLess}}}, err: "a comparison without a value"},
 			{name: "a comparison of a parameter without its argument", root: &Filter{Source: scanT, Conditions: []Condition{{Column: k, Operator: stmt.OpLess, Value: &Parameter{Number: 1}}}}, err: "the parameter 1 of a statement with 0 arguments"},
+			{name: "a comparison with a subquery that the statement does not have", root: &Filter{Source: scanT, Conditions: []Condition{{Column: k, Operator: stmt.OpLess, Value: &Subquery{Number: 1}}}}, err: "the subquery 1 of a statement with 0"},
 		}
 		for _, c := range cases {
 			_, err := buildQuery(t.Context(), fakeTx{newTable()}, &Query{Root: c.root}, nil, 1_000_000_000, reading{})
@@ -1174,6 +1187,18 @@ func TestChangeRows(t *testing.T) {
 			is.Equal(t, "the scan fails", err)
 			is.Equal(t, int64(0), n)
 			is.Equal(t, byRules("[table t]", scanAll), calls, fmt.Sprint("scan all: ", scanAll))
+		}
+	})
+
+	t.Run("should give the error of the read of a subquery, which it computes when it is built", func(t *testing.T) {
+		// The scan of the subquery is the first, and the statement scans only when it runs.
+		for _, src := range []string{"update t set w = 5 where k = (select k from t where w = 20)", "delete from t where k = (select k from t where w = 20)"} {
+			f := newTable()
+			f.scanFails = 0
+			s, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			_, err = buildSink(t.Context(), fakeTx{f}, NewPlan(s), nil, bugs{}, 1_000_000_000, readingOf(false))
+			is.Equal(t, "the scan fails", fmt.Sprint(err), src)
 		}
 	})
 

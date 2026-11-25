@@ -2997,11 +2997,44 @@ func TestCheck(t *testing.T) {
 			sqliteError(t, src, tables(t).exec(src), 1, "Expression tree is too large (maximum depth 1000)")
 			verify(t, src)
 		}
+		// The select of a subquery without a WHERE is 1 deep, that of its column, and with a LIMIT 2
+		// deep, that of the LIMIT, so with a WHERE of the statement of n conditions, of which the last
+		// is the comparison with the subquery, SQLite takes 998 conditions and 997 with the LIMIT.
+		outer := func(n int, sub string) string {
+			return "select * from t where v = 1" + strings.Repeat(" and v = 1", n-2) + " and k = " + sub
+		}
+		for _, c := range []struct {
+			sub  string
+			most int
+		}{
+			{"(select k from u)", 998},
+			{"(select k from u limit 1)", 997},
+			{"(select k from u order by a)", 998},
+		} {
+			src := outer(c.most, c.sub)
+			_, err := stmt.Check(src)
+			is.NotError(t, err, c.sub)
+			is.NotError(t, tables(t).exec(src), c.sub)
+			verify(t, src)
+
+			src = outer(c.most+1, c.sub)
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", strings.Index(src, "(select")), err.Error(), c.sub)
+			sqliteError(t, src, tables(t).exec(src), 1, "Expression tree is too large (maximum depth 1000)")
+			verify(t, src)
+		}
+		// With 997 conditions in the subquery, SQLite parses the statement and refuses it once it has
+		// found the tables, at the subquery, and with 998 already while it parses, as below.
+		src := "select * from t where k = " + inner(997)
+		_, err := stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", strings.Index(src, "(select")), err.Error())
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		verify(t, src)
 		// SQLite counts the level of a subquery while it parses too: with 998 conditions, the comparison
 		// is too deep, at the token after it, with 999 the subquery, at its closing parenthesis, and with
 		// 1000 its WHERE, at the AND that makes it too deep.
-		src := "select * from t where k = " + inner(998)
-		_, err := stmt.Check(src)
+		src = "select * from t where k = " + inner(998)
+		_, err = stmt.Check(src)
 		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)), err.Error())
 		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
 		verify(t, src)
@@ -3009,6 +3042,12 @@ func TestCheck(t *testing.T) {
 		_, err = stmt.Check(src)
 		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-1), err.Error())
 		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
+		// A compound select in that subquery is not supported at its UNION, before the closing
+		// parenthesis, where SQLite finds the subquery too deep.
+		src = strings.TrimSuffix(src, ")") + " union select k from u)"
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: compound SELECT (at offset %v)", strings.Index(src, "union")), err.Error())
 		verify(t, src)
 		src = "select * from t where k = " + inner(1000)
 		_, err = stmt.Check(src)

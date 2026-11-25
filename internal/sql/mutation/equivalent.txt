@@ -989,7 +989,7 @@ internal/engine/access.go orderBy.better operator: len(a.equal) > len(best.equal
 	The comparison is made only where the two lengths differ, so > and >= agree.
 internal/engine/access.go orderBy.place condition: !ok => true #2
 	Where the key delivers the order, skippedGaps leaves out of the key only columns after the first that the ORDER BY names and that it does not name, which are pinned ones, which delivers skips anyway, or ones after the end of the ORDER BY, so delivers gives the same answer for it.
-internal/engine/operator.go build.ordered condition: f != nil => true #4
+internal/engine/operator.go build.ordered condition: f != nil => true #5
 	A filter of no conditions gives every row of its source, in its order, and its errors.
 internal/engine/operator.go build.access condition: err != nil => false #4
 	fit fails only for bounds of values of two types, which checkType refuses before the access is chosen.
@@ -1211,3 +1211,115 @@ internal/engine/returning.go newReturned constant: len(data)-1 => len(data)-2
 	The planted bug dropLast then leaves out the last two rows of several, which TestDifferential_plantedBugs finds by the rows, as it finds dropLast.
 internal/engine/tx.go Conn.writeIn remove statement: planted.oldValues, planted.deleteNone, planted.starKeyFirst = c.e.bugs.oldValues, c.e.bugs.deleteNone, c.e.bugs.starKeyFirst =>
 	The planted bugs oldValues, deleteNone, and starKeyFirst left out of a write in a transaction, which statements of their own find, as for skipUnique and convertReal.
+
+# The scalar subquery of slice 15 in the recognizer, internal/sql/stmt.
+stmt/recognize.go recognizer.selectOf swap arguments: max(height, 2) => max(2, height)
+	max is symmetric.
+stmt/recognize.go recognizer.conditionValue constant: return r.term(e), 0 => return r.term(e), 1
+	The height of a value that is no subquery is not read: recognizer.condition gives the depth of the comparison for a condition without a subquery.
+
+# The scalar subquery of slice 15 in the engine, internal/engine.
+internal/engine/operator.go build.ordered condition: f != nil => true #3
+	A query without WHERE has no subqueries, so b.subs is nil and build.compute returns before it reads f.
+internal/engine/operator.go build.types remove statement: continue =>
+	The value of the condition of a subquery is computed after the check of the types, so it is nil there, and the next test continues too.
+internal/engine/subquery.go build.value condition: in.filter != nil => true #2
+	A filter of no conditions gives every row of its source, in its order, and its errors.
+internal/engine/subquery.go subqueries.lengths condition: err != nil => true #4
+	The check of the length of the argument of LIMIT is the last statement, so returning its error at once returns nil as the end does.
+internal/engine/telemetry.go report.end condition: r.access != "" => true #5
+	report.reads sets the reads of the subqueries only together with the access.
+internal/engine/telemetry.go report.end swap arguments: append(attrs, r.subqueryAttrs()...) => append(r.subqueryAttrs(), attrs...)
+	The attributes of an event are named, and their order means nothing.
+
+# The planted bugs of slice 15 in the engine, internal/engine.
+internal/engine/bugs.go changedOneByOne condition: err != nil => true
+	The planted bug ownChanges then changes no row, another wrong count of changes, which TestDifferential_plantedBugs and TestSimulation_plantedBugs find, as they find ownChanges.
+internal/engine/bugs.go changedOneByOne operator: err != nil => err == nil
+	The planted bug ownChanges then changes no row, which the tests of the planted bugs find, as for the mutant above.
+internal/engine/bugs.go changedOneByOne condition: err != nil => false
+	The planted bug ownChanges then goes on past an error of the read of the rows, which the runs of the planted bugs do not meet; the bug, the subqueries computed again after each change, stays, and the tests find it as before.
+internal/engine/bugs.go changedOneByOne remove statement: return int64(len(done)), err =>
+	As the mutant above: an error of the read of the rows, which the runs of the planted bugs do not meet.
+internal/engine/bugs.go changedOneByOne condition: !slices.ContainsFunc(done, func(v *s4qlpb.Value) bool { n, _ := compare(v, row[key]); return n == 0 }) => false
+	The planted bug ownChanges then changes no row, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne negation: !slices.ContainsFunc(done, func(v *s4qlpb.Value) bool { n, _ := compare(v, row[key]); return n == 0 }) => slices.ContainsFunc(done, func(v *s4qlpb.Value) bool { n, _ := compare(v, row[key]); return n == 0 })
+	The first row is not among the rows changed, of which there are none, so the planted bug ownChanges then changes no row, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne swap arguments: compare(v, row[key]) => compare(row[key], v)
+	Two values are equal in either order.
+internal/engine/bugs.go changedOneByOne remove statement: next = row[key] =>
+	The planted bug ownChanges then changes no row, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne remove statement: break =>
+	The planted bug ownChanges then changes the last row that it did not change first, not the first, and still computes the subqueries again after each change, which the tests of the planted bugs find as they find ownChanges.
+internal/engine/bugs.go changedOneByOne condition: next == nil => true
+	The planted bug ownChanges then changes no row, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne operator: next == nil => next != nil
+	The planted bug ownChanges then ends at the first row that it finds, without a change, another wrong count of changes, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne condition: err != nil => true #2
+	The planted bug ownChanges then ends after its first change, another wrong count of changes, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne operator: err != nil => err == nil #2
+	The planted bug ownChanges then ends after its first change that succeeds, another wrong count of changes, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne condition: err != nil => false #2
+	The planted bug ownChanges then goes on past an error of a change, another bug, and still computes the subqueries again after each change, which the tests of the planted bugs find as they find ownChanges.
+internal/engine/bugs.go changedOneByOne remove statement: return int64(len(done)), err => #2
+	As the mutant above: the planted bug goes on past an error of a change.
+internal/engine/bugs.go changedOneByOne condition: err != nil => true #3
+	The planted bug ownChanges then ends after its first change, another wrong count of changes, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne operator: err != nil => err == nil #3
+	The planted bug ownChanges then ends after its first change whose subqueries it computes again without an error, another wrong count of changes, which the tests of the planted bugs find.
+internal/engine/bugs.go changedOneByOne condition: err != nil => false #3
+	The planted bug ownChanges then goes on past an error of the subqueries computed again, which the runs of the planted bugs do not meet; the bug stays, and the tests find it as before.
+internal/engine/bugs.go changedOneByOne remove statement: return int64(len(done)), err => #3
+	As the mutant above: an error of the subqueries computed again, which the runs of the planted bugs do not meet.
+internal/engine/operator.go build.bind condition: b.subs != nil => true
+	The planted bug ownChanges then also changes the rows of a statement without a subquery one at a time, which a change of the key can make differ from changeRows: another bug in the same place, and the tests of the planted bugs find ownChanges by the statements with a subquery.
+internal/engine/operator.go build.bind condition: err != nil => true #5
+	The planted bug ownChanges then computes the subqueries again but keeps the access of their first values, another bug in the same place, which the tests of the planted bugs find as they find ownChanges.
+internal/engine/operator.go build.bind operator: err != nil => err == nil #5
+	As the mutant above where the subqueries are computed again without an error, which is so in every run of the planted bugs.
+internal/engine/operator.go build.bind condition: err != nil => false #5
+	The planted bug ownChanges then goes on past an error of the subqueries computed again, which the runs of the planted bugs do not meet.
+internal/engine/operator.go build.bind remove statement: return err =>
+	As the mutant above: an error of the subqueries computed again, which the runs of the planted bugs do not meet.
+internal/engine/subquery.go build.compute condition: b.how.e != nil => true
+	The planted bug keepValue runs only on an engine, whose reading has e; only a reading of a test has none.
+internal/engine/subquery.go build.compute swap arguments: fmt.Sprint(in.number, "\n", Format(in.query)) => fmt.Sprint("\n", in.number, Format(in.query))
+	The planted bug keepValue: the key still holds the number and the plan of the subquery, and a plan starts with a letter, so two subqueries have two keys.
+internal/engine/subquery.go build.compute swap arguments: fmt.Sprint(in.number, "\n", Format(in.query)) => fmt.Sprint(in.number, Format(in.query), "\n")
+	The planted bug keepValue: the key still holds the number and the plan of the subquery, and a plan starts with a letter, so two subqueries have two keys.
+internal/engine/subquery.go build.compute condition: !read.found => true
+	The planted bug noRowMatches then also makes the comparison IS NOT NULL where the subquery found a row, another wrong set of rows, which the tests of the planted bugs find as they find noRowMatches.
+internal/engine/subquery.go build.compute negation: !read.found => read.found
+	The planted bug noRowMatches then makes the comparison IS NOT NULL only where the subquery found a row, another wrong set of rows, which the tests of the planted bugs find.
+internal/engine/subquery.go build.compute constant: values[0] => values[1]
+	The planted bug swapSubqueries then gives both subqueries the value of one of them, another wrong value, which the tests of the planted bugs find as they find swapSubqueries.
+internal/engine/subquery.go build.compute constant: values[1] => values[0] #2
+	The planted bug swapSubqueries then gives both subqueries the value of one of them, another wrong value, which the tests of the planted bugs find.
+internal/engine/subquery.go build.compute constant: values[0] => values[1] #2
+	The planted bug swapSubqueries then gives both subqueries the value of one of them, another wrong value, which the tests of the planted bugs find.
+internal/engine/subquery.go build.value remove statement: inside.order.turnMixed, inside.order.ascendLast, inside.order.skipGap = inside.how.bugs.turnMixed, inside.how.bugs.ascendLast, inside.how.bugs.skipGap =>
+	The planted bugs turnMixed, ascendLast, and skipGap left out of the ORDER BY of a subquery, which the ORDER BY of the statements finds, as before slice 15.
+internal/engine/subquery.go build.value condition: row[in.position].HasNull() => true
+	The planted bug firstNotNull then passes over every row, so the subquery is NULL, another wrong value, which the tests of the planted bugs find as they find firstNotNull.
+internal/engine/subquery.go build.value condition: row[in.position].HasNull() => !row[in.position].HasNull()
+	The planted bug firstNotNull then passes over every row that is not NULL, another wrong value, which the tests of the planted bugs find.
+internal/engine/tx.go Conn.writeIn remove statement: defer func() { _ = rd.close(ctx) }() =>
+	The planted bug outsideTx then leaves its reader open, which only its runs open.
+internal/engine/tx.go Conn.writeIn remove statement: _ = rd.close(ctx) =>
+	As the mutant above: the planted bug outsideTx leaves its reader open.
+internal/engine/tx.go Conn.writeIn condition: err != nil => false #4
+	The planted bug outsideTx then goes on past an error of the opening of its reader, which its runs do not meet.
+internal/engine/tx.go Conn.writeIn remove statement: return Result{}, nil, err => #4
+	As the mutant above: an error of the opening of the reader of outsideTx, which its runs do not meet.
+internal/engine/tx.go Conn.writeIn condition: err != nil => true #4
+	The planted bug outsideTx then changes nothing and gives no error, a write that is lost, which the tests of the planted bugs find as they find outsideTx.
+internal/engine/tx.go Conn.writeIn operator: err != nil => err == nil #4
+	As the mutant above where the reader opens, which it does in every run of the planted bugs.
+internal/engine/tx.go Conn.writeIn condition: err != nil => false #5
+	The planted bug outsideTx then goes on past an error of the read transaction of its reader, which its runs do not meet.
+internal/engine/tx.go Conn.writeIn remove statement: return Result{}, nil, err => #5
+	As the mutant above: an error of the read transaction of the reader of outsideTx, which its runs do not meet.
+internal/engine/tx.go Conn.writeIn condition: err != nil => true #5
+	The planted bug outsideTx then changes nothing and gives no error, a write that is lost, which the tests of the planted bugs find.
+internal/engine/tx.go Conn.writeIn operator: err != nil => err == nil #5
+	As the mutant above where the read transaction begins, which it does in every run of the planted bugs.

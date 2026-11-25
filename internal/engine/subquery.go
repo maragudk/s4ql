@@ -45,9 +45,6 @@ import (
 // order of the text. A nil *subqueries is the subqueries of a statement without one.
 type subqueries struct {
 	list []*inner
-	// prepared is set for a select, which finds the tables of its subqueries and expands their `*`
-	// before it looks any name up.
-	prepared bool
 	// outer is the table of the statement, once it is found.
 	outer *s4qlpb.CreateTable
 	// correlated is the first name of a subquery that is correlated, or nil.
@@ -80,13 +77,13 @@ type inner struct {
 	named bool
 }
 
-// newSubqueries of a statement whose subqueries are qs, a select if prepared, or nil for a statement
-// without one. It panics for a subquery of another shape than [Query] says.
-func newSubqueries(qs []*Query, prepared bool) *subqueries {
+// newSubqueries of a statement whose subqueries are qs, or nil for a statement without one. It panics
+// for a subquery of another shape than [Query] says.
+func newSubqueries(qs []*Query) *subqueries {
 	if qs == nil {
 		return nil
 	}
-	s := &subqueries{prepared: prepared}
+	s := &subqueries{}
 	for i, q := range qs {
 		in := &inner{number: i + 1, query: q}
 		p, ok := q.Root.(*Project)
@@ -179,7 +176,7 @@ func (s *subqueries) count() int {
 // [subqueries.uncorrelated] refuses.
 func (s *subqueries) lookup(of map[string]int, outer *s4qlpb.CreateTable, name stmt.Name) (int, bool) {
 	position, ok := of[name.Fold()]
-	if ok || outer == nil {
+	if ok {
 		return position, ok
 	}
 	if _, ok := columnPositions(outer)[name.Fold()]; !ok {
@@ -218,9 +215,8 @@ func (s *subqueries) names(ctx context.Context, b build, in *inner) error {
 		in.position = position
 	}
 	if in.filter != nil {
-		inside := b
-		inside.subs = s
-		conditions, err := inside.walk(ctx, in.filter, t, s.outer)
+		// b is the build of the statement, whose subqueries are s.
+		conditions, err := b.walk(ctx, in.filter, t, s.outer)
 		if err != nil {
 			return err
 		}
@@ -243,9 +239,7 @@ func (s *subqueries) names(ctx context.Context, b build, in *inner) error {
 // SQLite names depends on the order in which its plan codes the conditions, so the statement is not
 // supported then, at the second.
 func (s *subqueries) widths(f *Filter) error {
-	if s == nil {
-		return nil
-	}
+	// Without subqueries, no condition has one, and s is not read.
 	var wide []Condition
 	for _, c := range f.Conditions {
 		if sub, ok := c.Value.(*Subquery); ok && s.list[sub.Number-1].width > 1 {
@@ -315,10 +309,9 @@ func (s *subqueries) types(b build, sub *Subquery, t *s4qlpb.CreateTable, positi
 	if err != nil {
 		return err
 	}
-	if in.filter != nil {
-		if err := b.types(in.filter, in.s, in.conditions); err != nil {
-			return err
-		}
+	// Without a filter, there are no conditions, and types checks none.
+	if err := b.types(in.filter, in.s, in.conditions); err != nil {
+		return err
 	}
 	if in.limit != nil {
 		if in.n, err = limitCount(in.limit.Count, in.count); err != nil {
@@ -440,7 +433,9 @@ func (b build) value(ctx context.Context, in *inner) (*s4qlpb.Value, subqueryRea
 		// LIMIT 0 gives no row, and reads none; the planted bug limitZeroRow reads the first.
 		return null(), subqueryRead{access: "none"}, nil
 	}
-	inside := build{r: b.r, args: b.args, limit: b.limit, how: b.how.inner(), order: in.by}
+	// The values of the subquery are evaluated and checked already, so the build of its access needs
+	// neither the arguments nor the length limit.
+	inside := build{r: b.r, how: b.how.inner(), order: in.by}
 	if b.how.bugs.orderIgnored {
 		// The planted bug: the access of the conditions alone, whose first row is taken.
 		inside.order = orderBy{}
