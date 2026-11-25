@@ -595,7 +595,16 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 	for _, p := range parametersIn(q) {
 		bound = append(bound, args[p-1])
 	}
-	alone := o.run(t, src[q.Span.Start:q.Span.End], bound...)
+	run := o.run
+	alone := run(t, src[q.Span.Start:q.Span.End], bound...)
+	if alone.err == tooBig && q.OrderBy != nil {
+		// SQLite refuses a sorted subquery under the lowered length limit for the record of what it
+		// sorts of a row, which s4ql answers: the known difference of slice 13, as for a select, see
+		// [pair.sortTooBig]. Its candidates are then SQLite's without the limit.
+		if unlimited := o.unlimited(t, src[q.Span.Start:q.Span.End], bound...); unlimited.err == "" {
+			alone, run = unlimited, o.unlimited
+		}
+	}
 	if alone.err != "" {
 		// SQLite refuses the subquery, as for a value of another type than its column, which s4ql
 		// refuses, and SQLite may not.
@@ -622,7 +631,7 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 		}
 	}
 	text, bound := stmttest.SelectText(&stmt.Select{Table: q.Table, Columns: list, Where: q.Where}, args, orderBy)
-	rows := o.run(t, text, bound...)
+	rows := run(t, text, bound...)
 	if rows.err == tooBig {
 		// A literal of the subquery that is longer than the length limit, which SQLite turns into NULL
 		// for a blob in the text, and refuses as an argument here, and s4ql refuses before it computes
@@ -644,6 +653,35 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 		}
 	}
 	return candidates, first
+}
+
+func TestSubqueryCandidates(t *testing.T) {
+	t.Run("should take the candidates of a sorted subquery that SQLite refuses under the lowered length limit from SQLite without the limit", func(t *testing.T) {
+		// As in TestPair_sortTooBig, SQLite refuses `select b from l order by c` under a limit of 1,000
+		// bytes for the record of what it sorts, the known difference of slice 13, and s4ql gives the
+		// row, as sequence 25196 of TestDifferential did in a subquery.
+		y := tally{}
+		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), y)
+		long := strings.Repeat("x", 990)
+		for _, src := range []string{
+			"create table l (k int primary key, a text, b text, c real, d real) strict, without rowid",
+			"insert into l values (1, '', '" + long + "', 4.0, 5.0)",
+		} {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		is.Equal(t, tooBig, p.o.run(t, "select b from l order by c limit 1").err)
+
+		src := "update l set a = 'y' where b = (select b from l order by c limit 1) returning k"
+		s, err := stmt.Check(src)
+		is.NotError(t, err)
+		candidates, first := subqueryCandidates(t, p.o, src, subqueriesIn(s)[0], nil)
+		is.EqualSlice(t, []string{strconv.Quote(long)}, candidates)
+		is.Equal(t, strconv.Quote(long), first)
+
+		is.Equal(t, "", p.step(stmttest.Call{Src: src, Query: true, Supported: true}), src)
+		is.Equal(t, "", p.last.err)
+		is.Equal(t, p.o.state(t), p.i.state())
+	})
 }
 
 // parametersIn the subquery q: the numbers of its parameters, in the order of the text.
