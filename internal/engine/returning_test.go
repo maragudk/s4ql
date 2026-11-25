@@ -576,9 +576,9 @@ func TestPair_returning(t *testing.T) {
 			is.Equal(t, p.o.state(t), p.i.state(), src)
 		}
 
-		// An integral value of a REAL column takes no byte in the record of the table and eight in that
-		// of a row of RETURNING, so SQLite refuses a row near the limit with RETURNING * too, which
-		// names no column twice, as sequence 16832 of TestDifferential did.
+		// The record of the table holds an integral value of a REAL column as an integer, 0 in no byte,
+		// and that of a row of RETURNING in eight, so SQLite refuses a row near the limit with
+		// RETURNING * too, which names no column twice, as in sequence 16832 of TestDifferential.
 		for _, src := range []string{"insert into c values (0.0, ?) returning *", "insert into c values (0.0, '" + strings.Repeat("x", 995) + "') returning *"} {
 			y := tally{}
 			p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, stmttest.LengthLimit), y)

@@ -869,10 +869,10 @@ const (
 	// with `string or blob too big` under a lowered length limit, where s4ql gives the rows: SQLite
 	// writes each row of RETURNING into a record of its own, which can be longer than the row's record
 	// in the table, as where RETURNING names a column twice, or where a REAL column holds an integral
-	// value, which takes no byte in the table's record and eight in that of RETURNING. It is the known
-	// difference of slice 14, which the lead kept, in docs/todo/slice-14.md. The statement without
-	// RETURNING must succeed in SQLite under the limit, and s4ql's rows must be SQLite's without the
-	// limit. See [pair.returningTooBig].
+	// value, which the table's record holds as an integer, in no byte for 0 and 1, and that of
+	// RETURNING in eight. It is the known difference of slice 14, kept, in docs/todo/slice-14.md. The
+	// statement without RETURNING must succeed in SQLite under the limit, and s4ql's rows must be
+	// SQLite's without the limit. See [pair.returningTooBig].
 	excusedReturningTooBig = "a statement with RETURNING, which SQLite refuses for the length of a row of RETURNING, checked against SQLite without the length limit"
 )
 
@@ -1308,8 +1308,8 @@ func (p *pair) sortTooBig(src string, args []any, got answer) bool {
 // under a lowered length limit, and gives SQLite's answer without the limit then: an insert, an
 // update, or a delete with RETURNING, which SQLite refuses for the record of a row of RETURNING,
 // longer than the row's record in the table, and which SQLite runs without RETURNING under the
-// limit, in a savepoint that is rolled back. The run without the limit changes SQLite's database, so the
-// caller compares its answer with the engine's in place of the refusal.
+// limit, in a savepoint that is rolled back. The run without the limit changes SQLite's database,
+// so the caller compares its answer with the engine's in place of the refusal.
 func (p *pair) returningTooBig(s stmt.Statement, src string, args []any) (answer, bool) {
 	t, o := p.t, p.o
 	t.Helper()
@@ -3881,6 +3881,9 @@ func flagSet(name string) bool {
 // With the flag -seed, also -seed 0, the test runs -sequences sequences from that seed, each with
 // the profile of its seed, and checks no count. With more -sequences than the default, it runs that
 // many of each profile, those of the full run among them, and checks the least numbers alone.
+//
+// A sequence that fails is reported, and the run goes on to the next one until ten have failed, so
+// that one failure does not hide another. A run in which a sequence failed checks no count.
 func TestDifferential(t *testing.T) {
 	replayed := flagSet("seed")
 	n := *sequences
@@ -3890,8 +3893,6 @@ func TestDifferential(t *testing.T) {
 	total := tally{}
 	runs := map[string]tally{}
 	var names []string
-	// A sequence that fails is reported, and the run goes on to the next, so that one failure does not
-	// hide another, up to ten.
 	failed := 0
 	run := func(s uint64) {
 		p := stmttest.ProfileOf(s)
@@ -3930,6 +3931,10 @@ func TestDifferential(t *testing.T) {
 		}
 	}
 	t.Logf("%v calls ran in SQLite, and were compared with it", total[comparedWithSQLite])
+	if failed > 0 {
+		// A sequence that failed counted only some of its statements, so no count is checked or written.
+		return
+	}
 	const doc = "What each profile of TestDifferential of the engine reaches in its full run."
 	switch full := !slow() && !replayed && atDefault("length"); {
 	case full && atDefault("sequences"):

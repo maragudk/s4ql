@@ -570,7 +570,8 @@ func subqueriesIn(s stmt.Statement) []stmt.Select {
 // the statement, on the database of o: the texts of the values that it may give, each once, and the
 // text of the value that SQLite's select of its text alone gives first; nil and "" for a subquery
 // whose table SQLite does not have, of `*` of more than one column, with a name that its table does
-// not have, or with an argument of LIMIT that s4ql refuses.
+// not have, or with an argument of LIMIT that s4ql refuses. A subquery with ORDER BY is sorted by
+// SQLite without the lowered length limit.
 func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args []any) ([]string, string) {
 	t.Helper()
 	_, columns := o.columns(t, q.Table.Value)
@@ -595,16 +596,16 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 	for _, p := range parametersIn(q) {
 		bound = append(bound, args[p-1])
 	}
+	// Both selects below sort a subquery with ORDER BY, and SQLite refuses a sort under the lowered
+	// length limit for the record of what it sorts of a row, which s4ql answers: the known difference
+	// of slice 13, as for a select, see [pair.sortTooBig]. So they run without the limit then, unless
+	// a literal or an argument of the subquery is longer than the limit, which s4ql refuses.
+	long := func(v any) bool { return o.limit > 0 && byteLength(v) > o.limit }
 	run := o.run
-	alone := run(t, src[q.Span.Start:q.Span.End], bound...)
-	if alone.err == tooBig && q.OrderBy != nil {
-		// SQLite refuses a sorted subquery under the lowered length limit for the record of what it
-		// sorts of a row, which s4ql answers: the known difference of slice 13, as for a select, see
-		// [pair.sortTooBig]. Its candidates are then SQLite's without the limit.
-		if unlimited := o.unlimited(t, src[q.Span.Start:q.Span.End], bound...); unlimited.err == "" {
-			alone, run = unlimited, o.unlimited
-		}
+	if q.OrderBy != nil && !long(q.Limit.Value) && !slices.ContainsFunc(bound, long) && !slices.ContainsFunc(q.Where, func(c stmt.Condition) bool { return long(c.Value.Value) }) {
+		run = o.unlimited
 	}
+	alone := run(t, src[q.Span.Start:q.Span.End], bound...)
 	if alone.err != "" {
 		// SQLite refuses the subquery, as for a value of another type than its column, which s4ql
 		// refuses, and SQLite may not.
@@ -656,31 +657,69 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 }
 
 func TestSubqueryCandidates(t *testing.T) {
-	t.Run("should take the candidates of a sorted subquery that SQLite refuses under the lowered length limit from SQLite without the limit", func(t *testing.T) {
-		// As in TestPair_sortTooBig, SQLite refuses `select b from l order by c` under a limit of 1,000
-		// bytes for the record of what it sorts, the known difference of slice 13, and s4ql gives the
-		// row, as sequence 25196 of TestDifferential did in a subquery.
-		y := tally{}
-		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), y)
-		long := strings.Repeat("x", 990)
-		for _, src := range []string{
-			"create table l (k int primary key, a text, b text, c real, d real) strict, without rowid",
-			"insert into l values (1, '', '" + long + "', 4.0, 5.0)",
-		} {
+	// As in TestPair_sortTooBig, SQLite refuses `select b from l order by c` under a limit of 1,000
+	// bytes for the record of what it sorts of the row of the long text, the known difference of
+	// slice 13, and s4ql gives the row.
+	long := strings.Repeat("x", 990)
+	newSetUp := func(t *testing.T, rows ...string) *pair {
+		t.Helper()
+		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), tally{})
+		for _, src := range append([]string{"create table l (k int primary key, a text, b text, c real, d real) strict, without rowid"}, rows...) {
 			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
 		}
+		return p
+	}
+	candidatesOf := func(t *testing.T, p *pair, src string, args ...any) ([]string, string) {
+		t.Helper()
+		s, err := stmt.Check(src)
+		is.NotError(t, err)
+		return subqueryCandidates(t, p.o, src, subqueriesIn(s)[0], args)
+	}
+
+	t.Run("should take the candidates of a sorted subquery that SQLite refuses under the lowered length limit from SQLite without the limit", func(t *testing.T) {
+		// Sequence 25196 of TestDifferential met it in goqite's receive.
+		p := newSetUp(t, "insert into l values (1, '', '"+long+"', 4.0, 5.0)")
 		is.Equal(t, tooBig, p.o.run(t, "select b from l order by c limit 1").err)
 
 		src := "update l set a = 'y' where b = (select b from l order by c limit 1) returning k"
-		s, err := stmt.Check(src)
-		is.NotError(t, err)
-		candidates, first := subqueryCandidates(t, p.o, src, subqueriesIn(s)[0], nil)
+		candidates, first := candidatesOf(t, p, src)
 		is.EqualSlice(t, []string{strconv.Quote(long)}, candidates)
 		is.Equal(t, strconv.Quote(long), first)
 
 		is.Equal(t, "", p.step(stmttest.Call{Src: src, Query: true, Supported: true}), src)
 		is.Equal(t, "", p.last.err)
 		is.Equal(t, p.o.state(t), p.i.state())
+	})
+
+	t.Run("should take the candidates from SQLite without the limit where only the sort of the rows that tie is too big", func(t *testing.T) {
+		// SQLite's sort for LIMIT 1 builds no record of a row that sorts after the first, so the subquery
+		// alone succeeds, and the sort of every row, for the rows that tie, does not.
+		p := newSetUp(t, "insert into l values (1, '', 'short', 1.0, 5.0)", "insert into l values (2, '', '"+long+"', 4.0, 5.0)")
+		is.Equal(t, "", p.o.run(t, "select b from l order by c limit 1").err)
+		is.Equal(t, tooBig, p.o.run(t, "select b, c from l order by c").err)
+
+		src := "update l set a = 'y' where b = (select b from l order by c limit 1) returning k"
+		candidates, first := candidatesOf(t, p, src)
+		is.EqualSlice(t, []string{`"short"`}, candidates)
+		is.Equal(t, `"short"`, first)
+		is.Equal(t, "", p.step(stmttest.Call{Src: src, Query: true, Supported: true}), src)
+		is.Equal(t, p.o.state(t), p.i.state())
+	})
+
+	t.Run("should give no candidates for a sorted subquery with a literal or an argument longer than the limit, which s4ql refuses", func(t *testing.T) {
+		p := newSetUp(t, "insert into l values (1, '', 'short', 1.0, 5.0)")
+		longer := strings.Repeat("z", 1200)
+		for _, c := range []struct {
+			src  string
+			args []any
+		}{
+			{"select k from l where b = (select b from l where a < '" + longer + "' order by c limit 1)", nil},
+			{"select k from l where b = (select b from l where a < ? order by c limit 1)", []any{longer}},
+		} {
+			candidates, first := candidatesOf(t, p, c.src, c.args...)
+			is.Equal(t, 0, len(candidates), c.src)
+			is.Equal(t, "", first, c.src)
+		}
 	})
 }
 

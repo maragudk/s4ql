@@ -159,7 +159,7 @@ Before merging, confirm that the pull request has checks and that every one of t
 
 The results of the workflow `Nightly`, in `.github/workflows/nightly.yml`, are read every day, and a failure is investigated the same day.
 
-- **Why:** the nightly failed five nights in a row from 2026-11-21, and opened issue #117, and nobody looked until Markus pointed at it on 2026-11-25: "BTW see also https://github.com/maragudk/s4ql/issues/117". All five were oracles of tests that were too narrow, but a real fault would have waited as long.
+- **Why:** the nightly failed five nights in a row from 2026-11-21, and opened issue #117, and nobody looked until Markus pointed at it on 2026-11-25: "BTW see also https://github.com/maragudk/s4ql/issues/117". Every failure of the five came from the oracle of a test that was too narrow, but a real fault would have waited as long.
 - **How to apply:** the lead, or a small sub-agent, reads the last nightly runs at the start of a session and before a larger round of sub-agents, with `gh run list --workflow nightly.yml --limit 3`. A failure goes the same day to a sub-agent that reproduces every failing seed or input at the run's commit and at `main`, and says whether it is a fault in s4ql. A list of accepted symptoms or an excuse is widened only when the planted bug or a recorded difference is shown to cause exactly that symptom. The workflow never closes its issue itself, so the lead closes it when a nightly has passed again.
 
 ### A test never skips itself, except under `-short`
