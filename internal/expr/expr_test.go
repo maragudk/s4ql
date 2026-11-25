@@ -439,6 +439,8 @@ func TestBound_Eval_faults(t *testing.T) {
 		_, err := b.Eval([]*s4qlpb.Value{integer(1)})
 		is.True(t, errors.Is(err, expr.ErrInternal), err)
 		is.Equal(t, "s4ql: internal error: the column at 2 of a row of 1 values", err.Error())
+		_, err = b.Eval([]*s4qlpb.Value{integer(1), integer(2)})
+		is.Equal(t, "s4ql: internal error: the column at 2 of a row of 2 values", err.Error())
 	})
 
 	t.Run("should give an internal error that names the fault for a value of another type than its column", func(t *testing.T) {
