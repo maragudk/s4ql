@@ -455,6 +455,17 @@ func TestEngine_subquery(t *testing.T) {
 		pin(t, setup, "select k from t where v = ? and k >= (select * from u where a = ?) order by k", "1/1: row value misused", int64(1), int64(2))
 	})
 
+	t.Run("should give row value misused of a subquery of * of more than one column in an update or a delete on the left of an expression, and sub-select returns N columns on its right", func(t *testing.T) {
+		setup := []string{"create table t (k int primary key, v int) strict, without rowid", "create table u (a int primary key, b int) strict, without rowid"}
+		pin(t, setup, "update t set v = 1 where (select * from u) = k + 1", "1/1: row value misused")
+		pin(t, setup, "update t set v = 1 where (select * from u) < k * 2", "1/1: row value misused")
+		pin(t, setup, "update t set v = 1 where (select * from u) >= -k", "1/1: row value misused")
+		pin(t, setup, "delete from t where v = 1 and (select * from u) > k - ?", "1/1: row value misused", int64(1))
+		pin(t, setup, "update t set v = 1 where k + 1 = (select * from u)", "1/1: sub-select returns 2 columns - expected 1")
+		pin(t, setup, "delete from t where k + 1 != (select * from u)", "1/1: sub-select returns 2 columns - expected 1")
+		pin(t, setup, "delete from t where (select * from u) <= k", "1/1: sub-select returns 2 columns - expected 1")
+	})
+
 	t.Run("should run goqite's receive without its arithmetic on goqite's table, two in a row picking two messages, and none on an empty queue", func(t *testing.T) {
 		p := newPair(t, newInstance(t, engine.Options{}), tally{})
 		for _, src := range []string{goqiteTable, goqiteIndex} {

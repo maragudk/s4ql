@@ -166,12 +166,18 @@ func TestSubqueries(t *testing.T) {
 
 	t.Run("should give no offset for SQLite's errors of a subquery of more than one column in an update or a delete", func(t *testing.T) {
 		s := &subqueries{list: []*inner{{width: 2}}}
+		tested := stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "k"}}, {Kind: stmt.ExprValue, Value: stmt.Integer(1)}}}
 		for _, c := range []struct {
 			c    Condition
 			want string
 		}{
 			{c: Condition{Operator: stmt.OpNotEqual, ValueFirst: true, Value: &Subquery{Number: 1}}, want: "row value misused"},
 			{c: Condition{Operator: stmt.OpEqual, Value: &Subquery{Number: 1}}, want: "sub-select returns 2 columns - expected 1"},
+			{c: Condition{Operator: stmt.OpLess, ValueFirst: true, Value: &Subquery{Number: 1}}, want: "sub-select returns 2 columns - expected 1"},
+			{c: Condition{Expression: tested, Operator: stmt.OpLess, ValueFirst: true, Value: &Subquery{Number: 1}}, want: "row value misused"},
+			{c: Condition{Expression: tested, Operator: stmt.OpEqual, ValueFirst: true, Value: &Subquery{Number: 1}}, want: "row value misused"},
+			{c: Condition{Expression: tested, Operator: stmt.OpEqual, Value: &Subquery{Number: 1}}, want: "sub-select returns 2 columns - expected 1"},
+			{c: Condition{Expression: tested, Operator: stmt.OpNotEqual, Value: &Subquery{Number: 1}}, want: "sub-select returns 2 columns - expected 1"},
 		} {
 			var se *sqlerr.Error
 			is.True(t, errors.As(s.widths(&Filter{Conditions: []Condition{c.c}}), &se), c.want)

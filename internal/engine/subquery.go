@@ -236,7 +236,8 @@ func (s *subqueries) names(ctx context.Context, b build, in *inner) error {
 // widths of the subqueries of the conditions of the filter f of an update or a delete, once the
 // names of its WHERE are looked up: for a subquery of `*` of a table of more than one column,
 // SQLite's `sub-select returns %d columns - expected 1`, or `row value misused` for one on the left of
-// != or <>, which SQLite's code generator gives. With two or more such subqueries, which of them
+// != or <>, or on the left of an arithmetic expression that the condition tests, with any operator,
+// which SQLite's code generator gives. With two or more such subqueries, which of them
 // SQLite names depends on the order in which its plan codes the conditions, so the statement is not
 // supported then, at the second.
 func (s *subqueries) widths(f *Filter) error {
@@ -252,7 +253,7 @@ func (s *subqueries) widths(f *Filter) error {
 		return nil
 	case 1:
 		c := wide[0]
-		if c.Operator == stmt.OpNotEqual && c.ValueFirst {
+		if c.ValueFirst && (c.Operator == stmt.OpNotEqual || c.Expression.Present()) {
 			return rowValueMisused(-1)
 		}
 		return subSelectColumns(s.list[c.Value.(*Subquery).Number-1].width)
