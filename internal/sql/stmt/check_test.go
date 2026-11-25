@@ -3238,6 +3238,109 @@ func TestCheck(t *testing.T) {
 		}
 	})
 
+	t.Run("should take an expression as deep as SQLite allows, and not one deeper", func(t *testing.T) {
+		// SQLite allows an expression of 1000 levels. A literal, a column, and a parameter are one
+		// level, a literal after a sign two, and an operator one more than its deeper operand. A
+		// comparison is one level more than its deeper side, and SQLite checks each value of SET on its
+		// own.
+		for _, c := range []struct {
+			name, start, end string
+			most             int
+			deep             string
+			offset           func(src string) int
+		}{
+			{"in set", "update t set v = 1", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a negative literal", "update t set v = -1", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set with a where", "update t set v = 1", " where v = 1", 999, "expression", func(src string) int { return len(src) - len("+ 1 where v = 1") }},
+			{"on the right of a comparison", "select * from t where v = 1", "", 998, "WHERE", func(src string) int { return len(src) }},
+			{"on the left of a comparison", "select * from t where 1", " = v", 998, "WHERE", func(src string) int { return len(src) }},
+			{"on the left after a negative literal", "delete from t where -1", " = v", 997, "WHERE", func(src string) int { return len(src) }},
+			{"after an and", "select * from t where v = 1 and v = 1", "", 997, "WHERE", func(src string) int { return len(src) }},
+		} {
+			chain := func(n int) string {
+				return c.start + strings.Repeat(" + 1", n) + c.end
+			}
+			src := chain(c.most)
+			_, err := stmt.Check(src)
+			is.NotError(t, err, c.name)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind, c.name)
+			o, _ := verify(t, src)
+			is.Equal(t, supported, o, c.name)
+
+			src = chain(c.most + 1)
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: %v deeper than SQLite's limit (at offset %v)", c.deep, c.offset(src)), err.Error(), c.name)
+			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message, c.name)
+			verify(t, src)
+		}
+		// In a subquery, SQLite counts the levels of the WHERE of the statement and those of the WHERE
+		// of the subquery together, once it has found the tables, as for a subquery of conditions.
+		inner := func(n int) string {
+			return "select * from t where k = (select k from u where a = 1" + strings.Repeat(" + 1", n) + ")"
+		}
+		tables := open(t)
+		tables.must("create table t (k int primary key, v int) strict, without rowid")
+		tables.must("create table u (k int primary key, a int) strict, without rowid")
+		src := inner(497)
+		_, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.NotError(t, tables.exec(src))
+		o, _ := verify(t, src)
+		is.Equal(t, supported, o)
+		src = inner(498)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", strings.Index(src, "(select")), err.Error())
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		sqliteError(t, src, tables.exec(src), 1, "Expression tree is too large (maximum depth 1000)")
+		verify(t, src)
+	})
+
+	t.Run("should take 100 parentheses open at once, and not 101, of which SQLite's parser takes either", func(t *testing.T) {
+		// Each level holds as many entries of the stack of SQLite's parser as an expression can: an
+		// addition and a multiplication that wait for their right operands, a negation, and a
+		// parenthesis. In a subquery after an AND, the statement holds more entries of the stack.
+		for _, c := range []struct{ start, end string }{
+			{"update t set v = ", ""},
+			{"select * from t where v = 1 and k = (select k from u where a = ", ")"},
+		} {
+			nested := func(n int) string {
+				return c.start + strings.Repeat("a + b * -(", n) + "a + 1" + strings.Repeat(")", n) + c.end
+			}
+			src := nested(100)
+			_, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+			o, _ := verify(t, src)
+			is.Equal(t, supported, o)
+
+			src = nested(101)
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len(c.start)+100*len("a + b * -(")+len("a + b * -")), err.Error())
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+			verify(t, src)
+		}
+		// Where SQLite's parser gives up, the pass has refused the text long before.
+		src := "update t set v = " + strings.Repeat("(1 + ", 831) + "1" + strings.Repeat(")", 831)
+		_, err := stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len("update t set v = ")+100*len("(1 + ")), err.Error())
+		is.Equal(t, "Recursion limit", oracle.Judge(src).Message)
+		verify(t, src)
+	})
+
+	t.Run("should take the receive of goqite's queue with the arithmetic in set", func(t *testing.T) {
+		src := "update goqite set timeout = ?, received = received + 1 where queue = ? and id = (select id from goqite where queue = ? and ? >= timeout and received < ? " +
+			"order by priority desc, created limit 1) returning id, body, received"
+		s, err := stmt.Check(src)
+		is.NotError(t, err)
+		u := s.(*stmt.Update)
+		is.Equal(t, 5, u.Parameters())
+		at := strings.Index(src, "received +")
+		is.Equal(t, fmt.Sprintf("%#v", ex(eop(stmt.ExprAdd, at, at+len("received + 1"), ec("received", at), ev(stmt.Integer(1), at+len("received + "), at+len("received + 1"))), at, at+len("received + 1"))),
+			fmt.Sprintf("%#v", u.Set[1].Value))
+		o, _ := verify(t, src)
+		is.Equal(t, supported, o)
+	})
+
 	t.Run("should answer for a subquery what SQLite does with its errors, its value, and its LIMIT", func(t *testing.T) {
 		// What SQLite does with a statement with a subquery, for the engine. In a select, SQLite finds
 		// every table first, that of the statement and then those of its subqueries in the order of the

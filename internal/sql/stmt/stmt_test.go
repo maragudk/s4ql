@@ -425,10 +425,17 @@ func canonicalTerm(v stmt.Term) string {
 	return literal(v.Value)
 }
 
-// canonicalExpression of e, with every name in double quotes and every operator in parentheses of its
-// own, so that SQLite reads the tree of e from it whatever the precedence and the grouping of the
-// operators.
+// canonicalExpression of e, with every name in double quotes, and parentheses only around an operand
+// that SQLite would otherwise group with another operator: a left operand that binds less tightly than
+// its operator, a right operand that binds less tightly or as tightly, and an operator after a
+// negation. So the text has no more parentheses open at once than any text of e.
 func canonicalExpression(e stmt.Expression) string {
+	group := func(x stmt.Expression, tighter bool) string {
+		if x.Operands != nil && (precedence(x.Kind) < precedence(e.Kind) || !tighter && precedence(x.Kind) == precedence(e.Kind)) {
+			return "(" + canonicalExpression(x) + ")"
+		}
+		return canonicalExpression(x)
+	}
 	switch e.Kind {
 	case stmt.ExprValue:
 		return literal(e.Value)
@@ -437,9 +444,36 @@ func canonicalExpression(e stmt.Expression) string {
 	case stmt.ExprColumn:
 		return quote(e.Column.Value)
 	case stmt.ExprNegate:
-		return "-" + canonicalExpression(e.Operands[0])
+		return "-" + group(e.Operands[0], false)
 	}
-	return "(" + canonicalExpression(e.Operands[0]) + " " + e.Kind.String() + " " + canonicalExpression(e.Operands[1]) + ")"
+	return group(e.Operands[0], true) + " " + e.Kind.String() + " " + group(e.Operands[1], false)
+}
+
+// precedence of the operator of the kind k, higher for one that binds more tightly: a negation more
+// tightly than * and /, and those more tightly than + and -.
+func precedence(k stmt.ExpressionKind) int {
+	switch k {
+	case stmt.ExprNegate:
+		return 3
+	case stmt.ExprMultiply, stmt.ExprDivide:
+		return 2
+	case stmt.ExprAdd, stmt.ExprSubtract:
+		return 1
+	}
+	return 4
+}
+
+// parenthesized expression e, with every name in double quotes and every operator in parentheses of
+// its own, so that SQLite reads the tree of e from it whatever the precedence and the grouping of the
+// operators.
+func parenthesized(e stmt.Expression) string {
+	switch e.Kind {
+	case stmt.ExprValue, stmt.ExprParameter, stmt.ExprColumn:
+		return canonicalExpression(e)
+	case stmt.ExprNegate:
+		return "(-" + parenthesized(e.Operands[0]) + ")"
+	}
+	return "(" + parenthesized(e.Operands[0]) + " " + e.Kind.String() + " " + parenthesized(e.Operands[1]) + ")"
 }
 
 // canonicalWhere of the conditions where, whose subqueries are subqueries: " where " and the
@@ -2796,10 +2830,10 @@ var expressionSamples = []stmt.Value{stmt.Integer(7), stmt.Integer(-3), stmt.Rea
 // checkExpressions of the supported statement s that src holds, if it has an arithmetic expression,
 // and report whether it has one; such a statement has no other check of its meaning. Each literal of
 // an expression has the value that SQLite gives its text. Each expression gives in SQLite, for every
-// row of a table of sample values and with sample arguments, what its canonical text gives, in which
-// every operator has parentheses of its own, so that SQLite reads the expression of src with the tree
-// of s. And src gives on such tables the result of the canonical text of s, the same changes, and the
-// same rows left in the table of the statement.
+// row of a table of sample values and with sample arguments, what its text gives in which every
+// operator has parentheses of its own, so that SQLite reads the expression of src with the tree of s.
+// And src gives on such tables the result of the canonical text of s, the same changes, and the same
+// rows left in the table of the statement.
 func checkExpressions(t testing.TB, open func(testing.TB) *db, src string, s stmt.Statement) bool {
 	t.Helper()
 	expressions, tables := expressionsOf(s)
@@ -2906,7 +2940,7 @@ func checkExpressions(t testing.TB, open func(testing.TB) *db, src string, s stm
 				own = append(own, args[n.Parameter-1])
 			}
 		}
-		sql := fmt.Sprintf("select %v, %v from %v", src[e.Span.Start:e.Span.End], canonicalExpression(e), quote(byFold[tables[i].Fold()].a.name))
+		sql := fmt.Sprintf("select %v, %v from %v", src[e.Span.Start:e.Span.End], parenthesized(e), quote(byFold[tables[i].Fold()].a.name))
 		_, rows, err := d.run(sql, slices.Concat(own, own))
 		if err != nil {
 			t.Fatalf("%q: %q: %v", src, sql, err)
