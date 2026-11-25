@@ -72,3 +72,55 @@ The pinned table `TestBound_Eval` alone found 15 of the 16, all but the conversi
 ### Future work
 
 - The engine step: wire `expr` into planning and execution, remove `engine.expressionRefusal`, decide the refusals of SET into a column of another type and of a comparison of a TEXT or BLOB column with an expression, and map `expr.ErrInternal` to the engine's internal error.
+
+## Step 2: The fuzz run, the README, the sanitizer, and the self-review
+
+**Author:** arithmetic-eval builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Run the fuzz target locally for a few minutes and report what it found." and "Self-review your diff against this brief when done, and fix what you find."
+**Interpretation:** Fuzz `FuzzExpr` for minutes, have a writer draft the package's README, run the checks that CI runs on this package, review the diff, and fix what matters.
+**Inferred intent:** Hand in a branch that passes CI as it is, with a reference document for the engine step and an honest account of what was checked.
+
+### What I did
+
+Ran `go test -run '^$' -fuzz '^FuzzExpr$' -fuzztime 5m -test.fuzzcachedir=/Volumes/990/s4ql/arithmetic-eval/fuzzcache .` in `/internal/expr`: 20,552,290 executions on 10 workers, 918 new inputs in the corpus, no failure. To see what the corpus holds, I copied it into `testdata/fuzz/FuzzExpr` for one run with a temporary print of the outcomes and removed both after: about 475 of the 918 inputs are cases that the check compares with SQLite (185 reals, 101 integers, 63 reals 0.0, 42 overflows, 26 NULL, 18 infinities, 17 divisions by zero, 10 reals -0.0, 12 refusals), and the rest are texts that the pass refuses or that name another column.
+
+Gave the README to a `fabrik:writer` sub-agent on Opus, which wrote `/internal/expr/README.md` and found four faults in my work: a test named "should give an integer for an integer divided by a real" that expects a real; the claim in the notes and in the kinds file that "an operation of an integer and a real cannot be infinite", which is false for `*` and for an integer divided by a real (the kinds file itself requires both); "9 of the 14" planted faults where the list holds 16; and an awkward comment on `expr.ErrEvaluation`. I fixed all four. Counting again from my runs, `TestBound_Eval` alone found 15 of the 16 faults, all but the conversion too early.
+
+Ran `make test` (passed), `golangci-lint run ./internal/expr/` (0 issues), `go test -count=30 -shuffle on ./internal/expr/`, and, since the package has a fuzz test and links C, the sanitizer in a Linux container: `docker run ... golang:1.27.3 make asan-test ASANPKGS=maragu.dev/s4ql/internal/expr`, and `go test -asan -run '^$' -fuzz '^FuzzExpr$' -fuzztime 60s .` there (143,462 executions, no failure).
+
+Ran the `code-review` skill at the level high. It found no bug in the arithmetic, and three nits: the zero `expr.Program` panics in `Bind` (index -1); an argument slice changed after `Bind` would make `Bound.Type` wrong; and the NULL item of `/docs/todo/expressions.md` is kept as built, where the rule of `AGENTS.md` deletes built items. I fixed the first, with a test. The second is the documented contract of `Bind` ("Bound holds args, which must not change while it is used"), so I left it. The third follows the lead's brief, which asked to record the item there as decided by the lead; the lead may delete it.
+
+Merged `main`, which now holds the statement pass as #150, into the branch.
+
+### Why
+
+The fuzz run and the sanitizer are what CI runs on this package; the review and the writer are the independent reads of the diff.
+
+### What worked
+
+The fuzz run found nothing in five minutes, and about half of what it kept are real cases, so the fuzzer does reach the evaluator and not only the pass's refusals.
+
+### What didn't work
+
+Under the address sanitizer `TestBound_Eval_allocations` failed: `expr_test.go:399: Expected "0", but got "14" (type float64)`, from `make asan-test ASANPKGS=maragu.dev/s4ql/internal/expr` in the container. The same test passes in the same container without `-asan`, so it is the instrumentation, which moves values to the heap. The test keeps its value check and asserts 0 allocations only without the sanitizer (`asanEnabled` in `/internal/expr/asan_test.go` and `noasan_test.go`, as in `internal/sql/stmt`).
+
+The review was asked for `arithmetic-stmt...HEAD`, and that branch was gone by then (merged and deleted), so it reviewed `main...HEAD`, which is the same diff after the merge of #150.
+
+### What I learned
+
+`go test` prints what a passing fuzz test writes to standard output only with `-v`.
+
+### What was tricky
+
+Nothing more than above.
+
+### What warrants review
+
+The asan exception of the allocation test, and the decision to keep the contract of `Bind` on the arguments rather than check them again per row.
+
+### Future work
+
+None beyond the engine step of step 1.
