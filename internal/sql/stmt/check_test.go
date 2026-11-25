@@ -3298,6 +3298,23 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message, c.name)
 			verify(t, src)
 		}
+		// The deeper operand may be the right one: * binds more tightly than +, so in `1 + 1 * 1 * ...`
+		// the + is one level more than the chain of * on its right, which is refused at its end.
+		right := func(n int) string {
+			return "update t set v = 1 + 1" + strings.Repeat(" * 1", n)
+		}
+		src := right(998)
+		_, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		o, _ := verify(t, src)
+		is.Equal(t, supported, o)
+		src = right(999)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: expression deeper than SQLite's limit (at offset %v)", len(src)), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
+
 		// In a subquery, SQLite counts the levels of the WHERE of the statement and those of the WHERE
 		// of the subquery together, once it has found the tables, as for a subquery of conditions.
 		inner := func(n int) string {
@@ -3306,11 +3323,11 @@ func TestCheck(t *testing.T) {
 		tables := open(t)
 		tables.must("create table t (k int primary key, v int) strict, without rowid")
 		tables.must("create table u (k int primary key, a int) strict, without rowid")
-		src := inner(497)
-		_, err := stmt.Check(src)
+		src = inner(497)
+		_, err = stmt.Check(src)
 		is.NotError(t, err)
 		is.NotError(t, tables.exec(src))
-		o, _ := verify(t, src)
+		o, _ = verify(t, src)
 		is.Equal(t, supported, o)
 		src = inner(498)
 		_, err = stmt.Check(src)
