@@ -95,3 +95,56 @@ The coordinator stopped every run for the main disk, at 4 GB free when I checked
 ### Future work
 
 - Resume the run when the coordinator allows it; check the four open survivors above.
+
+## Step 3: The resumed run, and the survivors of `expression.go` and `operator.go`
+
+**Author:** mutation-arithmetic-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (the coordinator) "The machine was restarted: swap is 0 and the main disk has 47 GB free. Resume your mutation run now where it stopped, with the runner's parallelism at 6. Three things: (1) the 16 mutants that were counted as killed by a timeout were run while the machine was thrashing, so run those 16 again on the quiet machine before they count, and say in the record how each ended; (2) note the rate of the resumed run in the diary; (3) carry on with the task as briefed: no survivor unexplained, the four open ones included, then the README section, `equivalent.txt`, the notes in `docs/todo/arithmetic.md`, `make test`, lint, the whole engine package without `-short`, and the final report. If free space on `/` falls under 20 GB (`df -h /`), stop the run as before and report."
+**Interpretation:** Take the 16 timeouts out of `results.jsonl` so that the tool runs them again, resume with `-j 6`, and go on classifying.
+**Inferred intent:** Results that do not depend on the state of the machine.
+
+### What I did
+
+- Kept the results of the first part as `out1/results-before-restart.jsonl` and its 16 timeouts as `out1/timeouts-before-restart.jsonl`, and wrote `out1/results.jsonl` without them, so the tool ran them again. The resumed run (`run2.log`) started at 20:33 with 2,216 mutants to run with 6 at once, at a load of about 4 after the restart, and planned the stages again in about 3 min: the hand-written stage took 64 s on the quiet machine, 77 s before. A watch stops me if `/` falls under 20 GB; it stayed at 45 to 47 GB.
+- **The 16 timeouts again.** Each of the 16 timed out again, at about 62 s, in the first stage (`-first`, whose limit is 1 min): 15 mutants of `Conn.write` that leave a transaction open or skip its roll back, so that the next statement of the test waits for good, and `leftmostOffset remove statement: e = e.Operands[0]`, which loops for good. They count as timed out.
+- **The rate.** 326 results in the first 1 h 13 min of the resumed run, 4.4 a minute, while the mutants of `update.check` and the timeouts ran; then 7.9 and 10.7 a minute: 1,300 of the 2,216 after 3 h 8 min, about 7 a minute over all, against 2.4 a minute before the restart.
+- **New tests**, each checked against its survivors with `scripts/many.sh` (which now tells a missing key from a kill):
+  - `TestBindArithmetic` (a column that the table does not have), `TestFromExpr`, `TestClass_String`, and `TestCompareNumbers` in `/internal/engine/expression_internal_test.go`.
+  - In `TestFilter` of `/internal/engine/operator_internal_test.go`: the internal errors of a pair (`a = b`) whose second column the row does not have; the internal errors of a computed condition (position, a text in the row, two classes, an operator), and that a computed condition that overflows is not true and fails, on either side and with the value first; a filter without a projection that refuses a type (`build.bind`); a read-only update or delete that computes no constant and reads no index (`build.constants`); the internal error of a pair in `build.types`.
+  - `TestUpdate_newRow`: the internal errors of a copy of a column that the row does not have and of an assignment of no value.
+  - In `TestEngine_arithmetic`: the refusals of the two sides of a comparison in the order of the text, a TEXT column on the left before a text argument on the right and the other way round.
+- **Code changed.** The message of the internal error of `compareNumbers` for two classes, "a comparison of an real with a integer", reads "a comparison of values of the classes real and integer" now. And the planted bug `nullCompares` was never planted in a comparison of two columns, which its comment in `/internal/engine/bugs.go` promises: `build.types` set `paired` and went on before `build.arithmetic`, which sets the flag, so its branch in `condition.holds` was dead, which is why every one of its 25 mutants survived. `build.types` sets the flag for a pair now; `TestDifferential_plantedBugs/nullCompares` and `TestSimulation_plantedBugs/nullCompares` still find it.
+- Equivalent entries so far are at the end of `/internal/sql/mutation/equivalent.txt`.
+
+### Why
+
+Each survivor needs a test or a reason.
+
+### What worked
+
+- A throwaway test file that prints what a mutant does, run with `scripts/mut.sh`, to tell a real gap from an equivalent mutant: it showed that `build.bind` is reached only by a plan without a projection, and that the mutant of `build.constants` reads the indexes of a read-only sink.
+
+### What didn't work
+
+- `many.sh` first counted every run without `ok` as a kill, so a key that no longer named a mutant (after the change of the message of `compareNumbers`) showed as killed; it now prints `MISSING` with the emitter's "no mutant with key".
+- A command that appended to a file in the scratch directory and then changed into the worktree for `git` was refused: "this command changes directory to a location computed at runtime before running git". Split in two.
+
+### What I learned
+
+- A survivor that sits only in a planted bug can show that the planted bug itself is dead code, as for `nullCompares` of a pair.
+
+### What was tricky
+
+- The order of the checks: a mutant that binds the value before the tested side changes only which refusal of two comes, and the tests pinned only one refusal at a time.
+
+### What warrants review
+
+- The one-line change in `build.types` that plants `nullCompares` in a pair.
+- The reasons of the entries for `build.types` and `build.arithmetic` in `/internal/sql/mutation/equivalent.txt`.
+
+### Future work
+
+- The rest of the run, and a rerun of the mutants of the changed declarations on the final code.
