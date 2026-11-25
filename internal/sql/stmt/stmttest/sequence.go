@@ -75,15 +75,16 @@ type Sequence struct {
 	step uint64
 	// The streams of the areas that start anew at each statement, as [stepStream] says. The stream
 	// of an area that is off in the profile panics at a draw.
-	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning, rSubquery, rArithmetic Rand
-	g                                                                                                                                  *Generator
+	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning, rSubquery, rArithmetic, rSeveral Rand
+	g                                                                                                                                            *Generator
 	// inner are the selects of the subqueries that the hooks of the statement that the sequence writes
 	// gave, for [Generator.Inner], by their numbers from 1.
 	inner []stmt.Select
 	// decided is set by [Sequence.Decide].
 	decided bool
 	// received is set by [Sequence.receive] for the RETURNING of its update, which goqite's receive
-	// has, and [Sequence.returning] clears it.
+	// has, and by [Sequence.several] for the last statement of some of its texts, and
+	// [Sequence.returning] clears it.
 	received bool
 	// failingRow is set by [Sequence.arithmeticCondition] for a select whose WHERE has a value that
 	// fails for some rows, for the LIMIT that [Sequence.order] then gives it, and the hook of the WHERE
@@ -298,6 +299,7 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	q.rPlan, q.rTables, q.rInserts, q.rSelects, q.rChanges = q.stream(areaPlan), q.stream(areaTables), q.stream(areaInserts), q.stream(areaSelects), q.stream(areaChanges)
 	q.rIndexes, q.rDefaults, q.rArguments, q.rOthers = q.stream(areaIndexes), q.stream(areaDefaults), q.stream(areaArguments), q.stream(areaOthers)
 	q.rOrder, q.rReturning, q.rSubquery, q.rArithmetic = q.stream(areaOrder), q.stream(areaReturning), q.stream(areaSubquery), q.stream(areaArithmetic)
+	q.rSeveral = q.stream(areaSeveral)
 	r := q.entity(areaNames, "")
 	tableNames, columnNames := common[0], common[1]
 	for range max(1+r.IntN(2), p.TableNames) {
@@ -2211,8 +2213,14 @@ type Call struct {
 	// Query reports whether to run the call as a query.
 	Query bool
 	// Supported reports whether the text is a statement of the slices that a [Sequence] writes, which
-	// s4ql supports.
+	// s4ql supports. It is false for a text of several statements.
 	Supported bool
+	// Statements is the number of statements of a text of several statements that [Sequence.several]
+	// wrote, from 2, and 0 for every other text.
+	Statements int
+	// Each reports, of a text of several statements, whether each of them is a statement of the slices
+	// that a Sequence writes, which s4ql supports, as Supported reports it of a text of one.
+	Each bool
 }
 
 // Integers of args, and true, if each is a Go integer without a name that fits a signed 64-bit
@@ -2250,7 +2258,7 @@ func integer(a any) (int64, bool) {
 func (q *Sequence) Next() Call {
 	q.step++
 	c := q.next()
-	if odds := q.profile.Around[map[bool]int{true: 0, false: 1}[len(c.Args) > 0]]; c.Supported && odds > 0 && q.rArguments.IntN(odds) == 0 {
+	if odds := q.profile.Around[map[bool]int{true: 0, false: 1}[len(c.Args) > 0]]; (c.Supported || c.Each) && odds > 0 && q.rArguments.IntN(odds) == 0 {
 		c.Args = q.around(c.Args)
 	}
 	return c
@@ -2447,6 +2455,16 @@ func (q *Sequence) next() Call {
 		}
 		return c
 	}
+	if p.on(areaSeveral) && q.rSeveral.IntN(p.Several) == 0 {
+		return q.several()
+	}
+	return q.statement()
+}
+
+// statement of the sequence: the next call of a statement that the generator writes, of the kind
+// that the weights of the profile draw, with an argument for each parameter.
+func (q *Sequence) statement() Call {
+	p := q.profile
 	r := q.rPlan
 	total := 0
 	for _, w := range p.Weights {

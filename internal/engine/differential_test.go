@@ -3894,6 +3894,10 @@ func variantOf(seed uint64) (restarts bool, limit int) {
 // the 300 of the one sequence of all areas before the profiles.
 func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
+	case stmttest.Several:
+		// Texts of several statements, which [engine.Conn.Exec] refuses for their second statement:
+		// they are [engine.Conn.ExecAll]'s.
+		return 0
 	case stmttest.Mixed:
 		n *= 5
 	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic:
