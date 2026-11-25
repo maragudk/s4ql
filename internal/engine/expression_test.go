@@ -1484,6 +1484,23 @@ func TestEngine_arithmetic(t *testing.T) {
 		}
 	})
 
+	t.Run("should compute the values of SET of each row in the order of the text", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		setUp(t, i)
+		// In the row of k = 1, a is 10 and b is 0, so a / b fails with a division by zero and a +
+		// 9223372036854775807 with an overflow: the assignment that comes first in the text fails.
+		for _, c := range []struct{ src, want string }{
+			{"update t set a = a / b, b = a + 9223372036854775807", "s4ql: division by zero in / (at offset 17)"},
+			{"update t set b = a + 9223372036854775807, a = a / b", "s4ql: integer overflow in + (at offset 17)"},
+			{"update t set n = a / b, r = r * 1e308, a = a + 9223372036854775807 where k = 1", "s4ql: division by zero in / (at offset 17)"},
+			{"update t set a = a + 9223372036854775807, n = a / b, r = r * 1e308 where k = 1", "s4ql: integer overflow in + (at offset 17)"},
+			{"update t set r = r * 1e308 * 10, a = a / b where k = 1", "s4ql: real result that is not finite in * (at offset 17)"},
+			{"update t set a = a / b, r = r * 1e308 * 10 where k = 1", "s4ql: division by zero in / (at offset 17)"},
+		} {
+			is.Equal(t, c.want, i.execValues(c.src, nil).message, c.src)
+		}
+	})
+
 	t.Run("should give SQLite's attempt to write a readonly database for an update or a delete in a read-only transaction, and compute no constant there", func(t *testing.T) {
 		d := newDuo(t, 0,
 			"create table t (k int primary key, a int, s text) strict, without rowid",
@@ -1547,6 +1564,9 @@ func TestEngine_arithmetic(t *testing.T) {
 		is.Equal(t, "", i.execValues("update t set n = n + 1 where k = 1", nil).err)
 		is.Equal(t, evaluationError, i.execValues("update t set a = a / (k - 1)", nil).err)
 		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
+		// One that fails on its last row, in the order of the key, takes back the rows before it.
+		is.Equal(t, "s4ql: division by zero in / (at offset 17)", i.execValues("update t set n = n / (k - 4)", nil).message)
+		is.Equal(t, `columns "k INT, n INT", rows ["1,11" "2,20" "3,30" "4,4"]`, i.queryValues("select k, n from t", nil).String())
 		is.NotError(t, i.c.Commit(t.Context()))
 		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
 	})
