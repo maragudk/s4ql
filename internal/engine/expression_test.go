@@ -1406,6 +1406,14 @@ func TestEngine_arithmetic(t *testing.T) {
 			}
 			is.Equal(t, c.want, text, c.src)
 		}
+		// The two sides of a comparison are checked in the order of the text: the column of type TEXT
+		// on the left before the argument that is text on the right, and the other way round.
+		for _, c := range []struct{ src, want string }{
+			{"select k from t where s + 1 = k + ?", "s4ql: not supported: column of type TEXT in arithmetic (at offset 22)"},
+			{"select k from t where k + ? = s + 1", "s4ql: not supported: argument 1 in arithmetic, which is text (at offset 26)"},
+		} {
+			is.Equal(t, c.want, i.execValues(c.src, values([]any{"x"})).message, c.src)
+		}
 		// SQLite gives row value misused at the first leaf of the expression, after the sign of a
 		// literal, as the shell shows it.
 		is.Equal(t, "", i.exec("create table u (x int primary key, y int) strict, without rowid").err)

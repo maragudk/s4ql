@@ -1419,7 +1419,7 @@ func (b build) types(f *Filter, s *scan, conditions []condition) error {
 			if columnClass(columns[pair].GetType()) != columnClass(columns[c.position].GetType()) {
 				return fmt.Errorf("%w: %v compared with %v", stmt.ErrNotSupported, columnName(s.table, pair), columnName(s.table, c.position))
 			}
-			c.paired, c.pair = true, pair
+			c.paired, c.pair, c.nullCompares = true, pair, b.how.bugs.nullCompares
 			continue
 		}
 		if fc.Expression.Present() || arithmetic != nil {
