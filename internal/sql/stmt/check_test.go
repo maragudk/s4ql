@@ -3276,6 +3276,10 @@ func TestCheck(t *testing.T) {
 		}{
 			{"in set", "update t set v = 1", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
 			{"in set after a negative literal", "update t set v = -1", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a column", "update t set v = v", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a parameter", "update t set v = ?", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a negated column", "update t set v = -v", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a negated parameter", "update t set v = -?", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
 			{"in set with a where", "update t set v = 1", " where v = 1", 999, "expression", func(src string) int { return len(src) - len("+ 1 where v = 1") }},
 			{"on the right of a comparison", "select * from t where v = 1", "", 998, "WHERE", func(src string) int { return len(src) }},
 			{"on the left of a comparison", "select * from t where 1", " = v", 998, "WHERE", func(src string) int { return len(src) }},
