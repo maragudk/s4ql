@@ -1425,3 +1425,5 @@ internal/engine/operator.go build.walk constant: -1 => -0
 	A condition that tests an expression reads its tested side from the expression, never at its position, and serves no access; only the planted bug noRowMatches reads it, which then tests the column at 0 for NOT NULL, as it does for -1.
 internal/engine/operator.go build.walk condition: !c.ValueFirst => true
 	The names of an expression of the value written first are then looked up a second time, after the column; they were all found the first time.
+internal/engine/operator.go build.values condition: !c.ValueFirst => true
+	The arguments of the tested expression are then also checked before a value written first: each check gives only SQLite's `string or blob too big`, at no offset, so the first too long of the two gives the same error.

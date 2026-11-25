@@ -813,6 +813,20 @@ func TestFilter(t *testing.T) {
 		}
 	})
 
+	t.Run("should compute no constant of an update or a delete in a read-only transaction, which gives each NULL, so its sink reads no row and no index", func(t *testing.T) {
+		for _, src := range []string{"update t set w = 1 where k = 1 + 1", "update t set w = 1 where k > 1 + 1", "delete from t where w = 2 * 3", "delete from t where k >= 1 - 2 and k < 2 * 3"} {
+			f := newTable()
+			f.tables["t"].ct.SetPrimaryKey([]uint32{1})
+			f.indexesFails = errors.New("the indexes fail")
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			built, err := buildSink(t.Context(), readOnly{fakeTx{f}}, NewPlan(s), nil, bugs{}, 1_000_000_000, reading{})
+			is.NotError(t, err, src)
+			is.True(t, scanOf(built).access.none, src)
+			is.Equal(t, "[table t]", fmt.Sprint(f.calls), src)
+		}
+	})
+
 	t.Run("should not read the indexes of the table of a select without WHERE and ORDER BY, with a LIMIT or without", func(t *testing.T) {
 		for _, src := range []string{"select * from t", "select * from t limit 1", "select k from t limit 0"} {
 			f := newTable()
