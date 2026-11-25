@@ -242,7 +242,6 @@ a:hover { text-decoration-thickness: 3px; }
 @media (max-width: 960px) {
   .claim-body { margin: 0; padding: 0; }
 }
-.state li { background: var(--void); }
 h1 {
   font-size: clamp(32px, 3.9vw, 58px);
   line-height: 1.06;
@@ -265,20 +264,6 @@ h1 .process { font-weight: 400; }
   gap: 16px 32px;
   margin-bottom: 32px;
 }
-.state {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.state li {
-  border: var(--rule);
-  margin: 0 -1px -1px 0;
-  padding: 4px 10px;
-}
-.state li.on { background: var(--lumin); color: var(--void); }
 
 .rail {
   background: var(--void);
@@ -668,12 +653,6 @@ footer ul {
         <a class="btn" href="simulator/">Try in simulator <span class="bars" aria-hidden="true"></span></a>
         <a href="https://github.com/maragudk/s4ql">See on GitHub</a>
       </div>
-      <ul class="state caps" aria-label="Project state">
-        <li class="on">Experiment</li>
-        <li>Storage built</li>
-        <li>SQL on one table built</li>
-        <li>Not ready for use</li>
-      </ul>
       </div>
     </div>
     <aside class="rail" aria-label="s4ql at a glance">
