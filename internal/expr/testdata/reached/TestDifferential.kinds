@@ -1,0 +1,67 @@
+# What the seeds of TestDifferential of the evaluator must reach: see stmttest.Reached.
+# A line is the least number of the total of a kind over all seeds, a tab, and the kind.
+# The numbers are written by hand, and a recount does not change them. They start from a third of
+# the totals on 2026-11-25. A total below its number fails the test, and so does a kind that no
+# seed reaches three times.
+#
+# A kind "x op y" is an operator whose operands were of the types x and y, with what it gave after
+# the colon if it failed; "op with null" one with a NULL operand; "- of ..." a negation; "case: ..."
+# the outcome of a whole case. A sum or a difference of an integer and a real cannot be infinite,
+# nor a real divided by an integer, so those kinds are not here.
+822	- of integer
+174	- of integer: integer overflow
+218	- of null
+1020	- of real
+465	- of real zero
+408	- with null
+430	* with null
+342	/ with null
+396	+ with null
+1059	a fused multiply and add would differ
+161	case: column alone
+390	case: division by zero
+758	case: integer
+1177	case: integer overflow
+617	case: null
+2316	case: real
+83	case: real -0.0
+530	case: real 0.0
+525	case: real result that is not finite
+26	case: refused, argument that is a blob
+25	case: refused, argument that is text
+111	case: refused, column of type BLOB
+103	case: refused, column of type TEXT
+510	integer - integer
+152	integer - integer: integer overflow
+567	integer - real
+1089	integer * integer
+631	integer * integer: integer overflow
+565	integer * real
+31	integer * real: real result that is not finite
+381	integer / integer
+146	integer / integer: division by zero
+71	integer / integer: integer overflow
+267	integer / real
+68	integer / real: division by zero
+27	integer / real: real result that is not finite
+540	integer + integer
+148	integer + integer: integer overflow
+559	integer + real
+2103	integer converted to real inexactly
+2086	integer converted to real on the left
+2167	integer converted to real on the right
+615	real - integer
+1371	real - real
+60	real - real: real result that is not finite
+561	real * integer
+32	real * integer: real result that is not finite
+1849	real * real
+251	real * real: real result that is not finite
+362	real / integer
+33	real / integer: division by zero
+500	real / real
+142	real / real: division by zero
+56	real / real: real result that is not finite
+562	real + integer
+1328	real + real
+66	real + real: real result that is not finite

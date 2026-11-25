@@ -33,7 +33,7 @@ corpus-verify:
 
 # fuzz runs each fuzz test in the SQLite binding, its cross-checks, the differential test of the driver, the storage formats, the storage core, the SQL
 # tokenizer, SQLite's verdicts on SQL, the SQL parser, the check of the shape of its tree, the pass
-# after the parser, and the engine for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address
+# after the parser, the evaluator of expressions, and the engine for FUZZTIME. Pass FUZZFLAGS=-asan to fuzz under the address
 # sanitizer (Linux only). It fails if it cannot list the fuzz tests of a directory, if a directory
 # has none, or if it cannot tell whether a directory's tests link C, so that no fuzz test is skipped
 # in silence.
@@ -52,7 +52,7 @@ corpus-verify:
 # names. Before it fuzzes a directory, it lists the directory's fuzz tests with go test, with the
 # build that the fuzzing then uses, and fails if go test names other fuzz tests than the files.
 FUZZDIRS ?= internal/sqlite $(CROSSCHECK) $(CROSSCHECK)/drivercheck internal/format internal/core internal/sql/token internal/sql/oracle internal/sql/parsetest \
-	internal/sql/parser internal/sql/shapetest internal/sql/stmt internal/engine
+	internal/sql/parser internal/sql/shapetest internal/sql/stmt internal/expr internal/engine
 FUZZGROUP ?=
 FUZZSHARD ?=
 # FUZZPLAN prints a line for each directory of FUZZDIRS: its group, the directory, and the names of
