@@ -8,7 +8,7 @@ A piece of work is named by its feature, such as "upserts", and no longer by a n
 
 | Area | Supported now | Decided next |
 | --- | --- | --- |
-| [Expressions and functions](#expressions-and-functions) | Literals, `null`, and `?`. No operators or functions. | An evaluator of s4ql's own, in Go. SQLite's answer or an error. Time and randomness from the host. |
+| [Expressions and functions](#expressions-and-functions) | Literals, `null`, and `?`. Arithmetic: `+`, `-`, `*`, `/`, and a unary `-` on integers and reals, in `set` and in `where`. | More operators and functions, and expressions in more places. The evaluator is s4ql's own, in Go. SQLite's answer or an error. Time and randomness from the host. |
 | [Reading](#reading) | `select` from one table, with `where`, `order by`, `limit`, and a scalar subquery in the `where`. | Operators of s4ql's own for grouping and joining. |
 | [Writing](#writing) | `insert` of one row, `update`, `delete`, and `returning`. | `on conflict (key) do nothing` and `do update`. Several rows per `insert`. |
 | [Schema](#schema) | `strict, without rowid` tables with one key column, defaults, indexes, and `if not exists`. | `strict, without rowid` with a primary key stays required. |
@@ -58,7 +58,13 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - Literals: a decimal integer that fits 64 bits, with at most one `-` in front; a real, such as `1.5`, `.5`, or `1e3`, read to the same float as SQLite reads it, bit for bit; a string in single quotes; a blob, such as `x'6162'`; and `null` (slices 1, 4, and 6).
 - A plain `?` in place of a value in `values`, `set`, `where`, and `limit` (slices 2, 7, 8, and 13).
 - Exact types: a value that is not null has the type of its column (slice 4).
-- No operator and no function. A `where` compares a column with a value; see [Reading](#reading).
+- Arithmetic, built on 2026-11-25, with the notes in [todo/arithmetic.md](todo/arithmetic.md):
+  - An expression is built from columns, integer and real literals, a plain `?`, parentheses, `+`, `-`, `*`, `/`, and a unary `-`. It may stand as the value of an assignment in `set` and as either side of a comparison in a `where`. Nowhere else yet, and no function.
+  - An integer overflow, a division by zero, and a real result that is not finite are errors, and the statement then changes nothing. In the driver they match `s4ql.ErrEvaluation`, with `s4ql.ErrOverflow`, `s4ql.ErrDivisionByZero`, or `s4ql.ErrNotFinite`.
+  - Text and blobs never meet arithmetic. An integer against a real across a comparison or a `set` is refused.
+  - A column may be compared with, or copied from, a column of the same type.
+  - Checked so far with the evaluator against SQLite with generated expressions and a fuzz test, the engine's differential tests, and two independent reviews. The generated workload, the simulation's planted bugs, the driver's generated test, and mutation testing for arithmetic are still to come.
+- No function. A `where` compares values and expressions; see [Reading](#reading).
 
 **Decided,** with the details in [todo/expressions.md](todo/expressions.md):
 
@@ -79,7 +85,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 **Supported now:**
 
 - `select` of named columns, in any order and also more than once, or of `*`, from one table (slice 5).
-- `where` with comparisons of a column with a literal, a `?`, or a scalar subquery, with the value on either side, by `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, and `>=`; `is null` and `is not null`; all joined by `and` (slices 7, 12, and 15).
+- `where` with comparisons of a column, or an expression of arithmetic, with a literal, a `?`, a scalar subquery, or a column of the same type, with the value on either side, by `=`, `==`, `!=`, `<>`, `<`, `<=`, `>`, and `>=`; `is null` and `is not null`; all joined by `and` (slices 7, 12, and 15).
 - `order by` one or more columns, each `asc` or `desc`, and `limit` with a number or a `?` (slice 13).
 - The scalar subquery is a `select` of one column from one table, in the `where` of a `select`, an `update`, or a `delete` (slice 15). It is built in the statement pass, the engine, and the driver. Its generated workload, simulation with planted bugs, driver test, and mutation testing are done.
 - A read uses the primary key or an index, chosen by fixed rules, and scans the whole table otherwise (slices 7, 9, and 13). Rows without `order by` come in an order that varies, as [the spec](spec.md) says.
@@ -98,7 +104,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 **Supported now:**
 
 - `insert` of one row, with or without a list of columns. A column that the list leaves out gets its default, or null (slices 1, 5, 6, and 11).
-- `update ... set` with literals, `null`, and `?`, also of the primary key, and `delete`, each with or without a `where`. `RowsAffected` counts as SQLite counts (slice 8).
+- `update ... set` with literals, `null`, `?`, arithmetic, and a column of the same type, also of the primary key, and `delete`, each with or without a `where`. `RowsAffected` counts as SQLite counts (slice 8).
 - `returning` a list of columns or `*`, on `insert`, `update`, and `delete` (slice 14).
 - A statement that would give a key twice fails with SQLite's error and changes nothing (slices 1 and 8).
 
