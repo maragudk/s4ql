@@ -226,4 +226,197 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, at, ns.Offset)
 		})
 	}
+
+	t.Run("should give the error of resolve before a refusal of the type of another column", func(t *testing.T) {
+		e, _, err := parse("s + zz")
+		is.NotError(t, err)
+		_, err = expr.Check(e, resolve)
+		is.Error(t, errNoSuchColumn, err)
+	})
+
+	t.Run("should give the first error of resolve in the order of the text", func(t *testing.T) {
+		e, _, err := parse("(a + yy) * zz")
+		is.NotError(t, err)
+		var names []string
+		_, err = expr.Check(e, func(n stmt.Name) (expr.Column, error) {
+			names = append(names, n.Value)
+			if n.Value == "a" {
+				return expr.Column{Position: 0, Type: s4qlpb.Type_TYPE_INT}, nil
+			}
+			return expr.Column{}, errors.New("no such column: " + n.Value)
+		})
+		is.Equal(t, "no such column: yy", err.Error())
+		is.EqualSlice(t, []string{"a", "yy"}, names)
+	})
+
+	t.Run("should resolve a name in any case and in double quotes", func(t *testing.T) {
+		e, _, err := parse(`A * "c"`)
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		b, err := x.Bind(nil)
+		is.NotError(t, err)
+		v, err := b.Eval(row(integer(3), integer(0), float(0.5), float(0)))
+		is.NotError(t, err)
+		is.Equal(t, expr.RealValue(1.5), v)
+	})
+
+	t.Run("should give an internal error for a tree that the pass never gives", func(t *testing.T) {
+		column := stmt.Expression{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "a"}}
+		for _, e := range []stmt.Expression{
+			{},
+			{Kind: stmt.ExprValue, Value: stmt.Text("1")},
+			{Kind: stmt.ExprValue, Value: stmt.Null{}},
+			{Kind: stmt.ExprParameter},
+			{Kind: stmt.ExprAdd, Operands: []stmt.Expression{column}},
+			{Kind: stmt.ExprNegate, Operands: []stmt.Expression{column, column}},
+			{Kind: stmt.ExprNegate},
+			{Kind: stmt.ExpressionKind(99)},
+		} {
+			_, err := expr.Check(e, resolve)
+			is.True(t, errors.Is(err, expr.ErrInternal), err)
+		}
+	})
+
+	t.Run("should give an internal error for a column of no type or at no position", func(t *testing.T) {
+		e, _, err := parse("a + 1")
+		is.NotError(t, err)
+		for _, c := range []expr.Column{{Position: 0}, {Position: -1, Type: s4qlpb.Type_TYPE_INT}} {
+			_, err := expr.Check(e, func(stmt.Name) (expr.Column, error) { return c, nil })
+			is.True(t, errors.Is(err, expr.ErrInternal), err)
+		}
+	})
+}
+
+func TestProgram_Type(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		// typ is the type of the program, 0 if it depends on the arguments, and bound the type with
+		// args.
+		typ   expr.Type
+		args  []*s4qlpb.Value
+		bound expr.Type
+	}{
+		{name: "should give an integer for integer columns and literals", src: "a * (b - 3) / -a", typ: expr.TypeInteger, bound: expr.TypeInteger},
+		{name: "should give a real for a real column", src: "a + c", typ: expr.TypeReal, bound: expr.TypeReal},
+		{name: "should give a real for a real literal", src: "1.0 * a", typ: expr.TypeReal, bound: expr.TypeReal},
+		{name: "should give the type of the operand for a negation", src: "-c", typ: expr.TypeReal, bound: expr.TypeReal},
+		{name: "should give the type of a column alone", src: "b", typ: expr.TypeInteger, bound: expr.TypeInteger},
+		{name: "should give the type of an integer argument when it is bound", src: "a + ?", args: []*s4qlpb.Value{integer(1)}, bound: expr.TypeInteger},
+		{name: "should give the type of a real argument when it is bound", src: "a + ?", args: []*s4qlpb.Value{float(1)}, bound: expr.TypeReal},
+		{name: "should give NULL for a NULL argument", src: "a + -?", args: []*s4qlpb.Value{null()}, bound: expr.TypeNull},
+		{name: "should give NULL for a NULL argument beside a real", src: "(c + ?) * 2.5", args: []*s4qlpb.Value{null()}, bound: expr.TypeNull},
+		{name: "should give a real for one of two arguments that is a real", src: "? * ?", args: []*s4qlpb.Value{integer(1), float(2)}, bound: expr.TypeReal},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			e, _, err := parse(test.src)
+			is.NotError(t, err)
+			x, err := expr.Check(e, resolve)
+			is.NotError(t, err)
+			typ, ok := x.Type()
+			is.Equal(t, test.typ, typ)
+			is.Equal(t, test.typ != 0, ok)
+			b, err := x.Bind(test.args)
+			is.NotError(t, err)
+			is.Equal(t, test.bound, b.Type())
+		})
+	}
+}
+
+func TestProgram_Bind(t *testing.T) {
+	t.Run("should take the arguments of the whole statement, by the numbers of the parameters", func(t *testing.T) {
+		e, _, err := parse("? - ?")
+		is.NotError(t, err)
+		e.Operands[0].Parameter, e.Operands[1].Parameter = 3, 1
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		b, err := x.Bind([]*s4qlpb.Value{integer(10), text("2"), integer(100)})
+		is.NotError(t, err)
+		v, err := b.Eval(nil)
+		is.NotError(t, err)
+		is.Equal(t, expr.IntegerValue(90), v)
+	})
+
+	t.Run("should give an internal error for a parameter without an argument, or one of no kind", func(t *testing.T) {
+		e, _, err := parse("a + ?")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		for _, args := range [][]*s4qlpb.Value{nil, {{}}} {
+			_, err := x.Bind(args)
+			is.True(t, errors.Is(err, expr.ErrInternal), err)
+		}
+	})
+}
+
+func TestBound_Eval_faults(t *testing.T) {
+	e, _, err := parse("a + c")
+	is.NotError(t, err)
+	x, err := expr.Check(e, resolve)
+	is.NotError(t, err)
+	b, err := x.Bind(nil)
+	is.NotError(t, err)
+
+	t.Run("should give an internal error for a row without the column", func(t *testing.T) {
+		_, err := b.Eval([]*s4qlpb.Value{integer(1)})
+		is.True(t, errors.Is(err, expr.ErrInternal), err)
+	})
+
+	t.Run("should give an internal error for a value of another type than its column", func(t *testing.T) {
+		for _, r := range [][]*s4qlpb.Value{row(float(1), integer(0), float(1), float(0)), row(integer(1), integer(0), integer(1), float(0)),
+			row(text("1"), integer(0), float(1), float(0)), row(&s4qlpb.Value{}, integer(0), float(1), float(0))} {
+			_, err := b.Eval(r)
+			is.True(t, errors.Is(err, expr.ErrInternal), err)
+		}
+	})
+
+	t.Run("should give an internal error for the zero Bound", func(t *testing.T) {
+		_, err := expr.Bound{}.Eval(zeros)
+		is.True(t, errors.Is(err, expr.ErrInternal), err)
+	})
+}
+
+func TestBound_Eval_allocations(t *testing.T) {
+	t.Run("should allocate nothing for a row", func(t *testing.T) {
+		e, _, err := parse("(a + ? * 3) / (b - 1) + -c * 2.5 - d / 7")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		b, err := x.Bind([]*s4qlpb.Value{integer(4)})
+		is.NotError(t, err)
+		r := row(integer(5), integer(3), float(1.5), float(-2))
+		var v expr.Value
+		allocations := testing.AllocsPerRun(100, func() {
+			v, err = b.Eval(r)
+		})
+		is.NotError(t, err)
+		// (5 + 4 * 3) / (3 - 1) is the integer 8.
+		want := 8 + -3.75
+		want -= -2.0 / 7
+		is.Equal(t, expr.RealValue(want), v)
+		is.Equal(t, 0.0, allocations)
+	})
+}
+
+func BenchmarkBound_Eval(b *testing.B) {
+	e, _, err := parse("(a + ? * 3) / (b - 1) + -c * 2.5 - d / 7")
+	if err != nil {
+		b.Fatal(err)
+	}
+	x, err := expr.Check(e, resolve)
+	if err != nil {
+		b.Fatal(err)
+	}
+	bound, err := x.Bind([]*s4qlpb.Value{integer(4)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	r := row(integer(5), integer(3), float(1.5), float(-2))
+	for b.Loop() {
+		if _, err := bound.Eval(r); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
