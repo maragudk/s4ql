@@ -151,4 +151,13 @@ func TestSplit(t *testing.T) {
 		is.NotError(t, err)
 		is.Equal(t, "CREATE TABLE u (v int primary key) strict, without rowid \n ", parts[0].Statement.(*stmt.CreateTable).SQL)
 	})
+
+	t.Run("should name its refusals of spaces by names of the vocabulary", func(t *testing.T) {
+		for _, src := range []string{"drop table t; drop table u", "drop table t; "} {
+			_, err := stmt.Split(src)
+			m := messageForm.FindStringSubmatch(err.Error())
+			is.True(t, m != nil, err.Error())
+			is.True(t, vocabulary(t)[m[1]], m[1])
+		}
+	})
 }

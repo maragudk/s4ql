@@ -156,6 +156,15 @@ Each check of the meaning in the tests runs the error of each name against SQLit
 4. The **recognizer** reads the tree of the statement, and builds the typed form or says why the statement is not supported.
 5. If the statement is supported, any text after it must be spaces, comments, and semicolons. Otherwise the text is not supported, at the first token of the **second statement**. The second statement is not parsed: SQLite's prepare of the first statement succeeds whatever follows it, so a later syntax error is not the first statement's. When the first statement is a syntax error or not supported, that answer wins.
 
+### Several statements
+
+`stmt.Split(src) ([]stmt.Part, error)` reads the statements of a text for a run of them one after another, as `mattn/go-sqlite3` runs such a text in its `Exec`: the first statement as `Check` reads it, then the first statement of each tail, from the end of the semicolon on, with `parser.ParseAt`, until the tail holds no statement. Each `stmt.Part` has its statement, recognized as `Check` recognizes it, with its spans in the whole text, and its span of the text: from the end of the part before, with the empty statements, spaces, and comments before the statement, to the end of its semicolon, or for the last part to the end of the text. It gives the parts that it read, and the error that ended the reading:
+
+1. An error of the whole text, with no part: the checks before parsing, as in `Check`, and two refusals of the spaces that mattn removes from each tail with Go's `strings.TrimSpace`, where SQLite reads them as part of a token, a no-break space or another Unicode space as a character of a name, and a vertical tab where a token starts as an illegal token: `space after a statement that SQLite reads as part of a token` at the start of a tail, and, once a tail follows the first statement, `space at the end of the text that SQLite reads as part of a token`, which covers a space at the end of a string without its closing quote and the space of `/* ` that leaves a slash. A space at the end of a line comment, or of a block comment without its end, is no such space. Where the readings agree, the statements after the first are read from the text without the spaces at its end, as mattn hands them to SQLite.
+2. SQLite's syntax error or "not supported" of the first statement that `Check` would refuse, with the parts of the statements before it.
+
+A text without a statement gives no part and no error. `Check` is unchanged by `Split`: it reads one statement, and refuses a second.
+
 ### The recognizer
 
 The recognizer is an allow-list over the tokens of the statement. It holds the tokens that the parser read for the statement, from the tokenizer (`parser.Tokens`), in the order of the text, and a cursor on the next one. It walks the tree in the order of the text, and takes each token that the supported form expects in that place: a token it takes must be the token at the cursor. It builds the typed form only from the tokens it took.
@@ -1022,6 +1031,8 @@ A test checks that every name the pass gives in any test is in these tables.
 | `text longer than SQLite's limit` | The text is longer than 1,000,000,000 bytes. The offset is that of the first byte past the limit. |
 | `statement beyond a limit of the parser` | The statement is nested deeper than the parser reads, or is longer. The offset is that of the statement's first token. |
 | `second statement` | A statement follows the first one. |
+| `space after a statement that SQLite reads as part of a token` | Of `Split`: a space at the start of a tail that Go's `strings.TrimSpace` removes, and SQLite reads as part of a token. |
+| `space at the end of the text that SQLite reads as part of a token` | Of `Split`: a space at the end of a text with a tail after its first statement that `strings.TrimSpace` removes, in a token other than a comment that stays a comment without it. |
 | `statement` | The recognizer expected a token after the end of the statement. No statement of SQLite's grammar gives this. |
 | `name in brackets` | A name is in `[brackets]`. |
 | `name in backticks` | A name is in backticks. |
