@@ -515,14 +515,27 @@ func SiteGuard(s stmt.Statement, site ArithmeticSite) []stmt.Condition {
 // spelling whose nodes start at one offset, as the two + of `a + b + c`, or the negation and the
 // subtraction of `-a - b`, which the message of the error does not tell apart, either justifies it.
 func Justify(s stmt.Statement, args []any, kind error, op stmt.ExpressionKind, offset int, subqueries []stmt.Term, rows func(src string, args []any) bool) string {
+	return JustifyWithin(s, args, kind, op, offset, subqueries, nil, rows)
+}
+
+// JustifyWithin is [Justify] for a statement whose access is known: a row of a site of the WHERE of
+// the statement s, not of SET or of a subquery, must also be one that every condition of access holds
+// for, which are conditions of the table of s with literal values, as of the range of the rows that
+// the access of s reads. SET needs no such row, since a row that the whole WHERE holds for is one
+// that the access reads. Without conditions, it is [Justify].
+func JustifyWithin(s stmt.Statement, args []any, kind error, op stmt.ExpressionKind, offset int, subqueries []stmt.Term, access []stmt.Condition, rows func(src string, args []any) bool) string {
 	at := false
 	for _, site := range ArithmeticSites(s) {
+		guard := SiteGuard(s, site)
+		if site.Set < 0 && site.Sub == 0 && access != nil {
+			guard = slices.Concat(access, guard)
+		}
 		for _, n := range Operators(site.Root) {
 			if n.Span.Start != offset || n.Kind.String() != op.String() {
 				continue
 			}
 			at = true
-			if rows(QuirkQuery(s, site, n, kind, SiteGuard(s, site), subqueries, args)) {
+			if rows(QuirkQuery(s, site, n, kind, guard, subqueries, args)) {
 				return ""
 			}
 		}

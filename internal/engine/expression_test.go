@@ -259,12 +259,41 @@ type accessGuard struct {
 // rule of the engine says: those that are not computed for each row, each value of arithmetic as the
 // value that SQLite gives it.
 func (p *pair) modelGuard(s stmt.Statement, args []any) ([]stmt.Condition, bool) {
-	t, o := p.t, p.o
-	t.Helper()
 	sel, ok := s.(*stmt.Select)
 	if !ok || sel.Subqueries != nil || sel.Limited() {
 		return nil, false
 	}
+	return p.accessRange(sel, args)
+}
+
+// writeGuard of the update or the delete s with arithmetic, with the arguments args, which the
+// instance of the pair ran by the rules: the conditions that hold for a row that the model's access
+// reads, as [pair.accessRange] gives them for the select of its WHERE, since a write finds its rows
+// as a select without ORDER BY and LIMIT does, and true; or nil and false for another statement, one
+// with a subquery, whose access depends on its value, and an instance that reads every row.
+func (p *pair) writeGuard(s stmt.Statement, args []any) ([]stmt.Condition, bool) {
+	switch s.(type) {
+	case *stmt.Update, *stmt.Delete:
+	default:
+		return nil, false
+	}
+	if subqueried(s) || p.i.e.ScansAll() {
+		return nil, false
+	}
+	sel, selArgs := stmttest.SelectOf(s, args)
+	if sel == nil {
+		return nil, false
+	}
+	return p.accessRange(sel, selArgs)
+}
+
+// accessRange of the select s with arithmetic and without subqueries, with the arguments args: the
+// conditions that hold for a row that the model's access reads, as [stmttest.ChosenAccess] chooses it
+// from the conditions that may serve the access, as [pair.reducedSelect] gives them, and true; or
+// nil and false where the model does not take it.
+func (p *pair) accessRange(sel *stmt.Select, args []any) ([]stmt.Condition, bool) {
+	t, o := p.t, p.o
+	t.Helper()
 	reduced, ok := p.reducedSelect(sel, args, true)
 	if !ok {
 		return nil, false
@@ -408,12 +437,20 @@ func valueTerm(v *s4qlpb.Value) stmt.Term {
 
 // justify the evaluation error ee of the engine for the statement s with the arguments args: what is
 // wrong with it, or "", as [stmttest.Justify] says, with the values that the engine computed for the
-// subqueries of s.
+// subqueries of s. For an update or a delete that the instance ran, a row of its WHERE must be one
+// that the model's access reads too, as [pair.writeGuard] gives it, where it gives one, so that a
+// write that reads rows outside its access fails here. A select needs no such guard, since
+// [pair.checkAccess] compares its access with the model's.
 func (p *pair) justify(s stmt.Statement, args []any, ee *expr.Error) string {
 	if ee == nil {
 		return "is no *expr.Error"
 	}
-	return stmttest.Justify(s, args, ee.Kind, ee.Op, ee.Span.Start, p.computedTerms(), p.rows)
+	// An access that reads every row gives no condition, and so no guard.
+	access, ok := p.writeGuard(s, args)
+	if ok {
+		p.count("arithmetic of a write whose evaluation error the model's access judges")
+	}
+	return stmttest.JustifyWithin(s, args, ee.Kind, ee.Op, ee.Span.Start, p.computedTerms(), access, p.rows)
 }
 
 // due is what evaluation error was due for the statement s, with the arguments args, which the engine

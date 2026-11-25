@@ -2,6 +2,7 @@ package stmttest_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"maragu.dev/is"
@@ -114,6 +115,39 @@ func TestJustify(t *testing.T) {
 		is.True(t, ok)
 		is.Equal(t, "", stmttest.Justify(s, []any{int64(-9223372036854775808)}, e.Kind, e.Op, e.Span.Start, nil, rows))
 		is.Equal(t, "select 1 where typeof(?) = 'integer' and typeof(-(?)) = 'real'", asked[0])
+	})
+}
+
+func TestJustifyWithin(t *testing.T) {
+	t.Run("should ask for a row of the access too, for a site of the WHERE of the statement", func(t *testing.T) {
+		s, err := stmt.Check("delete from t where k / (i - 1) = 2 and k > ?")
+		is.NotError(t, err)
+		var asked []string
+		rows := func(src string, args []any) bool {
+			asked = append(asked, fmt.Sprintf("%v %#v", src, args))
+			return true
+		}
+		access := []stmt.Condition{{Column: stmt.Name{Value: "k"}, Operator: stmt.OpGreater, Value: stmt.Term{Value: stmt.Integer(3)}}}
+		is.Equal(t, "", stmttest.JustifyWithin(s, []any{int64(3)}, expr.ErrDivisionByZero, stmt.ExprDivide, 20, nil, access, rows))
+		is.Equal(t, 1, len(asked))
+		is.Equal(t, `select 1 from "t" where "k" > ? and "k" is not null and ("i" - ?) is not null and ("k" / ("i" - ?)) is null limit 1 []interface {}{3, 1, 1}`, asked[0])
+	})
+
+	t.Run("should not ask for a row of the access for SET, which the whole WHERE guards, nor for a subquery", func(t *testing.T) {
+		s, err := stmt.Check("update t set i = i + 1 where k = (select x from u where x * 2 = 4)")
+		is.NotError(t, err)
+		var asked []string
+		rows := func(src string, args []any) bool {
+			asked = append(asked, src)
+			return false
+		}
+		access := []stmt.Condition{{Column: stmt.Name{Value: "k"}, Operator: stmt.OpGreater, Value: stmt.Term{Value: stmt.Integer(3)}}}
+		is.Equal(t, "SQLite's result of its operator justifies it for no row that the rule may evaluate", stmttest.JustifyWithin(s, nil, expr.ErrOverflow, stmt.ExprAdd, 17, nil, access, rows))
+		is.Equal(t, "SQLite's result of its operator justifies it for no row that the rule may evaluate", stmttest.JustifyWithin(s, nil, expr.ErrOverflow, stmt.ExprMultiply, 56, nil, access, rows))
+		is.Equal(t, 2, len(asked))
+		for _, src := range asked {
+			is.True(t, !strings.Contains(src, `"k" > `), src)
+		}
 	})
 }
 
