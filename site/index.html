@@ -544,41 +544,7 @@ p:last-child { margin-bottom: 0; }
 }
 .invert a:hover { text-decoration-thickness: 3px; }
 
-.status-table {
-  width: 100%;
-  border-collapse: collapse;
-  border-top: var(--rule);
-}
-.status-table th, .status-table td {
-  text-align: left;
-  vertical-align: top;
-  border-bottom: var(--rule);
-  padding: 20px 0;
-}
-.status-table th {
-  width: 220px;
-  padding-right: 24px;
-  font-weight: 700;
-}
-.status-table td p { max-width: 72ch; }
-.status-table ul { margin: 0; padding: 0; list-style: none; }
-.status-table li { padding-left: 24px; position: relative; margin-bottom: 8px; max-width: 72ch; }
-.status-table li:last-child { margin-bottom: 0; }
-.status-table li::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0.55em;
-  width: 12px;
-  height: 9px;
-  background: repeating-linear-gradient(90deg, currentColor 0 1px, transparent 1px 3px);
-}
-@media (max-width: 720px) {
-  .status-table th, .status-table td { display: block; width: auto; padding: 16px 0; }
-  .status-table th { border-bottom: 0; padding-bottom: 0; }
-}
-
-/* Roadmap */
+/* Roadmap: a row for each milestone. The glyph and the label on the right give its state. */
 
 .road {
   list-style: none;
@@ -601,13 +567,13 @@ p:last-child { margin-bottom: 0; }
 }
 .road .built .glyph {
   background: repeating-linear-gradient(90deg,
-    var(--lumin) 0 2px, transparent 2px 3px, var(--lumin) 3px 4px, transparent 4px 6px,
-    var(--lumin) 6px 9px, transparent 9px 10px);
+    var(--ink) 0 2px, transparent 2px 3px, var(--ink) 3px 4px, transparent 4px 6px,
+    var(--ink) 6px 9px, transparent 9px 10px);
 }
-.road .agreed .glyph {
-  background: repeating-linear-gradient(90deg, var(--lumin) 0 1px, transparent 1px 8px);
+.road .next .glyph {
+  background: repeating-linear-gradient(90deg, var(--ink) 0 1px, transparent 1px 8px);
 }
-.road .open .glyph { border-style: dashed; }
+.road .later .glyph { border-style: dashed; }
 .road h3 { margin-bottom: 6px; }
 .road p { max-width: 68ch; margin: 0; }
 .road .where { text-align: right; }
@@ -615,20 +581,7 @@ p:last-child { margin-bottom: 0; }
   .road li { grid-template-columns: 64px minmax(0, 1fr); }
   .road .where { grid-column: 2; text-align: left; }
 }
-
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 32px;
-  margin: 0 0 24px;
-  padding: 0;
-  list-style: none;
-}
-.legend li { display: inline-flex; align-items: center; gap: 12px; }
-.legend .glyph { display: inline-block; width: 40px; height: 14px; border: var(--rule); }
-.legend .built .glyph { background: repeating-linear-gradient(90deg, var(--lumin) 0 2px, transparent 2px 3px, var(--lumin) 3px 4px, transparent 4px 6px); }
-.legend .agreed .glyph { background: repeating-linear-gradient(90deg, var(--lumin) 0 1px, transparent 1px 8px); }
-.legend .open .glyph { border-style: dashed; }
+.road-more { margin-top: 40px; }
 
 /* Close */
 
@@ -710,7 +663,7 @@ footer ul {
         <span class="process"><span class="ko">Written by agents, trusted with simulation testing.</span></span>
       </h1>
       <div class="claim-body">
-      <p class="lede">s4ql is an embedded database engine in the spirit of SQLite. Your Go application talks to the bucket directly, and there is no server to run. Every line of it is written by AI agents, and no human reviews the code. Trust has to come from verification.</p>
+      <p class="lede">s4ql is an embedded database engine in the spirit of SQLite. Your Go application talks to the bucket directly, and there is no server to run. AI agents write every line, and no human reviews the code.</p>
       <div class="actions">
         <a class="btn" href="simulator/">Try in simulator <span class="bars" aria-hidden="true"></span></a>
         <a href="https://github.com/maragudk/s4ql">See on GitHub</a>
@@ -744,7 +697,7 @@ footer ul {
       <p>Two experiments in one repository. One is a database that needs nothing but object storage. The other is whether software that nobody reads can still be trusted.</p>
     </div>
     <dl class="sheet">
-      <div><dt class="caps">Nothing to operate</dt><dd>Your Go application talks to S3 directly through the module. There is no server, no cluster, and no replica to look after. The bucket is the only infrastructure and the source of truth.</dd></div>
+      <div><dt class="caps">Nothing to operate</dt><dd>There is no server, no cluster, and no replica to look after. The bucket is the only infrastructure and the source of truth.</dd></div>
       <div><dt class="caps">A database per user</dt><dd>Each database is a key prefix, so one bucket holds as many databases as you like. One database per user costs nothing extra, and write-heavy work spreads across them.</dd></div>
       <div><dt class="caps">SQLite's SQL, strictly</dt><dd>s4ql speaks a strict subset of SQLite's SQL. Whatever it accepts behaves exactly as in SQLite. Everything else is rejected, never reinterpreted.</dd></div>
       <div><dt class="caps">Trust without reading</dt><dd>AI agents write and own the code. <a href="https://www.maragu.dev/">Markus</a> sets the goals and takes part in design and architecture; he does not review code. The bet is that a database can earn trust when its correctness is checked, not read.</dd></div>
@@ -799,14 +752,13 @@ footer ul {
     </div>
 
     <dl class="sheet">
+      <div><dt class="caps">Interface</dt><dd>Go's <code>database/sql</code>, with the package <code>maragu.dev/s4ql</code> as the driver.</dd></div>
       <div><dt class="caps">Transactions</dt><dd>ACID within one database. No transaction spans databases.</dd></div>
       <div><dt class="caps">Writes</dt><dd>One write transaction at a time per database. A second writer waits until the first has committed or rolled back.</dd></div>
       <div><dt class="caps">Reads</dt><dd>In parallel, from a local SQLite cache, without contacting S3. Each read sees one consistent state, even while a write is in progress.</dd></div>
       <div><dt class="caps">Cache</dt><dd>Holds the same tables and rows as the database, is never ahead of S3, and can be rebuilt from the log at any time.</dd></div>
-      <div><dt class="caps">Lease</dt><dd>One instance at a time holds the database's lease, recorded in the manifest. It lasts 30 seconds and is renewed every 20. A spare instance waits and takes over when the lease times out.</dd></div>
-      <div><dt class="caps">Unknown outcome</dt><dd>If the swap ends without an answer, the instance asks S3 until it knows. The transaction is committed if and only if its commit object is in the log.</dd></div>
+      <div><dt class="caps">Lease</dt><dd>One instance at a time holds the database's lease, recorded in the manifest. A spare instance waits and takes over when the lease times out.</dd></div>
       <div><dt class="caps">S3 must offer</dt><dd>Strong consistency, compare-and-swap, and create-if-absent.</dd></div>
-      <div><dt class="caps">Interface</dt><dd>Go's <code>database/sql</code>.</dd></div>
     </dl>
   </div>
 </section>
@@ -815,7 +767,7 @@ footer ul {
   <div class="wrap">
     <div class="block-head">
       <h2 id="process-h">How it is built</h2>
-      <p>Agents write the code and nobody reviews it, so the tests have to show that it works. The production code runs unchanged inside a simulation where S3, time, and randomness are driven by one seed. The same seed always replays the same run, failures included.</p>
+      <p>The tests have to show that the code works. The production code runs unchanged inside a deterministic simulation, where one seed drives S3, time, and randomness. The same seed always replays the same run, failures included.</p>
     </div>
 
     <div class="replay">
@@ -832,9 +784,8 @@ footer ul {
     </div>
 
     <dl class="sheet">
-      <div><dt class="caps">Deterministic simulation</dt><dd>S3, clocks, and randomness are reached only through interfaces. One seed controls a whole run, so any failure the simulation finds can be replayed exactly.</dd></div>
       <div><dt class="caps">Buggify</dt><dd>Marked points in the production code do something legal but unusual in simulation: return an error, add a delay, take a rare branch. Each run switches on a different subset.</dd></div>
-      <div><dt class="caps">SQLite is the oracle</dt><dd>s4ql writes its own parser and engine, and checks them against SQLite. Results and errors are compared with SQLite's, and the parser is run on SQLite's own test statements.</dd></div>
+      <div><dt class="caps">SQLite is the oracle</dt><dd>s4ql has its own parser and engine, and checks them against SQLite. Results and errors are compared with SQLite's, and the parser runs on SQLite's own test statements.</dd></div>
       <div><dt class="caps">Real S3</dt><dd>A conformance suite and integration tests run against a real S3-compatible bucket on Tigris, to check that the simulated store behaves like the real one.</dd></div>
       <div><dt class="caps">Tests that test the tests</dt><dd>Property-based tests, fuzzing, and mutation testing. Bugs are planted on purpose to count how many seeds the simulation needs to find each one.</dd></div>
       <div><dt class="caps">Everything written down</dt><dd>The <a href="https://github.com/maragudk/s4ql/blob/main/docs/spec.md">spec</a>, the <a href="https://github.com/maragudk/s4ql/tree/main/docs/research">research</a>, the builders' diaries, and the <a href="https://github.com/maragudk/s4ql/tree/main/docs/conversations">conversations</a> behind each decision are in the repository.</dd></div>
@@ -842,206 +793,50 @@ footer ul {
   </div>
 </section>
 
-<section class="block invert" id="status" aria-labelledby="status-h">
-  <div class="wrap">
-    <div class="block-head">
-      <h2 id="status-h">Status</h2>
-      <p>As of 24 November 2026. s4ql is an experiment. It is not ready for use, and anything in it may change.</p>
-    </div>
-    <table class="status-table">
-      <tbody>
-        <tr>
-          <th scope="row" class="caps">Works now</th>
-          <td>
-            <p>Through <code>database/sql</code>, with the package <code>maragu.dev/s4ql</code> as the driver:</p>
-            <ul>
-              <li><code>create table</code> and <code>drop table</code> of a strict table with one or more columns, exactly one of them the primary key, and a <code>default</code> with a literal on a column.</li>
-              <li>The column types <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, and <code>blob</code>. A value must have the exact type of its column.</li>
-              <li>Columns that are <code>not null</code>, and columns that take null.</li>
-              <li><code>insert</code> of one row, with literals and arguments, with or without a list of columns. A column that the list leaves out gets its default.</li>
-              <li><code>select</code> of named columns or <code>*</code>, with a <code>where</code> of comparisons and of <code>is null</code> and <code>is not null</code>, joined by <code>and</code>. A comparison may have its value on either side. Rows without <code>order by</code> come in a varying order.</li>
-              <li><code>order by</code> of one or more columns, each ascending or descending, and <code>limit</code> with a number or <code>?</code>, on <code>select</code>.</li>
-              <li>A scalar subquery in a <code>where</code>, on the right or the left of a comparison, in a <code>select</code>, an <code>update</code>, and a <code>delete</code>. It is not correlated, and runs once before the statement changes anything.</li>
-              <li><code>update</code> and <code>delete</code>, with or without that <code>where</code>. An update may change the primary key, and <code>RowsAffected</code> is what SQLite reports.</li>
-              <li><code>returning</code> at the end of an <code>insert</code>, an <code>update</code>, and a <code>delete</code>, with column names or <code>*</code>. Outside a transaction, the statement commits before it gives its first row.</li>
-              <li><code>create index</code> and <code>drop index</code>, on one or more columns, each ascending or descending, not unique. The engine picks the index for a <code>where</code> by fixed rules.</li>
-              <li><code>if not exists</code> on <code>create table</code> and <code>create index</code>, and <code>if exists</code> on <code>drop table</code> and <code>drop index</code>.</li>
-              <li>Arguments for a plain <code>?</code>, directly and through prepared statements.</li>
-              <li>Transactions, also read-only ones.</li>
-              <li>Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.</li>
-            </ul>
-          </td>
-        </tr>
-        <tr>
-          <th scope="row" class="caps">Checked</th>
-          <td><p>Against SQLite with generated statements, in the engine and through <code>database/sql</code>, in a deterministic simulation with planted bugs, and with mutation testing and fuzzing. The storage is also tested against a real S3-compatible bucket in CI.</p></td>
-        </tr>
-        <tr>
-          <th scope="row" class="caps">Not built</th>
-          <td><p><code>or</code> and other expressions in a <code>where</code>, <code>offset</code>, more than one row per <code>insert</code>, and a statement while rows of the same transaction are open.</p></td>
-        </tr>
-        <tr>
-          <th scope="row" class="caps">Next</th>
-          <td><p>What is decided next is in the <a href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md#at-a-glance">roadmap</a> by area: expressions with an evaluator of s4ql's own, grouping and joining, <code>on conflict</code> upserts, several statements in one <code>Exec</code>, and a limit on the memory of an operator.</p></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<section class="block" id="roadmap" aria-labelledby="roadmap-h">
+<section class="block invert" id="roadmap" aria-labelledby="roadmap-h">
   <div class="wrap">
     <div class="block-head">
       <h2 id="roadmap-h">Roadmap</h2>
-      <p>SQL grows in small pieces. Nothing is supported until it is listed, all the way down to <code>select 1</code>, and each piece goes through every layer and is checked against SQLite before the next one starts.</p>
+      <p>s4ql is an experiment. It is not ready for use, and anything in it may change. SQL grows in small pieces, and each piece is checked against SQLite before the next one starts.</p>
     </div>
-    <ul class="legend caps" aria-label="Legend">
-      <li class="built"><span class="glyph" aria-hidden="true"></span>Built</li>
-      <li class="agreed"><span class="glyph" aria-hidden="true"></span>Agreed, not built</li>
-      <li class="open"><span class="glyph" aria-hidden="true"></span>Open</li>
-    </ul>
     <ol class="road">
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Storage core</h3><p>The log of commit objects, the manifest swap, the lease, crash recovery, and the local cache.</p></div>
+        <div><h3>Storage on S3</h3><p>The log of commits, the manifest swap, the lease, recovery after a crash, the local cache, and the S3 client.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>S3 client</h3><p>Uploads are signed with the commit object's SHA-256, so the store refuses content that does not match it.</p></div>
+        <div><h3>SQL front end</h3><p>A tokenizer and a parser of s4ql's own. The parser takes all of SQLite's grammar, and agrees with SQLite on which statements parse, on the message of each syntax error, and on the shape of the syntax tree. A pass after it rejects what is not supported yet.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Tokenizer</h3><p>The first piece of the SQL front end.</p></div>
-        <span class="where caps">Built</span>
+        <div><h3>SQL on one table</h3><p>Strict tables with a primary key, defaults, and indexes. Reads from one table with <code>select</code>, <code>where</code>, <code>order by</code>, <code>limit</code>, and a scalar subquery in the <code>where</code>. Writes with <code>insert</code> of one row, <code>update</code>, <code>delete</code>, and <code>returning</code>. Arguments and transactions, through <code>database/sql</code>.</p></div>
+        <span class="where caps">Built in 15 slices</span>
       </li>
-      <li class="built">
+      <li class="next">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Parser</h3><p>s4ql's own parser for all of SQLite's grammar. It agrees with SQLite on which statements parse, on the message of each syntax error, and on the shape of the syntax tree.</p></div>
-        <span class="where caps">Built</span>
+        <div><h3>Expressions</h3><p>Operators and functions, from an evaluator of s4ql's own, in Go. For every expression it gives SQLite's answer or an error, never a different answer.</p></div>
+        <span class="where caps">Next</span>
       </li>
-      <li class="built">
+      <li class="next">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>The pass after the parser</h3><p>It rejects whatever the roadmap does not list, and it raises the errors that SQLite's grammar actions raise while they parse.</p></div>
-        <span class="where caps">Built</span>
+        <div><h3>Grouping and joining</h3><p>Operators of s4ql's own, in Go, on top of the cache's ordered scans and lookups by key. A statement that would hold more rows in memory than a set limit fails with a clear error.</p></div>
+        <span class="where caps">Next</span>
       </li>
-      <li class="built">
+      <li class="next">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 1: one integer column</h3><p><code>create table</code>, <code>insert</code>, <code>select *</code>, and <code>drop table</code> on a strict table with one <code>int primary key</code>. The answers must survive a restart with an empty cache.</p></div>
-        <span class="where caps">Built</span>
+        <div><h3>More ways to write</h3><p>Upserts with <code>on conflict (key) do nothing</code> and <code>do update</code>, several rows per <code>insert</code>, and several statements in one <code>Exec</code>.</p></div>
+        <span class="where caps">Next</span>
       </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>The driver</h3><p>A <code>database/sql</code> driver as the main interface.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 2: parameters</h3><p>A plain <code>?</code> in the place of the integer literal of an <code>insert</code>, with a Go integer as the argument, directly and through a prepared statement. The number of arguments must equal the number of <code>?</code>.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 3: transactions</h3><p><code>db.BeginTx</code> begins a write transaction, which holds the place of the single writer until it commits or rolls back, or a read-only one with <code>sql.TxOptions{ReadOnly: true}</code>, which reads the state of its beginning and holds up no one. A transaction writes one commit object.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 4: the other types</h3><p>The column types <code>int</code>, <code>integer</code>, <code>real</code>, <code>text</code>, and <code>blob</code>, with their literals and Go arguments. A value must have the exact type of its column.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 5: several columns</h3><p>A table with several columns: one primary key, and the others <code>not null</code>. An <code>insert</code> gives the columns in the table's order or names them in any order, and a <code>select</code> names the columns it returns.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 6: <code>null</code></h3><p>Columns that take null: the literal <code>null</code>, a nil argument, and a column left out of an <code>insert</code>. A null comes back as nil.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 7: <code>where</code> on <code>select</code></h3><p>A column compared with a literal or a <code>?</code>, <code>is null</code>, and <code>is not null</code>, joined with <code>and</code>.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 8: <code>update</code> and <code>delete</code></h3><p><code>update ... set</code> with literals, <code>null</code>, and <code>?</code>, and <code>delete from</code>, each with or without the <code>where</code> of slice 7. <code>RowsAffected</code> gives the rows that SQLite reports as changed.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 9: indexes</h3><p><code>create index</code> on one or more columns, each <code>asc</code> or <code>desc</code>, and <code>drop index</code>. The log holds only the definition, and the cache holds a real SQLite index. s4ql picks the index by fixed rules, so the choice is the same on every instance, and rows without <code>order by</code> come in an order that varies from query to query. The statements run, and generated queries run through every path that can serve them.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 10: <code>if not exists</code> and <code>if exists</code></h3><p><code>create table if not exists</code> does nothing when the table exists, and <code>drop table if exists</code> does nothing when it does not, and the same for indexes. A statement that does nothing writes nothing to the log. The statements run, and generated sequences check them against SQLite.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 11: <code>default</code> with a literal</h3><p>A column may carry <code>default</code> with a literal or <code>null</code>, and an <code>insert</code> that leaves the column out stores it. The commit format changes: a column carries its default. The statements run, and generated sequences check them against SQLite.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 12: a value on the left of a comparison</h3><p>In a <code>where</code>, a comparison may have a literal or <code>?</code> on the left and the column on the right, such as <code>? &gt;= timeout</code>. The primary key and the indexes are used as for the other order, and the commit format stays as it is. The statements run, and generated sequences check them against SQLite.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 13: <code>order by</code> and <code>limit</code></h3><p><code>select</code> takes <code>order by</code> with one or more columns, each <code>asc</code> or <code>desc</code>, and <code>limit</code> with a number or <code>?</code>. Where the engine sorts, rows that tie come in an order that varies from query to query. The commit format stays as it is. The statements run, and generated ordered and limited queries are compared with SQLite up to ties, the engine's choice is compared with a model of the rules, and a check shows that the order SQLite leaves unspecified varies.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 14: <code>returning</code> on <code>insert</code>, <code>update</code>, and <code>delete</code></h3><p>An <code>insert</code>, an <code>update</code>, or a <code>delete</code> may end with <code>returning</code> and a list of columns or <code>*</code>. It gives one row for each row that it changes. Outside a transaction, the statement commits before it gives its first row. The commit format stays as it is. The statements run, and table tests compare them with SQLite, and through the driver with mattn/go-sqlite3, with goqite's send and its receive by id among them. Generated sequences with <code>returning</code> run in the engine's differential tests and in the driver's against mattn/go-sqlite3, and the simulation checks that the rows a caller read belong to a committed change and finds the planted bugs. Mutation testing of the new code left no mutant unexplained.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="built">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Slice 15: a scalar subquery in <code>where</code></h3><p>In the <code>where</code> of a <code>select</code>, an <code>update</code>, or a <code>delete</code>, a <code>select</code> in parentheses may stand for one value in a comparison, as goqite's receive needs. It gives the one column of its first row, or null when it finds no row. It runs once, before the statement changes anything. A subquery that names a column of the outer statement is refused, and so is a subquery in any other place. A subquery whose column has another declared type than the column it is compared with is refused too. The statements run, and table tests and the engine's differential tests compare them with SQLite. An independent review found no wrong result. The generated workload, the simulation with planted bugs, the driver's generated test, and mutation testing are done, with an independent review of them. Mutation testing of the new code left no mutant unexplained.</p></div>
-        <span class="where caps">Built</span>
-      </li>
-      <li class="agreed">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Expressions</h3><p>An evaluator of s4ql's own, in Go. It gives SQLite's answer or an error. Time and randomness come from the host.</p></div>
-        <span class="where caps">Agreed</span>
-      </li>
-      <li class="agreed">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Grouping and joining</h3><p>Operators of s4ql's own, in Go, on top of the ordered scans and the lookups by key of the cache.</p></div>
-        <span class="where caps">Agreed</span>
-      </li>
-      <li class="agreed">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Upserts</h3><p><code>insert ... on conflict (key) do nothing</code> and <code>do update set ...</code>.</p></div>
-        <span class="where caps">Agreed</span>
-      </li>
-      <li class="agreed">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Several statements in one <code>Exec</code></h3><p>They mean the same as running them one after another.</p></div>
-        <span class="where caps">Agreed</span>
-      </li>
-      <li class="agreed">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>A limit on operator memory</h3><p>A statement that would hold more fails with a clear error. Spooling to the cache comes later.</p></div>
-        <span class="where caps">Agreed</span>
-      </li>
-      <li class="open">
-        <span class="glyph" aria-hidden="true"></span>
-        <div><h3>More SQL, piece by piece</h3><p>Each piece is agreed before it is built. Every table is strict and without rowid, foreign keys are always enforced, and a name is never empty.</p></div>
-        <span class="where caps">Open</span>
-      </li>
-      <li class="open">
+      <li class="later">
         <span class="glyph" aria-hidden="true"></span>
         <div><h3>Storage format version 1</h3><p>The formats are drafts until then. From version 1 on, every version of s4ql reads what any older version wrote.</p></div>
-        <span class="where caps">Open</span>
+        <span class="where caps">Later</span>
       </li>
     </ol>
+    <p class="road-more"><a class="btn small" href="https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md">Full roadmap on GitHub <span class="bars" aria-hidden="true"></span></a></p>
   </div>
 </section>
 
@@ -1053,11 +848,11 @@ footer ul {
     </div>
     <dl class="sheet">
       <div><dt class="caps"><a href="https://sqlite.org/">SQLite</a></dt><dd>The embedded database s4ql is modelled on. s4ql speaks a subset of its SQL, checks its own answers against it, and uses it for the local cache.</dd></div>
-      <div><dt class="caps"><a href="https://www.foundationdb.org/">FoundationDB</a></dt><dd>A distributed, transactional key-value store, tested in deterministic simulation. s4ql's simulation and its buggify points follow its example, and so does the rule that an application checks its own data after an unknown commit outcome.</dd></div>
+      <div><dt class="caps"><a href="https://www.foundationdb.org/">FoundationDB</a></dt><dd>A distributed, transactional key-value store, tested in deterministic simulation. s4ql's simulation and its buggify points follow its example.</dd></div>
       <div><dt class="caps"><a href="https://graft.rs/">Graft</a></dt><dd>A storage engine in Rust that replicates SQLite pages to object storage as an append-only log of commits, with no server in between.</dd></div>
       <div><dt class="caps"><a href="https://slatedb.io/">SlateDB</a></dt><dd>An embedded key-value store in Rust that keeps all its files in object storage, with a manifest that lists the current state of the database.</dd></div>
-      <div><dt class="caps"><a href="https://turbopuffer.com/">Turbopuffer</a></dt><dd>A search service where object storage is the only source of truth and each namespace is a prefix in the bucket, with caches in memory and on disk in front of it.</dd></div>
-      <div><dt class="caps"><a href="https://litestream.io/">Litestream</a></dt><dd>A tool in Go that replicates a SQLite database to object storage from its write-ahead log, and a SQLite plugin that queries the copy in object storage directly.</dd></div>
+      <div><dt class="caps"><a href="https://turbopuffer.com/">Turbopuffer</a></dt><dd>A search service where object storage is the only source of truth and each namespace is a prefix in the bucket, with caches in front of it.</dd></div>
+      <div><dt class="caps"><a href="https://litestream.io/">Litestream</a></dt><dd>A tool in Go that replicates a SQLite database to object storage from its write-ahead log.</dd></div>
     </dl>
   </div>
 </section>
@@ -1067,7 +862,7 @@ footer ul {
   <div class="wrap">
     <div class="close-panel">
       <h2 id="close-h">Follow along</h2>
-      <p>The code, the spec, the open questions, and every conversation behind the decisions are public. Watch the repository to see whether a database written by agents can earn trust.</p>
+      <p>Watch the repository to see whether a database written by agents can earn trust.</p>
       <a class="btn" href="https://github.com/maragudk/s4ql">maragudk/s4ql on GitHub <span class="bars" aria-hidden="true"></span></a>
     </div>
   </div>
