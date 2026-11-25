@@ -3890,6 +3890,9 @@ func TestDifferential(t *testing.T) {
 	total := tally{}
 	runs := map[string]tally{}
 	var names []string
+	// A sequence that fails is reported, and the run goes on to the next, so that one failure does not
+	// hide another, up to ten.
+	failed := 0
 	run := func(s uint64) {
 		p := stmttest.ProfileOf(s)
 		if runs[p.Name] == nil {
@@ -3897,7 +3900,14 @@ func TestDifferential(t *testing.T) {
 			names = append(names, p.Name)
 		}
 		restarts, limit := variantOf(s)
-		differential(t, s, *length, restarts, limit, runs[p.Name])
+		i := newInstanceDirected(t, generatedOptions(), limit, s)
+		defer i.close()
+		if failure := differentialFind(t, s, *length, restarts, runs[p.Name], i, generatedOptions()); failure != "" {
+			t.Error(failure)
+			if failed++; failed == 10 {
+				t.Fatal("ten sequences failed, and the run stops")
+			}
+		}
 	}
 	if replayed {
 		for s := range uint64(n) {
