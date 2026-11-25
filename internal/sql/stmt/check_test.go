@@ -2089,6 +2089,10 @@ var checkCases = []checkCase{
 	{name: "a subquery in arithmetic in where", src: "select * from t where v = (select k from u) + 1", err: "s4ql: not supported: subquery (at offset 26)"},
 	{name: "a function in arithmetic", src: "update t set v = v + abs(v)", err: "s4ql: not supported: function call (at offset 21)"},
 	{name: "a function in set", src: "update t set v = abs(v)", err: "s4ql: not supported: function call (at offset 17)"},
+	// What a negation holds is named for itself.
+	{name: "a negated function in arithmetic", src: "update t set v = 1 + -abs(v)", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a negated cast in set", src: "update t set v = -cast(v as int)", err: "s4ql: not supported: CAST (at offset 18)"},
+	{name: "an operator that is not arithmetic in negated parentheses", src: "select * from t where v = -(v % 2)", err: "s4ql: not supported: binary operator (at offset 28)"},
 	{name: "a cast in set", src: "update t set v = cast(v as int)", err: "s4ql: not supported: CAST (at offset 17)"},
 	{name: "a case in set", src: "update t set v = case when v then 1 end", err: "s4ql: not supported: CASE (at offset 17)"},
 	{name: "a collate in arithmetic", src: "update t set v = v + 1 collate nocase", err: "s4ql: not supported: COLLATE (at offset 21)"},
