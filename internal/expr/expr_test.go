@@ -339,6 +339,27 @@ func TestProgram_Bind(t *testing.T) {
 		is.Equal(t, expr.IntegerValue(90), v)
 	})
 
+	t.Run("should refuse the first of two refused arguments in the order of the text, whatever their kinds", func(t *testing.T) {
+		e, full, err := parse("? + ?")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		first := strings.Index(full, "?")
+		for _, c := range []struct {
+			args []*s4qlpb.Value
+			what string
+		}{
+			{[]*s4qlpb.Value{text("1"), blob([]byte("1"))}, "argument 1 in arithmetic, which is text"},
+			{[]*s4qlpb.Value{blob([]byte("1")), text("1")}, "argument 1 in arithmetic, which is a blob"},
+		} {
+			_, err := x.Bind(c.args)
+			var ns *stmt.NotSupportedError
+			is.True(t, errors.As(err, &ns), "a *stmt.NotSupportedError")
+			is.Equal(t, c.what, ns.What)
+			is.Equal(t, first, ns.Offset)
+		}
+	})
+
 	t.Run("should give an internal error for a parameter without an argument, or one of no kind", func(t *testing.T) {
 		e, _, err := parse("a + ?")
 		is.NotError(t, err)
