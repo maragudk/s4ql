@@ -187,8 +187,10 @@ type Filter struct {
 // writes the value on the left of the operator and the column on the right, as in `5 < a`, of slice
 // 12. Operator is then the operator turned round, as [stmt.Condition] has it, so that `5 < a` is the
 // condition `a > 5`, and the engine reads every condition one way, whichever side its column is on.
-// ValueFirst is there only for the planted bug unturnedBound and for tests: the statement pass has
-// turned the operator round already, and nothing may turn Operator round again from ValueFirst.
+// ValueFirst is there for the planted bug unturnedBound, for tests, and for SQLite's error of a
+// subquery of `*` of more than one column, which depends on the side that the subquery is on
+// ([subqueries.widths], [build.walk]): the statement pass has turned the operator round already, and
+// nothing may turn Operator round again from ValueFirst.
 type Condition struct {
 	Column stmt.Name
 	// Expression is what the condition tests in place of Column, an operator with a column, as in `a

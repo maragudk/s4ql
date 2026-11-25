@@ -545,3 +545,6 @@
 9	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
 10	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
 1	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite
+# The excuse of an evaluation error, which is not pinned exactly since the fixes after the review of
+# the workload of arithmetic of 2026-11-25: a third of its total that day, 45.
+15	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies

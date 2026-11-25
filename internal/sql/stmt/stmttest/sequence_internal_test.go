@@ -625,6 +625,7 @@ func TestSequence_arithmetic(t *testing.T) {
 				}
 				for _, sub := range subqueriesOf(got) {
 					for _, c := range sub.Where {
+						count(c.Expression, "a subquery")
 						count(c.Value.Expression, "a subquery")
 					}
 				}
