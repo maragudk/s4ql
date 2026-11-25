@@ -61,6 +61,25 @@ func leftmostOffset(e stmt.Expression) int {
 	return e.Span.Start
 }
 
+// argumentLengths of the expression e, with the arguments args: SQLite's error for the first argument
+// of its parameters, in the order of the text, that is longer than the limit, as SQLite gives it when
+// it binds the argument, before [bindArithmetic] refuses a text or a blob in arithmetic. The zero
+// Expression has no parameter.
+func argumentLengths(e stmt.Expression, args []*s4qlpb.Value, limit int) error {
+	if e.Kind == stmt.ExprParameter {
+		if e.Parameter < 1 || e.Parameter > len(args) {
+			return internalError("the parameter %v of a statement with %v arguments", e.Parameter, len(args))
+		}
+		return checkLength(args[e.Parameter-1], limit)
+	}
+	for _, o := range e.Operands {
+		if err := argumentLengths(o, args, limit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // bindArithmetic checks the expression e, whose every column the table t has, and binds it to the
 // arguments args: the [expr.Bound], or "not supported" for a column of type TEXT or BLOB, the first
 // in the order of the text, and then for an argument that is text or a blob, as [expr.Check] and

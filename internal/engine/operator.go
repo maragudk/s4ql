@@ -1322,26 +1322,41 @@ func (b build) constants(conditions []condition) error {
 // values of the conditions of the filter f, which it evaluates and puts in conditions: SQLite's error
 // for the first, in the order of the text, that is longer than the limit. The values of a subquery
 // are checked where it is, as [subqueries.lengths] says, and its own value is computed later. An
-// arithmetic expression gives a number, which has no length, and is checked by [build.types].
+// arithmetic expression gives a number, which has no length, and is checked by [build.types], but
+// the arguments of its parameters are checked here, on either side of the condition, as
+// [argumentLengths] says.
 func (b build) values(f *Filter, conditions []condition) error {
 	for i, c := range f.Conditions {
-		if _, ok := c.Value.(*Arithmetic); c.Value == nil || ok {
-			continue
-		}
-		if sub, ok := c.Value.(*Subquery); ok {
-			if err := b.subs.lengths(b, sub); err != nil {
+		if !c.ValueFirst {
+			if err := argumentLengths(c.Expression, b.args, b.limit); err != nil {
 				return err
 			}
-			continue
 		}
-		v, err := eval(c.Value, b.args)
-		if err != nil {
-			return err
+		switch value := c.Value.(type) {
+		case nil:
+		case *Arithmetic:
+			if err := argumentLengths(value.Expression, b.args, b.limit); err != nil {
+				return err
+			}
+		case *Subquery:
+			if err := b.subs.lengths(b, value); err != nil {
+				return err
+			}
+		default:
+			v, err := eval(c.Value, b.args)
+			if err != nil {
+				return err
+			}
+			if err := checkLength(v, b.limit); err != nil {
+				return err
+			}
+			conditions[i].value = v
 		}
-		if err := checkLength(v, b.limit); err != nil {
-			return err
+		if c.ValueFirst {
+			if err := argumentLengths(c.Expression, b.args, b.limit); err != nil {
+				return err
+			}
 		}
-		conditions[i].value = v
 	}
 	return nil
 }
@@ -1861,8 +1876,11 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		computed: make([]*expr.Bound, len(set)), copied: make([]int, len(set)), ret: ret, bugs: b.bugs}
 	for i, a := range set {
 		u.exprs[i], u.copied[i] = a.Value, -1
-		if _, ok := a.Value.(*Arithmetic); ok {
-			// A number has no length.
+		if arithmetic, ok := a.Value.(*Arithmetic); ok {
+			// A number has no length, but an argument of its parameters has.
+			if err := argumentLengths(arithmetic.Expression, b.args, b.limit); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		v, err := eval(a.Value, b.args)

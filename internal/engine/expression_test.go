@@ -1182,6 +1182,29 @@ func TestEngine_arithmetic(t *testing.T) {
 		is.Equal(t, "", got.err)
 	})
 
+	t.Run("should give SQLite's string or blob too big for an argument of arithmetic that is too long, after the names and before the refusal of its type", func(t *testing.T) {
+		d := newDuo(t, 1000,
+			"create table t (k int primary key, a int, s text) strict, without rowid",
+			"insert into t values (1, 1, 'x')")
+		long, longBlob := strings.Repeat("a", 2000), []byte(strings.Repeat("a", 2000))
+		for _, arg := range []any{long, longBlob} {
+			d.run("select k from t where k + ? = 1", arg).is("18/18: string or blob too big")
+			d.run("select k from t where 1 = k + ?", arg).is("18/18: string or blob too big")
+			d.run("select k from t where k = 1 + ?", arg).is("18/18: string or blob too big")
+			d.run("select k from t where k = (select k from t where a * ? = 1)", arg).is("18/18: string or blob too big")
+			d.run("update t set a = a + ? where k = 1", arg).is("18/18: string or blob too big")
+			d.run("update t set a = 2 * ?", arg).is("18/18: string or blob too big")
+			d.run("update t set s = 1, a = a + ?", arg).is("18/18: string or blob too big")
+			d.run("delete from t where a - ? = 0", arg).is("18/18: string or blob too big")
+			// The names come first.
+			d.run("select k from t where k + ? = x", arg).is("1/1: no such column: x")
+		}
+		got := d.run("select k from t where k + ? = 1", strings.Repeat("a", 1000))
+		got.is("not supported")
+		is.Equal(t, "s4ql: not supported: argument 1 in arithmetic, which is text (at offset 26)", got.got.message)
+		d.same()
+	})
+
 	t.Run("should set every column from the row as it was, check NOT NULL on each row with a value per row, change nothing where one row fails, and leave the count of changes then", func(t *testing.T) {
 		h := &events{}
 		i := newInstance(t, engine.Options{Logger: slog.New(h)})
