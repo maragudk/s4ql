@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"math"
@@ -137,7 +138,8 @@ const (
 //     pin.
 //   - An evaluation error must be justified by SQLite: SQLite's result of the failing operator alone,
 //     on its operands, must show the quirk that s4ql refuses, for a row that the documented rule may
-//     evaluate, as [pair.justify] says. The call is not run in SQLite, and nothing changed.
+//     evaluate, as [pair.justify] says. The call is not run in SQLite, and nothing changed. An update
+//     or a delete in a read-only transaction computes nothing, so it never has one.
 //   - Where the engine gives no error, no evaluation error was due, as [pair.due] says.
 //
 // It gives the kind of excuse if the rule decides the call, or "", and what differs, or "".
@@ -155,6 +157,11 @@ func (p *pair) checkArithmetic(c stmttest.Call, s stmt.Statement, args []any, go
 		}
 		return excusedArithmeticType, ""
 	case evaluationError:
+		if _, isSelect := s.(*stmt.Select); p.readOnly && !isSelect {
+			// An update or a delete in a read-only transaction computes nothing, and gives SQLite's
+			// error for the write.
+			return excusedEvaluation, fmt.Sprintf("%q with the arguments %#v: the engine gives %q in a read-only transaction", c.Src, args, got.message)
+		}
 		if why := p.justify(s, args, got.eval); why != "" {
 			return excusedEvaluation, fmt.Sprintf("%q with the arguments %#v: the engine gives %q, which %v", c.Src, args, got.message, why)
 		}
@@ -601,12 +608,49 @@ var arithmeticSetUp = []stmttest.Call{
 	{Src: "insert into n values (4, 9223372036854775807, 30, null, null, x'04', 4)", Supported: true},
 	{Src: "insert into n values (5, -9223372036854775808, 40, 2.0, 'e', x'05', 5)", Supported: true},
 	{Src: "insert into n values (6, null, 50, -0.0, 'f', x'06', 6)", Supported: true},
+	// The tables of [keyChanges]: an integer key and a real one, each with an index that runs with the
+	// key and one that runs against it.
+	{Src: "create table m (k int primary key, a int, b int) strict, without rowid", Supported: true},
+	{Src: "create index m_a on m (a)", Supported: true},
+	{Src: "create index m_b on m (b)", Supported: true},
+	{Src: "insert into m values (1, 10, -1)", Supported: true},
+	{Src: "insert into m values (2, 20, -2)", Supported: true},
+	{Src: "insert into m values (3, 30, -3)", Supported: true},
+	{Src: "insert into m values (4, 40, -4)", Supported: true},
+	{Src: "create table q (k real primary key, a real, b real) strict, without rowid", Supported: true},
+	{Src: "create index q_a on q (a)", Supported: true},
+	{Src: "create index q_b on q (b)", Supported: true},
+	{Src: "insert into q values (1.0, 10.0, -1.0)", Supported: true},
+	{Src: "insert into q values (2.0, 20.0, -2.0)", Supported: true},
+	{Src: "insert into q values (3.0, 30.0, -3.0)", Supported: true},
+	{Src: "insert into q values (4.0, 40.0, -4.0)", Supported: true},
+}
+
+// keyChanges are calls of [arithmeticCases] that change the key with arithmetic or a copy of a
+// column, on the tables m, of an integer key, and q, of a real one, of [arithmeticSetUp]: each SET
+// without a WHERE, with one on the key, and with one on each index, with and without RETURNING, each
+// in a transaction that is rolled back, so that each starts from the same rows. SQLite changes the
+// rows of an update that changes the key in the order of the key, as s4ql does, whatever the access,
+// so the two give the same `UNIQUE constraint failed` and the same rows.
+func keyChanges() []stmttest.Call {
+	var calls []stmttest.Call
+	for _, table := range []string{"m", "q"} {
+		for _, set := range []string{"k = k + 1", "k = k - 1", "k = -k", "k = 6 - k", "k = k * 2", "k = k + 10", "k = k - 10",
+			"k = a", "k = b", "a = k, k = a", "k = k + 1, a = k", "a = k + 1, k = a / 10"} {
+			for _, where := range []string{"", " where k > 1", " where a >= 20", " where b <= -2", " where b >= -3 and a > 10"} {
+				for _, returning := range []string{"", " returning *"} {
+					calls = append(calls, stmttest.Call{Src: "begin"}, stmttest.Call{Src: "update " + table + " set " + set + where + returning}, stmttest.Call{Src: "rollback"})
+				}
+			}
+		}
+	}
+	return append(calls, stmttest.Call{Src: "update m set k = k + 10 returning *"}, stmttest.Call{Src: "update q set k = -k"})
 }
 
 // arithmeticCases of the differential tests of arithmetic, run in their order on the rows of
-// [arithmeticSetUp], each through Exec and through Query. A call whose text is "begin", "commit", or
-// "rollback" begins or ends a transaction of the pair.
-var arithmeticCases = []stmttest.Call{
+// [arithmeticSetUp], each through Exec and through Query, and then those of [keyChanges]. A call whose
+// text is "begin", "begin read only", "commit", or "rollback" begins or ends a transaction of the pair.
+var arithmeticCases = slices.Concat([]stmttest.Call{
 	// Each operator, in SET and on both sides of a comparison, with constants and per row.
 	{Src: "select k from n where i + 1 = 2"},
 	{Src: "select k from n where 2 = i + 1"},
@@ -720,6 +764,25 @@ var arithmeticCases = []stmttest.Call{
 	{Src: "commit"},
 	{Src: "select * from n"},
 
+	// In a read-only transaction, an update or a delete computes no constant and reads no row, and
+	// gives SQLite's error for the write; a select computes as outside one.
+	{Src: "begin read only"},
+	{Src: "delete from n where k = 1 + ?", Args: []any{int64(math.MaxInt64)}},
+	{Src: "delete from n where k = 99 and i = ? * 2", Args: []any{int64(math.MaxInt64)}},
+	{Src: "update n set i = ? * 2", Args: []any{int64(math.MaxInt64)}},
+	{Src: "update n set i = ? * 2 where k = 1", Args: []any{int64(math.MaxInt64)}},
+	{Src: "update n set j = j + 1 where k = 1 + ?", Args: []any{int64(math.MaxInt64)}},
+	{Src: "update n set i = i + 1"},
+	{Src: "update n set k = k + 1"},
+	{Src: "delete from n where j / (k - 3) > 0"},
+	{Src: "delete from n where k = (select k from n where j = 1 + ?)", Args: []any{int64(math.MaxInt64)}},
+	{Src: "update n set i = r * 2"},
+	{Src: "update n set j = 1 where s = k + 1"},
+	{Src: "select k from n where k = 1 + ?", Args: []any{int64(math.MaxInt64)}},
+	{Src: "select k from n where i + 1 > 0"},
+	{Src: "select k from n where j / 10 = k"},
+	{Src: "rollback"},
+
 	// The same text again with other arguments, as a prepared statement runs.
 	{Src: "update n set u = u + ? where k = ? returning u", Args: []any{int64(1), int64(2)}},
 	{Src: "update n set u = u + ? where k = ? returning u", Args: []any{int64(math.MaxInt64), int64(2)}},
@@ -731,7 +794,7 @@ var arithmeticCases = []stmttest.Call{
 	{Src: "update n set r = -0.0 * 1 where k = 2 returning r"},
 	{Src: "update n set r = r * -1 returning r"},
 	{Src: "select k from n where r = 0.0 * -1"},
-}
+}, keyChanges())
 
 func TestPair_arithmetic(t *testing.T) {
 	run := func(t *testing.T, p *pair, i *instance, calls []stmttest.Call) {
@@ -742,14 +805,16 @@ func TestPair_arithmetic(t *testing.T) {
 		var log []string
 		for _, c := range calls {
 			switch c.Src {
-			case "begin":
-				is.NotError(t, i.c.Begin(t.Context()))
-				is.NotError(t, p.other.c.Begin(t.Context()))
-				for _, s := range oracleBegin(false) {
+			case "begin", "begin read only":
+				readOnly := c.Src != "begin"
+				for _, conn := range []*engine.Conn{i.c, p.other.c} {
+					is.NotError(t, map[bool]func(context.Context) error{false: conn.Begin, true: conn.BeginReadOnly}[readOnly](t.Context()))
+				}
+				for _, s := range oracleBegin(readOnly) {
 					is.Equal(t, "", p.o.run(t, s).err, s)
 				}
-				p.inTx = true
-				log = append(log, "-- begin")
+				p.inTx, p.readOnly = true, readOnly
+				log = append(log, "-- "+c.Src)
 				continue
 			case "commit", "rollback":
 				for _, conn := range []*engine.Conn{i.c, p.other.c} {
@@ -759,10 +824,10 @@ func TestPair_arithmetic(t *testing.T) {
 						is.NotError(t, conn.Rollback(t.Context()))
 					}
 				}
-				for _, s := range oracleEnd(false, c.Src == "commit") {
+				for _, s := range oracleEnd(p.readOnly, c.Src == "commit") {
 					is.Equal(t, "", p.o.run(t, s).err, s)
 				}
-				p.inTx = false
+				p.inTx, p.readOnly = false, false
 				log = append(log, "-- "+c.Src)
 				continue
 			}
@@ -824,9 +889,10 @@ func TestPair_arithmetic(t *testing.T) {
 	})
 }
 
-// arithmeticCalls draws n calls of arithmetic on the table of [arithmeticSetUp] from r: selects,
-// updates, and deletes, with a subquery one time in ten, in a transaction one time in ten, with
-// expressions over the columns, literals at the edges of each type, and arguments. Each expression
+// arithmeticCalls draws n calls of arithmetic on the table n of [arithmeticSetUp] from r: selects,
+// updates, which set the key too, and deletes, with a subquery one time in ten, in a transaction one
+// time in ten, read-only one time in two of those, with expressions over the columns, literals at the
+// edges of each type, and arguments. Each expression
 // draws its operands from one class, integer or real, and one operand in twelve from the other, or
 // from a TEXT or BLOB column or a text argument, so that most statements run and every pair of types
 // meets.
@@ -929,7 +995,7 @@ func arithmeticCalls(r *rand.Rand, n int) []stmttest.Call {
 		case k < 5:
 			src = "select k from n where k = (select k from n" + where() + " order by j limit 1)"
 		case k < 8:
-			set := []string{"i", "j", "r", "u"}
+			set := []string{"i", "j", "r", "u", "k"}
 			first := r.IntN(len(set))
 			src = "update n set " + assignment(set[first])
 			if r.IntN(3) == 0 {
@@ -948,7 +1014,7 @@ func arithmeticCalls(r *rand.Rand, n int) []stmttest.Call {
 			}
 		}
 		if r.IntN(10) == 0 {
-			calls = append(calls, stmttest.Call{Src: "begin"}, stmttest.Call{Src: src, Args: args}, stmttest.Call{Src: []string{"commit", "rollback"}[r.IntN(2)]})
+			calls = append(calls, stmttest.Call{Src: []string{"begin", "begin read only"}[r.IntN(2)]}, stmttest.Call{Src: src, Args: args}, stmttest.Call{Src: []string{"commit", "rollback"}[r.IntN(2)]})
 			continue
 		}
 		calls = append(calls, stmttest.Call{Src: src, Args: args})
@@ -1224,6 +1290,31 @@ func TestEngine_arithmetic(t *testing.T) {
 		d.same()
 	})
 
+	t.Run("should change the rows of an update that changes the key in the order of the key, as SQLite does, whatever the index that reads them", func(t *testing.T) {
+		d := newDuo(t, 0,
+			"create table m (k int primary key, a int, b int) strict, without rowid",
+			"create index m_a on m (a)",
+			"create index m_b on m (b)",
+			"insert into m values (1, 10, -1)",
+			"insert into m values (2, 20, -2)",
+			"insert into m values (3, 30, -3)")
+		const unique = "19/1555: UNIQUE constraint failed: m.k"
+		// In the order of the key, 1 becomes 2 while 2 is there; in the order of the index on b, 3
+		// would become 4 first, and every row would move.
+		d.run("update m set k = k + 1").is(unique)
+		d.run("update m set k = k + 1 where b <= -1").is(unique)
+		d.run("update m set k = k + 1 where a >= 10 returning *").is(unique)
+		d.run("update m set k = 4 - k where b < 0").is(unique)
+		// In the order of the key, 1 becomes 0 first, and every row moves; in the order of the index on
+		// b, 3 would become 2 while 2 is there.
+		d.run("update m set k = k - 1 where b <= -1").ok()
+		d.run("update m set k = k + 1 where b <= -1 returning *").is(unique)
+		d.run("update m set k = k + 10 where b <= -1 returning *").ok()
+		d.run("update m set k = a, a = k").ok()
+		d.run("update m set k = b where a < 20").ok()
+		d.same()
+	})
+
 	t.Run("should compute the constants of SET, then of WHERE, then of each subquery, each in the order of the text, and the two sides of a comparison left to right", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		setUp(t, i)
@@ -1274,8 +1365,17 @@ func TestEngine_arithmetic(t *testing.T) {
 		d.run("update t set a = a * 9223372036854775807 where k = 1").is(readOnly)
 		d.run("delete from t where a / (a - a) = 1").is(readOnly)
 		d.run("delete from t where k = (select k from t where a = 1 + ?)", maxInt).is(readOnly)
-		// The names come first, and a select computes its constants as outside a transaction.
+		// The write is refused before the values of SET are checked, as for a plain value.
+		d.run("update t set a = s + 1").is(readOnly)
+		d.run("update t set a = a + ?", "1").is(readOnly)
+		d.run("update t set a = 'x'").is(readOnly)
+		d.run("update t set s = a + 1").is(readOnly)
+		// The names come first, the types of WHERE as in a select, and a select computes its constants
+		// as outside a transaction.
 		d.run("update t set a = x + 1").is("1/1: no such column: x")
+		got := d.run("update t set a = s + 1 where s = k + 1")
+		got.is("not supported")
+		is.Equal(t, "s4ql: not supported: an expression of type integer compared with the column t.s of type TEXT", got.got.message)
 		is.Equal(t, "s4ql: integer overflow in + (at offset 26)", d.i.queryValues("select k from t where k = 1 + ?", values([]any{maxInt})).message)
 		is.NotError(t, d.i.c.Rollback(t.Context()))
 		for _, src := range oracleEnd(true, false) {

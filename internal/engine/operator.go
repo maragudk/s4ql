@@ -1898,9 +1898,14 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		}
 	}
 	// The expressions of SET, in the order of the text, after the lengths of SET and of WHERE, as
-	// [build.types] checks those of WHERE, and then those.
-	if err := u.bind(of, set, b.args); err != nil {
-		return nil, err
+	// [build.types] checks those of WHERE, and then those. In a read-only transaction, SQLite refuses
+	// the write before it looks at a value of SET, as it does for a plain value, which [update.check]
+	// checks, so the expressions of SET are neither checked nor computed there.
+	_, lookups := w.(readOnly)
+	if !lookups {
+		if err := u.bind(of, set, b.args); err != nil {
+			return nil, err
+		}
 	}
 	if filtered {
 		if err := b.types(f, s, conditions); err != nil {
@@ -1908,18 +1913,16 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		}
 	}
 	// The expressions without a column of SET are computed once, after the checks, as those of WHERE
-	// are, before them.
-	if _, lookups := w.(readOnly); !lookups {
-		for i, bound := range u.computed {
-			if bound == nil || set[i].Value.(*Arithmetic).Expression.HasColumn() {
-				continue
-			}
-			v, err := bound.Eval(nil)
-			if err != nil {
-				return nil, fromExpr(err)
-			}
-			u.values[i] = v.Proto()
+	// are, before them. In a read-only transaction none is bound, and none is computed.
+	for i, bound := range u.computed {
+		if bound == nil || set[i].Value.(*Arithmetic).Expression.HasColumn() {
+			continue
 		}
+		v, err := bound.Eval(nil)
+		if err != nil {
+			return nil, fromExpr(err)
+		}
+		u.values[i] = v.Proto()
 	}
 	if filtered {
 		if src, err = b.computeAndReach(ctx, f, s, conditions); err != nil {
