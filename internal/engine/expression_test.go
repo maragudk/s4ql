@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -423,17 +424,19 @@ func (p *pair) justify(s stmt.Statement, args []any, ee *expr.Error) string {
 // The rows that the access reads are those of the model's access for a select, as [pair.modelGuard]
 // gives it, and otherwise those that every condition that may serve the access holds for. A subquery
 // reads only up to its first row, and a select with LIMIT only up to its last, which their order
-// decides, so neither has a due error for a row.
+// decides, so neither has a due error for a row. A subquery with LIMIT 0 gives NULL and computes
+// nothing, also no expression without a column.
 func (p *pair) due(s stmt.Statement, args []any) string {
 	sel, isSelect := s.(*stmt.Select)
 	computed := !subqueried(s) || p.computed != nil
+	subs := subqueriesIn(s)
 	access := accessGuard{must: true}
 	if access.conditions, access.modeled = p.modelGuard(s, args); access.modeled {
 		p.count(modeledDue)
 	}
 	for _, site := range stmttest.ArithmeticSites(s) {
 		switch {
-		case !site.Root.HasColumn() && site.Sub > 0 && !computed:
+		case !site.Root.HasColumn() && site.Sub > 0 && (!computed || limitZero(subs[site.Sub-1].Limit, args)):
 			continue
 		case site.Root.HasColumn() && (site.Sub > 0 || !computed || isSelect && sel.Limited()):
 			continue
@@ -447,6 +450,12 @@ func (p *pair) due(s stmt.Statement, args []any) string {
 		}
 	}
 	return ""
+}
+
+// limitZero reports whether the term of a LIMIT, with the arguments args, is the integer 0; a LIMIT
+// that the select does not have is not.
+func limitZero(limit stmt.Term, args []any) bool {
+	return (limit.Value != nil || limit.Parameter > 0) && stmttest.BoundValue(limit, args) == any(int64(0))
 }
 
 // arithmeticRows of the table n of [arithmeticSetUp], with the edges of each type and NULL.
@@ -920,7 +929,8 @@ func reachArithmetic(s stmt.Statement, got answer, count func(string)) {
 // one that gave its rows where a row that it did not read would fail, as SQLite's quirk shows. A
 // condition computed for each row that rules a row out that the others of its select hold for. An
 // update that sets a column from itself, one whose SET reads a column that it sets before, and one
-// that computes its key from its row, each by whether it changed rows or broke the key.
+// that computes its key from its row, each by whether it changed rows or broke the key. And what
+// [reachCompared] counts.
 func (p *pair) reachOfArithmetic(c stmttest.Call, s stmt.Statement, got answer) {
 	t, o := p.t, p.o
 	t.Helper()
@@ -929,6 +939,7 @@ func (p *pair) reachOfArithmetic(c stmttest.Call, s stmt.Statement, got answer) 
 	if len(args) != s.Parameters() || o.prepare(t, c.Src) != nil {
 		return
 	}
+	reachCompared(s, got, p.count)
 	if ee := got.eval; ee != nil {
 		for _, site := range stmttest.ArithmeticSites(s) {
 			if !slices.ContainsFunc(stmttest.Operators(site.Root), func(n stmt.Expression) bool { return n.Span == ee.Span && n.Kind == ee.Op }) {
@@ -1016,6 +1027,50 @@ func (p *pair) reachOfArithmetic(c stmttest.Call, s stmt.Statement, got answer) 
 			}) {
 				p.count("arithmetic: update whose SET reads a column that it sets before " + outcome)
 			}
+		}
+	}
+}
+
+// classRefusals are the refusals of the classes of arithmetic that [reachCompared] counts, by the
+// kind that it counts each as.
+var classRefusals = []struct {
+	pattern *regexp.Regexp
+	kind    string
+}{
+	{regexp.MustCompile(`^s4ql: not supported: (an? [a-z]+ literal|argument \d+, which is [a-z ]+,) compared with an expression of type [a-z]+$`), "a plain value compared with an expression"},
+	{regexp.MustCompile(`^s4ql: not supported: subquery \d+, of the column .+, compared with an expression of type [a-z]+$`), "a subquery compared with an expression"},
+	{regexp.MustCompile(`^s4ql: not supported: an expression of type null compared with the column .+ of type (TEXT|BLOB)$`), "an expression of type null compared with a TEXT or BLOB column"},
+	{regexp.MustCompile(`^s4ql: not supported: an expression of type null for the column .+ of type (TEXT|BLOB)$`), "an expression of type null for a TEXT or BLOB column"},
+	{regexp.MustCompile(`^s4ql: not supported: an expression of type integer for the column .+ of type REAL$`), "an expression of type integer for a REAL column"},
+}
+
+// reachCompared counts with count, under "arithmetic: ", the comparisons of the statement s with
+// arithmetic, which SQLite prepares, whose answer of the engine is got, of an expression that a
+// condition tests, of the WHERE of the statement or of a subquery, with a plain value, a literal or a
+// ?, and with a subquery, by whether the engine gave no error, and the refusals of the classes of
+// [classRefusals] that the engine gave.
+func reachCompared(s stmt.Statement, got answer, count func(string)) {
+	if got.err == "not supported" {
+		for _, r := range classRefusals {
+			if r.pattern.MatchString(got.message) {
+				count("arithmetic: refused " + r.kind)
+			}
+		}
+	}
+	if got.err != "" {
+		return
+	}
+	_, where := tableWhere(s)
+	for _, q := range subqueriesIn(s) {
+		where = append(slices.Clone(where), q.Where...)
+	}
+	for _, c := range where {
+		switch {
+		case !c.Expression.Present() || c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+		case c.Value.Subquery > 0:
+			count("arithmetic: expression compared with a subquery, ok")
+		case !c.Value.Expression.Present():
+			count("arithmetic: expression compared with a plain value, ok")
 		}
 	}
 }

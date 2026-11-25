@@ -204,15 +204,19 @@ var (
 	// an update, with a column and without one, also the column that it sets, as `n = n + 1`, and its
 	// key, and on either side of a comparison of a WHERE of a select, an update, and a delete: a value
 	// without a column that serves the key or an index as a ? does, an expression of a column that
-	// serves nothing, a column compared with a column, and two expressions of columns. Its values reach
-	// each error of the evaluation, an integer overflow, a division by zero, and a real result that is
-	// not finite, for every row, for some rows, and for none, with a LIMIT whose direction decides
-	// which, and its faults the refusals of the types: an expression of another type than its column,
-	// a TEXT or BLOB column in arithmetic, and an argument that is text or a blob. Its texts of
+	// serves nothing, a column compared with a column, two expressions of columns, and an expression
+	// of a column compared with a literal, a ?, or a scalar subquery. One select, update, or delete in
+	// six has scalar subqueries, whose WHERE has arithmetic too. Its values reach each error of the
+	// evaluation, an integer overflow, a division by zero, and a real result that is not finite, for
+	// every row, for some rows, and for none, with a LIMIT whose direction decides which, and its
+	// faults the refusals of the types: an expression of another type than its column, also an integer
+	// expression in SET for a REAL column and one of the type of NULL for a TEXT or BLOB column, a
+	// plain value or a subquery of another type than the expression that it is compared with, a TEXT or
+	// BLOB column in arithmetic, and an argument that is text or a blob. Its texts of
 	// [ArithmeticRefused] are those that the statement pass refuses. Its test begins transactions more
 	// often, where a statement that fails leaves the transaction usable.
 	Arithmetic = &Profile{Name: "arithmetic", Faults: []string{areaArithmetic}, Aim: 3, Weights: weights(3, 12, 12, 1, 11, 4, 4, 1), Where: 3, Indexes: 2, Columns: 3,
-		Parameters: 3, Transactions: 3, Order: 1, Limit: 2, Keys: 2, Returning: 4, ByKey: 4, NewKey: 6, EveryRow: 3, Arithmetic: 2}
+		Parameters: 3, Transactions: 3, Order: 1, Limit: 2, Keys: 2, Returning: 4, ByKey: 4, NewKey: 6, EveryRow: 3, Subquery: 6, Arithmetic: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].

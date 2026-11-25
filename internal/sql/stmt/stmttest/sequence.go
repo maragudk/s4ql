@@ -2671,9 +2671,10 @@ func (q *Sequence) arithmeticInner() {
 }
 
 // arithmeticWhere gives the conditions cs of a WHERE of table, of a select, an update, a delete, or a
-// subquery, with one comparison in [Profile.Arithmetic] that is not a test for NULL and has no
-// subquery as its value made one of arithmetic, as [Sequence.arithmeticCondition] draws it. The
-// others are as they were.
+// subquery, with one comparison in [Profile.Arithmetic] that is not a test for NULL made one of
+// arithmetic: as [Sequence.arithmeticCondition] draws it, or, for one whose value is a subquery, with
+// the expression of [Sequence.testedOf] in place of its column, which the subquery is compared with.
+// The others are as they were.
 func (q *Sequence) arithmeticWhere(table stmt.Name, cs []stmt.Condition) []stmt.Condition {
 	r, p := q.rArithmetic, q.profile
 	if len(cs) == 0 {
@@ -2682,42 +2683,57 @@ func (q *Sequence) arithmeticWhere(table stmt.Name, cs []stmt.Condition) []stmt.
 	shape := q.shapeOf(table)
 	cs = slices.Clone(cs)
 	for i, c := range cs {
-		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || c.Value.Subquery > 0 || c.Expression.Present() || c.Value.Expression.Present() {
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || c.Expression.Present() || c.Value.Expression.Present() {
 			continue
 		}
-		if r.IntN(p.Arithmetic) == 0 {
-			cs[i] = q.arithmeticCondition(r, shape, c)
+		if r.IntN(p.Arithmetic) != 0 {
+			continue
 		}
+		if c.Value.Subquery > 0 {
+			column := columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold())
+			cs[i].Column, cs[i].Expression = stmt.Name{}, q.testedOf(r, shape, c.Column.Raw, classOf(column, nil))
+			continue
+		}
+		cs[i] = q.arithmeticCondition(r, shape, c)
 	}
 	return cs
 }
 
 // arithmeticCondition gives the comparison c, of a column of the shape or of a name that the shape
 // does not have, with arithmetic, drawn from r. A comparison of a TEXT or a BLOB column stays as it
-// is, but as a fault of the area, since s4ql refuses arithmetic there. Otherwise, of the class of the
-// column, as [classOf] gives it:
+// is, but as a fault of the area, since s4ql refuses arithmetic there, and then one time in two its
+// value is an expression of the class of NULL, as [Sequence.nullExpression] draws it, which s4ql
+// refuses too. Otherwise, of the class of the column, as [classOf] gives it, in 14 draws:
 //
-//   - one time in four, the value is an expression without a column whose value is that of c, as
+//   - three times, the value is an expression without a column whose value is that of c, as
 //     [Sequence.constantOf] draws it, so that the condition serves the key or an index as c would;
-//   - one time in six, the comparison tests the column in an expression, `c + d`, `c - d`, `1 * c`,
-//     or `-c`, against a value that keeps it true of the same rows where nothing overflows, which
+//   - two times, the comparison tests the column in an expression, `c + d`, `c - d`, `1 * c`, or
+//     `-c`, against a value that keeps it true of the same rows where nothing overflows, which
 //     serves nothing;
-//   - one time in twelve, the value is another column, as [Sequence.otherColumn] gives it;
-//   - one time in twelve, the value is an expression of another column and a number;
-//   - one time in four, the value is one that fails for every row, for some, or for none, as
+//   - once, the value is another column, as [Sequence.otherColumn] gives it;
+//   - once, the value is an expression of another column and a number;
+//   - three times, the value is one that fails for every row, for some, or for none, as
 //     [Sequence.failing] draws it;
-//   - one time in twelve, both sides are a column times a number;
-//   - and otherwise, as a fault of the area one time in two, the value of c plus a number of the
-//     other class of numbers, and else a value as for the first case.
+//   - once, both sides are a column times a number;
+//   - two times, the comparison tests the column in an expression of [Sequence.testedOf] against a
+//     plain value, a literal or a ?, as [Sequence.plainOf] draws it;
+//   - and once, as a fault of the area one time in two, the value of c plus a number of the other
+//     class of numbers, and else a value as for the first case.
 func (q *Sequence) arithmeticCondition(r Rand, shape []stmt.Column, c stmt.Condition) stmt.Condition {
 	column := columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold())
 	class := classOf(column, c.Value.Value)
-	if (class == classText || class == classBlob) && !q.fault(r, areaArithmetic, 6) {
-		return c
+	if class == classText || class == classBlob {
+		if !q.fault(r, areaArithmetic, 6) {
+			return c
+		}
+		if r.IntN(2) == 0 {
+			c.Value = stmt.Term{Expression: q.nullExpression(r, shape)}
+			return c
+		}
 	}
 	v := c.Value.Value
 	raw := c.Column.Raw
-	switch n := r.IntN(12); {
+	switch n := r.IntN(14); {
 	case n < 3:
 		c.Value = stmt.Term{Expression: q.constantOf(r, v, class)}
 	case n < 5:
@@ -2747,6 +2763,9 @@ func (q *Sequence) arithmeticCondition(r Rand, shape []stmt.Column, c stmt.Condi
 	case n < 11:
 		c.Column, c.Expression = stmt.Name{}, operatorNode(stmt.ExprMultiply, columnNode(raw), valueNode(q.small(r, class)))
 		c.Value, c.ValueFirst = stmt.Term{Expression: operatorNode(stmt.ExprMultiply, columnNode(q.otherColumn(r, shape, class)), valueNode(q.small(r, class)))}, false
+	case n < 13:
+		c.Column, c.Expression = stmt.Name{}, q.testedOf(r, shape, raw, class)
+		c.Value = stmt.Term{Value: q.plainOf(r, v, class)}
 	default:
 		if q.fault(r, areaArithmetic, 2) {
 			c.Value = stmt.Term{Expression: operatorNode(stmt.ExprAdd, valueNode(v), valueNode(q.small(r, otherClass(class))))}
@@ -2765,9 +2784,100 @@ func otherClass(class string) string {
 	return classInteger
 }
 
+// testedOf the column of the shape whose raw text is raw, of the class, as the side that a comparison
+// tests against a plain value or a subquery: an expression that keeps the value of the column, `raw +
+// 0`, `raw - 0`, `1 * raw`, or `raw / 1`, with numbers of the class; one time in six `raw + ?` with
+// NULL, of the class of NULL, which meets every class of numbers; and, as a fault of the area one
+// time in three, an expression of another class of numbers, `raw + 0.0` for an integer, and for a
+// real an integer column of the shape times 1, where the shape has one.
+func (q *Sequence) testedOf(r Rand, shape []stmt.Column, raw, class string) stmt.Expression {
+	zero := stmt.Value(stmt.Integer(0))
+	if class == classReal {
+		zero = stmt.Real(0)
+	}
+	if q.fault(r, areaArithmetic, 3) {
+		if class != classReal {
+			return operatorNode(stmt.ExprAdd, columnNode(raw), valueNode(stmt.Real(0)))
+		}
+		var integers []stmt.Column
+		for _, c := range shape {
+			if classOf(&c, nil) == classInteger {
+				integers = append(integers, c)
+			}
+		}
+		if len(integers) > 0 {
+			return operatorNode(stmt.ExprMultiply, columnNode(q.spell(r, integers[r.IntN(len(integers))].Name.Value)), valueNode(stmt.Integer(1)))
+		}
+	}
+	switch r.IntN(6) {
+	case 0:
+		return operatorNode(stmt.ExprAdd, columnNode(raw), valueNode(stmt.Null{}))
+	case 1:
+		return operatorNode(stmt.ExprSubtract, columnNode(raw), valueNode(zero))
+	case 2:
+		return operatorNode(stmt.ExprMultiply, valueNode(q.one(class)), columnNode(raw))
+	case 3:
+		return operatorNode(stmt.ExprDivide, columnNode(raw), valueNode(q.one(class)))
+	}
+	return operatorNode(stmt.ExprAdd, columnNode(raw), valueNode(zero))
+}
+
+// plainOf the value v of a comparison of a column of the class, for a side that it tests in an
+// expression: v, or, as a fault of the area one time in three, a value of another class, a number of
+// the other class of numbers one time in two, and else a text or a blob, which s4ql refuses against
+// an expression.
+func (q *Sequence) plainOf(r Rand, v stmt.Value, class string) stmt.Value {
+	if !q.fault(r, areaArithmetic, 3) {
+		return v
+	}
+	switch r.IntN(4) {
+	case 0:
+		return stmt.Text("a")
+	case 1:
+		return stmt.Blob{0x01}
+	}
+	return q.small(r, otherClass(class))
+}
+
+// nullExpression of the class of NULL, from r, for a comparison or an assignment of a column of the
+// shape: NULL, which the generator writes as a ?, and a number, or one time in two a column of the
+// shape of a class of numbers, where it has one, minus NULL.
+func (q *Sequence) nullExpression(r Rand, shape []stmt.Column) stmt.Expression {
+	var numbers []stmt.Column
+	for _, c := range shape {
+		if class := classOf(&c, nil); class == classInteger || class == classReal {
+			numbers = append(numbers, c)
+		}
+	}
+	if len(numbers) > 0 && r.IntN(2) == 0 {
+		return operatorNode(stmt.ExprSubtract, columnNode(q.spell(r, numbers[r.IntN(len(numbers))].Name.Value)), valueNode(stmt.Null{}))
+	}
+	k := []stmt.ExpressionKind{stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply}[r.IntN(3)]
+	return operatorNode(k, valueNode(stmt.Null{}), valueNode(q.small(r, classInteger)))
+}
+
+// integerExpression of the class integer, from r, for an assignment of a column of the shape: an
+// integer column of the shape, where it has one, plus a number one time in two, and else an
+// expression without a column whose value is a small number, as [Sequence.constantOf] draws it.
+func (q *Sequence) integerExpression(r Rand, shape []stmt.Column) stmt.Expression {
+	var integers []stmt.Column
+	for _, c := range shape {
+		if classOf(&c, nil) == classInteger {
+			integers = append(integers, c)
+		}
+	}
+	if len(integers) > 0 && r.IntN(2) == 0 {
+		return operatorNode(stmt.ExprAdd, columnNode(q.spell(r, integers[r.IntN(len(integers))].Name.Value)), valueNode(q.small(r, classInteger)))
+	}
+	return q.constantOf(r, q.small(r, classInteger), classInteger)
+}
+
 // arithmeticSet gives the assignments set of an update of table with one in [Profile.Arithmetic]
 // given arithmetic, drawn from the stream of the area. An assignment of a TEXT or a BLOB column stays
-// as it is, but as a fault of the area. Otherwise, of the class of the column, as [classOf] gives it:
+// as it is, but as a fault of the area, and then one time in two its value is an expression of the
+// class of NULL, as [Sequence.nullExpression] draws it. One of a REAL column is, as a fault of the
+// area one time in eight, an expression of the class integer, as [Sequence.integerExpression] draws
+// it. s4ql refuses both. Otherwise, of the class of the column, as [classOf] gives it:
 // three times in ten the column that it sets and a number, as `n = n + 1`, also of the key, which the
 // update then computes; one time in ten another column, as [Sequence.otherColumn] gives it, and a
 // number, of the other class as a fault of the area one time in two; two times in ten another column
@@ -2804,7 +2914,17 @@ func (q *Sequence) arithmeticSet(table stmt.Name, set []stmt.Assignment) []stmt.
 		if r.IntN(p.Arithmetic) != 0 {
 			continue
 		}
-		if (class == classText || class == classBlob) && !q.fault(r, areaArithmetic, 6) {
+		switch {
+		case class == classText || class == classBlob:
+			if !q.fault(r, areaArithmetic, 6) {
+				continue
+			}
+			if r.IntN(2) == 0 {
+				set[i].Value = stmt.Term{Expression: q.nullExpression(r, shape)}
+				continue
+			}
+		case class == classReal && column != nil && q.fault(r, areaArithmetic, 8):
+			set[i].Value = stmt.Term{Expression: q.integerExpression(r, shape)}
 			continue
 		}
 		self := a.Column.Raw
