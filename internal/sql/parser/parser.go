@@ -66,6 +66,15 @@ func Parse(src string) (*ast.Statement, int, error) {
 	return parseAt(src, 0, textEnd(src))
 }
 
+// ParseAt reads the first statement of src[:end] that starts at or after the offset at, as [Parse]
+// of src[at:end] reads it, with the offsets of the statement, of the tail, and of an error in src.
+// src[at:end] must hold no NUL byte: Parse ends a text at its first NUL byte, and ParseAt does not
+// look for one, so that a reading of every statement of a text, each from where the one before it
+// ends, takes time in proportion to the text.
+func ParseAt(src string, at, end int) (*ast.Statement, int, error) {
+	return parseAt(src, at, end)
+}
+
 // ParseAll statements of src, each as [Parse] would from where the one before it ends, until the end
 // of the text or the first error.
 func ParseAll(src string) ([]*ast.Statement, error) {

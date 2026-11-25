@@ -47,9 +47,26 @@
 // The SQL is a strict subset of SQLite's, and what a statement returns is what SQLite returns for
 // it. Each statement is a transaction of its own, which is committed when the statement returns
 // without an error, unless it runs in a transaction that spans statements: see Transactions below. A
-// statement is bounded by the context that it is given, and so is its commit. Several statements in
-// one text are not supported. [database/sql.DB.PrepareContext] checks the text of the statement,
-// and neither the tables that it names nor whether the instance serves.
+// statement is bounded by the context that it is given, and so is its commit.
+// [database/sql.DB.PrepareContext] checks the text of the statement, and neither the tables that it
+// names nor whether the instance serves.
+//
+// A text of several statements, separated by semicolons, runs through [database/sql.DB.ExecContext]
+// as the statements would one after another, as mattn/go-sqlite3 runs it: each takes as many of the
+// arguments as it has parameters, in order, and is a transaction of its own, or a statement of the
+// transaction that the text runs in. Nothing is wrapped around them: a statement that fails ends
+// the call with its error, those before it stay, and none after it runs. The result is SQLite's
+// count of changes after the last statement that ran, also where mattn/go-sqlite3 gives another
+// count: after a text that ends in an empty statement, such as a comment after the last semicolon,
+// and after a last statement with RETURNING. More arguments than the statements have parameters are
+// refused before any statement runs, if every statement is one that s4ql supports, and fewer at the
+// statement that lacks them. An argument of a Go type that s4ql does not support runs no statement,
+// and its error names it by its number in the call; an argument whose value a statement refuses
+// fails that statement, and its error names it by its number among the arguments of the statement.
+// Query, QueryRow, and Prepare take a text of one statement. A space after a semicolon or at the
+// end of the text that Go's strings.TrimSpace removes and SQLite does not read as a space, such as
+// a no-break space, is not supported, because mattn/go-sqlite3 and SQLite read such a text
+// differently.
 //
 // A parameter is a plain ?, and its argument is given by position:
 //
