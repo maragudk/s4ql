@@ -307,7 +307,12 @@ func (r Returning) Present() bool {
 }
 
 // Term of a row, of an [Assignment], or of a [Condition]: the literal Value, the argument of a
-// parameter if Parameter is not 0, or the value of a scalar subquery if Subquery is not 0.
+// parameter if Parameter is not 0, the value of a scalar subquery if Subquery is not 0, or the value
+// of an arithmetic expression if Expression is present.
+//
+// A Term without an Expression is a plain value, as it was before expressions: a literal, with at
+// most one - before a number, a plain ?, or a subquery. Only the value of an [Assignment] and the
+// value of a comparison of a [Condition] can be an expression.
 type Term struct {
 	// Value of the literal, and nil for a parameter or a subquery. The literal NULL has the value
 	// [Null], never nil.
@@ -321,13 +326,18 @@ type Term struct {
 	// of the WHERE of a [Select], an [Update], or a [Delete] is one, never the value of a condition
 	// of a subquery itself.
 	Subquery int
+	// Expression that gives the value, or the zero Expression for a plain value; see
+	// [Expression.Present]. With one, Value is nil, Parameter 0, and Subquery 0. It is an operator,
+	// or, as the value of an [Assignment] only, a column alone, as in `set a = b`.
+	Expression Expression
 	// Span of the value in the text, its sign included, or of the parameter, or of the subquery from
-	// its opening parenthesis to the end of its closing one.
+	// its opening parenthesis to the end of its closing one, or of the expression with the parentheses
+	// around it.
 	Span Span
 }
 
 // parametersOf the term t of a statement whose subqueries are subqueries: 1 for a parameter, those of
-// its select for a subquery, and 0 for a literal and for the zero Term.
+// its select for a subquery, those of its expression, and 0 for a literal and for the zero Term.
 func parametersOf(t Term, subqueries []Select) int {
 	switch {
 	case t.Parameter > 0:
@@ -335,7 +345,115 @@ func parametersOf(t Term, subqueries []Select) int {
 	case t.Subquery > 0:
 		return subqueries[t.Subquery-1].Parameters()
 	}
-	return 0
+	return t.Expression.parameters()
+}
+
+// Expression of arithmetic: a literal, a parameter, a column, or an operator with its operands, each
+// an Expression. It holds its operands by value, in a slice, so that a statement holds no pointer and
+// is compared and printed by value.
+//
+// The tree has SQLite's precedence and associativity: * and / bind more tightly than + and -, each
+// groups to the left, and the - of a negation binds most tightly. Parentheses are not nodes: they
+// group, and the Span of the parent holds them.
+//
+// A - directly before a number is part of the literal, as SQLite codes it, so `-5` is the value -5
+// and never the negation of 5, and `-9223372036854775808` is the smallest integer of 64 bits. Every
+// other - before an operand is [ExprNegate].
+type Expression struct {
+	// Kind of the node, or 0 for no expression.
+	Kind ExpressionKind
+	// Value of the literal of [ExprValue]: an [Integer] or a [Real], with its sign. Never a [Text],
+	// a [Blob], or [Null], which arithmetic does not take. Nil for every other kind.
+	Value Value
+	// Parameter of [ExprParameter]: its number, from 1, numbered with every other parameter of the
+	// statement in the order of the text. 0 for every other kind.
+	Parameter int
+	// Column of [ExprColumn]: its name, bare or in double quotes. Whether the table has it is not
+	// decided here. The zero Name for every other kind.
+	Column Name
+	// Operands of an operator, in the order of the text: one for [ExprNegate], and two, the left and
+	// the right, for [ExprAdd], [ExprSubtract], [ExprMultiply], and [ExprDivide]. Nil for a literal, a
+	// parameter, and a column.
+	Operands []Expression
+	// Span of the node in the text, from its first token to the end of its last, without parentheses
+	// around the node itself and with those around its operands. That of a literal holds its sign.
+	Span Span
+}
+
+// ExpressionKind of a node of an [Expression]. The zero value is no expression.
+type ExpressionKind int
+
+// The kinds of a node of an [Expression].
+const (
+	// ExprValue is a literal: an integer or a real.
+	ExprValue ExpressionKind = iota + 1
+	// ExprParameter is a plain ?.
+	ExprParameter
+	// ExprColumn is the value of a column of the row.
+	ExprColumn
+	// ExprNegate is - before its one operand, which is no literal.
+	ExprNegate
+	// ExprAdd is +.
+	ExprAdd
+	// ExprSubtract is -.
+	ExprSubtract
+	// ExprMultiply is *.
+	ExprMultiply
+	// ExprDivide is /. Its right operand is never the literal 0 or 0.0, with or without a sign.
+	ExprDivide
+)
+
+// String of the kind: the operator as SQL writes it, such as + or - for both a negation and a
+// subtraction, or "value", "parameter", or "column", or "" for no kind.
+func (k ExpressionKind) String() string {
+	switch k {
+	case ExprValue:
+		return "value"
+	case ExprParameter:
+		return "parameter"
+	case ExprColumn:
+		return "column"
+	case ExprNegate, ExprSubtract:
+		return "-"
+	case ExprAdd:
+		return "+"
+	case ExprMultiply:
+		return "*"
+	case ExprDivide:
+		return "/"
+	}
+	return ""
+}
+
+// Present reports whether e is an expression, and not the zero Expression.
+func (e Expression) Present() bool {
+	return e.Kind != 0
+}
+
+// HasColumn reports whether a node of e is a column. An expression without a column has one value
+// for each run of its statement, which its literals and its arguments decide, whatever the row.
+func (e Expression) HasColumn() bool {
+	if e.Kind == ExprColumn {
+		return true
+	}
+	for _, o := range e.Operands {
+		if o.HasColumn() {
+			return true
+		}
+	}
+	return false
+}
+
+// parameters of e: how many of its nodes are a parameter.
+func (e Expression) parameters() int {
+	n := 0
+	if e.Kind == ExprParameter {
+		n++
+	}
+	for _, o := range e.Operands {
+		n += o.parameters()
+	}
+	return n
 }
 
 // Select of the rows of one table that meet the conditions of its WHERE clause, or of every row, with
@@ -399,23 +517,33 @@ type OrderColumn struct {
 	Descending bool
 }
 
-// Condition of a WHERE clause of a select, an update, or a delete: a column compared with a value,
-// which may be a scalar subquery, or tested for NULL.
+// Condition of a WHERE clause of a select, an update, or a delete: a column, or an arithmetic
+// expression with a column, compared with a value, which may be a scalar subquery or an arithmetic
+// expression, or a column tested for NULL.
 //
 // A condition always reads as Column, Operator, Value, whichever side of the operator the text
 // writes the column on: `5 < a` is the condition `a > 5`, with ValueFirst set. SQLite gives the two
 // the same rows, for every operator and every type, NULL included, so code that runs a condition can
 // read every condition one way and never needs ValueFirst. The text's own order is kept for messages
 // and spans: in ValueFirst, and in the offsets of Column and of Value.
+//
+// The side that the condition tests is the side with a column. Where both sides have one, it is the
+// side that is a column alone, or the left side if neither is, so that Expression is present only
+// where neither side is a column alone. The two sides of a comparison never are both a column alone,
+// and never are both without a column.
 type Condition struct {
-	// Column that the condition tests. Whether the table has it is not decided here.
+	// Column that the condition tests, or the zero Name if Expression is present. Whether the table
+	// has it is not decided here.
 	Column Name
+	// Expression that the condition tests in place of Column: an operator with a column, as in `a + 1
+	// = 5`, or the zero Expression if the condition tests Column; see [Expression.Present].
+	Expression Expression
 	// Operator of the condition, as it compares Column with Value. When ValueFirst is set, the text
 	// writes [Operator.Swapped] of it.
 	Operator Operator
 	// Value that the column is compared with, a literal or a parameter, as a value of an insert is,
-	// or a scalar subquery, on either side of the column. For [OpIsNull] and [OpIsNotNull] it is the
-	// zero Term, which is neither.
+	// or a scalar subquery, or an arithmetic expression, with a column or without one, on either side
+	// of the column. For [OpIsNull] and [OpIsNotNull] it is the zero Term, which is none of them.
 	Value Term
 	// ValueFirst reports whether the text writes the value on the left of the operator and the column
 	// on the right, as in `5 < a`. It is never set for [OpIsNull] and [OpIsNotNull], whose column is
@@ -505,7 +633,8 @@ type Update struct {
 type Assignment struct {
 	// Column that gets the value.
 	Column Name
-	// Value of the column, a literal or a parameter, as a value of an insert is.
+	// Value of the column, a literal or a parameter, as a value of an insert is, or an arithmetic
+	// expression, which may be a column alone and may name the columns of the row before the update.
 	Value Term
 }
 
@@ -624,14 +753,12 @@ func (s *Select) Parameters() int {
 }
 
 // Parameters of the statement: the number of the values of its assignments and of its conditions
-// that are a parameter, with those of its subqueries. Those of the assignments come first, as SQLite
-// numbers them in the order of the text.
+// that are a parameter, with those of its subqueries and its expressions. Those of the assignments
+// come first, as SQLite numbers them in the order of the text.
 func (s *Update) Parameters() int {
 	n := 0
 	for _, a := range s.Set {
-		if a.Value.Parameter > 0 {
-			n++
-		}
+		n += parametersOf(a.Value, nil)
 	}
 	return n + conditionParameters(s.Where, s.Subqueries)
 }
@@ -643,11 +770,11 @@ func (s *Delete) Parameters() int {
 }
 
 // conditionParameters of the conditions where, whose subqueries are subqueries: the number of their
-// values that are a parameter, and of the parameters of the subqueries that they name.
+// values that are a parameter, and of the parameters of the subqueries and the expressions of them.
 func conditionParameters(where []Condition, subqueries []Select) int {
 	n := 0
 	for _, c := range where {
-		n += parametersOf(c.Value, subqueries)
+		n += c.Expression.parameters() + parametersOf(c.Value, subqueries)
 	}
 	return n
 }

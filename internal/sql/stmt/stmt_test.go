@@ -413,28 +413,96 @@ func canonical(s stmt.Statement) string {
 	panic(fmt.Sprintf("%T", s))
 }
 
-// canonicalTerm of a value: a ? for a parameter, and the canonical literal otherwise.
+// canonicalTerm of a value: a ? for a parameter, the canonical expression of an expression, and the
+// canonical literal otherwise.
 func canonicalTerm(v stmt.Term) string {
-	if v.Parameter > 0 {
+	switch {
+	case v.Parameter > 0:
 		return "?"
+	case v.Expression.Present():
+		return canonicalExpression(v.Expression)
 	}
 	return literal(v.Value)
 }
 
+// canonicalExpression of e, with every name in double quotes, and parentheses only around an operand
+// that SQLite would otherwise group with another operator: a left operand that binds less tightly than
+// its operator, a right operand that binds less tightly or as tightly, and an operator after a
+// negation. So the text has no more parentheses open at once than any text of e.
+func canonicalExpression(e stmt.Expression) string {
+	group := func(x stmt.Expression, tighter bool) string {
+		if x.Operands != nil && (precedence(x.Kind) < precedence(e.Kind) || !tighter && precedence(x.Kind) == precedence(e.Kind)) {
+			return "(" + canonicalExpression(x) + ")"
+		}
+		return canonicalExpression(x)
+	}
+	switch e.Kind {
+	case stmt.ExprValue:
+		return literal(e.Value)
+	case stmt.ExprParameter:
+		return "?"
+	case stmt.ExprColumn:
+		return quote(e.Column.Value)
+	case stmt.ExprNegate:
+		return "-" + group(e.Operands[0], false)
+	}
+	return group(e.Operands[0], true) + " " + e.Kind.String() + " " + group(e.Operands[1], false)
+}
+
+// precedence of the operator of the kind k, higher for one that binds more tightly: a negation more
+// tightly than * and /, and those more tightly than + and -.
+func precedence(k stmt.ExpressionKind) int {
+	switch k {
+	case stmt.ExprNegate:
+		return 3
+	case stmt.ExprMultiply, stmt.ExprDivide:
+		return 2
+	case stmt.ExprAdd, stmt.ExprSubtract:
+		return 1
+	}
+	return 4
+}
+
+// parenthesized expression e, with every name in double quotes and every operator in parentheses of
+// its own, so that SQLite reads the tree of e from it whatever the precedence and the grouping of the
+// operators.
+func parenthesized(e stmt.Expression) string {
+	switch e.Kind {
+	case stmt.ExprValue, stmt.ExprParameter, stmt.ExprColumn:
+		return canonicalExpression(e)
+	case stmt.ExprNegate:
+		return "(-" + parenthesized(e.Operands[0]) + ")"
+	}
+	return "(" + parenthesized(e.Operands[0]) + " " + e.Kind.String() + " " + parenthesized(e.Operands[1]) + ")"
+}
+
 // canonicalWhere of the conditions where, whose subqueries are subqueries: " where " and the
-// conditions joined by " and ", each with its column first and a subquery as its canonical select in
-// parentheses, or "" for no conditions.
+// conditions joined by " and ", each with its two sides in the order of the text, a subquery as its
+// canonical select in parentheses, or "" for no conditions.
 func canonicalWhere(where []stmt.Condition, subqueries []stmt.Select) string {
 	var conditions []string
 	for _, c := range where {
-		condition := quote(c.Column.Value) + " " + c.Operator.String()
-		switch {
-		case c.Value.Subquery > 0:
-			condition += " (" + canonical(&subqueries[c.Value.Subquery-1]) + ")"
-		case c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull:
-			condition += " " + canonicalTerm(c.Value)
+		tested := quote(c.Column.Value)
+		if c.Expression.Present() {
+			tested = canonicalExpression(c.Expression)
 		}
-		conditions = append(conditions, condition)
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+			conditions = append(conditions, tested+" "+c.Operator.String())
+			continue
+		}
+		var value string
+		if c.Value.Subquery > 0 {
+			value = "(" + canonical(&subqueries[c.Value.Subquery-1]) + ")"
+		} else {
+			value = canonicalTerm(c.Value)
+		}
+		switch {
+		case c.ValueFirst:
+			// In the order of the text, so that the parameters of the two sides keep their numbers.
+			conditions = append(conditions, value+" "+c.Operator.Swapped().String()+" "+tested)
+		default:
+			conditions = append(conditions, tested+" "+c.Operator.String()+" "+value)
+		}
 	}
 	if conditions == nil {
 		return ""
@@ -513,7 +581,7 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 		t.Fatalf("%q: the canonical text %q gives %q", src, canonical(s), canonical(c))
 	}
 
-	if checkSubqueries(t, open, src, s) {
+	if checkExpressions(t, open, src, s) || checkSubqueries(t, open, src, s) {
 		return
 	}
 	switch s := s.(type) {
@@ -2430,7 +2498,7 @@ func checkSelectPositions(t testing.TB, src string, b stmt.Span, s *stmt.Select,
 		if v, ok := s.Limit.Value.(stmt.Integer); s.Limit.Parameter == 0 && (!ok || v < 0) {
 			t.Fatalf("%q: LIMIT %v", src, s.Limit.Value)
 		}
-	} else if s.Limit != (stmt.Term{}) {
+	} else if fmt.Sprintf("%#v", s.Limit) != fmt.Sprintf("%#v", stmt.Term{}) {
 		t.Fatalf("%q: no LIMIT, and the term %+v", src, s.Limit)
 	}
 	is.Equal(t, *parameters-start, s.Parameters(), src)
@@ -2459,7 +2527,7 @@ func (s *subqueryState) done(t testing.TB, src string) {
 // none.
 func conditionsEnd(end int, where []stmt.Condition) int {
 	for _, c := range where {
-		end = max(end, c.Column.Offset+len(c.Column.Raw), c.Value.Span.End)
+		end = max(end, c.Column.Offset+len(c.Column.Raw), c.Expression.Span.End, c.Value.Span.End)
 	}
 	return end
 }
@@ -2544,6 +2612,19 @@ func checkTerm(t testing.TB, src string, b stmt.Span, end, parameters *int, v st
 		}
 		return checkSelectPositions(t, src, sp, q, parameters, nil)
 	}
+	if v.Expression.Present() {
+		if v.Value != nil || v.Parameter != 0 {
+			t.Fatalf("%q: the expression at %v with the value %v and the parameter %v", src, v.Span, v.Value, v.Parameter)
+		}
+		e := v.Expression
+		if !operatorsOnly(src[v.Span.Start:e.Span.Start], "") || !operatorsOnly(src[e.Span.End:v.Span.End], "") {
+			t.Fatalf("%q: the expression at %v in the term at %v", src, e.Span, v.Span)
+		}
+		*end = v.Span.Start
+		names := checkExpression(t, src, v.Span, end, parameters, e)
+		*end = v.Span.End
+		return names
+	}
 	// The value of a literal at its span is checked against SQLite in checkMeaning.
 	if v.Parameter > 0 {
 		*parameters++
@@ -2569,13 +2650,24 @@ func checkConditions(t testing.TB, src string, b stmt.Span, end int, parameters 
 	}
 	var names []stmt.Name
 	column := func(c stmt.Condition) {
+		if c.Expression.Present() {
+			if c.Column != (stmt.Name{}) || c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || !c.Expression.HasColumn() {
+				t.Fatalf("%q: the condition on %q and the expression at %v, %v", src, c.Column.Raw, c.Expression.Span, c.Operator)
+			}
+			names = append(names, checkExpression(t, src, b, &end, parameters, c.Expression)...)
+			return
+		}
+		names = append(names, c.Column)
 		if c.Column.Offset < end {
 			t.Fatalf("%q: condition on %q at %v", src, c.Column.Raw, c.Column.Offset)
 		}
 		end = c.Column.Offset + len(c.Column.Raw)
 	}
 	for _, c := range where {
-		names = append(names, c.Column)
+		// The two sides of a comparison are never both without a column.
+		if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull && !c.Expression.Present() && c.Column == (stmt.Name{}) {
+			t.Fatalf("%q: a comparison without a column", src)
+		}
 		switch c.Operator {
 		case stmt.OpIsNull, stmt.OpIsNotNull:
 			column(c)
@@ -2594,6 +2686,308 @@ func checkConditions(t testing.TB, src string, b stmt.Span, end int, parameters 
 		}
 		column(c)
 		names = append(names, checkTerm(t, src, b, &end, parameters, c.Value, subs)...)
+	}
+	return names
+}
+
+// checkExpression e of a statement of src in the bounds b, after the end of what comes before it and
+// after as many parameters: its span is after end and in b, its operands come in the order of the
+// text inside its span, with only parentheses, spaces, and comments around them and its operator
+// between them, a ? has the number after parameters, and a name has its raw text at its offset. It
+// moves end and parameters past e, and gives the names of its columns.
+func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int, e stmt.Expression) []stmt.Name {
+	t.Helper()
+	sp := e.Span
+	if sp.Start < *end || sp.End > b.End || sp.Start >= sp.End {
+		t.Fatalf("%q: the expression %v at %v, after %v", src, e.Kind, sp, *end)
+	}
+	var names []stmt.Name
+	switch e.Kind {
+	case stmt.ExprValue:
+		_, integer := e.Value.(stmt.Integer)
+		_, real := e.Value.(stmt.Real)
+		if !integer && !real || e.Operands != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) {
+			t.Fatalf("%q: the literal %+v", src, e)
+		}
+	case stmt.ExprParameter:
+		*parameters++
+		if e.Parameter != *parameters || src[sp.Start:sp.End] != "?" || e.Operands != nil || e.Value != nil || e.Column != (stmt.Name{}) {
+			t.Fatalf("%q: the parameter %+v, after %v", src, e, *parameters-1)
+		}
+	case stmt.ExprColumn:
+		if e.Column.Offset != sp.Start || src[sp.Start:sp.End] != e.Column.Raw || e.Operands != nil || e.Value != nil || e.Parameter != 0 {
+			t.Fatalf("%q: the column %+v", src, e)
+		}
+		names = append(names, e.Column)
+	case stmt.ExprNegate:
+		if len(e.Operands) != 1 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) ||
+			e.Operands[0].Kind == stmt.ExprValue || e.Operands[0].Kind == stmt.ExprNegate {
+			t.Fatalf("%q: the negation %+v", src, e)
+		}
+		x := e.Operands[0]
+		if !operatorsOnly(src[sp.Start:x.Span.Start], "-") || !operatorsOnly(src[x.Span.End:sp.End], "") {
+			t.Fatalf("%q: the negation at %v of the operand at %v", src, sp, x.Span)
+		}
+		*end = sp.Start
+		names = checkExpression(t, src, sp, end, parameters, x)
+	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
+		if len(e.Operands) != 2 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) {
+			t.Fatalf("%q: the operator %+v", src, e)
+		}
+		x, y := e.Operands[0], e.Operands[1]
+		if !operatorsOnly(src[sp.Start:x.Span.Start], "") || !operatorsOnly(src[x.Span.End:y.Span.Start], e.Kind.String()) ||
+			!operatorsOnly(src[y.Span.End:sp.End], "") {
+			t.Fatalf("%q: the operator %v at %v of the operands at %v and %v", src, e.Kind, sp, x.Span, y.Span)
+		}
+		*end = sp.Start
+		names = checkExpression(t, src, sp, end, parameters, x)
+		names = append(names, checkExpression(t, src, sp, end, parameters, y)...)
+		if e.Kind == stmt.ExprDivide && y.Kind == stmt.ExprValue && compareValues(y.Value, stmt.Integer(0)) == 0 {
+			t.Fatalf("%q: a division by zero", src)
+		}
+	default:
+		t.Fatalf("%q: the expression of the kind %v", src, e.Kind)
+	}
+	*end = sp.End
+	return names
+}
+
+// operatorsOnly reports whether text, between two operands or around one, holds only parentheses,
+// spaces, and comments, and the one token op if it is not "".
+func operatorsOnly(text, op string) bool {
+	var others []string
+	for _, tk := range token.Tokens(text) {
+		switch tk.Kind {
+		case token.Space, token.Comment, token.LP, token.RP:
+		default:
+			others = append(others, tk.Text(text))
+		}
+	}
+	if op == "" {
+		return others == nil
+	}
+	return len(others) == 1 && others[0] == op
+}
+
+// statementParts of the statement s: its table, its conditions, and its subqueries, for a select, an
+// update, or a delete, and nothing for another statement.
+func statementParts(s stmt.Statement) (stmt.Name, []stmt.Condition, []stmt.Select) {
+	switch s := s.(type) {
+	case *stmt.Select:
+		return s.Table, s.Where, s.Subqueries
+	case *stmt.Update:
+		return s.Table, s.Where, s.Subqueries
+	case *stmt.Delete:
+		return s.Table, s.Where, s.Subqueries
+	}
+	return stmt.Name{}, nil, nil
+}
+
+// expressionsOf the statement s: every expression of its assignments and its conditions, and those of
+// the conditions of its subqueries, each with the name of the table whose rows it reads.
+func expressionsOf(s stmt.Statement) ([]stmt.Expression, []stmt.Name) {
+	table, where, subqueries := statementParts(s)
+	var expressions []stmt.Expression
+	var tables []stmt.Name
+	if u, ok := s.(*stmt.Update); ok {
+		for _, a := range u.Set {
+			if a.Value.Expression.Present() {
+				expressions, tables = append(expressions, a.Value.Expression), append(tables, table)
+			}
+		}
+	}
+	add := func(table stmt.Name, where []stmt.Condition) {
+		for _, c := range where {
+			for _, e := range []stmt.Expression{c.Expression, c.Value.Expression} {
+				if e.Present() {
+					expressions, tables = append(expressions, e), append(tables, table)
+				}
+			}
+		}
+	}
+	add(table, where)
+	for _, q := range subqueries {
+		add(q.Table, q.Where)
+	}
+	return expressions, tables
+}
+
+// nodesOf e: e and every node under it, each before its operands.
+func nodesOf(e stmt.Expression) []stmt.Expression {
+	nodes := []stmt.Expression{e}
+	for _, o := range e.Operands {
+		nodes = append(nodes, nodesOf(o)...)
+	}
+	return nodes
+}
+
+// expressionSamples are the values of the columns and the parameters in [checkExpressions]: small
+// numbers of both types that tell the groupings of the operators apart, zero, an edge of 64 bits,
+// NULL, and a text that SQLite reads as a number.
+var expressionSamples = []stmt.Value{stmt.Integer(7), stmt.Integer(-3), stmt.Real(2.5), stmt.Integer(11), stmt.Integer(0),
+	stmt.Real(-0.25), stmt.Integer(2), stmt.Integer(math.MaxInt64), stmt.Null{}, stmt.Text("12"), stmt.Integer(5)}
+
+// checkExpressions of the supported statement s that src holds, if it has an arithmetic expression,
+// and report whether it has one; such a statement has no other check of its meaning. Each literal of
+// an expression has the value that SQLite gives its text. Each expression gives in SQLite, for every
+// row of a table of sample values and with sample arguments, what its text gives in which every
+// operator has parentheses of its own, so that SQLite reads the expression of src with the tree of s.
+// And src gives on such tables the result of the canonical text of s, the same changes, and the same
+// rows left in the table of the statement.
+func checkExpressions(t testing.TB, open func(testing.TB) *db, src string, s stmt.Statement) bool {
+	t.Helper()
+	expressions, tables := expressionsOf(s)
+	if expressions == nil {
+		return false
+	}
+	for _, e := range expressions {
+		for _, n := range nodesOf(e) {
+			if n.Kind == stmt.ExprValue {
+				lit := src[n.Span.Start:n.Span.End]
+				if got, want := show(open(t).value("select "+lit)), show(n.Value); got != want {
+					t.Fatalf("%q: the value is %v, SQLite gives %v for %q", src, want, got, lit)
+				}
+			}
+		}
+	}
+
+	// A table for each table that the statement reads, with a column of the type ANY for each name
+	// that the statement says anywhere, so that each name is a column of each table.
+	table, where, subqueries := statementParts(s)
+	all := []stmt.Name{table}
+	var named []stmt.Name
+	switch s := s.(type) {
+	case *stmt.Select:
+		named = append(slices.Clone(s.Columns), orderNames(s.OrderBy)...)
+	case *stmt.Update:
+		for _, a := range s.Set {
+			named = append(named, a.Column)
+		}
+		named = append(named, s.Returning.Columns...)
+	case *stmt.Delete:
+		named = slices.Clone(s.Returning.Columns)
+	}
+	conditions := slices.Clone(where)
+	for _, q := range subqueries {
+		all = append(all, q.Table)
+		named = append(append(named, q.Columns...), orderNames(q.OrderBy)...)
+		conditions = append(conditions, q.Where...)
+	}
+	for _, c := range conditions {
+		if c.Column != (stmt.Name{}) {
+			named = append(named, c.Column)
+		}
+	}
+	for _, e := range expressions {
+		for _, n := range nodesOf(e) {
+			if n.Kind == stmt.ExprColumn {
+				named = append(named, n.Column)
+			}
+		}
+	}
+	type built struct {
+		a    anyTable
+		rows [][]stmt.Value
+	}
+	var folds []string
+	byFold := map[string]built{}
+	for _, tb := range all {
+		if _, ok := byFold[tb.Fold()]; ok {
+			continue
+		}
+		a := newAnyTable(swapCase(tb.Value), named)
+		pools := make([][]stmt.Value, len(a.names))
+		for i := range pools {
+			if i != a.key {
+				// Each column starts at a sample of its own, so that two columns differ in a row.
+				k := i % len(expressionSamples)
+				pools[i] = slices.Concat(expressionSamples[k:], expressionSamples[:k])
+			}
+		}
+		folds = append(folds, tb.Fold())
+		byFold[tb.Fold()] = built{a: a, rows: whereRows(src+" "+tb.Fold(), pools, a.key, 20)}
+	}
+	build := func() *db {
+		d := open(t)
+		for _, f := range folds {
+			d.must(byFold[f].a.create(byFold[f].a.names))
+			d.insert(byFold[f].a.name, byFold[f].rows)
+		}
+		return d
+	}
+
+	var args []stmt.Value
+	for i := range s.Parameters() {
+		args = append(args, expressionSamples[(len(src)+3*i)%len(expressionSamples)])
+	}
+	selects := slices.Clone(subqueries)
+	if sel, ok := s.(*stmt.Select); ok {
+		selects = append(selects, *sel)
+	}
+	for _, q := range selects {
+		if q.Limit.Parameter > 0 {
+			args[q.Limit.Parameter-1] = limitArg(src)
+		}
+	}
+
+	// The tree: each expression of src and its canonical text give the same value in each row, with
+	// the arguments of its own parameters, which come in the same order in the two texts.
+	d := build()
+	for i, e := range expressions {
+		var own []stmt.Value
+		for _, n := range nodesOf(e) {
+			if n.Kind == stmt.ExprParameter {
+				own = append(own, args[n.Parameter-1])
+			}
+		}
+		sql := fmt.Sprintf("select %v, %v from %v", src[e.Span.Start:e.Span.End], parenthesized(e), quote(byFold[tables[i].Fold()].a.name))
+		_, rows, err := d.run(sql, slices.Concat(own, own))
+		if err != nil {
+			t.Fatalf("%q: %q: %v", src, sql, err)
+		}
+		if len(rows) == 0 {
+			t.Fatalf("%q: %q gives no row", src, sql)
+		}
+		for _, row := range rows {
+			if show(row[0]) != show(row[1]) {
+				t.Fatalf("%q: %q gives %v for the text and %v for the tree", src, sql, show(row[0]), show(row[1]))
+			}
+		}
+	}
+
+	// The statement and its canonical text, which give the same error for a subquery of *.
+	_, isSelect := s.(*stmt.Select)
+	star := slices.ContainsFunc(subqueries, func(q stmt.Select) bool { return q.Columns == nil })
+	run := func(sql string) string {
+		d := build()
+		if !star {
+			is.Equal(t, d.parameters(sql), len(args), sql)
+		}
+		names, rows, err := d.run(sql, args)
+		if err != nil && star {
+			// A subquery of * reads a table of more than one column here.
+			return err.Error()
+		}
+		if err != nil {
+			t.Fatalf("%q: %v", sql, err)
+		}
+		got := fmt.Sprint(names, "\n", sortedRows(rows))
+		if !isSelect {
+			_, left, err := d.run("select * from "+quote(byFold[table.Fold()].a.name), nil)
+			is.NotError(t, err)
+			got += fmt.Sprint("\n", show(d.value("select changes()")), "\n", showRows(left))
+		}
+		return got
+	}
+	is.Equal(t, run(canonical(s)), run(src), src)
+	return true
+}
+
+// orderNames of the columns of an ORDER BY.
+func orderNames(columns []stmt.OrderColumn) []stmt.Name {
+	var names []stmt.Name
+	for _, c := range columns {
+		names = append(names, c.Name)
 	}
 	return names
 }

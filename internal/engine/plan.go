@@ -276,8 +276,12 @@ func (*Subquery) expr()    {}
 // that, and one with LIMIT a [*Limit] over that, as [Query] says. An insert, an update, and a delete
 // with RETURNING have its [*Returning]. A select, an update, and a delete with scalar subqueries in
 // their WHERE have the [*Query] of each in their Subqueries, and a [*Subquery] as the value of the
-// condition that compares a column with it.
+// condition that compares a column with it. It panics for a statement with an arithmetic
+// expression, which the engine does not evaluate yet, as [expressionRefusal] says.
 func NewPlan(s stmt.Statement) Plan {
+	if expressionRefusal(s) != nil {
+		panic("engine: no plan of a statement with an expression")
+	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, IfNotExists: s.IfNotExists, PrimaryKey: []int{s.Key()}, SQL: s.SQL}

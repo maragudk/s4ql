@@ -45,6 +45,8 @@ type recognizer struct {
 	// inner is the closing parenthesis of the subquery whose select the recognizer reads, or the
 	// absent token outside a subquery.
 	inner ast.Token
+	// parentheses of an expression that the recognizer reads, which are open at the next token.
+	parentheses int
 }
 
 // stop is the panic with which the recognizer unwinds when the statement is not supported.
@@ -824,7 +826,8 @@ func (r *recognizer) where(w *ast.Where) ([]Condition, int) {
 }
 
 // update: UPDATE table SET and one or more assignments, separated by commas, each a column = a value,
-// where the value is a literal or a parameter, an optional WHERE, and an optional RETURNING.
+// where the value is a literal, a parameter, or an arithmetic expression, an optional WHERE, and an
+// optional RETURNING.
 func (r *recognizer) update(c *ast.Update) *Update {
 	r.accept(c)
 	r.take(c.Update)
@@ -852,7 +855,7 @@ func (r *recognizer) update(c *ast.Update) *Update {
 		n := r.name(a.Column)
 		seen[n.Fold()] = true
 		r.take(a.Eq)
-		s.Set = append(s.Set, Assignment{Column: n, Value: r.term(a.X)})
+		s.Set = append(s.Set, Assignment{Column: n, Value: r.setValue(a.X)})
 	}
 	if c.Where != nil {
 		s.Where, s.Subqueries = r.statementWhere(c.Where)
@@ -901,10 +904,9 @@ func (r *recognizer) conditions(e ast.Expr) ([]Condition, int) {
 	conditions := []Condition{c}
 	for i := len(ands) - 1; i >= 0; i-- {
 		// SQLite gives an AND the depth of its deeper operand and one more, and refuses an expression
-		// deeper than maxDepth while it parses, whatever the database holds. A condition without a
-		// subquery is at most 3 deep, so the depth of the AND is height+1 when that can be too much,
-		// and the error is at the AND. A condition with a subquery can be deeper, and the AND is
-		// checked again after it.
+		// deeper than maxDepth while it parses, whatever the database holds. When the conditions before
+		// make the AND too deep, the error is at the AND. A condition after it with a subquery or an
+		// expression can make it too deep too, and the AND is checked again after it.
 		if height+1 > maxDepth {
 			r.reject("WHERE deeper than SQLite's limit")
 		}
@@ -913,8 +915,8 @@ func (r *recognizer) conditions(e ast.Expr) ([]Condition, int) {
 		conditions = append(conditions, c)
 		height = max(height, h) + 1
 		if height > maxDepth {
-			// The condition after the AND has a subquery that makes the AND too deep, which SQLite
-			// refuses once it has read the condition, at the token after it.
+			// The condition after the AND has a subquery or an expression that makes the AND too deep,
+			// which SQLite refuses once it has read the condition, at the token after it.
 			r.reject("WHERE deeper than SQLite's limit")
 		}
 	}
@@ -928,20 +930,6 @@ func (r *recognizer) conditions(e ast.Expr) ([]Condition, int) {
 // keeps at its default.
 const maxDepth = 1000
 
-// depth of the condition e, which the recognizer took, as SQLite counts it: a name, a literal, and a
-// parameter are 1 deep, and an operator is one deeper than its deepest operand, a sign too, on
-// either side of the operator.
-func depth(e ast.Expr) int {
-	if b, ok := e.(*ast.Binary); ok {
-		_, left := b.X.(*ast.Unary)
-		_, right := b.Y.(*ast.Unary)
-		if left || right {
-			return 3
-		}
-	}
-	return 2
-}
-
 // isBinary reports whether e is the binary operator of the kind k.
 func isBinary(e ast.Expr, k token.Kind) bool {
 	b, ok := e.(*ast.Binary)
@@ -954,22 +942,24 @@ var comparisons = map[token.Kind]Operator{
 	token.GE: OpGreaterOrEqual,
 }
 
-// condition e of a WHERE clause: a column compared with a literal, a parameter, or a scalar subquery,
-// with one of the operators of [comparisons], on either side of the operator, or a column IS NULL or
-// IS NOT NULL. It gives the condition and its height as SQLite counts it.
+// condition e of a WHERE clause: two operands compared with one of the operators of [comparisons],
+// or a column IS NULL or IS NOT NULL. It gives the condition and its height as SQLite counts it. An
+// operand is a column, a literal, a parameter, a scalar subquery, or an arithmetic expression, as
+// [recognizer.operand] reads it, and one of the two has a column.
 //
-// A comparison with the value on the left, as `5 < a`, is read as the column compared with the value
-// by the operator swapped, `a > 5`, with [Condition.ValueFirst] set; see [Condition] for why. The
-// value is read as a value on the right is, with the same names for what is not supported, and its
-// ? has its number in the order of the text. A value on either side is read as
-// [recognizer.conditionValue] reads it.
+// The condition tests the operand with a column, compared with the other, as [Condition] says: a
+// comparison with the tested operand on the right, as `5 < a`, is read by the operator swapped, `a >
+// 5`, with [Condition.ValueFirst] set; see [Condition] for why. Each operand is read in the order of
+// the text, with the same names for what is not supported on either side, and its ? have their
+// numbers in the order of the text.
 //
 // The next token is the first of e when it is called, since e follows WHERE or AND, and the first
 // token of the left operand of a condition is the first of the condition.
 func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	switch e := e.(type) {
 	case *ast.Is:
-		return r.isCondition(e), depth(e)
+		// The column and NULL are 1 deep, and IS one deeper.
+		return r.isCondition(e), 2
 	case *ast.Unary:
 		if e.Op.Kind == token.Not {
 			r.reject("NOT operator")
@@ -989,47 +979,268 @@ func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 		r.unexpected()
 	}
 	r.accept(b)
-	var c Condition
-	var height int
-	if isValue(b.X) {
-		c = Condition{Operator: op.Swapped(), ValueFirst: true}
-		c.Value, height = r.conditionValue(b.X)
-		r.take(b.Op)
-		c.Column = r.conditionColumn(b.Y, "value compared with a value")
-	} else {
-		c = Condition{Column: r.conditionColumn(b.X, ""), Operator: op}
-		r.take(b.Op)
-		if ref, ok := b.Y.(*ast.ColumnRef); ok && !isTrueOrFalse(ref) {
-			r.reject("column compared with a column")
-		}
-		c.Value, height = r.conditionValue(b.Y)
+	left := r.operand(b.X)
+	r.take(b.Op)
+	switch {
+	case left.column && isColumn(b.Y):
+		r.reject("column compared with a column")
+	case !left.hasColumn() && isValue(b.Y):
+		r.reject("value compared with a value")
 	}
-	if c.Value.Subquery == 0 {
-		return c, depth(e)
+	right := r.operand(b.Y)
+	if !left.hasColumn() && !right.hasColumn() {
+		// An expression without a column is a value, which the recognizer knows once it has read it.
+		panic(stop{&NotSupportedError{What: "value compared with a value", Offset: b.Y.Bounds().Start}})
 	}
-	// The column on the other side is 1 deep, and the subquery deeper.
-	if height+1 > maxDepth {
+	height := max(left.height, right.height) + 1
+	if height > maxDepth {
 		// SQLite refuses the comparison once it has read it, at the token after it.
 		r.reject("WHERE deeper than SQLite's limit")
 	}
-	return c, height + 1
+	c := Condition{Operator: op}
+	switch {
+	case left.column:
+		c.Column, c.Value = left.name, right.term
+	case right.column:
+		c.Column, c.Value = right.name, left.term
+		c.Operator, c.ValueFirst = op.Swapped(), true
+	case left.hasColumn():
+		c.Expression, c.Value = left.term.Expression, right.term
+	default:
+		c.Expression, c.Value = right.term.Expression, left.term
+		c.Operator, c.ValueFirst = op.Swapped(), true
+	}
+	return c, height
 }
 
-// conditionValue e of a comparison: a scalar subquery, as [recognizer.subquery] reads it, with its
-// height, or a literal or a parameter, as [recognizer.term] reads it, with the height 0, which the
-// caller does not use. A subquery after a - is not supported, at the subquery; one after a + is `+
-// sign`, as for a parameter.
-func (r *recognizer) conditionValue(e ast.Expr) (Term, int) {
+// comparand is an operand of a comparison, as [recognizer.operand] reads it: a column alone, with
+// its name, or a term, and its height as SQLite counts it.
+type comparand struct {
+	column bool
+	name   Name
+	term   Term
+	height int
+}
+
+// hasColumn reports whether the operand is a column or an expression with a column.
+func (c comparand) hasColumn() bool {
+	return c.column || c.term.Expression.HasColumn()
+}
+
+// operand e of a comparison: the bare name of a column, as [recognizer.conditionColumn] reads it, 1
+// deep; a scalar subquery, as [recognizer.subquery] reads it, with its height; a literal or a
+// parameter, as [recognizer.term] reads it, 1 deep, or 2 with a sign; or an arithmetic expression,
+// as [recognizer.expression] reads it. A subquery after a - is not supported, at the subquery; one
+// after a + is `+ sign`, as for a parameter.
+func (r *recognizer) operand(e ast.Expr) comparand {
 	switch x := e.(type) {
+	case *ast.ColumnRef:
+		return comparand{column: true, name: r.conditionColumn(x, ""), height: 1}
 	case *ast.Subquery:
-		return r.subquery(x)
+		t, height := r.subquery(x)
+		return comparand{term: t, height: height}
 	case *ast.Unary:
 		if _, ok := x.X.(*ast.Subquery); ok && x.Op.Kind == token.Minus {
 			r.take(x.Op)
 			r.reject("subquery after a sign")
 		}
 	}
-	return r.term(e), 0
+	if plainValue(e) {
+		// SQLite reads a sign as an operator of its own, one deeper than its literal.
+		height := 1
+		if _, ok := e.(*ast.Unary); ok {
+			height = 2
+		}
+		return comparand{term: r.term(e), height: height}
+	}
+	x, height := r.expression(e, "WHERE deeper than SQLite's limit")
+	return comparand{term: Term{Expression: x, Span: spanOf(e)}, height: height}
+}
+
+// isColumn reports whether e is a name, and not the bare word TRUE or FALSE.
+func isColumn(e ast.Expr) bool {
+	ref, ok := e.(*ast.ColumnRef)
+	return ok && !isTrueOrFalse(ref)
+}
+
+// spanOf the expression e in the text.
+func spanOf(e ast.Expr) Span {
+	b := e.Bounds()
+	return Span{Start: b.Start, End: b.End}
+}
+
+// setValue e of an assignment: a plain value, as [recognizer.term] reads it, or an arithmetic
+// expression, as [recognizer.expression] reads it, which may be a column alone. SQLite checks the
+// depth of each value of SET on its own.
+func (r *recognizer) setValue(e ast.Expr) Term {
+	if plainValue(e) {
+		return r.term(e)
+	}
+	x, _ := r.expression(e, "expression deeper than SQLite's limit")
+	return Term{Expression: x, Span: spanOf(e)}
+}
+
+// plainValue reports whether e is read as a plain value, a literal or a parameter, by
+// [recognizer.term], or refused by it with the names that it gives: a literal, a ?, or a unary
+// operator other than a - before a parameter, a name, parentheses, or an operator, each of which is
+// an arithmetic expression.
+func plainValue(e ast.Expr) bool {
+	switch e := e.(type) {
+	case *ast.Literal, *ast.Variable:
+		return true
+	case *ast.Unary:
+		if e.Op.Kind != token.Minus {
+			return true
+		}
+		switch e.X.(type) {
+		case *ast.Variable, *ast.ColumnRef, *ast.Paren, *ast.Binary:
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// maxParentheses that an expression may have open at once. SQLite has no such limit, but its parser
+// holds each open parenthesis, and each operator that waits for its right operand, on a stack of
+// 2,499 entries, and gives `Recursion limit` beyond it: `(1 + (1 + ...))` parses to 830 levels. With
+// at most 100 parentheses, no second sign, and two levels of binary operators, an expression holds
+// far fewer entries than that, so the pass never supports a text that SQLite's parser refuses.
+const maxParentheses = 100
+
+// arithmetic operators, by the kind of their token.
+var arithmetic = map[token.Kind]ExpressionKind{
+	token.Plus: ExprAdd, token.Minus: ExprSubtract, token.Star: ExprMultiply, token.Slash: ExprDivide,
+}
+
+// expression e of arithmetic, which starts at the next token, and its height as SQLite counts it: a
+// literal, a parameter, and a column are 1 deep, a literal after a - 2 deep, and an operator one
+// deeper than its deeper operand. Parentheses add nothing. An operator deeper than [maxDepth] is not
+// supported, as deep: at the operator for its left operand, and at the token after its operand for
+// another. The caller reads a plain value itself, so a literal here is the operand of an operator.
+func (r *recognizer) expression(e ast.Expr, deep string) (Expression, int) {
+	switch x := e.(type) {
+	case *ast.Paren:
+		return r.parenthesized(x, deep)
+	case *ast.Binary:
+		kind := arithmetic[x.Op.Kind]
+		if kind == 0 {
+			r.unexpected()
+		}
+		r.accept(x)
+		left, hl := r.expression(x.X, deep)
+		if hl+1 > maxDepth {
+			r.reject(deep)
+		}
+		r.take(x.Op)
+		right, hr := r.expression(x.Y, deep)
+		if hr+1 > maxDepth {
+			r.reject(deep)
+		}
+		if kind == ExprDivide && isZero(right) {
+			// SQLite gives NULL for a division by zero, which s4ql refuses.
+			panic(stop{&NotSupportedError{What: "division by zero", Offset: right.Span.Start}})
+		}
+		return Expression{Kind: kind, Operands: []Expression{left, right}, Span: spanOf(e)}, max(hl, hr) + 1
+	case *ast.Unary:
+		return r.unary(x, deep)
+	case *ast.ColumnRef:
+		switch {
+		case x.Table.Present():
+			r.reject("column with the name of a table")
+		case isTrueOrFalse(x):
+			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+			r.reject("TRUE or FALSE")
+		}
+		r.accept(x)
+		return Expression{Kind: ExprColumn, Column: r.name(x.Column), Span: spanOf(e)}, 1
+	case *ast.Variable:
+		n, span := r.parameter(x)
+		return Expression{Kind: ExprParameter, Parameter: n, Span: span}, 1
+	case *ast.Literal:
+		// SQLite gives NULL for arithmetic with NULL, and reads a string or a blob as a number.
+		switch x.Value.Kind {
+		case token.String:
+			r.reject("string in arithmetic")
+		case token.Blob:
+			r.reject("blob in arithmetic")
+		case token.Null:
+			r.reject("NULL in arithmetic")
+		}
+		v, span := r.value(x, false, r.at())
+		return Expression{Kind: ExprValue, Value: v, Span: span}, 1
+	}
+	r.unexpected()
+	return Expression{}, 0
+}
+
+// unary operator u of an expression: a - before a number, which is a literal as [recognizer.literal]
+// reads it, 2 deep, or a - before a parameter, a column, or parentheses, which is [ExprNegate], one
+// deeper than its operand. A + and every other unary operator are not supported, by the names that a
+// value has for them, and so is a second sign and a - before a string, a blob, or NULL.
+func (r *recognizer) unary(u *ast.Unary, deep string) (Expression, int) {
+	if u.Op.Kind == token.Minus {
+		if _, ok := u.X.(*ast.Literal); ok {
+			v, span := r.literal(u)
+			return Expression{Kind: ExprValue, Value: v, Span: span}, 2
+		}
+	}
+	switch {
+	case u.Op.Kind == token.Plus && isNull(u.X):
+		r.reject("NULL after a sign")
+	case u.Op.Kind != token.Minus:
+		r.reject(unaryName(u.Op))
+	}
+	r.accept(u)
+	r.take(u.Op)
+	if x, ok := u.X.(*ast.Unary); ok {
+		if x.Op.Kind == token.Minus || x.Op.Kind == token.Plus {
+			r.reject("second sign")
+		}
+		r.reject(unaryName(x.Op))
+	}
+	x, height := r.expression(u.X, deep)
+	if height+1 > maxDepth {
+		r.reject(deep)
+	}
+	return Expression{Kind: ExprNegate, Operands: []Expression{x}, Span: spanOf(u)}, height + 1
+}
+
+// parenthesized expression p: parentheses around an operator, at most [maxParentheses] of them open
+// at once. Parentheses around a single literal, parameter, column, or subquery, or around
+// parentheses, are not supported: SQLite reads them as what they hold, so they hold nothing of their
+// own, and a column in parentheses would be compared with a column.
+func (r *recognizer) parenthesized(p *ast.Paren, deep string) (Expression, int) {
+	if r.parentheses == maxParentheses {
+		r.reject("parentheses deeper than 100")
+	}
+	switch x := p.X.(type) {
+	case *ast.Literal, *ast.Variable, *ast.ColumnRef, *ast.Subquery, *ast.Paren:
+		r.reject("parentheses")
+	case *ast.Unary:
+		if _, ok := x.X.(*ast.Literal); ok && x.Op.Kind == token.Minus {
+			r.reject("parentheses")
+		}
+	}
+	r.accept(p)
+	r.take(p.LParen)
+	r.parentheses++
+	x, height := r.expression(p.X, deep)
+	r.parentheses--
+	r.take(p.RParen)
+	return x, height
+}
+
+// isZero reports whether the expression e is the literal 0 or 0.0, with or without a sign, also one
+// that SQLite reads as 0.0, as `1e-400`.
+func isZero(e Expression) bool {
+	switch v := e.Value.(type) {
+	case Integer:
+		return e.Kind == ExprValue && v == 0
+	case Real:
+		return e.Kind == ExprValue && v == 0
+	}
+	return false
 }
 
 // isCondition: a column IS NULL or IS NOT NULL.

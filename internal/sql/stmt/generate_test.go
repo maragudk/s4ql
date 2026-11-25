@@ -60,6 +60,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.OrderBy = 3
 	g.Returning = 3
 	g.Subquery = 4
+	g.Expression = 4
 	return g
 }
 
@@ -148,7 +149,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 35, 139)
+	excused(t, c, 34, 165)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -683,11 +684,14 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v where null is null",
 		"select * from %[1]v where ? is not null",
 		"select * from %[1]v where 1 is %[2]v",
-		"select * from %[1]v where 1 = %[2]v + 1",
+		"select * from %[1]v where 1 = %[2]v || 1",
+		"select * from %[1]v where %[2]v + 1 is null",
+		"select * from %[1]v where 1 + 1 = 2",
+		"select * from %[1]v where (%[2]v) + 1 = 2",
 		"select * from %[1]v where (1) = %[2]v",
 		"select * from %[1]v where 1 = (%[2]v)",
 		"select * from %[1]v where +1 = %[2]v",
-		"select * from %[1]v where -? = %[2]v",
+		"select * from %[1]v where - -? = %[2]v",
 		"select * from %[1]v where ?1 = %[2]v",
 		"select * from %[1]v where true = %[2]v",
 		"select * from %[1]v where 0x1 = %[2]v",
@@ -704,7 +708,7 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v where not %[2]v = 1",
 		"select * from %[1]v where (%[2]v = 1)",
 		"select * from %[1]v where %[2]v = (1)",
-		"select * from %[1]v where %[2]v + 1 = 2",
+		"select * from %[1]v where %[2]v & 1 = 2",
 		"select * from %[1]v where lower(%[2]v) = 'a'",
 		"select * from %[1]v where %[2]v in (1)",
 		"select * from %[1]v where %[2]v between 1 and 2",
@@ -718,7 +722,7 @@ var nearMisses = map[string][]string{
 		"select * from %[1]v where %[2]v collate nocase = 'a'",
 		"select * from %[1]v where %[2]v = 'a' collate nocase",
 		"select * from %[1]v where %[2]v = +1",
-		"select * from %[1]v where %[2]v = -?",
+		"select * from %[1]v where %[2]v = - -?",
 		"select * from %[1]v where %[2]v = ?1",
 		"select * from %[1]v where %[2]v = true",
 		"select * from %[1]v where %[2]v = 1 and",
@@ -853,16 +857,20 @@ var nearMisses = map[string][]string{
 		"update %[1]v set %[2]v = %[3]v limit 1",
 		"update %[1]v set %[2]v = %[3]v order by %[2]v",
 		"update %[1]v set %[2]v = %[3]v where %[2]v = 1 order by %[2]v limit 1",
-		"update %[1]v set %[2]v = %[3]v + 1",
+		"update %[1]v set %[2]v = %[3]v || 1",
+		"update %[1]v set %[2]v = %[2]v / 0",
+		"update %[1]v set %[2]v = %[2]v + null",
+		"update %[1]v set %[2]v = ((%[2]v + 1))",
+		"update %[1]v set %[2]v = %[2]v - 9223372036854775808",
 		"update %[1]v set %[2]v = (%[3]v)",
 		"update %[1]v set %[2]v = - (%[3]v)",
 		"update %[1]v set %[2]v = +%[3]v",
-		"update %[1]v set %[2]v = %[2]v",
+		"update %[1]v set %[2]v = (%[2]v)",
 		"update %[1]v set %[2]v = %[1]v.%[2]v",
-		`update %[1]v set %[2]v = "a"`,
+		`update %[1]v set %[2]v = %[1]v."a"`,
 		"update %[1]v set %[2]v = ?1",
 		"update %[1]v set %[2]v = :a",
-		"update %[1]v set %[2]v = -?",
+		"update %[1]v set %[2]v = - -?",
 		"update %[1]v set %[2]v = true",
 		"update %[1]v set %[2]v = %[3]v collate binary",
 		"update %[1]v set %[2]v = cast(%[3]v as int)",
@@ -930,15 +938,15 @@ var nearMisses = map[string][]string{
 		"delete from %[1]v where 1 = 1",
 		"delete from %[1]v where %[3]v = ?",
 		"delete from %[1]v where ? is null",
-		"delete from %[1]v where %[3]v = -%[2]v",
+		"delete from %[1]v where %[3]v = ~%[2]v",
 		"delete from %[1]v where %[3]v = %[2]v or %[3]v = %[2]v",
 		"delete from %[1]v where %[2]v = %[3]v or %[2]v = %[3]v",
 		"delete from %[1]v where not %[2]v = %[3]v",
 		"delete from %[1]v where (%[2]v = %[3]v)",
-		"delete from %[1]v where %[2]v = %[3]v + 1",
+		"delete from %[1]v where %[2]v = %[3]v || 1",
 		"delete from %[1]v where %[2]v = +%[3]v",
 		"delete from %[1]v where %[2]v = ?1",
-		"delete from %[1]v where %[2]v = -?",
+		"delete from %[1]v where %[2]v = - -?",
 		"delete from %[1]v where %[2]v = true",
 		"delete from %[1]v where %[2]v in (%[3]v)",
 		"delete from %[1]v where %[2]v between %[3]v and %[3]v",
@@ -1048,9 +1056,10 @@ func TestGenerate_nearMisses(t *testing.T) {
 		n /= 10
 	}
 	// The forms of the near misses write the value of an insert themselves, so the generator writes no
-	// parameter.
+	// parameter, and no expression, whose text would be a value of the forms.
 	g := newGenerator(t, *seed+3)
 	g.Parameters = 0
+	g.Expression = 0
 	c := counts{}
 	for range n {
 		src, s := g.Statement()
