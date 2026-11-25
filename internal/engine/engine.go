@@ -421,7 +421,8 @@ func Check(src string, n int) error {
 }
 
 // check the text src, as [Conn.Exec], [Conn.Query], and [Check] check it: its statement, or its
-// error, as [stmt.Check] gives it, or [ErrNoStatement].
+// error, as [stmt.Check] gives it, or [ErrNoStatement], or the refusal of a statement that the pass
+// supports and the engine does not run, as [expressionRefusal] gives it.
 func check(src string) (stmt.Statement, error) {
 	s, err := stmt.Check(src)
 	if err != nil {
@@ -429,6 +430,9 @@ func check(src string) (stmt.Statement, error) {
 	}
 	if s == nil {
 		return nil, ErrNoStatement
+	}
+	if err := expressionRefusal(s); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
