@@ -57,3 +57,63 @@ Where the NOT NULL check of an update goes. Before, the values of SET were const
 ### Future work
 
 Error mapping in `write`/`writeIn` and the driver, telemetry, the column compared with a column, the differential pair, the driver's tests, and the docs.
+
+## Step 2: the driver, the column compared with a column, the differential pair, and the checks
+
+**Author:** arithmetic-engine (builder)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief of step 1) "How the driver reports an evaluation error. ... make an evaluation error as tellable ... If that needs a new exported name in the root package, add it in the style of the existing ones"; "Also lift the statement pass's refusal of a column compared with a column (`where a = b`) for columns of the same declared type"; "Differential tests against SQLite in the style of `internal/engine/differential_test.go` (the pair skips statements with expressions today through `expressed`; make `pair.step` handle them)".
+
+**Interpretation:** give the caller sentinels for the evaluation error and its kinds; lift `a = b` if small; make the pair judge statements with arithmetic by rules that are independent of the engine; write the unit tests, the driver's tests, and plant faults.
+
+**Inferred intent:** that goqite's receive runs through the driver, and that every outcome of arithmetic is checked against SQLite.
+
+### What I did
+
+- Commit `7600180`: `s4ql.ErrEvaluation` with `s4ql.ErrOverflow`, `s4ql.ErrDivisionByZero`, `s4ql.ErrNotFinite` in `/errors.go` (`failure` got a second sentinel, `kind`), documented in `/s4ql.go`; `ran` in `/internal/engine/engine.go` leaves the count of changes after an evaluation error, in `write` and `writeIn`; `outcomeOf` gives `evaluation_error` at Debug. `TestArithmetic` in `/conn_test.go`: goqite's whole receive (counts `received` up, prepared, in a transaction rolled back, an empty queue, the annotation, a restart with an empty cache), evaluation errors through Exec, Query, QueryRow in and outside a transaction, and negative zero against SQLite, in the commit object (`committedReals`), and after a replay.
+- Commit `3cbd763`: the pass takes `where a = b` as the condition on `a` with a `Term.Expression` of `ExprColumn` (`/internal/sql/stmt/recognize.go`); the engine compares the two columns (`condition.paired`) where they are of one class. It was small: seven pinned cases of `TestCheck` and three near misses changed (`v = v` and `v = w` became `v = (v)` and `v = (w)`).
+- Commit `fda9d9d`: the pair. `stmttest.whereText` writes arithmetic (`stmttest.ExpressionText`, `stmttest.TermText`, `stmttest.BoundValue` exported); `subqueryCall.flatten`, `parametersIn`, `subqueryCandidates`, and `correlatedRule` read the parameters and columns of expressions; `pair.step` calls `pair.checkArithmetic` in place of `checkType` for a statement with arithmetic; `bothWays` reads a write with arithmetic by the rules and accepts an evaluation error by one path of a select if `pair.justify` justifies it; `reach`, `checkAccess`, `returnedInOrder` handle or leave out arithmetic. `TestPair_arithmetic` runs `arithmeticCases` (hand-written, on the core and in memory, with a restart) and `arithmeticCalls` (generated, 100 seeds of 40 calls). The generated run found a real bug at once: `b = ((? - r) * (-0.0 - 2.0))` with a NULL argument passed the type check (an expression whose every value is NULL meets every class) and then failed with `s4ql: internal error: a value of kind blob in a comparison of arithmetic`. I made arithmetic never meet text or blobs, whatever its arguments (`meetsArithmetic`), as the brief says, and `condition.computed` reads the column after the expressions.
+- Commit `2fefed1`: `TestEquivalent` of `/internal/sql/mutation` failed with `no such mutant: internal/engine/operator.go build.bind operator: err != nil => err == nil #5`, because the end of `build.bind` moved to `build.computeAndReach`; the five entries now name it, with `#3`.
+- Commit `6a2281d`: `make lint` found `func isColumn is unused` and SA4026 for `-0.0` in a Go literal of the test (`math.Copysign(0, -1)` now).
+- `TestEngine_arithmetic` and `TestNewPlan_arithmetic` in `/internal/engine/expression_test.go` pin the plans, the access of constants (`primary_key reads 1`, `index t_a reads 2`) and of per-row conditions (`full_scan reads 4`), the guards of the text and of a bound, the LIMIT with the direction, the constants also without rows, the order of the names and the messages, NOT NULL per row, the count, and the event.
+
+Runs: `go test ./internal/engine` (without -short) 155 s, ok; `go test ./internal/sql/...` ok; the root package ok but `TestOpen_realBucket`, which needs credentials that this worktree has not (not copied, as the brief says); `-race -count=50` of the new tests of the engine (60 s) and of the root package, ok; 600 seeds of the generated test, ok, once.
+
+### Why
+
+The pair had to keep SQLite and the instance in the same state: an evaluation error is not run in SQLite at all, which works because it leaves the count of changes and changes nothing.
+
+### What worked
+
+The planted faults, each found by a test (script `plant.py` in the scratchpad, each fault applied, tests run, file restored):
+- per-row conditions given to the access: `TestPair_arithmetic`;
+- a constant of `>` taken as NULL: all three;
+- SET copied from the new row: `TestEngine_arithmetic`, `TestPair_arithmetic`;
+- a comparison with NULL true: both of the engine;
+- text meets arithmetic: `TestEngine_arithmetic` only;
+- an evaluation error counted as a step error: both of the engine;
+- no stop at the first condition that is not true: both;
+- NOT NULL per row skipped: both;
+- the value side always first: `TestPair_arithmetic`.
+
+### What didn't work
+
+Several shell commands with here-docs holding backticks were refused by the harness ("this command is too complex to verify that it stays inside the worktree"); writing the text to a scratch file and running python on it worked. A `git commit` followed by `go test` in one command was refused too.
+
+### What I learned
+
+The offset of an evaluation error is the start of the operator's node, its first operand, not the operator itself: `update t set a = a + 1` fails "at offset 17".
+
+### What was tricky
+
+The pair's notion of a row that "the documented rule evaluates": for a justification it may be any row that the conditions before the failing one hold for (a bound may or may not rule it out), and for a due error only rows that also every condition that may serve the access holds for. A select with LIMIT and a subquery have no due errors for rows, because their order decides how far they read.
+
+### What warrants review
+
+`pair.checkArithmetic`, `pair.justify`, `pair.due`, and `arithmeticRefusals` in `/internal/engine/expression_test.go`, which are the independent rules; `bothWays` keeping the other instance in the state of the instance.
+
+### Future work
+
+The generated workload in `stmttest`, the simulation's planted bugs, the driver's generated test against mattn, and mutation testing, as the brief says.

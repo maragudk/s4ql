@@ -1864,7 +1864,8 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	t, o, other := p.t, p.o, p.other
 	t.Helper()
 	if s != nil && expressed(s) {
-		// The engine refuses a statement with an arithmetic expression until it evaluates it.
+		// Which rows a statement with arithmetic computes depends on its path, which may stop an
+		// evaluation error, so its paths are not compared; [pair.bothWays] reads a select by another.
 		return ""
 	}
 	if s != nil && subqueried(s) {
