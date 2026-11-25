@@ -150,10 +150,10 @@ func TestNewSequence(t *testing.T) {
 	// recounted, with S4QL_RECOUNT=1.
 	t.Run("should give each profile the sequences that its digest pins, which change only with the areas that the profile has on", func(t *testing.T) {
 		want := map[string]string{
-			"mixed": "60ee46f9e1dab118", "tables": "29ebcd8aa183db68", "where": "4bda84f3f43b104a", "changes": "e9ff49a7282d4cf7",
+			"mixed": "8d3ad5b7482c1462", "tables": "29ebcd8aa183db68", "where": "4bda84f3f43b104a", "changes": "e9ff49a7282d4cf7",
 			"indexes": "414a9a700d02c392", "exists": "2b60aa13e8d46150", "defaults": "7691b53223e1efdf", "valuefirst": "d395629f1c472444",
 			"transactions": "d131350fa1745ac7", "arguments": "8c37d49ea586cc44", "order": "272db593f02cec3f",
-			"returning": "cd327a3fc439add9", "subquery": "054019eab626c9ae", "arithmetic": "7e8e730181bd7d1e", "several": "2f29efd0010dabfc",
+			"returning": "cd327a3fc439add9", "subquery": "054019eab626c9ae", "arithmetic": "7e8e730181bd7d1e", "several": "61a4780dc189f9db",
 		}
 		is.Equal(t, len(Profiles), len(want))
 		for _, p := range Profiles {

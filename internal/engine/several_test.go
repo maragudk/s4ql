@@ -338,6 +338,8 @@ func TestConn_ExecAll(t *testing.T) {
 					is.NotError(t, all.c.Commit(t.Context()))
 				}
 				is.Equal(t, one.state(), all.state(), fmt.Sprint("seed ", seed))
+				one.closeMemory()
+				all.closeMemory()
 			}
 		}
 		is.True(t, compared > 4000, fmt.Sprint(compared, " texts compared"))
@@ -351,8 +353,13 @@ func sameDirections(t *testing.T, seed uint64) *instance {
 	i := &instance{t: t, seed: seed}
 	i.e, i.memory = engine.NewMemory(sim.NewFree(sim.Buggify{}), i.directed(engine.Options{}))
 	i.c = i.e.Conn()
-	t.Cleanup(func() { is.NotError(t, i.c.Close(context.WithoutCancel(t.Context()))) })
 	return i
+}
+
+// closeMemory closes the connection of an instance of [sameDirections], after which nothing holds it.
+func (i *instance) closeMemory() {
+	i.t.Helper()
+	is.NotError(i.t, i.c.Close(context.WithoutCancel(i.t.Context())))
 }
 
 // errorText of err for a comparison of two errors: its type, its message, the offset of SQLite's

@@ -2215,8 +2215,9 @@ type Call struct {
 	// Supported reports whether the text is a statement of the slices that a [Sequence] writes, which
 	// s4ql supports. It is false for a text of several statements.
 	Supported bool
-	// Statements is the number of statements of a text of several statements that [Sequence.several]
-	// wrote, from 2, and 0 for every other text.
+	// Statements is the number of texts that [Sequence.several] joined into a text of several
+	// statements, from 2, and 0 for every other text. A text of [Others] among them can hold another
+	// number of statements than one.
 	Statements int
 	// Each reports, of a text of several statements, whether each of them is a statement of the slices
 	// that a Sequence writes, which s4ql supports, as Supported reports it of a text of one.

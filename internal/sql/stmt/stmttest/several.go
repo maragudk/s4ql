@@ -38,7 +38,8 @@ var severalTrimmedEnds = []string{"; /* ", "; select 'abc  ", ";\n/*\t"}
 // three, with RETURNING if it is an insert, an update, or a delete; or, one time in twelve after
 // the first, an earlier statement of the text again, such as an insert that then fails on its key;
 // or, as a fault one time in 24 each, a text of [Others] or of [ArithmeticRefused], which SQLite does
-// not prepare, s4ql does not support, or that fails, in the middle of the text. Before the first
+// not prepare, s4ql does not support, or that fails, also first, and which may hold a second
+// statement, or a string without its end that holds the rest of the text. Before the first
 // statement, one time in four, and between two, stand spaces, comments, and empty statements, of
 // [severalLeads] and [severalSeparators], and after the last one of [severalEnds], or nothing. As
 // faults: the arguments lack the last one, one time in 16, or have one more, one time in 16; and
@@ -79,7 +80,7 @@ func (q *Sequence) several() Call {
 			i := r.IntN(len(texts))
 			text, a = texts[i], args[i]
 		case d == 1 && q.fault(r, areaSeveral, 2):
-			text, a = q.other(r, true)
+			text, a = q.other(r)
 			each = false
 		case d == 2 && q.profile.on(areaArithmetic) && q.fault(r, areaSeveral, 2):
 			form := ArithmeticRefused[r.IntN(len(ArithmeticRefused))]
@@ -107,6 +108,10 @@ func (q *Sequence) several() Call {
 		if r.IntN(3) == 0 {
 			end = severalTrimmedEnds[r.IntN(len(severalTrimmedEnds))]
 		} else {
+			if openComment(end) {
+				// A line comment at the end would hold the space.
+				end += "\n"
+			}
 			end += severalTrimmed[r.IntN(len(severalTrimmed))]
 		}
 	}
@@ -123,15 +128,10 @@ func (q *Sequence) several() Call {
 	return Call{Src: b.String(), Args: all, Query: r.IntN(8) == 0, Statements: n, Each: each}
 }
 
-// other is a text of [Others] at random from r, with a table and a column of the sequence, and a
-// value of the sequence as the argument of each ?. If statement, it is one that holds a statement,
-// for a text of several statements.
-func (q *Sequence) other(r Rand, statement bool) (string, []any) {
-	forms := Others
-	if statement {
-		forms = othersWithStatement
-	}
-	form := forms[r.IntN(len(forms))]
+// other is a text of [othersWithStatement] at random from r, with a table and a column of the
+// sequence, and a value of the sequence as the argument of each ?, for a text of several statements.
+func (q *Sequence) other(r Rand) (string, []any) {
+	form := othersWithStatement[r.IntN(len(othersWithStatement))]
 	table, column, value := q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))], r.IntN(5)
 	src := form
 	// Sprintf would add the arguments that a form without a verb does not use to its text.

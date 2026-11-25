@@ -5295,7 +5295,7 @@ func (p *pair) several(src string, c call, supported bool, runs [][]any) (outcom
 	}
 	p.reachSeveral(src, parts, args, got, stopped, scope)
 	for i, part := range parts {
-		if ct, ok := part.Statement.(*stmt.CreateTable); ok && i <= stopped {
+		if ct, ok := part.Statement.(*stmt.CreateTable); ok && i < stopped {
 			p.created[ct.Table.Value] = true
 		}
 		if p.tx != nil && scope == p.tx.kind() && i <= stopped {
@@ -5305,6 +5305,10 @@ func (p *pair) several(src string, c call, supported bool, runs [][]any) (outcom
 			}
 			p.note(src[part.Span.Start:part.Span.End], ran)
 		}
+	}
+	if p.tx != nil && scope == p.tx.kind() && got.failed != "" && (stopped < 0 || stopped == len(parts)) {
+		// A failure before any statement, or of the statement that Split refused.
+		p.note(src, got)
 	}
 	if failure == "" {
 		failure = p.compareIn(s, o)
@@ -5398,6 +5402,9 @@ func (p *pair) severalRan(src string, parts []stmt.Part, args []any, got outcome
 	}
 	if want.affected != fmt.Sprint(changes) {
 		excuse := severalExcuse(src, parts)
+		if excuse == excusedSeveralEnd && want.affected != "0" {
+			excuse = ""
+		}
 		if excuse == "" {
 			return fmt.Sprintf("mattn's result has %v rows affected, and SQLite's count of changes after the text is %v", want.affected, changes)
 		}
@@ -5453,6 +5460,11 @@ func severalMattnText(tb testing.TB, err error) string {
 //
 // A statement after the parts that Split refused gets the same judgement, without arguments. It gives
 // the number of the part at which s4ql stopped, and what differs, or "".
+//
+// An error without an offset that two parts give alike, as a statement of the text again does, is
+// taken for the first, where s4ql stops if it follows its rules. An s4ql that ran the first and
+// failed at the second changed the state that the tables read back after the text show, but for a
+// first that changes nothing, such as a select, which the checks of a statement alone judge.
 func (p *pair) severalFailed(src string, supported bool, parts []stmt.Part, failed error, args []any, got outcome, o runner) (int, string) {
 	tb := p.tb
 	tb.Helper()

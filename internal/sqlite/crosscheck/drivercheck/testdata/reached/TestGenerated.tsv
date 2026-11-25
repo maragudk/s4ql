@@ -63,7 +63,7 @@ mixed	171	57	insert with a parameter ok
 mixed	92	30	insert with a parameter wrong number of arguments
 mixed	39	13	insert wrong number of arguments
 mixed	25	8	other incomplete input
-mixed	375	125	other not supported
+mixed	376	125	other not supported
 mixed	36	12	other syntax error
 mixed	5	1	reached: != on the key ok
 mixed	3	1	reached: < on another column ok
@@ -278,7 +278,7 @@ mixed	3	1	reached: select with a subquery through prepare, query ok
 mixed	3	1	reached: select with a subquery through query ok
 mixed	11	3	reached: several statements through prepare, exec not supported
 mixed	3	1	reached: several statements through prepare, exec several times not supported
-mixed	6	2	reached: several statements through query not supported
+mixed	5	1	reached: several statements through query not supported
 mixed	3	1	reached: several statements through query row not supported
 mixed	30	10	reached: several statements: 2 statements failed
 mixed	6	2	reached: several statements: 2 statements ok
@@ -3172,7 +3172,7 @@ arithmetic	5	1	reached: IS NOT NULL on another column ok
 arithmetic	4	1	reached: IS NOT NULL on the key ok
 arithmetic	4	1	reached: IS NULL on another column ok
 arithmetic	7	2	reached: IS NULL on the key ok
-arithmetic	33	11	reached: LIMIT by an argument ok
+arithmetic	34	11	reached: LIMIT by an argument ok
 arithmetic	8	2	reached: LIMIT that cuts
 arithmetic	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
 arithmetic	18	6	reached: NULL argument into a column that takes NULL ok
@@ -3242,9 +3242,9 @@ arithmetic	3	1	reached: delete with a subquery through exec ok
 arithmetic	5	1	reached: delete with a subquery through prepare, exec several times ok
 arithmetic	9	3	reached: delete without WHERE ok, no row found
 arithmetic	9	3	reached: delete without WHERE ok, rows changed
-arithmetic	14	4	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
+arithmetic	13	4	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
 arithmetic	23	7	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
-arithmetic	6	2	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite
+arithmetic	7	2	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite
 arithmetic	11	3	reached: insert into BLOB UNIQUE constraint failed
 arithmetic	11	3	reached: insert into BLOB a value of another type
 arithmetic	4	1	reached: insert into BLOB attempt to write a readonly database
@@ -3363,8 +3363,8 @@ arithmetic	4	1	read-only transaction: rows left open
 arithmetic	4	1	read-only transaction: select ok with rows
 arithmetic	11	3	select no rows
 arithmetic	19	6	select no such table
-arithmetic	88	29	select ok
-arithmetic	23	7	select ok with rows
+arithmetic	87	29	select ok
+arithmetic	22	7	select ok with rows
 arithmetic	90	30	write transaction begin ok
 arithmetic	5	1	write transaction commit ok after a create table
 arithmetic	5	1	write transaction commit ok after a drop table
@@ -3444,8 +3444,8 @@ several	26	=	excused: arithmetic refused by the rules of its types, checked agai
 several	2	=	excused: error about the database before a syntax error, a known gap
 several	62	=	excused: mattn's result of 0 rows affected after a text of several statements that ends in an empty statement, where s4ql gives SQLite's count
 several	4	=	excused: mattn's result of the statement before a last statement with RETURNING, where s4ql gives SQLite's count
-several	46	=	excused: spaces that mattn trims and SQLite does not take for spaces
-several	90	=	excused: the wrong number of arguments of a text of several statements, checked against s4ql's rule
+several	48	=	excused: spaces that mattn trims and SQLite does not take for spaces
+several	89	=	excused: the wrong number of arguments of a text of several statements, checked against s4ql's rule
 several	104	=	excused: the wrong number of arguments, checked against s4ql's rule
 several	57	19	insert UNIQUE constraint failed
 several	64	21	insert no such table
@@ -3457,7 +3457,7 @@ several	84	28	insert with a parameter no such table
 several	100	33	insert with a parameter ok
 several	24	8	insert with a parameter wrong number of arguments
 several	21	7	insert wrong number of arguments
-several	348	116	other not supported
+several	352	117	other not supported
 several	11	3	other syntax error
 several	11	3	reached: != on the key ok
 several	5	1	reached: < on another column ok
@@ -3606,28 +3606,28 @@ several	29	9	reached: select * of 3 columns ok
 several	8	2	reached: select * with NULL ok
 several	93	31	reached: select of names ok
 several	3	1	reached: select of names with NULL ok
-several	83	27	reached: several statements through prepare, exec not supported
-several	48	16	reached: several statements through prepare, exec several times not supported
+several	82	27	reached: several statements through prepare, exec not supported
+several	47	15	reached: several statements through prepare, exec several times not supported
 several	19	6	reached: several statements through prepare, query not supported
 several	52	17	reached: several statements through query not supported
 several	30	10	reached: several statements through query row not supported
-several	217	72	reached: several statements: 2 statements failed
-several	60	20	reached: several statements: 2 statements ok
+several	216	72	reached: several statements: 2 statements failed
+several	59	19	reached: several statements: 2 statements ok
 several	43	14	reached: several statements: 3 statements ok
 several	29	9	reached: several statements: 4 statements ok
 several	169	56	reached: several statements: 5 statements failed
 several	14	4	reached: several statements: 5 statements ok
 several	40	13	reached: several statements: createindex that ran
-several	109	36	reached: several statements: createtable that ran
+several	108	36	reached: several statements: createtable that ran
 several	60	20	reached: several statements: delete that ran
 several	41	13	reached: several statements: delete with a parameter that ran
 several	21	7	reached: several statements: dropindex that ran
 several	38	12	reached: several statements: droptable that ran
-several	668	222	reached: several statements: empty statement or comment after the last statement failed
-several	111	37	reached: several statements: empty statement or comment after the last statement ok
-several	757	252	reached: several statements: empty statement or comment before the first statement
-several	909	303	reached: several statements: empty statement or comment between statements
-several	855	285	reached: several statements: failed
+several	667	222	reached: several statements: empty statement or comment after the last statement failed
+several	110	36	reached: several statements: empty statement or comment after the last statement ok
+several	755	251	reached: several statements: empty statement or comment before the first statement
+several	907	302	reached: several statements: empty statement or comment between statements
+several	854	284	reached: several statements: failed
 several	14	4	reached: several statements: failed after a statement ran: NOT NULL constraint failed
 several	75	25	reached: several statements: failed after a statement ran: UNIQUE constraint failed
 several	38	12	reached: several statements: failed after a statement ran: already exists
@@ -3640,17 +3640,17 @@ several	48	16	reached: several statements: failed before the last statement: UNI
 several	4	1	reached: several statements: failed before the last statement: evaluation error
 several	20	6	reached: several statements: failed before the last statement: no such table
 several	15	5	reached: several statements: failed before the last statement: not supported
-several	22	7	reached: several statements: fewer arguments than parameters
-several	132	44	reached: several statements: insert that ran
+several	21	7	reached: several statements: fewer arguments than parameters
+several	131	43	reached: several statements: insert that ran
 several	140	46	reached: several statements: insert with a parameter that ran
 several	40	13	reached: several statements: last statement with RETURNING that ran
 several	68	22	reached: several statements: more arguments than parameters
-several	146	48	reached: several statements: ok
-several	159	53	reached: several statements: select that ran
+several	145	48	reached: several statements: ok
+several	158	52	reached: several statements: select that ran
 several	50	16	reached: several statements: select with a parameter that ran
 several	48	16	reached: several statements: update that ran
 several	71	23	reached: several statements: update with a parameter that ran
-several	624	208	reached: several statements: with arguments failed
+several	623	207	reached: several statements: with arguments failed
 several	95	31	reached: several statements: with arguments ok
 several	6	2	reached: table read back after an evaluation error of an update or a delete, outside a transaction
 several	346	115	reached: table read back after an update or a delete
@@ -3692,14 +3692,14 @@ several	13	4	select wrong number of arguments
 several	187	62	write transaction begin ok
 several	26	8	write transaction commit ok after a create table
 several	9	3	write transaction commit ok after a drop table
-several	86	28	write transaction commit ok after a failed call
+several	87	29	write transaction commit ok after a failed call
 several	29	9	write transaction commit ok after a statement with RETURNING
-several	47	15	write transaction commit ok after an insert
+several	46	15	write transaction commit ok after an insert
 several	65	21	write transaction commit ok on a pinned connection
 several	61	20	write transaction commit ok through the pool
 several	12	4	write transaction rollback ok after a create table
 several	11	3	write transaction rollback ok after a drop table
-several	43	14	write transaction rollback ok after a failed call
+several	44	14	write transaction rollback ok after a failed call
 several	13	4	write transaction rollback ok after a statement with RETURNING
 several	21	7	write transaction rollback ok after an insert
 several	29	9	write transaction rollback ok on a pinned connection
@@ -3725,7 +3725,7 @@ several	24	8	write transaction: insert with a parameter ok
 several	7	2	write transaction: insert with a parameter wrong number of arguments
 several	3	1	write transaction: other syntax error
 several	23	7	write transaction: reached: several statements: empty statement or comment after the last statement ok
-several	195	65	write transaction: reached: several statements: failed
+several	194	64	write transaction: reached: several statements: failed
 several	18	6	write transaction: reached: several statements: failed after a statement ran: UNIQUE constraint failed
 several	22	7	write transaction: reached: several statements: failed after a statement ran: not supported
 several	31	10	write transaction: reached: several statements: ok

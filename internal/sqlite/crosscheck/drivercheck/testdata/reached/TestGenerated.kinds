@@ -565,9 +565,9 @@
 2	reached: table read back after an evaluation error of an update or a delete, in a transaction
 # The generated workload of several statements in one Exec of 2026-11-26: a third of the total that
 # day of each form that pair.several and pair.reach count, of the profile several and of mixed.
-51	reached: several statements: ok
+50	reached: several statements: ok
 323	reached: several statements: failed
-22	reached: several statements: 2 statements ok
+21	reached: several statements: 2 statements ok
 14	reached: several statements: 3 statements ok
 9	reached: several statements: 4 statements ok
 4	reached: several statements: 5 statements ok
@@ -576,7 +576,7 @@
 32	reached: several statements: with arguments ok
 228	reached: several statements: with arguments failed
 39	reached: several statements: createtable that ran
-47	reached: several statements: insert that ran
+46	reached: several statements: insert that ran
 49	reached: several statements: insert with a parameter that ran
 56	reached: several statements: select that ran
 16	reached: several statements: select with a parameter that ran
@@ -602,8 +602,8 @@
 1	reached: several statements: failed before the last statement: evaluation error
 9	reached: several statements: failed before the last statement: no such table
 5	reached: several statements: failed before the last statement: not supported
-282	reached: several statements: empty statement or comment before the first statement
-339	reached: several statements: empty statement or comment between statements
+281	reached: several statements: empty statement or comment before the first statement
+338	reached: several statements: empty statement or comment between statements
 38	reached: several statements: empty statement or comment after the last statement ok
 250	reached: several statements: empty statement or comment after the last statement failed
 10	write transaction: reached: several statements: ok
@@ -615,5 +615,5 @@
 19	reached: several statements through query not supported
 11	reached: several statements through query row not supported
 31	reached: several statements through prepare, exec not supported
-17	reached: several statements through prepare, exec several times not supported
+16	reached: several statements through prepare, exec several times not supported
 7	reached: several statements through prepare, query not supported
