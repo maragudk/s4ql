@@ -117,3 +117,55 @@ The pair's notion of a row that "the documented rule evaluates": for a justifica
 ### Future work
 
 The generated workload in `stmttest`, the simulation's planted bugs, the driver's generated test against mattn, and mutation testing, as the brief says.
+
+## Step 3: the documentation and the self-review
+
+**Author:** arithmetic-engine (builder)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief of step 1) "Update `internal/engine/README.md`, the statement pass's README if you lift the column comparison, and `s4ql.go`'s package documentation where it speaks of errors (prose may go to a `fabrik:writer` sub-agent with `model: opus`)" and "Self-review your diff against this brief when done, and fix what you find."
+
+**Interpretation:** have a writer put the decisions into the READMEs and the todo, check its text against the code, then review the whole diff and fix what is real.
+
+**Inferred intent:** that the lead and Markus can read the exact rule of evaluation and every difference from SQLite without reading the code.
+
+### What I did
+
+A `fabrik:writer` (opus) wrote the section `## Arithmetic` of `/internal/engine/README.md`, the heading "The engine and the driver" of `/docs/todo/arithmetic.md`, the changes of `/internal/sql/stmt/README.md` for `where a = b`, and closed the built items of `/docs/todo/expressions.md`, `/docs/todo/sql-front-end.md`, and `/internal/expr/README.md` (commit `50ca156`). I corrected one line of the todo: the other instance of the pair reads a select with arithmetic by another path, and only a write by the rules. It reported a stale comment in `pair.everyPath`, which I rewrote.
+
+The review (`code-review`, high, over `main...HEAD`) gave four findings, all fixed in `52cd4e2`:
+- `row value misused` beside `-1.5 * a = (select * from u)` had the offset of the sign, where SQLite gives that of `1.5`: `leftmostOffset` now adds one for a negative literal, and `TestEngine_arithmetic` pins four offsets measured with the shell. With a space between the sign and the number it is still one short; SQLite's offsets are not promised.
+- The constants of SET are computed in `build.change`, before `update.check`, so they fail before the refusal of a type of SET and before NOT NULL; the comment of `expression.go`, the README, and the todo said "after every check". The text now says which checks come before.
+- The planted bug `noRowMatches` gave an internal error on a condition that tests an expression: it now clears the expression too.
+- A stale reason in the comment of `recognizer.parenthesized`.
+
+Then `make test` (all of it, the simulator's tests with `s4ql_browser` included) and `make lint` passed.
+
+### Why
+
+The rule of evaluation is the part Markus must know, and the review found the one place where the text and the code disagreed on it.
+
+### What worked
+
+Giving the writer the facts as a list, with the code to check them against; it found that the slower runs (`-race`, the sanitizer) also take 8 seeds, not only `-short`.
+
+### What didn't work
+
+Nothing failed in this step; the first `make test` of step 2 had stopped at `TestEquivalent`, so this was the first full run of the simulator's tests on the branch.
+
+### What I learned
+
+The equivalent mutants of `/internal/sql/mutation/equivalent.txt` are named by function and occurrence, so moving code between functions breaks them silently until `TestEquivalent` runs.
+
+### What was tricky
+
+Saying "after the checks" exactly: the update checks NOT NULL and the types of SET in its sink's `check`, after the build, while the constants are computed in the build.
+
+### What warrants review
+
+The section "When an evaluation error comes" of the engine's README against `build.change`, `build.compute`, and `filter.holds`.
+
+### Future work
+
+None beyond the generated checks of the brief and the two open items in `/docs/todo/arithmetic.md`.
