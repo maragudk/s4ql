@@ -175,7 +175,7 @@ func (p *pair) checkArithmetic(c stmttest.Call, s stmt.Statement, args []any, go
 		if len(refusals) > 0 {
 			return "", fmt.Sprintf("%q with the arguments %#v: the engine gives %v, and the rules refuse it with one of %q", c.Src, args, got, refusals)
 		}
-		if due := p.due(s, args); due != "" {
+		if due := p.due(s, args, readEvery(s, args, c.Query, got)); due != "" {
 			return "", fmt.Sprintf("%q with the arguments %#v: the engine gives %v, and %v", c.Src, args, got, due)
 		}
 	}
@@ -506,21 +506,32 @@ func (p *pair) changedBefore(u *stmt.Update, args []any, ee *expr.Error) bool {
 // The rows that the access reads are those of the model's access for a select, as [pair.modelGuard]
 // gives it, and otherwise those that every condition that may serve the access holds for. A subquery
 // reads only up to its first row, and a select with LIMIT only up to its last, which their order
-// decides, so neither has a due error for a row. A subquery with LIMIT 0 gives NULL and computes
-// nothing, also no expression without a column.
-func (p *pair) due(s stmt.Statement, args []any) string {
+// decides, so neither has a due error for a row, but a select with LIMIT that read every row of its
+// access, as everyRow reports, which it does where it gave fewer rows than its LIMIT: its rows are
+// those of the range of the model's access, as [pair.accessRange] gives it, where the model takes
+// it. A subquery with LIMIT 0 gives NULL and computes nothing, also no expression without a column.
+func (p *pair) due(s stmt.Statement, args []any, everyRow bool) string {
 	sel, isSelect := s.(*stmt.Select)
+	limited := isSelect && sel.Limited() && !everyRow
 	computed := !subqueried(s) || p.computed != nil
 	subs := subqueriesIn(s)
 	access := accessGuard{must: true}
-	if access.conditions, access.modeled = p.modelGuard(s, args); access.modeled {
-		p.count(modeledDue)
+	switch {
+	case isSelect && sel.Limited() && everyRow:
+		p.count("arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides")
+		if sel.Subqueries == nil {
+			access.conditions, access.modeled = p.accessRange(sel, args)
+		}
+	default:
+		if access.conditions, access.modeled = p.modelGuard(s, args); access.modeled {
+			p.count(modeledDue)
+		}
 	}
 	for _, site := range stmttest.ArithmeticSites(s) {
 		switch {
 		case !site.Root.HasColumn() && site.Sub > 0 && (!computed || limitZero(subs[site.Sub-1].Limit, args)):
 			continue
-		case site.Root.HasColumn() && (site.Sub > 0 || !computed || isSelect && sel.Limited()):
+		case site.Root.HasColumn() && (site.Sub > 0 || !computed || limited):
 			continue
 		}
 		for _, n := range stmttest.Operators(site.Root) {
@@ -532,6 +543,18 @@ func (p *pair) due(s stmt.Statement, args []any) string {
 		}
 	}
 	return ""
+}
+
+// readEvery reports whether the select s with LIMIT, with the arguments args, whose answer of the
+// engine is got, through Query if query, read every row of its access: whether it gave fewer rows
+// than its LIMIT, which stops the reading only once it has given its last row.
+func readEvery(s stmt.Statement, args []any, query bool, got answer) bool {
+	sel, ok := s.(*stmt.Select)
+	if !ok || !sel.Limited() || !query || got.err != "" {
+		return false
+	}
+	n, ok := stmttest.BoundValue(sel.Limit, args).(int64)
+	return ok && int64(len(got.rows)) < n
 }
 
 // limitZero reports whether the term of a LIMIT, with the arguments args, is the integer 0; a LIMIT
@@ -1056,13 +1079,19 @@ func (p *pair) reachOfArithmetic(c stmttest.Call, s stmt.Statement, got answer) 
 		if s.Subqueries != nil || !c.Query {
 			return
 		}
+		// A row that the LIMIT kept the select from reading is one of the range of the model's access
+		// that the conditions before the site hold for.
+		access := accessGuard{must: true}
 		if s.Limited() && len(got.rows) > 0 {
+			access.conditions, access.modeled = p.accessRange(s, args)
+		}
+		if access.modeled {
 			for _, site := range stmttest.ArithmeticSites(s) {
 				if !site.Root.HasColumn() {
 					continue
 				}
 				if slices.ContainsFunc(stmttest.Operators(site.Root), func(n stmt.Expression) bool {
-					return slices.ContainsFunc(stmttest.EvaluationKinds, func(kind error) bool { return p.quirkRows(s, site, n, kind, args, accessGuard{}) })
+					return slices.ContainsFunc(stmttest.EvaluationKinds, func(kind error) bool { return p.quirkRows(s, site, n, kind, args, access) })
 				}) {
 					p.count("arithmetic: select with LIMIT that gave rows where a row that it did not read fails")
 					break
