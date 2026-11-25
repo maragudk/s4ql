@@ -27,7 +27,8 @@ type Node interface {
 }
 
 // Expr is an expression that gives a value: an [*Integer], a [*Real], a [*Text], a [*Blob], a
-// [*Null], a [*Parameter], or, as the value of a condition, a [*Subquery].
+// [*Null], a [*Parameter], as the value of a condition, a [*Subquery], or, as the value of an
+// assignment or of a condition, an [*Arithmetic].
 type Expr interface {
 	expr()
 }
@@ -181,15 +182,18 @@ type Filter struct {
 	Conditions []Condition
 }
 
-// Condition of a [Filter]: the column of the name, as the statement writes it, compared with Value
-// by Operator, or tested for NULL, with a Value of nil. ValueFirst reports whether the statement
+// Condition of a [Filter]: the column of the name, as the statement writes it, or the arithmetic of
+// Expression in its place, compared with Value by Operator, or tested for NULL, with a Value of nil. ValueFirst reports whether the statement
 // writes the value on the left of the operator and the column on the right, as in `5 < a`, of slice
 // 12. Operator is then the operator turned round, as [stmt.Condition] has it, so that `5 < a` is the
 // condition `a > 5`, and the engine reads every condition one way, whichever side its column is on.
 // ValueFirst is there only for the planted bug unturnedBound and for tests: the statement pass has
 // turned the operator round already, and nothing may turn Operator round again from ValueFirst.
 type Condition struct {
-	Column     stmt.Name
+	Column stmt.Name
+	// Expression is what the condition tests in place of Column, an operator with a column, as in `a
+	// + 1 = 5`, or the zero Expression if it tests Column, which is then the zero Name.
+	Expression stmt.Expression
 	Operator   stmt.Operator
 	Value      Expr
 	ValueFirst bool
@@ -237,6 +241,15 @@ type Parameter struct {
 	Number int
 }
 
+// Arithmetic is the value of an arithmetic expression of the statement pass: an operator with its
+// operands, or, as the value of an assignment, a column alone, as in `set a = b`. An expression
+// without a column, [stmt.Expression.HasColumn], has one value for each run of the statement; one
+// with a column has one for each row, and its columns are those of the row as it was before the
+// statement.
+type Arithmetic struct {
+	Expression stmt.Expression
+}
+
 // Subquery is the value of the scalar subquery of the number Number, which counts from 1, in the
 // Subqueries of the statement, whose opening parenthesis is at Offset in the text. [Format] does not
 // print the offset.
@@ -266,6 +279,7 @@ func (*Blob) expr()        {}
 func (*Null) expr()        {}
 func (*Parameter) expr()   {}
 func (*Subquery) expr()    {}
+func (*Arithmetic) expr()  {}
 
 // NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
 // column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
@@ -276,12 +290,9 @@ func (*Subquery) expr()    {}
 // that, and one with LIMIT a [*Limit] over that, as [Query] says. An insert, an update, and a delete
 // with RETURNING have its [*Returning]. A select, an update, and a delete with scalar subqueries in
 // their WHERE have the [*Query] of each in their Subqueries, and a [*Subquery] as the value of the
-// condition that compares a column with it. It panics for a statement with an arithmetic
-// expression, which the engine does not evaluate yet, as [expressionRefusal] says.
+// condition that compares a column with it. An arithmetic expression of a value is an
+// [*Arithmetic], and one that a condition tests is its Expression.
 func NewPlan(s stmt.Statement) Plan {
-	if expressionRefusal(s) != nil {
-		panic("engine: no plan of a statement with an expression")
-	}
 	switch s := s.(type) {
 	case *stmt.CreateTable:
 		p := &CreateTable{Table: s.Table, IfNotExists: s.IfNotExists, PrimaryKey: []int{s.Key()}, SQL: s.SQL}
@@ -367,7 +378,7 @@ func rowsOf(table stmt.Name, where []stmt.Condition) Node {
 	}
 	f := &Filter{Source: source}
 	for _, c := range where {
-		condition := Condition{Column: c.Column, Operator: c.Operator, ValueFirst: c.ValueFirst}
+		condition := Condition{Column: c.Column, Expression: c.Expression, Operator: c.Operator, ValueFirst: c.ValueFirst}
 		if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
 			condition.Value = term(c.Value)
 		}
@@ -377,8 +388,11 @@ func rowsOf(table stmt.Name, where []stmt.Condition) Node {
 }
 
 // term of a row of an insert, of an assignment, of a condition, or of a LIMIT, as an expression: its
-// literal, NULL among them, its parameter, or its subquery.
+// literal, NULL among them, its parameter, its subquery, or its arithmetic.
 func term(t stmt.Term) Expr {
+	if t.Expression.Present() {
+		return &Arithmetic{Expression: t.Expression}
+	}
 	if t.Subquery > 0 {
 		return &Subquery{Number: t.Subquery, Offset: t.Span.Start}
 	}
@@ -503,7 +517,11 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 			if i > 0 {
 				b.WriteString(" and")
 			}
-			fmt.Fprint(b, " ", c.Column.Raw, " ", c.Operator)
+			tested := c.Column.Raw
+			if c.Expression.Present() {
+				tested = formatArithmetic(c.Expression)
+			}
+			fmt.Fprint(b, " ", tested, " ", c.Operator)
 			if c.Value != nil {
 				fmt.Fprint(b, " ", formatExpr(c.Value))
 			}
@@ -601,8 +619,29 @@ func formatExpr(e Expr) string {
 		return fmt.Sprint("?", e.Number)
 	case *Subquery:
 		return fmt.Sprint("(subquery ", e.Number, ")")
+	case *Arithmetic:
+		return formatArithmetic(e.Expression)
 	}
 	panic(fmt.Sprintf("engine: an expression of type %T", e))
+}
+
+// formatArithmetic of the expression e: a literal as [formatExpr] prints it, a parameter by its
+// number, a column as the statement writes it, a negation with a - before its operand, and every
+// binary operator in parentheses, so that the text shows the tree.
+func formatArithmetic(e stmt.Expression) string {
+	switch e.Kind {
+	case stmt.ExprValue:
+		return formatExpr(term(stmt.Term{Value: e.Value}))
+	case stmt.ExprParameter:
+		return fmt.Sprint("?", e.Parameter)
+	case stmt.ExprColumn:
+		return e.Column.Raw
+	case stmt.ExprNegate:
+		return "-" + formatArithmetic(e.Operands[0])
+	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
+		return fmt.Sprint("(", formatArithmetic(e.Operands[0]), " ", e.Kind, " ", formatArithmetic(e.Operands[1]), ")")
+	}
+	panic(fmt.Sprintf("engine: an expression of kind %v", int(e.Kind)))
 }
 
 // typeName of a column's type, as SQLite gives it for the declared type of a column of a strict

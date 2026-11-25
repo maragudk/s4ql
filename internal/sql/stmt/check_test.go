@@ -1052,9 +1052,11 @@ var checkCases = []checkCase{
 	{name: "a value and AND without a gap", src: "select * from t where v=1and w<-1", err: `unrecognized token: "1and"`},
 	// Only a sign makes a value of a literal: ~ is an operator of its own.
 	{name: "a bitwise not of a number on the left", src: "select * from t where ~1 < v", err: "s4ql: not supported: ~ operator (at offset 22)"},
-	{name: "a column on the right", src: "select * from t where v = w", err: "s4ql: not supported: column compared with a column (at offset 26)"},
-	{name: "a column in double quotes on the right", src: `select * from t where v = "a"`, err: "s4ql: not supported: column compared with a column (at offset 26)"},
-	{name: "a column with its table on the right", src: "select * from t where v = t.w", err: "s4ql: not supported: column compared with a column (at offset 26)"},
+	{name: "a column on the right", src: "select * from t where v = w", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, ex(ec("w", 26), 26, 27))}}},
+	{name: "a column in double quotes on the right", src: `select * from t where v = "a"`, want: &stmt.Select{Span: stmt.Span{Start: 0, End: 29}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, ex(stmt.Expression{Kind: stmt.ExprColumn, Column: name(`"a"`, "a", 26), Span: stmt.Span{Start: 26, End: 29}}, 26, 29))}}},
+	{name: "a column with its table on the right", src: "select * from t where v = t.w", err: "s4ql: not supported: column with the name of a table (at offset 26)"},
 	{name: "a column with its table in where", src: "select * from t where t.v = 1", err: "s4ql: not supported: column with the name of a table (at offset 22)"},
 	{name: "a column with its schema and table in where", src: "select * from t where main.t.v = 1", err: "s4ql: not supported: column with the name of a table (at offset 22)"},
 	{name: "or", src: "select * from t where v = 1 or w = 2", err: "s4ql: not supported: OR (at offset 28)"},
@@ -1101,7 +1103,7 @@ var checkCases = []checkCase{
 	{name: "true on the right", src: "select * from t where v = true", err: "s4ql: not supported: TRUE or FALSE (at offset 26)"},
 	// With the name of a table, true and false are names of columns, as in SQLite.
 	{name: "a column named true with its table alone", src: "select * from t where t.true", err: "s4ql: not supported: column reference (at offset 22)"},
-	{name: "a column named false with its table on the right", src: "select * from t where v = t.false", err: "s4ql: not supported: column compared with a column (at offset 26)"},
+	{name: "a column named false with its table on the right", src: "select * from t where v = t.false", err: "s4ql: not supported: column with the name of a table (at offset 26)"},
 	{name: "false after and", src: "select * from t where v = 1 and false", err: "s4ql: not supported: TRUE or FALSE (at offset 32)"},
 	{name: "a literal after and", src: "select * from t where v = 1 and 1", err: "s4ql: not supported: literal (at offset 32)"},
 	{name: "a column after and", src: "select * from t where v = 1 and w", err: "s4ql: not supported: column reference (at offset 32)"},
@@ -1597,10 +1599,13 @@ var checkCases = []checkCase{
 	{name: "a value on both sides after a condition", src: "select * from t where 5 < v and 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 36)"},
 	{name: "a value on both sides in an update", src: "update t set v = 1 where 2 = 2", err: "s4ql: not supported: value compared with a value (at offset 29)"},
 	{name: "a value on both sides in a delete", src: "delete from t where 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 24)"},
-	// A column on both sides stays not supported.
-	{name: "a column on both sides", src: "select * from t where a = b", err: "s4ql: not supported: column compared with a column (at offset 26)"},
-	{name: "a column compared with itself", src: "select * from t where a = a", err: "s4ql: not supported: column compared with a column (at offset 26)"},
-	{name: "a column in double quotes on both sides", src: `select * from t where "a" < "b"`, err: "s4ql: not supported: column compared with a column (at offset 28)"},
+	// A column on both sides tests the left one, compared with the right one alone.
+	{name: "a column on both sides", src: "select * from t where a = b", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("a", "a", 22), stmt.OpEqual, ex(ec("b", 26), 26, 27))}}},
+	{name: "a column compared with itself", src: "select * from t where a = a", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("a", "a", 22), stmt.OpEqual, ex(ec("a", 26), 26, 27))}}},
+	{name: "a column in double quotes on both sides", src: `select * from t where "a" < "b"`, want: &stmt.Select{Span: stmt.Span{Start: 0, End: 31}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name(`"a"`, "a", 22), stmt.OpLess, ex(stmt.Expression{Kind: stmt.ExprColumn, Column: name(`"b"`, "b", 28), Span: stmt.Span{Start: 28, End: 31}}, 28, 31))}}},
 	// IS NULL and IS NOT NULL take only a column on the left.
 	{name: "a number is null", src: "select * from t where 5 is null", err: "s4ql: not supported: value before IS (at offset 22)"},
 	{name: "null is null", src: "select * from t where null is null", err: "s4ql: not supported: value before IS (at offset 22)"},

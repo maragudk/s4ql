@@ -10,6 +10,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
@@ -24,6 +25,7 @@ func TestOutcomeOf(t *testing.T) {
 		{fmt.Errorf("x: %w", &stmt.NotSupportedError{What: "WHERE clause"}), "not_supported", slog.LevelDebug},
 		{fmt.Errorf("x: %w", core.ErrReaderBusy), "not_supported", slog.LevelDebug},
 		{fmt.Errorf("x: %w", ErrNoStatement), "no_statement", slog.LevelDebug},
+		{&expr.Error{Kind: expr.ErrOverflow, Op: stmt.ExprAdd}, "evaluation_error", slog.LevelDebug},
 		{internalError("x"), "internal_error", slog.LevelError},
 		{fmt.Errorf("%w: %w", core.ErrOutcomeUnknown, context.DeadlineExceeded), "core_error", slog.LevelWarn},
 		{fmt.Errorf("x: %w", core.ErrNoLease), "refused", slog.LevelDebug},

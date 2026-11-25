@@ -50,6 +50,10 @@ func TestBound_Eval(t *testing.T) {
 		{name: "should give a positive quotient of two negative integers", src: "-7 / -2", row: zeros, sqlite: expr.IntegerValue(3)},
 		{name: "should give an integer for the product of integers", src: "a * b", row: row(integer(-4), integer(5), float(0), float(0)), sqlite: expr.IntegerValue(-20)},
 		{name: "should give the smallest integer as a product that just fits", src: "a * b", row: row(integer(-1<<31), integer(1<<32), float(0), float(0)), sqlite: expr.IntegerValue(minInt)},
+		{name: "should give the largest integer as a product that is exactly it", src: "a * b", row: row(integer(7), integer(maxInt/7), float(0), float(0)), sqlite: expr.IntegerValue(maxInt)},
+		{name: "should give the largest integer as a product of two negative integers", src: "a * b", row: row(integer(-7), integer(-(maxInt / 7)), float(0), float(0)), sqlite: expr.IntegerValue(maxInt)},
+		{name: "should divide the smallest integer by a negative integer other than -1", src: "a / b", row: row(integer(minInt), integer(-2), float(0), float(0)), sqlite: expr.IntegerValue(1 << 62)},
+		{name: "should truncate the quotient of the smallest integer by a negative integer toward zero", src: "a / -3", row: row(integer(minInt), integer(0), float(0), float(0)), sqlite: expr.IntegerValue(3074457345618258602)},
 		{name: "should give the smallest integer as a sum that just fits", src: "a + b", row: row(integer(minInt+1), integer(-1), float(0), float(0)), sqlite: expr.IntegerValue(minInt)},
 
 		{name: "should refuse a sum above the largest integer, which SQLite gives as a real", src: "a + 1", row: row(integer(maxInt), integer(0), float(0), float(0)),
@@ -102,6 +106,10 @@ func TestBound_Eval(t *testing.T) {
 			sqlite: expr.Value{}, err: expr.ErrNotFinite, at: "c * 10"},
 		{name: "should give the smallest subnormal real for a quotient that underflows to it", src: "c / d", row: row(integer(0), integer(0), float(math.SmallestNonzeroFloat64), float(1.5)),
 			sqlite: expr.RealValue(math.SmallestNonzeroFloat64)},
+		{name: "should give a subnormal real that is not zero for a product below the smallest normal real", src: "c * d", row: row(integer(0), integer(0), float(1e-300), float(1e-10)),
+			sqlite: expr.RealValue(1e-310)},
+		{name: "should give a negative subnormal real for a difference of two normal reals", src: "c - d", row: row(integer(0), integer(0), float(0x1p-1022), float(0x1.0000000000001p-1022)),
+			sqlite: expr.RealValue(-0x1p-1074)},
 		{name: "should give zero for a product that underflows", src: "c * d", row: row(integer(0), integer(0), float(1e-200), float(1e-200)), sqlite: expr.RealValue(0)},
 		{name: "should give negative zero for a negative product that underflows", src: "c * d", row: row(integer(0), integer(0), float(-1e-200), float(1e-200)), sqlite: expr.RealValue(negZero)},
 
@@ -337,6 +345,27 @@ func TestProgram_Bind(t *testing.T) {
 		v, err := b.Eval(nil)
 		is.NotError(t, err)
 		is.Equal(t, expr.IntegerValue(90), v)
+	})
+
+	t.Run("should refuse the first of two refused arguments in the order of the text, whatever their kinds", func(t *testing.T) {
+		e, full, err := parse("? + ?")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		first := strings.Index(full, "?")
+		for _, c := range []struct {
+			args []*s4qlpb.Value
+			what string
+		}{
+			{[]*s4qlpb.Value{text("1"), blob([]byte("1"))}, "argument 1 in arithmetic, which is text"},
+			{[]*s4qlpb.Value{blob([]byte("1")), text("1")}, "argument 1 in arithmetic, which is a blob"},
+		} {
+			_, err := x.Bind(c.args)
+			var ns *stmt.NotSupportedError
+			is.True(t, errors.As(err, &ns), "a *stmt.NotSupportedError")
+			is.Equal(t, c.what, ns.What)
+			is.Equal(t, first, ns.Offset)
+		}
 	})
 
 	t.Run("should give an internal error for a parameter without an argument, or one of no kind", func(t *testing.T) {

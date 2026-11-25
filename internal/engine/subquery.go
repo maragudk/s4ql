@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -303,8 +304,9 @@ func (s *subqueries) lengths(b build, sub *Subquery) error {
 // or NULL, and SQLite compares it with the column of the statement by the affinities of the two,
 // which convert a value only where the two are of other types. So the rule of exact types holds for
 // the two columns, whatever the rows: INT and INTEGER are one type there, and every other two
-// types are refused.
-func (s *subqueries) types(b build, sub *Subquery, t *s4qlpb.CreateTable, position int) error {
+// types are refused. Where the condition tests an arithmetic expression, test, in place of a
+// column, the column of the subquery must be of the class of its values, as [comparable] says.
+func (s *subqueries) types(b build, sub *Subquery, t *s4qlpb.CreateTable, position int, test *expr.Bound) error {
 	in, err := s.at(sub, nil)
 	if err != nil {
 		return err
@@ -319,6 +321,17 @@ func (s *subqueries) types(b build, sub *Subquery, t *s4qlpb.CreateTable, positi
 		}
 	}
 	columns := in.s.table.GetColumns()
+	if test != nil {
+		if in.position < 0 || in.position >= len(columns) {
+			return internalError("a subquery of the column at %v compared with an expression", in.position)
+		}
+		inside := columns[in.position]
+		if meetsArithmetic(columnClass(inside.GetType()), arithmeticClass(test)) {
+			return nil
+		}
+		return fmt.Errorf("%w: subquery %v, of the column %v.%v of type %v, compared with %v", stmt.ErrNotSupported,
+			in.number, in.s.table.GetTable(), inside.GetName(), typeName(inside.GetType()), expressionName(arithmeticClass(test)))
+	}
 	if in.position < 0 || in.position >= len(columns) || position < 0 || position >= len(t.GetColumns()) {
 		return internalError("a subquery of the column at %v compared with the column at %v", in.position, position)
 	}
@@ -360,7 +373,13 @@ type subqueryRead struct {
 // statement says none, with none set, as a query with LIMIT 0 does; one with another condition that
 // is never true, as [never] says; and the sink of a write that is built only to look its names up,
 // in a [readOnly] transaction, and is not run.
+//
+// The expressions without a column of the conditions are computed first, as [build.constants] says,
+// so that a value of NULL among them makes the statement give no row too.
 func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []condition, none bool) error {
+	if err := b.constants(conditions); err != nil {
+		return err
+	}
 	if b.subs == nil {
 		return nil
 	}
@@ -370,7 +389,7 @@ func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []con
 			others = append(others, conditions[i])
 		}
 	}
-	if _, lookups := b.r.(readOnly); none || lookups || never(s.table, others) {
+	if _, lookups := b.r.(readOnly); none || lookups || never(s.table, bounds(others)) {
 		for i, c := range f.Conditions {
 			if _, ok := c.Value.(*Subquery); ok {
 				conditions[i].value = null()
@@ -422,7 +441,11 @@ func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []con
 	}
 	for _, i := range matches {
 		// The planted bug: no row makes the comparison true of every row whose column is not NULL.
-		conditions[i].op, conditions[i].value = stmt.OpIsNotNull, nil
+		conditions[i].op, conditions[i].value, conditions[i].test = stmt.OpIsNotNull, nil, nil
+		if conditions[i].position < 0 {
+			// A condition that tests an expression has no column; the bug makes it true of every row.
+			conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 0
+		}
 	}
 	return nil
 }
@@ -435,6 +458,10 @@ func (b build) value(ctx context.Context, in *inner) (*s4qlpb.Value, subqueryRea
 	}
 	// The values of the subquery are evaluated and checked already, so the build of its access needs
 	// neither the arguments nor the length limit.
+	// The expressions without a column of its conditions are computed when the subquery is.
+	if err := b.constants(in.conditions); err != nil {
+		return nil, subqueryRead{}, err
+	}
 	inside := build{r: b.r, how: b.how.inner(), order: in.by}
 	if b.how.bugs.orderIgnored {
 		// The planted bug: the access of the conditions alone, whose first row is taken.

@@ -24,6 +24,7 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/corpus"
@@ -87,6 +88,8 @@ type answer struct {
 	// backward is the direction of the rows of a statement with RETURNING of the engine, as
 	// [engine.Rows.Backward] gives it, or nil. It is not in the text of the answer.
 	backward *bool
+	// eval is the engine's evaluation error of arithmetic, or nil. It is not in the text of the answer.
+	eval *expr.Error
 }
 
 // String of the answer, which is what the tests compare between the engine and SQLite: its error, or
@@ -361,6 +364,8 @@ func errText(t testing.TB, src string, err error) string {
 		return "no statement"
 	case errors.Is(err, engine.ErrArguments):
 		return wrongArguments
+	case errors.Is(err, expr.ErrEvaluation):
+		return evaluationError
 	}
 	t.Fatalf("%q: the engine gives %v", src, err)
 	return ""
@@ -370,6 +375,10 @@ func errText(t testing.TB, src string, err error) string {
 // than the statement has parameters.
 const wrongArguments = "wrong number of arguments"
 
+// evaluationError is the err of an [answer] of the engine's error of an arithmetic expression whose
+// value s4ql does not give, an [*expr.Error], whose message says its kind and its operator.
+const evaluationError = "evaluation error"
+
 // errAnswer of an error of the engine, with its message.
 func errAnswer(t testing.TB, src string, err error) answer {
 	t.Helper()
@@ -378,6 +387,7 @@ func errAnswer(t testing.TB, src string, err error) answer {
 	if errors.As(err, &se) {
 		a.offset = se.Offset
 	}
+	a.eval, _ = errors.AsType[*expr.Error](err)
 	return a
 }
 
@@ -1116,21 +1126,23 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	// A statement with an arithmetic expression is refused before its values and its arguments until
-	// the engine evaluates it, as [expressed] says, so no rule of its values holds for it.
-	if s == nil || !expressed(s) {
-		if kind, failure := p.checkLength(c, got); kind != "" {
-			if failure == "" {
-				p.y.excused(kind)
-			}
-			return failure
+	if kind, failure := p.checkLength(c, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
 		}
-		if kind, failure := p.checkType(c, args, got); kind != "" {
-			if failure == "" {
-				p.y.excused(kind)
-			}
-			return failure
+		return failure
+	}
+	// A statement with arithmetic has rules of its own for its types and its evaluation errors, as
+	// [pair.checkArithmetic] says.
+	check := p.checkType
+	if s != nil && expressed(s) {
+		check = func(c stmttest.Call, args []any, got answer) (string, string) { return p.checkArithmetic(c, s, args, got) }
+	}
+	if kind, failure := check(c, args, got); kind != "" || failure != "" {
+		if failure == "" {
+			p.y.excused(kind)
 		}
+		return failure
 	}
 	if got.err == "not supported" && p.tooLongForCache(src, got.message) {
 		p.y.excused(excusedCacheLimit)
@@ -1140,9 +1152,8 @@ func (p *pair) step(c stmttest.Call) string {
 		// A statement of the generator and every statement that the pass supports are supported, but
 		// for the refusals of their arguments and of the types of their values, which are checked
 		// above, and a text that is not supported is one that SQLite accepts: SQLite prepares it on an
-		// empty database without a syntax error. A statement with an arithmetic expression is not
-		// supported until the engine evaluates it, as [expressed] says.
-		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil && !expressed(s) {
+		// empty database without a syntax error.
+		if s, err := stmt.Check(src); c.Supported || err == nil && s != nil {
 			return fmt.Sprintf("%q: the engine does not support a statement that the pass supports: %v", src, got.message)
 		}
 		if m := syntaxOfNotSupported(t, p.empty, src); m != "" {
@@ -1251,6 +1262,8 @@ func (p *pair) step(c stmttest.Call) string {
 		if failure := p.checkOrder(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
+		// The access of a select with arithmetic is that of its conditions without an expression with a
+		// column, which the rules of stmttest do not tell apart; the engine's own tests pin it.
 		if failure := p.checkAccess(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
@@ -1468,6 +1481,17 @@ func (p *pair) returnedInOrder(s stmt.Statement, args []any) []string {
 			if a.Column.Fold() != fold(name) {
 				continue
 			}
+			if a.Value.Expression.Present() {
+				// SQLite computes the arithmetic on the row as it is, before the update, as the update
+				// does, and a REAL column stores -0.0 as 0.0.
+				text, valueArgs := stmttest.TermText(a.Value, nil, args)
+				term = text
+				if c := stmttest.ColumnOf(columns, stmt.Name{Value: name}); c >= 0 && columns[c].Type == "REAL" {
+					term = "(" + text + " + 0.0)"
+				}
+				bound = append(bound, valueArgs...)
+				continue
+			}
 			v := termArg(a.Value, args)
 			term = "?"
 			if _, ok := v.(float64); ok {
@@ -1542,7 +1566,7 @@ func (p *pair) checkReturned(s stmt.Statement, got answer, inOrder []string) str
 func (p *pair) checkAccess(s *stmt.Select, args []any, got answer) string {
 	t, o := p.t, p.o
 	t.Helper()
-	if got.access == nil || p.i.e == nil || p.i.e.Forced() {
+	if got.access == nil || expressed(s) || p.i.e == nil || p.i.e.Forced() {
 		return ""
 	}
 	table, columns := o.columns(t, s.Table.Value)
@@ -1840,7 +1864,8 @@ func (p *pair) everyPath(s stmt.Statement, c stmttest.Call) string {
 	t, o, other := p.t, p.o, p.other
 	t.Helper()
 	if s != nil && expressed(s) {
-		// The engine refuses a statement with an arithmetic expression until it evaluates it.
+		// Which rows a statement with arithmetic computes depends on its path, which may stop an
+		// evaluation error, so its paths are not compared; [pair.bothWays] reads a select by another.
 		return ""
 	}
 	if s != nil && subqueried(s) {
@@ -2141,7 +2166,11 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		return vs
 	})
 	path := engine.Path{}
-	if byKey {
+	// The rows that a write with arithmetic computes depend on its access, which may stop an
+	// evaluation error, so the other instance changes them by the rules too, and stays in the state of
+	// the instance.
+	_, isSelect := s.(*stmt.Select)
+	if byKey && (s == nil || !expressed(s) || isSelect) {
 		paths := otherPaths(p.indexNames(s)...)
 		path = paths[p.ways%len(paths)]
 		p.ways++
@@ -2166,6 +2195,19 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		same = all.columns == got.columns && len(all.rows) == len(got.rows)
 		otherAnswer := all
 		p.otherOrdered = &otherAnswer
+	}
+	if isSelect && expressed(s) && (got.err == evaluationError || all.err == evaluationError) && all.message != got.message {
+		// Which rows a select with arithmetic computes depends on its access, which may stop an
+		// evaluation error: an error of the other instance must be justified as [pair.justify] says, and
+		// one of the instance is, by [pair.step].
+		if all.err != evaluationError {
+			return ""
+		}
+		if why := p.justify(s, oracleArgs(c.Args), all.eval); why != "" {
+			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, which %v", c.Src, c.Args, path, all.message, why)
+		}
+		p.count("evaluation error by one path and not by another")
+		return ""
 	}
 	if !byKey {
 		// The instance read every row, as -scanall makes it, and the other instance by the key.
@@ -2223,6 +2265,12 @@ func (p *pair) count(kind string) {
 // "reached: ", on the database of SQLite before the call, as [reach] says.
 func (p *pair) reach(c stmttest.Call, got answer) {
 	p.t.Helper()
+	if s, _ := stmt.Check(c.Src); p.y != nil && s != nil && expressed(s) {
+		// What a statement with arithmetic reaches is counted as arithmetic, by [reachArithmetic], also in
+		// its subqueries.
+		reachArithmetic(s, got, p.count)
+		return
+	}
 	if p.y != nil {
 		found := false
 		// A statement with subqueries counts what it reaches as the statement with the values that the
@@ -4531,7 +4579,8 @@ func FuzzSQL_core(f *testing.F) {
 }
 
 // fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of a sequence of
-// the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], and every 500th text of the corpus.
+// the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], every 500th text of the corpus,
+// and texts with arithmetic.
 func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 	add := shardedAdd(f)
 	q := newSequence(f, stmttest.Mixed.Seed(1))
@@ -4551,6 +4600,21 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		if i%500 == 0 {
 			add(e.SQL, i%1000 == 0)
 		}
+	}
+	// Arithmetic and a column compared with or set to a column, which the statement pass takes since
+	// the engine step of arithmetic, and which the pair judges by the rules of expression_test.go.
+	for i, src := range []string{
+		"select * from t1 where v1 = v1",
+		"select * from t1 where v1 + 1 = 2",
+		"select * from t1 where 2 > -v1",
+		"select * from t1 where v1 * 9223372036854775807 > 0",
+		"select * from t1 where v1 = (select v1 from t1 where v1 * 2 = 2)",
+		"update t1 set v1 = v1 + 10 returning *",
+		"update t1 set v1 = v1",
+		"delete from t1 where v1 / (v1 - v1) = 1",
+		`select * from "foo BAR" where "bar""X" - 7 = 0`,
+	} {
+		add(src, i%2 == 1)
 	}
 	f.Fuzz(func(t *testing.T, src string, exec bool) {
 		i := newInstance(t)
