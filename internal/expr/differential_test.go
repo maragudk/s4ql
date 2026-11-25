@@ -1,16 +1,21 @@
 package expr_test
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/sqlite"
 )
 
@@ -586,6 +591,9 @@ func (k *checker) check(c exprCase) string {
 		kind += map[bool]string{true: " -0.0", false: " 0.0"}[math.Signbit(f)]
 	}
 	k.tally[kind]++
+	if e.Kind == stmt.ExprColumn {
+		k.tally["case: column alone"]++
+	}
 	return ""
 }
 
@@ -597,4 +605,159 @@ func walkColumns(e stmt.Expression, f func(stmt.Name)) {
 	for _, o := range e.Operands {
 		walkColumns(o, f)
 	}
+}
+
+// The number of seeds of [TestDifferential], and of cases of each.
+const (
+	differentialSeeds = 8
+	differentialCases = 2500
+)
+
+// TestDifferential checks the evaluator against SQLite and [reference] with the cases of
+// [generator], each seed a run of its own, and checks that the runs reach the kinds of
+// testdata/reached/TestDifferential.kinds, as [stmttest.Reached] says: each operator with each pair
+// of the types of its operands, each error of each, NULL, both sides of the conversion of an integer
+// to a real, and a fused instruction that would give another result.
+func TestDifferential(t *testing.T) {
+	k := &checker{o: newOracle(t)}
+	runs := map[string]map[string]int{}
+	var names []string
+	for seed := uint64(1); seed <= differentialSeeds; seed++ {
+		name := fmt.Sprint("seed ", seed)
+		names = append(names, name)
+		k.tally = map[string]int{}
+		g := newGenerator(seed)
+		failures := 0
+		for range differentialCases {
+			if failure := k.check(g.next()); failure != "" {
+				t.Error(failure)
+				if failures++; failures == 10 {
+					t.FailNow()
+				}
+			}
+		}
+		for kind, n := range k.tally {
+			if strings.HasPrefix(kind, "not a case") {
+				t.Errorf("%v gives %v cases that are %v", name, n, kind)
+			}
+		}
+		runs[name] = k.tally
+	}
+	path := filepath.Join("testdata", "reached", t.Name())
+	reached := stmttest.Reached{Kinds: path + ".kinds", Counts: path + ".tsv",
+		Doc: "What each seed of TestDifferential of the evaluator reaches."}
+	failures, err := reached.Check(names, runs)
+	is.NotError(t, err)
+	for _, failure := range failures {
+		t.Error(failure)
+	}
+}
+
+// FuzzExpr checks the evaluator against SQLite and [reference], as [TestDifferential] does, for the
+// text of an expression, the values of the columns a, b, c, and d of the row, and the arguments,
+// which [decode] reads. A text that is not an expression over [schema] alone is no case. The seeds
+// are cases of [generator].
+func FuzzExpr(f *testing.F) {
+	g := newGenerator(1)
+	for range 200 {
+		c := g.next()
+		f.Add(c.src, encode(c.row[:4]), encode(c.args))
+	}
+	f.Fuzz(func(t *testing.T, src string, row, args []byte) {
+		c := exprCase{src: src, row: make([]*s4qlpb.Value, len(schema)), args: decode(args)}
+		values := decode(row)
+		for i := range schema {
+			var v *s4qlpb.Value
+			if i < len(values) {
+				v = values[i]
+			}
+			c.row[i] = columnOf(i, v)
+		}
+		if e, _, err := parse(src); err == nil {
+			for len(c.args) < len(parametersOf(e)) {
+				c.args = append(c.args, integer(1))
+			}
+		}
+		k := &checker{o: newOracle(t), tally: map[string]int{}}
+		if failure := k.check(c); failure != "" {
+			t.Error(failure)
+		}
+	})
+}
+
+// encode the values vs for [FuzzExpr]: for each, a byte of its kind and eight of its value.
+func encode(vs []*s4qlpb.Value) []byte {
+	var b []byte
+	for _, v := range vs {
+		var kind byte
+		var bits uint64
+		switch v.WhichKind() {
+		case s4qlpb.Value_Integer_case:
+			kind, bits = 1, uint64(v.GetInteger())
+		case s4qlpb.Value_Real_case:
+			kind, bits = 2, math.Float64bits(v.GetReal())
+		case s4qlpb.Value_Text_case:
+			kind = 3
+		case s4qlpb.Value_Blob_case:
+			kind = 4
+		}
+		b = binary.LittleEndian.AppendUint64(append(b, kind), bits)
+	}
+	return b
+}
+
+// decode the values of [encode]: NULL, an integer, a real, the text '1', or the blob x'31', by the
+// first byte modulo 5, with a real that is not finite as 0.0, which no row or argument holds.
+func decode(b []byte) []*s4qlpb.Value {
+	var vs []*s4qlpb.Value
+	for ; len(b) >= 9; b = b[9:] {
+		bits := binary.LittleEndian.Uint64(b[1:9])
+		switch b[0] % 5 {
+		case 0:
+			vs = append(vs, null())
+		case 1:
+			vs = append(vs, integer(int64(bits)))
+		case 2:
+			f := math.Float64frombits(bits)
+			if math.IsInf(f, 0) || math.IsNaN(f) {
+				f = 0
+			}
+			vs = append(vs, float(f))
+		case 3:
+			vs = append(vs, text("1"))
+		default:
+			vs = append(vs, blob([]byte("1")))
+		}
+	}
+	return vs
+}
+
+// columnOf the value v, or nil, for the column at the position i of [schema], which holds only NULL
+// and values of its type: v if it is NULL or of the type, an integer or a real of the bits of v
+// otherwise, 0 for nil, and the text '4' or the blob x'35' for a column of type TEXT or BLOB.
+func columnOf(i int, v *s4qlpb.Value) *s4qlpb.Value {
+	switch schema[i].typ {
+	case s4qlpb.Type_TYPE_TEXT:
+		return text("4")
+	case s4qlpb.Type_TYPE_BLOB:
+		return blob([]byte("5"))
+	}
+	if v.HasNull() {
+		return v
+	}
+	var bits uint64
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		bits = uint64(v.GetInteger())
+	case s4qlpb.Value_Real_case:
+		bits = math.Float64bits(v.GetReal())
+	}
+	if schema[i].typ == s4qlpb.Type_TYPE_REAL {
+		f := math.Float64frombits(bits)
+		if math.IsInf(f, 0) || math.IsNaN(f) {
+			f = 0
+		}
+		return float(f)
+	}
+	return integer(int64(bits))
 }

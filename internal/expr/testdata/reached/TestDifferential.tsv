@@ -1,0 +1,461 @@
+# What each seed of TestDifferential of the evaluator reaches.
+# A row is a run, what the run reached when this file was written, the least number that is
+# required of it, a third, or = for a count that is pinned exactly, and the kind. The kinds are
+# those of testdata/reached/TestDifferential.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
+# Do not edit a number by hand.
+seed 1	150	50	* with null
+seed 1	146	48	+ with null
+seed 1	288	96	- of integer
+seed 1	67	22	- of integer: integer overflow
+seed 1	89	29	- of null
+seed 1	396	132	- of real
+seed 1	181	60	- of real zero
+seed 1	150	50	- with null
+seed 1	137	45	/ with null
+seed 1	408	136	a fused multiply and add would differ
+seed 1	61	20	case: column alone
+seed 1	155	51	case: division by zero
+seed 1	275	91	case: integer
+seed 1	426	142	case: integer overflow
+seed 1	230	76	case: null
+seed 1	897	299	case: real
+seed 1	29	9	case: real -0.0
+seed 1	180	60	case: real 0.0
+seed 1	207	69	case: real result that is not finite
+seed 1	8	2	case: refused, argument that is a blob
+seed 1	11	3	case: refused, argument that is text
+seed 1	37	12	case: refused, column of type BLOB
+seed 1	45	15	case: refused, column of type TEXT
+seed 1	430	143	integer * integer
+seed 1	219	73	integer * integer: integer overflow
+seed 1	238	79	integer * real
+seed 1	15	5	integer * real: real result that is not finite
+seed 1	181	60	integer + integer
+seed 1	55	18	integer + integer: integer overflow
+seed 1	228	76	integer + real
+seed 1	186	62	integer - integer
+seed 1	61	20	integer - integer: integer overflow
+seed 1	216	72	integer - real
+seed 1	138	46	integer / integer
+seed 1	54	18	integer / integer: division by zero
+seed 1	24	8	integer / integer: integer overflow
+seed 1	102	34	integer / real
+seed 1	31	10	integer / real: division by zero
+seed 1	15	5	integer / real: real result that is not finite
+seed 1	851	283	integer converted to real inexactly
+seed 1	845	281	integer converted to real on the left
+seed 1	805	268	integer converted to real on the right
+seed 1	186	62	real * integer
+seed 1	12	4	real * integer: real result that is not finite
+seed 1	734	244	real * real
+seed 1	95	31	real * real: real result that is not finite
+seed 1	207	69	real + integer
+seed 1	490	163	real + real
+seed 1	24	8	real + real: real result that is not finite
+seed 1	236	78	real - integer
+seed 1	584	194	real - real
+seed 1	28	9	real - real: real result that is not finite
+seed 1	148	49	real / integer
+seed 1	16	5	real / integer: division by zero
+seed 1	189	63	real / real
+seed 1	54	18	real / real: division by zero
+seed 1	18	6	real / real: real result that is not finite
+seed 2	176	58	* with null
+seed 2	166	55	+ with null
+seed 2	350	116	- of integer
+seed 2	80	26	- of integer: integer overflow
+seed 2	78	26	- of null
+seed 2	376	125	- of real
+seed 2	167	55	- of real zero
+seed 2	183	61	- with null
+seed 2	131	43	/ with null
+seed 2	399	133	a fused multiply and add would differ
+seed 2	40	13	case: column alone
+seed 2	143	47	case: division by zero
+seed 2	278	92	case: integer
+seed 2	455	151	case: integer overflow
+seed 2	244	81	case: null
+seed 2	840	280	case: real
+seed 2	33	11	case: real -0.0
+seed 2	203	67	case: real 0.0
+seed 2	185	61	case: real result that is not finite
+seed 2	16	5	case: refused, argument that is a blob
+seed 2	10	3	case: refused, argument that is text
+seed 2	52	17	case: refused, column of type BLOB
+seed 2	41	13	case: refused, column of type TEXT
+seed 2	403	134	integer * integer
+seed 2	238	79	integer * integer: integer overflow
+seed 2	245	81	integer * real
+seed 2	13	4	integer * real: real result that is not finite
+seed 2	194	64	integer + integer
+seed 2	59	19	integer + integer: integer overflow
+seed 2	214	71	integer + real
+seed 2	159	53	integer - integer
+seed 2	54	18	integer - integer: integer overflow
+seed 2	193	64	integer - real
+seed 2	133	44	integer / integer
+seed 2	58	19	integer / integer: division by zero
+seed 2	24	8	integer / integer: integer overflow
+seed 2	87	29	integer / real
+seed 2	29	9	integer / real: division by zero
+seed 2	9	3	integer / real: real result that is not finite
+seed 2	818	272	integer converted to real inexactly
+seed 2	790	263	integer converted to real on the left
+seed 2	838	279	integer converted to real on the right
+seed 2	208	69	real * integer
+seed 2	9	3	real * integer: real result that is not finite
+seed 2	710	236	real * real
+seed 2	89	29	real * real: real result that is not finite
+seed 2	225	75	real + integer
+seed 2	484	161	real + real
+seed 2	23	7	real + real: real result that is not finite
+seed 2	242	80	real - integer
+seed 2	522	174	real - real
+seed 2	23	7	real - real: real result that is not finite
+seed 2	144	48	real / integer
+seed 2	10	3	real / integer: division by zero
+seed 2	191	63	real / real
+seed 2	46	15	real / real: division by zero
+seed 2	19	6	real / real: real result that is not finite
+seed 3	166	55	* with null
+seed 3	163	54	+ with null
+seed 3	309	103	- of integer
+seed 3	71	23	- of integer: integer overflow
+seed 3	81	27	- of null
+seed 3	375	125	- of real
+seed 3	174	58	- of real zero
+seed 3	170	56	- with null
+seed 3	142	47	/ with null
+seed 3	398	132	a fused multiply and add would differ
+seed 3	63	21	case: column alone
+seed 3	141	47	case: division by zero
+seed 3	276	92	case: integer
+seed 3	456	152	case: integer overflow
+seed 3	228	76	case: null
+seed 3	859	286	case: real
+seed 3	31	10	case: real -0.0
+seed 3	194	64	case: real 0.0
+seed 3	210	70	case: real result that is not finite
+seed 3	10	3	case: refused, argument that is a blob
+seed 3	15	5	case: refused, argument that is text
+seed 3	35	11	case: refused, column of type BLOB
+seed 3	45	15	case: refused, column of type TEXT
+seed 3	389	129	integer * integer
+seed 3	234	78	integer * integer: integer overflow
+seed 3	215	71	integer * real
+seed 3	18	6	integer * real: real result that is not finite
+seed 3	187	62	integer + integer
+seed 3	64	21	integer + integer: integer overflow
+seed 3	224	74	integer + real
+seed 3	191	63	integer - integer
+seed 3	58	19	integer - integer: integer overflow
+seed 3	236	78	integer - real
+seed 3	142	47	integer / integer
+seed 3	49	16	integer / integer: division by zero
+seed 3	29	9	integer / integer: integer overflow
+seed 3	108	36	integer / real
+seed 3	22	7	integer / real: division by zero
+seed 3	8	2	integer / real: real result that is not finite
+seed 3	792	264	integer converted to real inexactly
+seed 3	831	277	integer converted to real on the left
+seed 3	811	270	integer converted to real on the right
+seed 3	207	69	real * integer
+seed 3	14	4	real * integer: real result that is not finite
+seed 3	690	230	real * real
+seed 3	103	34	real * real: real result that is not finite
+seed 3	199	66	real + integer
+seed 3	533	177	real + real
+seed 3	25	8	real + real: real result that is not finite
+seed 3	242	80	real - integer
+seed 3	508	169	real - real
+seed 3	19	6	real - real: real result that is not finite
+seed 3	137	45	real / integer
+seed 3	12	4	real / integer: division by zero
+seed 3	176	58	real / real
+seed 3	58	19	real / real: division by zero
+seed 3	23	7	real / real: real result that is not finite
+seed 4	167	55	* with null
+seed 4	141	47	+ with null
+seed 4	311	103	- of integer
+seed 4	49	16	- of integer: integer overflow
+seed 4	82	27	- of null
+seed 4	404	134	- of real
+seed 4	184	61	- of real zero
+seed 4	138	46	- with null
+seed 4	142	47	/ with null
+seed 4	370	123	a fused multiply and add would differ
+seed 4	74	24	case: column alone
+seed 4	146	48	case: division by zero
+seed 4	300	100	case: integer
+seed 4	413	137	case: integer overflow
+seed 4	239	79	case: null
+seed 4	843	281	case: real
+seed 4	39	13	case: real -0.0
+seed 4	194	64	case: real 0.0
+seed 4	216	72	case: real result that is not finite
+seed 4	7	2	case: refused, argument that is a blob
+seed 4	11	3	case: refused, argument that is text
+seed 4	52	17	case: refused, column of type BLOB
+seed 4	40	13	case: refused, column of type TEXT
+seed 4	419	139	integer * integer
+seed 4	230	76	integer * integer: integer overflow
+seed 4	181	60	integer * real
+seed 4	12	4	integer * real: real result that is not finite
+seed 4	226	75	integer + integer
+seed 4	61	20	integer + integer: integer overflow
+seed 4	209	69	integer + real
+seed 4	177	59	integer - integer
+seed 4	49	16	integer - integer: integer overflow
+seed 4	212	70	integer - real
+seed 4	136	45	integer / integer
+seed 4	48	16	integer / integer: division by zero
+seed 4	24	8	integer / integer: integer overflow
+seed 4	96	32	integer / real
+seed 4	25	8	integer / real: division by zero
+seed 4	8	2	integer / real: real result that is not finite
+seed 4	760	253	integer converted to real inexactly
+seed 4	743	247	integer converted to real on the left
+seed 4	812	270	integer converted to real on the right
+seed 4	225	75	real * integer
+seed 4	9	3	real * integer: real result that is not finite
+seed 4	661	220	real * real
+seed 4	107	35	real * real: real result that is not finite
+seed 4	198	66	real + integer
+seed 4	497	165	real + real
+seed 4	33	11	real + real: real result that is not finite
+seed 4	243	81	real - integer
+seed 4	483	161	real - real
+seed 4	23	7	real - real: real result that is not finite
+seed 4	127	42	real / integer
+seed 4	10	3	real / integer: division by zero
+seed 4	187	62	real / real
+seed 4	63	21	real / real: division by zero
+seed 4	24	8	real / real: real result that is not finite
+seed 5	164	54	* with null
+seed 5	147	49	+ with null
+seed 5	297	99	- of integer
+seed 5	60	20	- of integer: integer overflow
+seed 5	81	27	- of null
+seed 5	431	143	- of real
+seed 5	184	61	- of real zero
+seed 5	158	52	- with null
+seed 5	124	41	/ with null
+seed 5	404	134	a fused multiply and add would differ
+seed 5	70	23	case: column alone
+seed 5	155	51	case: division by zero
+seed 5	285	95	case: integer
+seed 5	405	135	case: integer overflow
+seed 5	223	74	case: null
+seed 5	932	310	case: real
+seed 5	27	9	case: real -0.0
+seed 5	212	70	case: real 0.0
+seed 5	178	59	case: real result that is not finite
+seed 5	6	2	case: refused, argument that is a blob
+seed 5	4	1	case: refused, argument that is text
+seed 5	37	12	case: refused, column of type BLOB
+seed 5	36	12	case: refused, column of type TEXT
+seed 5	425	141	integer * integer
+seed 5	223	74	integer * integer: integer overflow
+seed 5	203	67	integer * real
+seed 5	10	3	integer * real: real result that is not finite
+seed 5	224	74	integer + integer
+seed 5	50	16	integer + integer: integer overflow
+seed 5	214	71	integer + real
+seed 5	202	67	integer - integer
+seed 5	52	17	integer - integer: integer overflow
+seed 5	226	75	integer - real
+seed 5	161	53	integer / integer
+seed 5	61	20	integer / integer: division by zero
+seed 5	20	6	integer / integer: integer overflow
+seed 5	114	38	integer / real
+seed 5	31	10	integer / real: division by zero
+seed 5	10	3	integer / real: real result that is not finite
+seed 5	792	264	integer converted to real inexactly
+seed 5	808	269	integer converted to real on the left
+seed 5	829	276	integer converted to real on the right
+seed 5	223	74	real * integer
+seed 5	12	4	real * integer: real result that is not finite
+seed 5	673	224	real * real
+seed 5	85	28	real * real: real result that is not finite
+seed 5	214	71	real + integer
+seed 5	447	149	real + real
+seed 5	22	7	real + real: real result that is not finite
+seed 5	229	76	real - integer
+seed 5	535	178	real - real
+seed 5	23	7	real - real: real result that is not finite
+seed 5	138	46	real / integer
+seed 5	13	4	real / integer: division by zero
+seed 5	202	67	real / real
+seed 5	50	16	real / real: division by zero
+seed 5	16	5	real / real: real result that is not finite
+seed 6	171	57	* with null
+seed 6	148	49	+ with null
+seed 6	299	99	- of integer
+seed 6	80	26	- of integer: integer overflow
+seed 6	108	36	- of null
+seed 6	363	121	- of real
+seed 6	161	53	- of real zero
+seed 6	150	50	- with null
+seed 6	122	40	/ with null
+seed 6	394	131	a fused multiply and add would differ
+seed 6	52	17	case: column alone
+seed 6	154	51	case: division by zero
+seed 6	260	86	case: integer
+seed 6	444	148	case: integer overflow
+seed 6	245	81	case: null
+seed 6	844	281	case: real
+seed 6	24	8	case: real -0.0
+seed 6	222	74	case: real 0.0
+seed 6	212	70	case: real result that is not finite
+seed 6	11	3	case: refused, argument that is a blob
+seed 6	9	3	case: refused, argument that is text
+seed 6	39	13	case: refused, column of type BLOB
+seed 6	36	12	case: refused, column of type TEXT
+seed 6	407	135	integer * integer
+seed 6	229	76	integer * integer: integer overflow
+seed 6	196	65	integer * real
+seed 6	8	2	integer * real: real result that is not finite
+seed 6	190	63	integer + integer
+seed 6	45	15	integer + integer: integer overflow
+seed 6	211	70	integer + real
+seed 6	205	68	integer - integer
+seed 6	62	20	integer - integer: integer overflow
+seed 6	212	70	integer - real
+seed 6	161	53	integer / integer
+seed 6	58	19	integer / integer: division by zero
+seed 6	28	9	integer / integer: integer overflow
+seed 6	120	40	integer / real
+seed 6	27	9	integer / real: division by zero
+seed 6	8	2	integer / real: real result that is not finite
+seed 6	821	273	integer converted to real inexactly
+seed 6	782	260	integer converted to real on the left
+seed 6	803	267	integer converted to real on the right
+seed 6	198	66	real * integer
+seed 6	19	6	real * integer: real result that is not finite
+seed 6	696	232	real * real
+seed 6	99	33	real * real: real result that is not finite
+seed 6	217	72	real + integer
+seed 6	524	174	real + real
+seed 6	27	9	real + real: real result that is not finite
+seed 6	224	74	real - integer
+seed 6	479	159	real - real
+seed 6	30	10	real - real: real result that is not finite
+seed 6	125	41	real / integer
+seed 6	20	6	real / integer: division by zero
+seed 6	207	69	real / real
+seed 6	49	16	real / real: division by zero
+seed 6	21	7	real / real: real result that is not finite
+seed 7	151	50	* with null
+seed 7	143	47	+ with null
+seed 7	319	106	- of integer
+seed 7	50	16	- of integer: integer overflow
+seed 7	75	25	- of null
+seed 7	364	121	- of real
+seed 7	180	60	- of real zero
+seed 7	132	44	- with null
+seed 7	109	36	/ with null
+seed 7	413	137	a fused multiply and add would differ
+seed 7	61	20	case: column alone
+seed 7	140	46	case: division by zero
+seed 7	285	95	case: integer
+seed 7	469	156	case: integer overflow
+seed 7	223	74	case: null
+seed 7	871	290	case: real
+seed 7	35	11	case: real -0.0
+seed 7	199	66	case: real 0.0
+seed 7	189	63	case: real result that is not finite
+seed 7	10	3	case: refused, argument that is a blob
+seed 7	6	2	case: refused, argument that is text
+seed 7	40	13	case: refused, column of type BLOB
+seed 7	33	11	case: refused, column of type TEXT
+seed 7	406	135	integer * integer
+seed 7	274	91	integer * integer: integer overflow
+seed 7	219	73	integer * real
+seed 7	10	3	integer * real: real result that is not finite
+seed 7	211	70	integer + integer
+seed 7	59	19	integer + integer: integer overflow
+seed 7	199	66	integer + real
+seed 7	208	69	integer - integer
+seed 7	62	20	integer - integer: integer overflow
+seed 7	218	72	integer - real
+seed 7	126	42	integer / integer
+seed 7	54	18	integer / integer: division by zero
+seed 7	24	8	integer / integer: integer overflow
+seed 7	82	27	integer / real
+seed 7	16	5	integer / real: division by zero
+seed 7	8	2	integer / real: real result that is not finite
+seed 7	724	241	integer converted to real inexactly
+seed 7	752	250	integer converted to real on the left
+seed 7	800	266	integer converted to real on the right
+seed 7	223	74	real * integer
+seed 7	11	3	real * integer: real result that is not finite
+seed 7	696	232	real * real
+seed 7	97	32	real * real: real result that is not finite
+seed 7	210	70	real + integer
+seed 7	502	167	real + real
+seed 7	25	8	real + real: real result that is not finite
+seed 7	214	71	real - integer
+seed 7	515	171	real - real
+seed 7	14	4	real - real: real result that is not finite
+seed 7	134	44	real / integer
+seed 7	8	2	real / integer: division by zero
+seed 7	170	56	real / real
+seed 7	62	20	real / real: division by zero
+seed 7	24	8	real / real: real result that is not finite
+seed 8	146	48	* with null
+seed 8	134	44	+ with null
+seed 8	293	97	- of integer
+seed 8	66	22	- of integer: integer overflow
+seed 8	61	20	- of null
+seed 8	352	117	- of real
+seed 8	165	55	- of real zero
+seed 8	144	48	- with null
+seed 8	119	39	/ with null
+seed 8	391	130	a fused multiply and add would differ
+seed 8	64	21	case: column alone
+seed 8	137	45	case: division by zero
+seed 8	316	105	case: integer
+seed 8	464	154	case: integer overflow
+seed 8	221	73	case: null
+seed 8	863	287	case: real
+seed 8	33	11	case: real -0.0
+seed 8	188	62	case: real 0.0
+seed 8	179	59	case: real result that is not finite
+seed 8	12	4	case: refused, argument that is a blob
+seed 8	11	3	case: refused, argument that is text
+seed 8	42	14	case: refused, column of type BLOB
+seed 8	34	11	case: refused, column of type TEXT
+seed 8	389	129	integer * integer
+seed 8	246	82	integer * integer: integer overflow
+seed 8	200	66	integer * real
+seed 8	9	3	integer * real: real result that is not finite
+seed 8	209	69	integer + integer
+seed 8	52	17	integer + integer: integer overflow
+seed 8	178	59	integer + real
+seed 8	202	67	integer - integer
+seed 8	60	20	integer - integer: integer overflow
+seed 8	190	63	integer - real
+seed 8	148	49	integer / integer
+seed 8	56	18	integer / integer: division by zero
+seed 8	40	13	integer / integer: integer overflow
+seed 8	93	31	integer / real
+seed 8	24	8	integer / real: division by zero
+seed 8	15	5	integer / real: real result that is not finite
+seed 8	751	250	integer converted to real inexactly
+seed 8	709	236	integer converted to real on the left
+seed 8	803	267	integer converted to real on the right
+seed 8	213	71	real * integer
+seed 8	10	3	real * integer: real result that is not finite
+seed 8	688	229	real * real
+seed 8	79	26	real * real: real result that is not finite
+seed 8	217	72	real + integer
+seed 8	509	169	real + real
+seed 8	21	7	real + real: real result that is not finite
+seed 8	217	72	real - integer
+seed 8	487	162	real - real
+seed 8	22	7	real - real: real result that is not finite
+seed 8	134	44	real / integer
+seed 8	12	4	real / integer: division by zero
+seed 8	178	59	real / real
+seed 8	45	15	real / real: division by zero
+seed 8	23	7	real / real: real result that is not finite
