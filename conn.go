@@ -382,17 +382,32 @@ func (c *conn) Ping(ctx context.Context) error {
 	return c.c.public(ctx, c.c.db.Wait(ctx))
 }
 
-// ExecContext runs the statement of the text query, with args for its parameters, by position. The
-// text is judged first, then the arguments, as [arguments] says, and then the instance runs the
-// statement. A statement with an error of its text or of its arguments does not run.
+// ExecContext runs the statements of the text query one after another, with args for their
+// parameters, by position, as [engine.Conn.ExecAll] runs them: each statement takes as many of the
+// arguments as it has parameters, in order, and runs as a transaction of its own, or in the
+// transaction of the connection, if one is open. A statement that fails ends the call with its
+// error, and keeps those before it. The text is judged first, then whether each argument is one
+// that s4ql supports, as [arguments] says, and then the instance runs the statements; an argument
+// that s4ql does not support runs none of them. The result is SQLite's count of changes on the
+// connection after the last statement that ran.
 func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	values, err := arguments(query, args)
+	return c.exec(ctx, query, args, true)
+}
+
+// exec is [conn.ExecContext] of the text query with args, of the statements of the text if several,
+// and of its one statement otherwise, as [engine.Conn.Exec] runs it and [prepared] needs it.
+func (c *conn) exec(ctx context.Context, query string, args []driver.NamedValue, several bool) (driver.Result, error) {
+	check, run := engine.Check, c.e.Exec
+	if several {
+		check, run = engine.CheckAll, c.e.ExecAll
+	}
+	values, err := arguments(query, args, check)
 	if err != nil {
 		return nil, err
 	}
 	c.enter(ctx)
 	defer c.leave(ctx)
-	res, err := c.e.Exec(ctx, query, values...)
+	res, err := run(ctx, query, values...)
 	// The engine gives the result with an error too: an insert that fails sets the count to 0.
 	c.count(res)
 	if err != nil {
@@ -402,11 +417,12 @@ func (c *conn) ExecContext(ctx context.Context, query string, args []driver.Name
 }
 
 // QueryContext runs the statement of the text query, with args for its parameters, and gives its
-// rows. The text and the arguments are judged as [conn.ExecContext] judges them. A statement that is
-// no query gives no columns and no rows. Outside a transaction, a statement with RETURNING gives its
+// rows. The text and the arguments are judged as [conn.ExecContext] judges a text of one statement,
+// and a text of several statements is not supported, as a second statement. A statement that is no
+// query gives no columns and no rows. Outside a transaction, a statement with RETURNING gives its
 // rows once it is committed, and without an error from then on.
 func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	values, err := arguments(query, args)
+	values, err := arguments(query, args, engine.Check)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +461,8 @@ func (c *conn) count(res engine.Result) {
 
 // PrepareContext checks the text query, and gives a statement that runs it. It fails with SQLite's
 // syntax error and with "not supported", which the text alone decides: the check reads no table,
-// and does not need the instance to serve.
+// and does not need the instance to serve. A text of several statements is not supported, as a
+// second statement: a prepared statement holds one.
 func (c *conn) PrepareContext(_ context.Context, query string) (driver.Stmt, error) {
 	return c.Prepare(query)
 }
@@ -474,23 +491,25 @@ func check(query string) error {
 	return publicError(err)
 }
 
-// arguments of a statement of the text query: the value of each of args, in order, as [argument]
-// gives it, after the conversion of [conn.CheckNamedValue].
+// arguments of the text query: the value of each of args, in order, as [argument] gives it, after
+// the conversion of [conn.CheckNamedValue]. check is the check of the text with a number of
+// arguments that the engine makes when it runs the text: [engine.Check] for one statement, and
+// [engine.CheckAll] for the statements of [conn.ExecContext].
 //
 // The errors come in this order, the first that holds, so that an error of the text never depends on
-// the arguments: the error of the text, as [check] gives it; another number of arguments than the
-// statement has parameters, an error that says both numbers; and "not supported" for the first
+// the arguments: the error of the text, as check gives it; another number of arguments than the
+// statements have parameters, an error that says both numbers; and "not supported" for the first
 // argument with a name or of a type that no column holds, which says which type. The engine makes
-// the first two checks again when it runs the statement, so they are made here only for arguments
-// that are not supported, and the text is parsed once on the path where every argument is. The
-// engine then refuses an argument whose value no column holds, such as a NaN or text with the
-// character NUL, and, once it has found the table, a value of another type than its column.
-func arguments(query string, args []driver.NamedValue) ([]*s4qlpb.Value, error) {
+// the first two checks again when it runs the text, so they are made here only for arguments that
+// are not supported, and the text is parsed once on the path where every argument is. The engine
+// then refuses an argument whose value no column holds, such as a NaN or text with the character
+// NUL, and, once it has found the table, a value of another type than its column.
+func arguments(query string, args []driver.NamedValue, check func(string, int) error) ([]*s4qlpb.Value, error) {
 	values := make([]*s4qlpb.Value, 0, len(args))
 	for _, a := range args {
 		v, err := argument(a)
 		if err != nil {
-			if err := publicError(engine.Check(query, len(args))); err != nil {
+			if err := publicError(check(query, len(args))); err != nil {
 				return nil, err
 			}
 			return nil, err
@@ -637,9 +656,9 @@ func (p *prepared) NumInput() int {
 	return -1
 }
 
-// ExecContext runs the statement with args, as [conn.ExecContext] runs its text.
+// ExecContext runs the statement with args, as [conn.ExecContext] runs a text of one statement.
 func (p *prepared) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
-	return p.conn.ExecContext(ctx, p.query, args)
+	return p.conn.exec(ctx, p.query, args, false)
 }
 
 // QueryContext runs the statement with args, and gives its rows, as [conn.QueryContext] runs its text.

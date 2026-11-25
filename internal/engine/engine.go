@@ -330,6 +330,12 @@ func (c *Conn) exec(ctx context.Context, r *report, src string, args []*s4qlpb.V
 		r.end(ctx, err)
 		return Result{}, err
 	}
+	return c.execPlan(ctx, r, p, text, args)
+}
+
+// execPlan runs the plan p of a statement whose text is text, with args, for the report r, as
+// [Conn.Exec] runs it once its text and its arguments are checked, and ends the report.
+func (c *Conn) execPlan(ctx context.Context, r *report, p Plan, text string, args []*s4qlpb.Value) (Result, error) {
 	if q, ok := p.(*Query); ok {
 		rows, err := c.query(ctx, r, q, args)
 		if err != nil {
@@ -457,8 +463,14 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 	if err := checkArguments(s.Parameters(), args); err != nil {
 		return nil, "", err
 	}
+	p, text := planOf(s, src)
+	return p, text, nil
+}
+
+// planOf the statement s of the text src: its plan, and its own text, which its spans give.
+func planOf(s stmt.Statement, src string) (Plan, string) {
 	span := s.Bounds()
-	return NewPlan(s), src[span.Start:span.End], nil
+	return NewPlan(s), src[span.Start:span.End]
 }
 
 // write runs the plan p of a statement that changes the database, whose text is sql, with the

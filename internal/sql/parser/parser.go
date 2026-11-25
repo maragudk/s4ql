@@ -66,6 +66,12 @@ func Parse(src string) (*ast.Statement, int, error) {
 	return parseAt(src, 0, textEnd(src))
 }
 
+// ParseAt reads the first statement of src that starts at or after the offset at, as [Parse] of
+// src[at:] reads it, with the offsets of the statement, of the tail, and of an error in src.
+func ParseAt(src string, at int) (*ast.Statement, int, error) {
+	return parseAt(src, at, textEnd(src))
+}
+
 // ParseAll statements of src, each as [Parse] would from where the one before it ends, until the end
 // of the text or the first error.
 func ParseAll(src string) ([]*ast.Statement, error) {

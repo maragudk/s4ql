@@ -63,8 +63,14 @@ func checkArguments(parameters int, args []*s4qlpb.Value) error {
 	if err := countArguments(parameters, len(args)); err != nil {
 		return err
 	}
+	return checkValues(args, 0)
+}
+
+// checkValues args, as [checkArgument] checks each, the first of which is the argument after first
+// of its call, which its error names by its number in the call.
+func checkValues(args []*s4qlpb.Value, first int) error {
 	for i, a := range args {
-		if err := checkArgument(i+1, a); err != nil {
+		if err := checkArgument(first+i+1, a); err != nil {
 			return err
 		}
 	}
@@ -210,11 +216,7 @@ func countArguments(parameters, n int) error {
 	if n == parameters {
 		return nil
 	}
-	noun := "parameters"
-	if parameters == 1 {
-		noun = "parameter"
-	}
-	return fmt.Errorf("%w: %v for a statement with %v %v", ErrArguments, n, parameters, noun)
+	return fmt.Errorf("%w: %v for a statement with %v %v", ErrArguments, n, parameters, parameterNoun(parameters))
 }
 
 // internalError that matches [ErrInternal], and wraps nothing else.
