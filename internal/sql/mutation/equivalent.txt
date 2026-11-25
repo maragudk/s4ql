@@ -1321,3 +1321,72 @@ internal/engine/tx.go Conn.writeIn condition: err != nil => true #5
 	The planted bug outsideTx then changes nothing and gives no error, a write that is lost, which the tests of the planted bugs find.
 internal/engine/tx.go Conn.writeIn operator: err != nil => err == nil #5
 	As the mutant above where the read transaction begins, which it does in every run of the planted bugs.
+
+# The evaluator of arithmetic, internal/expr.
+
+internal/expr/expr.go TypeInteger constant: iota + 1 => iota + 2
+	The types are named, never counted: they need only differ from each other and from 0, which is no type.
+internal/expr/expr.go Check condition: err != nil => false #3
+	typeOf fails only at a parameter, for an argument of the wrong kind or none, and Check calls it only for an expression without a parameter.
+internal/expr/expr.go Check remove statement: return nil, err => #3
+	As the mutant above: typeOf gives no error for an expression without a parameter.
+internal/expr/expr.go Program.add constant: return 0, internalError("a literal of %T in arithmetic", e.Value) => return 1, internalError("a literal of %T in arithmetic", e.Value)
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: return 0, internalError("a parameter numbered %v", e.Parameter) => return 1, internalError("a parameter numbered %v", e.Parameter)
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: 0 => 1
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: 0 => 1 #2
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: return 0, internalError("a column of type %v", c.Type) => return 1, internalError("a column of type %v", c.Type)
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: return 0, internalError("a column at position %v", c.Position) => return 1, internalError("a column at position %v", c.Position)
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: return 0, internalError("an expression of kind %v", int(e.Kind)) => return 1, internalError("an expression of kind %v", int(e.Kind))
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: return 0, internalError("%v with %v operands", e.Kind, len(e.Operands)) => return 1, internalError("%v with %v operands", e.Kind, len(e.Operands))
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: return 0, err => return 1, err
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.add constant: return 0, err => return 1, err #2
+	An index beside an error: every caller of Program.add returns the error and reads no index.
+internal/expr/expr.go Program.typeOf constant: return 0, internalError("parameter %v of %v arguments", n.index+1, len(args)) => return 1, internalError("parameter %v of %v arguments", n.index+1, len(args))
+	A type beside an error: Bind and Check return the error and read no type.
+internal/expr/expr.go Program.typeOf constant: 0 => 1
+	A type beside an error: Bind and Check return the error and read no type.
+internal/expr/expr.go Program.typeOf constant: 0 => 1 #2
+	A type beside an error: Bind and Check return the error and read no type.
+internal/expr/expr.go Program.typeOf constant: return 0, internalError("argument %v of no kind", n.index+1) => return 1, internalError("argument %v of no kind", n.index+1)
+	A type beside an error: Bind and Check return the error and read no type.
+internal/expr/expr.go Program.Bind element: args: args, =>
+	An expression without a parameter reads no argument, so its Bound needs none.
+internal/expr/expr.go evalNode condition: err != nil => false
+	An error of evalNode comes with the zero Value, which is NULL, so the negation returns the error at the check of NULL anyway.
+internal/expr/expr.go integerArithmetic constant: return 0, ErrOverflow => return 1, ErrOverflow
+	A result beside the kind of an error: arithmetic returns the error and reads no result.
+internal/expr/expr.go integerArithmetic constant: return 0, ErrOverflow => return 1, ErrOverflow #2
+	A result beside the kind of an error: arithmetic returns the error and reads no result.
+internal/expr/expr.go integerArithmetic swap arguments: bits.Mul64(magnitude(a), magnitude(b)) => bits.Mul64(magnitude(b), magnitude(a))
+	The product of two magnitudes is commutative.
+internal/expr/expr.go integerArithmetic operator: a < 0 => a <= 0
+	Only for a factor of 0, whose product is 0 with either sign: -0 is 0, and 0 is not above 1<<63.
+internal/expr/expr.go integerArithmetic constant: a < 0 => a < 1
+	Only for a factor of 0, whose product is 0 with either sign: -0 is 0, and 0 is not above 1<<63.
+internal/expr/expr.go integerArithmetic operator: b < 0 => b <= 0
+	Only for a factor of 0, whose product is 0 with either sign: -0 is 0, and 0 is not above 1<<63.
+internal/expr/expr.go integerArithmetic constant: b < 0 => b < 1
+	Only for a factor of 0, whose product is 0 with either sign: -0 is 0, and 0 is not above 1<<63.
+internal/expr/expr.go integerArithmetic condition: negative => true #2
+	A product that is not negative and above 1<<63 is above the largest integer too, which the case before refuses.
+internal/expr/expr.go integerArithmetic constant: return 0, ErrOverflow => return 1, ErrOverflow #3
+	A result beside the kind of an error: arithmetic returns the error and reads no result.
+internal/expr/expr.go integerArithmetic constant: return 0, ErrDivisionByZero => return 1, ErrDivisionByZero
+	A result beside the kind of an error: arithmetic returns the error and reads no result.
+internal/expr/expr.go integerArithmetic constant: return 0, ErrOverflow => return 1, ErrOverflow #4
+	A result beside the kind of an error: arithmetic returns the error and reads no result.
+internal/expr/expr.go integerArithmetic constant: return 0, internalError("arithmetic of the operator %v", op) => return 1, internalError("arithmetic of the operator %v", op)
+	A result beside the kind of an error: arithmetic returns the error and reads no result.
+internal/expr/expr.go magnitude operator: i < 0 => i <= 0
+	Only for 0, whose magnitude is 0 both ways.
+internal/expr/expr.go magnitude constant: i < 0 => i < 1
+	Only for 0, whose magnitude is 0 both ways.
