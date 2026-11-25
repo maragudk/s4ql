@@ -453,6 +453,20 @@ func TestEngine_subquery(t *testing.T) {
 		pin(t, setup, "select * from t where k = (select * from u)", "1/1: row value misused")
 		pin(t, setup, "select * from t where v < 1 and   (select * from u) != k", "1/1: row value misused")
 		pin(t, setup, "select k from t where v = ? and k >= (select * from u where a = ?) order by k", "1/1: row value misused", int64(1), int64(2))
+		// On the left of an expression that the condition tests, SQLite gives the offset of its first
+		// number, after the sign of a negative literal.
+		for _, src := range []string{
+			"select * from t where k + 1 = (select * from u)",
+			"select * from t where 5 - k > (select * from u)",
+			"select * from t where 0 * k > (select * from u)",
+			"select * from t where -5 + k = (select * from u)",
+			"select * from t where -5 * k * 2 != (select * from u)",
+			"select * from t where 2.5 * k < (select * from u)",
+			"select * from t where -2.5 * k < (select * from u)",
+			"select * from t where -0.0 + k <= (select * from u)",
+		} {
+			pin(t, setup, src, "1/1: row value misused")
+		}
 	})
 
 	t.Run("should give row value misused of a subquery of * of more than one column in an update or a delete on the left of an expression, and sub-select returns N columns on its right", func(t *testing.T) {
