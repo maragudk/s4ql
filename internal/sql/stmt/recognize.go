@@ -981,10 +981,7 @@ func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	r.accept(b)
 	left := r.operand(b.X)
 	r.take(b.Op)
-	switch {
-	case left.column && isColumn(b.Y):
-		r.reject("column compared with a column")
-	case !left.hasColumn() && isValue(b.Y):
+	if !left.hasColumn() && isValue(b.Y) {
 		r.reject("value compared with a value")
 	}
 	right := r.operand(b.Y)
@@ -999,6 +996,11 @@ func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	}
 	c := Condition{Operator: op}
 	switch {
+	case left.column && right.column:
+		// A column compared with a column tests the left one, whose value is the right one, a column
+		// alone.
+		span := spanOf(b.Y)
+		c.Column, c.Value = left.name, Term{Expression: Expression{Kind: ExprColumn, Column: right.name, Span: span}, Span: span}
 	case left.column:
 		c.Column, c.Value = left.name, right.term
 	case right.column:

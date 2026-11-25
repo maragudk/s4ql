@@ -206,18 +206,28 @@ type condition struct {
 	valueFirst bool
 	// test, per, and constant are the expressions of the condition, each nil where it has none.
 	test, per, constant *expr.Bound
+	// paired reports whether the value of the condition is the column alone at pair of the row, as in
+	// `a = b`, in place of value.
+	paired bool
+	pair   int
+}
+
+// perRow reports whether the condition has a side that is computed for each row, or compares two
+// columns of the row.
+func (c condition) perRow() bool {
+	return c.test != nil || c.per != nil || c.paired
 }
 
 // bounds of the conditions: those that may serve the access, which are those that compare a column
 // with a value of one run of the statement, or test it for NULL. A condition that is computed for
 // each row is left to the filter.
 func bounds(conditions []condition) []condition {
-	if !slices.ContainsFunc(conditions, func(c condition) bool { return c.test != nil || c.per != nil }) {
+	if !slices.ContainsFunc(conditions, condition.perRow) {
 		return conditions
 	}
 	var bs []condition
 	for _, c := range conditions {
-		if c.test == nil && c.per == nil {
+		if !c.perRow() {
 			bs = append(bs, c)
 		}
 	}
@@ -273,6 +283,12 @@ func (c condition) holds(row []*s4qlpb.Value) (bool, error) {
 		return false, internalError("a condition of the column at %v of a row of %v values", c.position, len(row))
 	}
 	v := row[c.position]
+	if c.paired {
+		if c.pair < 0 || c.pair >= len(row) {
+			return false, internalError("a condition of the column at %v of a row of %v values", c.pair, len(row))
+		}
+		c.value = row[c.pair]
+	}
 	switch c.op {
 	case stmt.OpIsNull:
 		return v.HasNull(), nil
@@ -1342,6 +1358,20 @@ func (b build) types(f *Filter, s *scan, conditions []condition) error {
 	for i := range conditions {
 		c, fc := &conditions[i], f.Conditions[i]
 		arithmetic, _ := fc.Value.(*Arithmetic)
+		if arithmetic != nil && arithmetic.Expression.Kind == stmt.ExprColumn && !fc.Expression.Present() {
+			// A column compared with a column alone, of the same class, compares them as SQLite does,
+			// with no conversion and no evaluator.
+			pair, ok := columnPositions(s.table)[arithmetic.Expression.Column.Fold()]
+			if !ok || c.position < 0 {
+				return internalError("a condition of the column %v, which the table %v does not have", arithmetic.Expression.Column.Value, s.table.GetTable())
+			}
+			columns := s.table.GetColumns()
+			if columnClass(columns[pair].GetType()) != columnClass(columns[c.position].GetType()) {
+				return fmt.Errorf("%w: %v compared with %v", stmt.ErrNotSupported, columnName(s.table, pair), columnName(s.table, c.position))
+			}
+			c.paired, c.pair = true, pair
+			continue
+		}
 		if fc.Expression.Present() || arithmetic != nil {
 			if err := b.arithmetic(fc, s.table, c, arithmetic); err != nil {
 				return err
