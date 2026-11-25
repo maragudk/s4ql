@@ -82,6 +82,8 @@ The generated read-only transactions failed at once: `"update n set k = j, i = (
 
 So `build.change` now calls `update.bind` only outside a read-only transaction, which also makes the later `!lookups` guard on the constants of SET redundant; it is gone. The pinned read-only subtest has the four statements, and `update t set a = s + 1 where s = k + 1` still gives the refusal of WHERE first, as for a plain value. The README of the engine says both, and how an argument inside arithmetic gets its length error.
 
+The `code-review` skill (high, over `main...HEAD`, so over the whole branch of the engine step too) gave four findings, none in this diff: the offset of `row value misused` beside `-0` or `- 5`, a subquery on the left of a tested expression whose refusals come after the expression's, the driver check without rules for arithmetic, and a panic of `stmttest.WhereRule` on `where v1 = s1` in that check's fuzz path. I recorded each as open in `/docs/todo/arithmetic.md` and fixed none, as they lie outside the eleven findings and the last two belong to the generated driver check that is still to come.
+
 Checks: `go test ./internal/engine -run 'TestPair_arithmetic|TestEngine_arithmetic' -count=20` (100 s), the same with `-race -count=5` (16 s), `go test ./internal/expr -race -count=3`, `go test ./internal/sql/mutation -run TestEquivalent`, `make lint` (0 issues), `make test`.
 
 ### Why
