@@ -1167,6 +1167,15 @@ func TestEngine_arithmetic(t *testing.T) {
 			}
 			is.Equal(t, c.want, text, c.src)
 		}
+		// SQLite gives row value misused at the first leaf of the expression, after the sign of a
+		// literal, as the shell shows it.
+		is.Equal(t, "", i.exec("create table u (x int primary key, y int) strict, without rowid").err)
+		for src, offset := range map[string]int{"select k from t where a + 1 = (select * from u)": 22, "select k from t where (a + 1) * 2 = (select * from u)": 23,
+			"select k from t where -a = (select * from u)": 23, "select k from t where -1.5 * a = (select * from u)": 23} {
+			got := i.queryValues(src, nil)
+			is.Equal(t, "1/1: row value misused", got.err, src)
+			is.Equal(t, offset, got.offset, src)
+		}
 		got := i.queryValues("select k from t where k + ? = 1", values([]any{"1"}))
 		is.Equal(t, "s4ql: not supported: argument 1 in arithmetic, which is text (at offset 26)", got.message)
 		got = i.queryValues("select k from t where k = 2 + ?", values([]any{nil}))

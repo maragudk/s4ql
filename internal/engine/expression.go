@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math"
 
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -21,7 +22,7 @@ import (
 //     is compared with or assigned to, by the rule of exact types: see [bindArithmetic] and
 //     [comparable].
 //   - An expression without a column is a constant of one run of the statement: it is computed once,
-//     after every check of the statement and before its access is chosen, and serves a lookup by
+//     after the checks of the statement that come before its access is chosen, and serves a lookup by
 //     the key or a bound of an index as an argument does. An expression with a column is computed for
 //     each row that the statement reads or changes, and never serves the access.
 
@@ -40,10 +41,22 @@ func missingName(e stmt.Expression, found func(stmt.Name) bool) (stmt.Name, bool
 }
 
 // leftmostOffset of the expression e: the offset of its first leaf in the text, where SQLite gives
-// the offset of an error of a comparison whose left side is e.
+// the offset of an error of a comparison whose left side is e. A negative literal starts at its sign,
+// and SQLite gives the offset of the number after it, which is one more where the sign and the number
+// have no space between them, as they mostly have.
 func leftmostOffset(e stmt.Expression) int {
 	for len(e.Operands) > 0 {
 		e = e.Operands[0]
+	}
+	switch v := e.Value.(type) {
+	case stmt.Integer:
+		if v < 0 {
+			return e.Span.Start + 1
+		}
+	case stmt.Real:
+		if math.Signbit(float64(v)) {
+			return e.Span.Start + 1
+		}
 	}
 	return e.Span.Start
 }

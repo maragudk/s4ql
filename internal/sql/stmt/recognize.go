@@ -1205,7 +1205,7 @@ func (r *recognizer) unary(u *ast.Unary, deep string) (Expression, int) {
 // parenthesized expression p: parentheses around an operator, at most [maxParentheses] of them open
 // at once. Parentheses around a single literal, parameter, column, or subquery, or around
 // parentheses, are not supported: SQLite reads them as what they hold, so they hold nothing of their
-// own, and a column in parentheses would be compared with a column.
+// own.
 func (r *recognizer) parenthesized(p *ast.Paren, deep string) (Expression, int) {
 	if r.parentheses == maxParentheses {
 		r.reject("parentheses deeper than 100")

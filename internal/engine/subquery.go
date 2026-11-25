@@ -441,7 +441,11 @@ func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []con
 	}
 	for _, i := range matches {
 		// The planted bug: no row makes the comparison true of every row whose column is not NULL.
-		conditions[i].op, conditions[i].value = stmt.OpIsNotNull, nil
+		conditions[i].op, conditions[i].value, conditions[i].test = stmt.OpIsNotNull, nil, nil
+		if conditions[i].position < 0 {
+			// A condition that tests an expression has no column; the bug makes it true of every row.
+			conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 0
+		}
 	}
 	return nil
 }
