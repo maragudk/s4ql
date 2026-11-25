@@ -1,0 +1,600 @@
+package expr_test
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"math/big"
+	"strings"
+	"testing"
+
+	"maragu.dev/s4ql/internal/expr"
+	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sqlite"
+)
+
+// The check of the evaluator against SQLite. An expression is the value of the assignment of
+// `update t set k = ...`, which [stmt.Check] reads into the tree that the engine gives the
+// evaluator, over a row of the columns of [schema] and the arguments of its parameters. For each,
+// s4ql's answer is compared with SQLite's and with that of [reference], which computes it apart from
+// the evaluator, with exact arithmetic: s4ql must give SQLite's value, of the same type and bit for
+// bit, or an error that the reference justifies, and SQLite's answer for the operation that fails
+// must show the quirk that s4ql refuses.
+
+// schema of the row of every expression of the tests: the columns by name, at their positions.
+var schema = []struct {
+	name string
+	typ  s4qlpb.Type
+}{
+	{"a", s4qlpb.Type_TYPE_INT}, {"b", s4qlpb.Type_TYPE_INTEGER}, {"c", s4qlpb.Type_TYPE_REAL}, {"d", s4qlpb.Type_TYPE_REAL},
+	{"s", s4qlpb.Type_TYPE_TEXT}, {"x", s4qlpb.Type_TYPE_BLOB},
+}
+
+// prefix of the statement that holds an expression of the tests, as the value of its assignment.
+const prefix = "update t set k = "
+
+// exprCase of the tests: the text of an expression, without [prefix], the row, which holds a value
+// for each column of [schema], and the arguments of its parameters.
+type exprCase struct {
+	src  string
+	row  []*s4qlpb.Value
+	args []*s4qlpb.Value
+}
+
+// String of the case, for a message of a failure.
+func (c exprCase) String() string {
+	return fmt.Sprintf("%q with the row %v and the arguments %v", c.src, values(c.row), values(c.args))
+}
+
+// values as text, for a message: each as [expr.Value.String] writes it, text and blobs quoted.
+func values(vs []*s4qlpb.Value) string {
+	texts := make([]string, len(vs))
+	for i, v := range vs {
+		switch v.WhichKind() {
+		case s4qlpb.Value_Text_case:
+			texts[i] = fmt.Sprintf("%q", v.GetText())
+		case s4qlpb.Value_Blob_case:
+			texts[i] = fmt.Sprintf("x'%x'", v.GetBlob())
+		default:
+			texts[i] = valueOf(v).String()
+		}
+	}
+	return "[" + strings.Join(texts, ", ") + "]"
+}
+
+// valueOf v, an integer, a real, or NULL, as an [expr.Value].
+func valueOf(v *s4qlpb.Value) expr.Value {
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return expr.IntegerValue(v.GetInteger())
+	case s4qlpb.Value_Real_case:
+		return expr.RealValue(v.GetReal())
+	}
+	return expr.Value{}
+}
+
+// integer, real, text, blob, and null values of a row or an argument.
+func integer(i int64) *s4qlpb.Value {
+	v := &s4qlpb.Value{}
+	v.SetInteger(i)
+	return v
+}
+
+func float(f float64) *s4qlpb.Value {
+	v := &s4qlpb.Value{}
+	v.SetReal(f)
+	return v
+}
+
+func text(s string) *s4qlpb.Value {
+	v := &s4qlpb.Value{}
+	v.SetText(s)
+	return v
+}
+
+func blob(b []byte) *s4qlpb.Value {
+	v := &s4qlpb.Value{}
+	v.SetBlob(b)
+	return v
+}
+
+func null() *s4qlpb.Value {
+	v := &s4qlpb.Value{}
+	v.SetNull(&s4qlpb.Null{})
+	return v
+}
+
+// errNoExpression is the error of [parse] for a statement that is not an assignment of an
+// expression alone.
+var errNoExpression = errors.New("not an update of one assignment of an expression")
+
+// parse the text of an expression: its tree, as [stmt.Check] reads it as the value of the
+// assignment of `update t set k = ...`, and the text of the statement, which its spans are of.
+func parse(src string) (stmt.Expression, string, error) {
+	full := prefix + src
+	s, err := stmt.Check(full)
+	if err != nil {
+		return stmt.Expression{}, "", err
+	}
+	u, ok := s.(*stmt.Update)
+	if !ok || len(u.Set) != 1 || u.Where != nil || u.Returning.Present() || u.Subqueries != nil || u.Table.Value != "t" ||
+		u.Set[0].Column.Value != "k" || !u.Set[0].Value.Expression.Present() {
+		return stmt.Expression{}, "", errNoExpression
+	}
+	return u.Set[0].Value.Expression, full, nil
+}
+
+// errNoSuchColumn is the error of [resolve] for a name that is not a column of [schema].
+var errNoSuchColumn = errors.New("no such column")
+
+// resolve the name n to its column of [schema].
+func resolve(n stmt.Name) (expr.Column, error) {
+	for i, c := range schema {
+		if n.Fold() == c.name {
+			return expr.Column{Position: i, Type: c.typ}, nil
+		}
+	}
+	return expr.Column{}, errNoSuchColumn
+}
+
+// oracle asks SQLite for the value of an expression.
+type oracle struct {
+	conn *sqlite.Conn
+}
+
+// newOracle on a database in memory, which the test closes.
+func newOracle(t testing.TB) *oracle {
+	t.Helper()
+	conn, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return &oracle{conn: conn}
+}
+
+// value that SQLite gives the expression of the text src over the row of the columns of [schema],
+// with args bound to its parameters, in the order of the text: an integer, a real, which may be
+// infinite, or NULL. The columns are those of a common table expression, which have no affinity,
+// so that each has the value of the row as it is.
+func (o *oracle) value(src string, row, args []*s4qlpb.Value) (expr.Value, error) {
+	names := make([]string, len(schema))
+	params := make([]string, len(schema))
+	for i, c := range schema {
+		names[i], params[i] = c.name, fmt.Sprint("?", i+1)
+	}
+	q := fmt.Sprintf("with v(%v) as (select %v) select %v from v", strings.Join(names, ", "), strings.Join(params, ", "), src)
+	s, err := o.conn.Prepare(q)
+	if err != nil {
+		return expr.Value{}, fmt.Errorf("prepare %q: %w", q, err)
+	}
+	defer func() {
+		_ = s.Finalize()
+	}()
+	for i, v := range append(row[:len(row):len(row)], args...) {
+		if err := bind(s, i+1, v); err != nil {
+			return expr.Value{}, err
+		}
+	}
+	ok, err := s.Step()
+	if err != nil || !ok {
+		return expr.Value{}, fmt.Errorf("step %q: %v, %w", q, ok, err)
+	}
+	switch s.ColumnType(0) {
+	case sqlite.TypeInteger:
+		return expr.IntegerValue(s.ColumnInt64(0)), nil
+	case sqlite.TypeFloat:
+		return expr.RealValue(s.ColumnDouble(0)), nil
+	case sqlite.TypeNull:
+		return expr.Value{}, nil
+	}
+	return expr.Value{}, fmt.Errorf("%q gives a value of type %v", q, s.ColumnType(0))
+}
+
+// bind v to the parameter i of s.
+func bind(s *sqlite.Stmt, i int, v *s4qlpb.Value) error {
+	switch v.WhichKind() {
+	case s4qlpb.Value_Integer_case:
+		return s.BindInt64(i, v.GetInteger())
+	case s4qlpb.Value_Real_case:
+		return s.BindDouble(i, v.GetReal())
+	case s4qlpb.Value_Text_case:
+		return s.BindText(i, v.GetText())
+	case s4qlpb.Value_Blob_case:
+		return s.BindBlob(i, v.GetBlob())
+	}
+	return s.BindNull(i)
+}
+
+// refError of [reference]: the kind of the error, as [expr.Error] has it, and the node that fails.
+type refError struct {
+	kind error
+	node stmt.Expression
+}
+
+// reference computes the value of an expression apart from the evaluator, by the rules that s4ql
+// takes from SQLite: integers with math/big, exactly, which shows an overflow; reals as the real
+// nearest to the exact result, which math/big computes, with the sign of a zero as IEEE 754 gives
+// it; an integer operand of a real operation converted to the nearest real by math/big; and - as
+// 0 minus its operand, as SQLite computes it. It counts what each node reaches with tally.
+type reference struct {
+	row, args []*s4qlpb.Value
+	tally     func(kind string)
+	// computed holds the value of each node that has one, by its span, which no two nodes of a tree
+	// share.
+	computed map[stmt.Span]expr.Value
+}
+
+// value of the node e: its value, or the error of the first of its nodes that fails, its operands
+// before itself and the left before the right.
+func (r *reference) value(e stmt.Expression) (expr.Value, *refError) {
+	v, err := r.compute(e)
+	if err == nil {
+		r.computed[e.Span] = v
+	}
+	return v, err
+}
+
+func (r *reference) compute(e stmt.Expression) (expr.Value, *refError) {
+	switch e.Kind {
+	case stmt.ExprValue:
+		switch v := e.Value.(type) {
+		case stmt.Integer:
+			return expr.IntegerValue(int64(v)), nil
+		case stmt.Real:
+			return expr.RealValue(float64(v)), nil
+		}
+		panic(fmt.Sprintf("a literal %#v", e.Value))
+	case stmt.ExprParameter:
+		return valueOf(r.args[e.Parameter-1]), nil
+	case stmt.ExprColumn:
+		c, err := resolve(e.Column)
+		if err != nil {
+			panic(err)
+		}
+		return valueOf(r.row[c.Position]), nil
+	case stmt.ExprNegate:
+		v, err := r.value(e.Operands[0])
+		if err != nil {
+			return expr.Value{}, err
+		}
+		if v.Null() {
+			r.tally("- of null")
+			return v, nil
+		}
+		if i, ok := v.Integer(); ok {
+			n := new(big.Int).Neg(big.NewInt(i))
+			if !n.IsInt64() {
+				r.tally("- of integer: integer overflow")
+				return expr.Value{}, &refError{kind: expr.ErrOverflow, node: e}
+			}
+			r.tally("- of integer")
+			return expr.IntegerValue(n.Int64()), nil
+		}
+		f, _ := v.Real()
+		if f == 0 {
+			r.tally("- of real zero")
+			return expr.RealValue(0), nil
+		}
+		r.tally("- of real")
+		return expr.RealValue(-f), nil
+	}
+	l, err := r.value(e.Operands[0])
+	if err != nil {
+		return expr.Value{}, err
+	}
+	rv, err := r.value(e.Operands[1])
+	if err != nil {
+		return expr.Value{}, err
+	}
+	op := e.Kind.String()
+	pair := fmt.Sprintf("%v %v %v", l.Type(), op, rv.Type())
+	if l.Null() || rv.Null() {
+		r.tally(op + " with null")
+		return expr.Value{}, nil
+	}
+	fail := func(kind error) (expr.Value, *refError) {
+		r.tally(fmt.Sprintf("%v: %v", pair, strings.TrimPrefix(kind.Error(), "s4ql: ")))
+		return expr.Value{}, &refError{kind: kind, node: e}
+	}
+	x, xInt := l.Integer()
+	y, yInt := rv.Integer()
+	if xInt && yInt {
+		a, b := big.NewInt(x), big.NewInt(y)
+		c := new(big.Int)
+		switch e.Kind {
+		case stmt.ExprAdd:
+			c.Add(a, b)
+		case stmt.ExprSubtract:
+			c.Sub(a, b)
+		case stmt.ExprMultiply:
+			c.Mul(a, b)
+		case stmt.ExprDivide:
+			if b.Sign() == 0 {
+				return fail(expr.ErrDivisionByZero)
+			}
+			// Quo truncates toward zero, as SQLite's integer division does.
+			c.Quo(a, b)
+		}
+		if !c.IsInt64() {
+			return fail(expr.ErrOverflow)
+		}
+		r.tally(pair)
+		return expr.IntegerValue(c.Int64()), nil
+	}
+	fx, fy := r.float(l, "left"), r.float(rv, "right")
+	if e.Kind == stmt.ExprDivide && fy == 0 {
+		return fail(expr.ErrDivisionByZero)
+	}
+	a, b := new(big.Float).SetFloat64(fx), new(big.Float).SetFloat64(fy)
+	// Exact for +, -, and *, whose results never need more bits, and enough that rounding the
+	// quotient again to a float64 gives the nearest one.
+	c := new(big.Float).SetPrec(2200)
+	switch e.Kind {
+	case stmt.ExprAdd:
+		c.Add(a, b)
+	case stmt.ExprSubtract:
+		c.Sub(a, b)
+	case stmt.ExprMultiply:
+		c.Mul(a, b)
+	case stmt.ExprDivide:
+		c.Quo(a, b)
+	}
+	f, _ := c.Float64()
+	if math.IsInf(f, 0) {
+		return fail(expr.ErrNotFinite)
+	}
+	if c.Sign() == 0 {
+		// An exact zero: of a sum, -0 only for -0 + -0 and -0 - 0, and of a product or a quotient,
+		// negative if one operand is negative.
+		negative := math.Signbit(fx) != math.Signbit(fy)
+		switch e.Kind {
+		case stmt.ExprAdd:
+			negative = math.Signbit(fx) && math.Signbit(fy)
+		case stmt.ExprSubtract:
+			negative = math.Signbit(fx) && !math.Signbit(fy)
+		}
+		f = math.Copysign(0, map[bool]float64{true: -1, false: 1}[negative])
+	}
+	r.tally(pair)
+	r.fused(e, f)
+	return expr.RealValue(f), nil
+}
+
+// float of v, an integer or a real, for an operation of reals: the real itself, or the real nearest
+// to the integer, the even one of two that are as near, which side counts as a conversion.
+func (r *reference) float(v expr.Value, side string) float64 {
+	if f, ok := v.Real(); ok {
+		return f
+	}
+	i, _ := v.Integer()
+	f, accuracy := new(big.Float).SetInt64(i).Float64()
+	r.tally("integer converted to real on the " + side)
+	if accuracy != big.Exact {
+		r.tally("integer converted to real inexactly")
+	}
+	return f
+}
+
+// fused counts, for a sum or a difference e with the real result f of which an operand is a
+// product of reals, whether one instruction that fused the two would give another result, which
+// SQLite never gives.
+func (r *reference) fused(e stmt.Expression, f float64) {
+	if e.Kind != stmt.ExprAdd && e.Kind != stmt.ExprSubtract {
+		return
+	}
+	for k, m := range e.Operands {
+		other := e.Operands[1-k]
+		if m.Kind != stmt.ExprMultiply {
+			continue
+		}
+		x, okX := r.computed[m.Operands[0].Span].Real()
+		y, okY := r.computed[m.Operands[1].Span].Real()
+		z, okZ := r.computed[other.Span].Real()
+		if !okX || !okY || !okZ {
+			continue
+		}
+		switch {
+		case e.Kind == stmt.ExprSubtract && k == 0:
+			z = -z
+		case e.Kind == stmt.ExprSubtract:
+			x = -x
+		}
+		if g := math.FMA(x, y, z); math.Float64bits(g) != math.Float64bits(f) && !math.IsInf(g, 0) {
+			r.tally("a fused multiply and add would differ")
+		}
+	}
+}
+
+// parametersOf e: the numbers of its parameters, in the order of the text.
+func parametersOf(e stmt.Expression) []int {
+	if e.Kind == stmt.ExprParameter {
+		return []int{e.Parameter}
+	}
+	var ps []int
+	for _, o := range e.Operands {
+		ps = append(ps, parametersOf(o)...)
+	}
+	return ps
+}
+
+// argumentsOf the parameters of e, which are numbered in the statement, from args, the arguments of
+// the statement, in the order of the text of e, as SQLite numbers the parameters of e alone.
+func argumentsOf(e stmt.Expression, args []*s4qlpb.Value) []*s4qlpb.Value {
+	var as []*s4qlpb.Value
+	for _, n := range parametersOf(e) {
+		as = append(as, args[n-1])
+	}
+	return as
+}
+
+// refusalOf the case c with the tree e: the refusal that s4ql must give, at [expr.Check] for the
+// first column of type TEXT or BLOB in the order of the text, or else at [expr.Program.Bind] for
+// the first parameter whose argument is text or a blob; and whether it comes at the check.
+func refusalOf(e stmt.Expression, c exprCase) (*stmt.NotSupportedError, bool) {
+	var column, argument *stmt.NotSupportedError
+	var walk func(e stmt.Expression)
+	walk = func(e stmt.Expression) {
+		switch e.Kind {
+		case stmt.ExprColumn:
+			col, _ := resolve(e.Column)
+			if t := col.Type; column == nil && (t == s4qlpb.Type_TYPE_TEXT || t == s4qlpb.Type_TYPE_BLOB) {
+				column = &stmt.NotSupportedError{What: fmt.Sprintf("column of type %v in arithmetic", strings.TrimPrefix(t.String(), "TYPE_")), Offset: e.Span.Start}
+			}
+		case stmt.ExprParameter:
+			var which string
+			switch c.args[e.Parameter-1].WhichKind() {
+			case s4qlpb.Value_Text_case:
+				which = "text"
+			case s4qlpb.Value_Blob_case:
+				which = "a blob"
+			}
+			if argument == nil && which != "" {
+				argument = &stmt.NotSupportedError{What: fmt.Sprintf("argument %v in arithmetic, which is %v", e.Parameter, which), Offset: e.Span.Start}
+			}
+		}
+		for _, o := range e.Operands {
+			walk(o)
+		}
+	}
+	walk(e)
+	if column != nil {
+		return column, true
+	}
+	return argument, false
+}
+
+// checker of cases: the oracle, and the tally of what the cases reach.
+type checker struct {
+	o     *oracle
+	tally map[string]int
+}
+
+// check the case c, and give what fails, or "" if nothing does. The tree of c is that of [parse],
+// which must take it, and its columns must be those of [schema], and its arguments as many as its
+// parameters; for a case that is none of these, check gives "" and counts it as "not a case", which
+// only the fuzz test gives.
+func (k *checker) check(c exprCase) string {
+	e, full, err := parse(c.src)
+	if err != nil {
+		k.tally["not a case: "+err.Error()]++
+		return ""
+	}
+	for _, n := range parametersOf(e) {
+		if n > len(c.args) {
+			k.tally["not a case: too few arguments"]++
+			return ""
+		}
+	}
+	unknown := false
+	walkColumns(e, func(n stmt.Name) {
+		if _, err := resolve(n); err != nil {
+			unknown = true
+		}
+	})
+	if unknown {
+		x, err := expr.Check(e, resolve)
+		if !errors.Is(err, errNoSuchColumn) {
+			return fmt.Sprintf("%v: the check gives %v and %v, and not the error of resolve", c, x, err)
+		}
+		k.tally["not a case: no such column"]++
+		return ""
+	}
+
+	refusal, atCheck := refusalOf(e, c)
+	x, err := expr.Check(e, resolve)
+	if atCheck {
+		var ns *stmt.NotSupportedError
+		if !errors.As(err, &ns) || *ns != *refusal || !errors.Is(err, stmt.ErrNotSupported) {
+			return fmt.Sprintf("%v: the check gives %v, and not %v", c, err, refusal)
+		}
+		k.tally["case: refused, "+refusal.What[:strings.Index(refusal.What, " in ")]]++
+		return ""
+	}
+	if err != nil {
+		return fmt.Sprintf("%v: the check gives %v", c, err)
+	}
+	b, err := x.Bind(c.args)
+	if refusal != nil {
+		var ns *stmt.NotSupportedError
+		if !errors.As(err, &ns) || *ns != *refusal || !errors.Is(err, stmt.ErrNotSupported) {
+			return fmt.Sprintf("%v: the binding gives %v, and not %v", c, err, refusal)
+		}
+		k.tally["case: refused, argument that is "+refusal.What[strings.Index(refusal.What, "which is ")+len("which is "):]]++
+		return ""
+	}
+	if err != nil {
+		return fmt.Sprintf("%v: the binding gives %v", c, err)
+	}
+	if typ, ok := x.Type(); ok != (len(parametersOf(e)) == 0) || ok && typ != b.Type() {
+		return fmt.Sprintf("%v: the program has the type %v, %v, and the bound one %v", c, typ, ok, b.Type())
+	}
+	got, gotErr := b.Eval(c.row)
+
+	ref := &reference{row: c.row, args: c.args, tally: func(kind string) { k.tally[kind]++ }, computed: map[stmt.Span]expr.Value{}}
+	want, wantErr := ref.value(e)
+	if wantErr != nil {
+		var ee *expr.Error
+		node := wantErr.node
+		if !errors.As(gotErr, &ee) || ee.Kind != wantErr.kind || ee.Span != node.Span || ee.Op != node.Kind ||
+			!errors.Is(gotErr, expr.ErrEvaluation) || !errors.Is(gotErr, wantErr.kind) {
+			return fmt.Sprintf("%v: s4ql gives %v and %v, where %v is due at %q", c, got, gotErr, wantErr.kind, full[node.Span.Start:node.Span.End])
+		}
+		// SQLite's answer for the operation that fails shows the quirk that s4ql refuses: a real
+		// from integer operands for an overflow, NULL from operands that are not NULL for a
+		// division by zero, and an infinity for a real result that is not finite.
+		quirk, err := k.o.value(full[node.Span.Start:node.Span.End], c.row, argumentsOf(node, c.args))
+		if err != nil {
+			return fmt.Sprintf("%v: %v", c, err)
+		}
+		f, isReal := quirk.Real()
+		var shown bool
+		switch wantErr.kind {
+		case expr.ErrOverflow:
+			shown = isReal
+		case expr.ErrDivisionByZero:
+			shown = quirk.Null()
+		case expr.ErrNotFinite:
+			shown = isReal && math.IsInf(f, 0)
+		}
+		if !shown {
+			return fmt.Sprintf("%v: SQLite gives %v for %q, which fails with %v in s4ql", c, quirk, full[node.Span.Start:node.Span.End], wantErr.kind)
+		}
+		k.tally[fmt.Sprintf("case: %v", strings.TrimPrefix(wantErr.kind.Error(), "s4ql: "))]++
+		return ""
+	}
+	sqliteValue, err := k.o.value(full[e.Span.Start:e.Span.End], c.row, argumentsOf(e, c.args))
+	if err != nil {
+		return fmt.Sprintf("%v: %v", c, err)
+	}
+	if sqliteValue != want {
+		return fmt.Sprintf("%v: SQLite gives %v, and the reference %v", c, sqliteValue, want)
+	}
+	if gotErr != nil || got != want {
+		return fmt.Sprintf("%v: s4ql gives %v and %v, and SQLite %v", c, got, gotErr, want)
+	}
+	if !got.Null() && got.Type() != b.Type() || b.Type() == expr.TypeNull && !got.Null() {
+		return fmt.Sprintf("%v: s4ql gives %v of the type %v", c, got, b.Type())
+	}
+	kind := "case: " + got.Type().String()
+	if f, ok := got.Real(); ok && f == 0 {
+		kind += map[bool]string{true: " -0.0", false: " 0.0"}[math.Signbit(f)]
+	}
+	k.tally[kind]++
+	return ""
+}
+
+// walkColumns of e, the names of its columns in the order of the text.
+func walkColumns(e stmt.Expression, f func(stmt.Name)) {
+	if e.Kind == stmt.ExprColumn {
+		f(e.Column)
+	}
+	for _, o := range e.Operands {
+		walkColumns(o, f)
+	}
+}
