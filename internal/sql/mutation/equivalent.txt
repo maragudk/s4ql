@@ -1399,3 +1399,9 @@ internal/engine/operator.go condition.holds condition: c.value.HasNull() => fals
 	The planted bug nullCompares then only where the first column is NULL, which its tests find as before.
 internal/engine/operator.go condition.holds condition: c.value.HasNull() => !c.value.HasNull()
 	The planted bug nullCompares then true where the second column is not NULL, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds boolean: true => false
+	nullCompares left out of a comparison of two columns: the NULL comparison is then false, as without the bug, and its comparisons of arithmetic find it.
+internal/engine/operator.go condition.computed condition: !c.valueFirst => true
+	A value written first is then computed a second time, after the tested side; the evaluation is pure, and an error of it came the first time.
+internal/engine/operator.go update.newRow boolean: false => true
+	The check of NOT NULL then runs also for an update of plain values, where update.check has refused every such NULL before the update reads a row.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
@@ -899,6 +901,44 @@ func TestFilter(t *testing.T) {
 			is.True(t, errors.Is(err, ErrInternal), c.err)
 			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err))
 		}
+		// The same of a condition that is computed for each row of the table t (w, k), with w + 1 and
+		// w + 0.5 of the INT column w, and with w plus the largest integer, which overflows on every row
+		// and is an evaluation error.
+		ct := newTable().tables["t"].ct
+		plus := func(v stmt.Value) *expr.Bound {
+			t.Helper()
+			e := stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "w"}}, {Kind: stmt.ExprValue, Value: v}}}
+			b, err := bindArithmetic(ct, e, nil)
+			is.NotError(t, err)
+			return b
+		}
+		overflows := plus(stmt.Integer(math.MaxInt64))
+		for _, c := range []struct {
+			c   condition
+			row []*s4qlpb.Value
+			err string
+		}{
+			{c: condition{position: 2, op: stmt.OpEqual, per: plus(stmt.Integer(1))}, row: []*s4qlpb.Value{integer(1), integer(2)}, err: "a condition of the column at 2 of a row of 2 values"},
+			{c: condition{position: -1, op: stmt.OpEqual, per: plus(stmt.Integer(1))}, row: []*s4qlpb.Value{integer(1), integer(2)}, err: "a condition of the column at -1 of a row of 2 values"},
+			{c: condition{position: 1, op: stmt.OpEqual, per: plus(stmt.Integer(1))}, row: []*s4qlpb.Value{integer(1), text}, err: "a value of kind text in a comparison of arithmetic"},
+			{c: condition{position: 1, op: stmt.OpEqual, per: plus(stmt.Real(0.5))}, row: []*s4qlpb.Value{integer(1), integer(2)}, err: "a comparison of values of the classes integer and real"},
+			{c: condition{op: stmt.Operator(99), test: plus(stmt.Integer(1)), value: integer(2)}, row: []*s4qlpb.Value{integer(1), integer(2)}, err: "a computed condition with the operator 99"},
+		} {
+			ok, err := c.c.holds(c.row)
+			is.True(t, !ok, c.err)
+			is.True(t, errors.Is(err, ErrInternal), c.err)
+			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err))
+		}
+		for _, c := range []condition{
+			{position: 0, op: stmt.OpEqual, per: overflows},
+			{position: 0, op: stmt.OpEqual, per: overflows, valueFirst: true},
+			{op: stmt.OpEqual, test: overflows, value: integer(1)},
+			{op: stmt.OpEqual, test: overflows, value: integer(1), valueFirst: true},
+		} {
+			ok, err := c.holds([]*s4qlpb.Value{integer(1), integer(2)})
+			is.True(t, !ok, fmt.Sprint(c))
+			is.True(t, errors.Is(err, expr.ErrOverflow), fmt.Sprint(c))
+		}
 		_, err = chooseAccess(newTable().tables["t"].ct, nil, []condition{{position: 0, op: stmt.OpLess, value: integer(1)}, {position: 0, op: stmt.OpLess, value: text}}, orderBy{}, bugs{})
 		is.True(t, errors.Is(err, ErrInternal))
 	})
@@ -1348,6 +1388,32 @@ func TestChangeRows(t *testing.T) {
 		is.Equal(t, "s4ql: internal error: the row of a key that a delete found is gone", err.Error())
 		is.Equal(t, int64(0), n)
 		is.Equal(t, "[keys t add 9 key 9 get t 9]", fmt.Sprint(f.calls))
+	})
+}
+
+func TestUpdate_newRow(t *testing.T) {
+	t.Run("should give the internal error of a copy of a column that the row does not have, and of an assignment of no value, which no statement gives", func(t *testing.T) {
+		ct := newFake().with("t", []string{"k", "a"}).tables["t"].ct
+		old := []*s4qlpb.Value{integer(1), integer(2)}
+		for _, c := range []struct {
+			copied int
+			err    string
+		}{
+			{copied: 2, err: "a copy of the column at 2 of a row of 2 values"},
+			{copied: 3, err: "a copy of the column at 3 of a row of 2 values"},
+			{copied: -1, err: "an assignment of no value"},
+		} {
+			u := &update{table: ct, positions: []int{1}, values: []*s4qlpb.Value{nil}, computed: []*expr.Bound{nil}, copied: []int{c.copied}, order: []int{0}}
+			row, err := u.newRow(old)
+			is.True(t, row == nil, c.err)
+			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err))
+		}
+		u := &update{table: ct, positions: []int{1}, values: []*s4qlpb.Value{nil}, computed: []*expr.Bound{nil}, copied: []int{0}, order: []int{0}}
+		row, err := u.newRow(old)
+		is.NotError(t, err)
+		is.Equal(t, 2, len(row))
+		is.Equal(t, int64(1), row[0].GetInteger())
+		is.Equal(t, int64(1), row[1].GetInteger())
 	})
 }
 
