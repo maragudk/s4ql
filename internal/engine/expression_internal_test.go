@@ -23,3 +23,15 @@ func TestArgumentLengths(t *testing.T) {
 		}
 	})
 }
+
+func TestBindArithmetic(t *testing.T) {
+	t.Run("should give the internal error of a column that the table does not have, which the walk over the statement rules out", func(t *testing.T) {
+		table := newFake().with("t", []string{"k", "a"}).tables["t"].ct
+		e := stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{
+			{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "a"}},
+			{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "b"}},
+		}}
+		_, err := bindArithmetic(table, e, nil)
+		is.Equal(t, "s4ql: internal error: an expression of the column b, which the table t does not have", err.Error())
+	})
+}
