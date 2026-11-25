@@ -36,6 +36,8 @@ func TestValue(t *testing.T) {
 		is.Equal(t, expr.TypeReal, v.Type())
 		is.Equal(t, "-0", v.String())
 		is.Equal(t, "1.5", expr.RealValue(1.5).String())
+		is.Equal(t, "-1.5", expr.RealValue(-1.5).String())
+		is.Equal(t, "0", expr.RealValue(0).String())
 		is.True(t, math.Signbit(v.Proto().GetReal()))
 		is.True(t, v.Proto().HasReal())
 		is.True(t, v != expr.RealValue(0), "negative zero is not zero")
