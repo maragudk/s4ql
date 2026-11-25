@@ -146,3 +146,49 @@ The sequence comparison judges one statement at a time with many excuses (evalua
 ### Future work
 
 The generated checks of the notes, including a check that `ExecAll` equals `Exec` on one statement over the corpus, and a fuzz target of `Split`.
+
+## Step 4: fixes after the independent review, the status texts, and the landing
+
+**Author:** builder (several-statements, landing)
+
+### Prompt Context
+
+**Verbatim prompt:** "You finish and land a reviewed branch in s4ql (`maragu.dev/s4ql`, repository `maragudk/s4ql`): `several-statements` (several statements in one `Exec`). The task is small: four fixes from an independent review, the status texts, and the landing. Do nothing beyond it." (The brief then lists the four fixes: the event's duration, a cancel between two statements, a guard of the cost of `ParseAt` if there is a clean one, and a rewrap in `s4ql.go`; the status texts of the roadmap, the README, and the site; and the steps of the landing.)
+**Interpretation:** make the four fixes with tests that do not depend on real time, update the status texts by a few lines, merge `main`, pass `make test` and `make lint`, and take the branch through its pull request to the merge.
+**Inferred intent:** close the review's findings without widening the piece of work, so that it can be merged and the generated checks can follow from merged code.
+
+### What I did
+
+In `/internal/engine/several.go`, `ExecAll` now reads the clock once before `stmt.Split`. The report of the split's panic, the refusal before any statement runs, and the event of the first statement all start from that reading, through new `newReportFrom` on `Engine` (`/internal/engine/telemetry.go`) and `Conn` (`/internal/engine/engine.go`). Each later statement reads the clock when it starts, and so does the refusal of a later statement that `Split` refused. The test `TestConn_ExecAll_duration` in `/internal/engine/several_internal_test.go` uses the existing `ticking` host and a handler that records the clock's reading when each event is logged. It asserts that the event's duration equals that reading minus the first reading of the call, for texts of one statement through both `ExecAll` and `Exec`, for a wrong count of arguments, and for several statements.
+
+In `/internal/engine/several_test.go` a handler `canceling` cancels the context when it logs the event of the first insert of `insert 1; insert 2; insert 3`, outside a transaction and inside a `Begin`. The second insert fails with `context.Canceled` and gives the same error as `Exec` of it alone with that context. The first insert stays, also after a commit, and the third logs no event.
+
+The guard of `ParseAt`'s cost has no clean form, so it is recorded as open in `/docs/todo/driver.md`. The paragraph in `/s4ql.go` was rewrapped to the width of the file. The fixes are recorded under "Fixes after the review" in `/docs/todo/several-statements.md`. `/docs/roadmap.md` (the "At a glance" row and the driver's area) and `/README.md` ("Status") now say that several statements are built. `/site/index.html` is unchanged: the milestone "Upserts and batches" is still next, and its summary is still right.
+
+### Why
+
+Before the branch, `Exec` started its event before the check of its text. The branch's `execPart` started a new report after the split, so a refused text reported a duration of about zero, which loses the time of the check from the telemetry.
+
+### What worked
+
+The existing `ticking` host was enough for the duration test, once each event also recorded the clock's reading at the moment it was logged. A logger is a hook into the engine that fires between two statements, so the cancel needs no timer.
+
+### What didn't work
+
+The first form of the duration test failed as intended on the old code, before the fix: `go test -p 4 ./internal/engine -run 'TestConn_ExecAll_duration'` gave `several_internal_test.go:62: Expected "2s", but got "1s" (type time.Duration)` for `drop table t1`. A plain comparison of durations with a ticking clock could not tell the old code from the fixed one, because both read the clock twice around the statement: the old code just read it once more before. Only the span from the call's first reading distinguishes them.
+
+### What I learned
+
+With a clock that ticks at each reading, a duration counts readings and not work. To pin where a duration starts, compare it with a reading taken at a known point, the first of the call, and not with a constant.
+
+### What was tricky
+
+The guard of the cost of `ParseAt`. The planted fault was a `strings.IndexByte` over the rest of the text. That call allocates nothing and does not go through the tokenizer, so neither a count of the tokenizer's bytes nor `testing.AllocsPerRun` would see it, and a bound on time depends on the machine.
+
+### What warrants review
+
+The choice that the split of a text of several statements counts toward the first statement's event, and that a later statement that `Split` refused has an event of almost no duration, because its check was part of the split. A design that chains each event's start to the end of the one before was possible, but it would need `report.end` to hand back its reading.
+
+### Future work
+
+A guard of `Split`'s cost, if a way to count every read of the text, or a measure of work that a slow machine does not change, turns up; see `/docs/todo/driver.md`.
