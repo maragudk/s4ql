@@ -230,11 +230,6 @@ type report struct {
 	ended bool
 }
 
-// newReport of a statement of the text sql that starts now.
-func (e *Engine) newReport(sql string) *report {
-	return e.newReportFrom(sql, e.host.Monotonic())
-}
-
 // newReportFrom of a statement of the text sql that started at start, on the monotonic clock of the
 // host.
 func (e *Engine) newReportFrom(sql string, start time.Duration) *report {
