@@ -152,6 +152,7 @@ mixed	7	2	reached: argument time.Time
 mixed	15	5	reached: argument uint64
 mixed	8	2	reached: argument uint64 above int64
 mixed	30	10	reached: arithmetic of a select whose due errors the model's access decides
+mixed	10	3	reached: arithmetic of a write whose evaluation error the model's access judges
 mixed	3	1	reached: arithmetic with a column in SET of a update, no such column
 mixed	25	8	reached: arithmetic with a column in SET of a update, no such table
 mixed	14	4	reached: arithmetic with a column in SET of a update, not supported
@@ -213,6 +214,7 @@ mixed	4	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression 
 mixed	4	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
 mixed	3	1	reached: arithmetic: s4ql: real result that is not finite in WHERE
 mixed	6	2	reached: arithmetic: select with LIMIT that failed on a row
+mixed	16	5	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
 mixed	3	1	reached: arithmetic: update that sets a column from itself that changed rows
 mixed	1168	389	reached: changed both ways
 mixed	169	56	reached: chosen a get
@@ -3747,6 +3749,7 @@ arithmetic	271	90	reached: argument int64
 arithmetic	70	23	reached: argument nil
 arithmetic	135	45	reached: argument string
 arithmetic	76	25	reached: arithmetic of a select whose due errors the model's access decides
+arithmetic	45	15	reached: arithmetic of a write whose evaluation error the model's access judges
 arithmetic	17	5	reached: arithmetic with a column in SET of a update, NOT NULL constraint failed
 arithmetic	10	3	reached: arithmetic with a column in SET of a update, UNIQUE constraint failed
 arithmetic	3	1	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: division by zero
@@ -3847,6 +3850,7 @@ arithmetic	19	6	reached: arithmetic: s4ql: real result that is not finite in WHE
 arithmetic	12	4	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression with a column
 arithmetic	7	2	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression without a column
 arithmetic	50	16	reached: arithmetic: select with LIMIT that failed on a row
+arithmetic	100	33	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
 arithmetic	13	4	reached: arithmetic: select with LIMIT that gave rows where a row that it did not read fails
 arithmetic	8	2	reached: arithmetic: update that computes its key from its row that changed rows
 arithmetic	9	3	reached: arithmetic: update that copies another column alone that changed rows

@@ -807,3 +807,7 @@
 # WHERE of a select, string or blob too big"; "arithmetic without a column in a subquery of a
 # select, no such column". "evaluation error by one path and not by another" is required by
 # TestConn_differential since.
+# The fixes after the review of the engine's checks of arithmetic of 2026-11-25: a third of the
+# total that day.
+18	reached: arithmetic of a write whose evaluation error the model's access judges
+38	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
