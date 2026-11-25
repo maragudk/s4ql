@@ -339,16 +339,17 @@ func (c condition) computed(row []*s4qlpb.Value) (bool, error) {
 			return false, fromExpr(err)
 		}
 		tested = numberOf(v)
-	} else {
+	}
+	if !c.valueFirst {
+		if value, err = c.valueOf(row); err != nil {
+			return false, err
+		}
+	}
+	if c.test == nil {
 		if c.position < 0 || c.position >= len(row) {
 			return false, internalError("a condition of the column at %v of a row of %v values", c.position, len(row))
 		}
 		if tested, err = protoNumber(row[c.position]); err != nil {
-			return false, err
-		}
-	}
-	if !c.valueFirst {
-		if value, err = c.valueOf(row); err != nil {
 			return false, err
 		}
 	}
@@ -690,7 +691,7 @@ func (u *update) check(ctx context.Context) error {
 				return fmt.Errorf("%w: %v for %v", stmt.ErrNotSupported, columnName(u.table, u.copied[i]), columnName(u.table, position))
 			}
 		case u.computed[i] != nil:
-			if c := arithmeticClass(u.computed[i]); !comparable(c, into) {
+			if c := arithmeticClass(u.computed[i]); !meetsArithmetic(into, c) {
 				return fmt.Errorf("%w: %v for %v", stmt.ErrNotSupported, expressionName(c), columnName(u.table, position))
 			}
 		default:
@@ -1387,7 +1388,7 @@ func (b build) types(f *Filter, s *scan, conditions []condition) error {
 			continue
 		}
 		if c.test != nil {
-			if !comparable(arithmeticClass(c.test), valueClass(c.value)) {
+			if !meetsArithmetic(valueClass(c.value), arithmeticClass(c.test)) {
 				what, err := valueName(fc.Value, c.value)
 				if err != nil {
 					return err
@@ -1445,13 +1446,14 @@ func (b build) arithmetic(fc Condition, t *s4qlpb.CreateTable, c *condition, val
 	if bound == nil {
 		bound = c.constant
 	}
-	tested, name := classAny, ""
+	var meets bool
+	var name string
 	if c.test != nil {
-		tested, name = arithmeticClass(c.test), expressionName(arithmeticClass(c.test))
+		meets, name = comparable(arithmeticClass(c.test), arithmeticClass(bound)), expressionName(arithmeticClass(c.test))
 	} else {
-		tested, name = columnClass(t.GetColumns()[c.position].GetType()), columnName(t, c.position)
+		meets, name = meetsArithmetic(columnClass(t.GetColumns()[c.position].GetType()), arithmeticClass(bound)), columnName(t, c.position)
 	}
-	if comparable(tested, arithmeticClass(bound)) {
+	if meets {
 		return nil
 	}
 	return fmt.Errorf("%w: %v compared with %v", stmt.ErrNotSupported, expressionName(arithmeticClass(bound)), name)

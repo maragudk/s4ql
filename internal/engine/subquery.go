@@ -326,7 +326,7 @@ func (s *subqueries) types(b build, sub *Subquery, t *s4qlpb.CreateTable, positi
 			return internalError("a subquery of the column at %v compared with an expression", in.position)
 		}
 		inside := columns[in.position]
-		if comparable(columnClass(inside.GetType()), arithmeticClass(test)) {
+		if meetsArithmetic(columnClass(inside.GetType()), arithmeticClass(test)) {
 			return nil
 		}
 		return fmt.Errorf("%w: subquery %v, of the column %v.%v of type %v, compared with %v", stmt.ErrNotSupported,

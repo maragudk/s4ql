@@ -156,6 +156,15 @@ func comparable(a, b class) bool {
 	return a == b || a == classAny || b == classAny
 }
 
+// meetsArithmetic reports whether a value of the class c, of a column or of a plain value, may meet an
+// arithmetic expression of the class of arithmetic a in a comparison or an assignment, as
+// [comparable] says. Text and blobs never do, whatever a is, also the class of NULL of an expression
+// whose argument is NULL: SQLite converts a number to text or a blob by the affinity of a column, and
+// orders a number before text and blobs elsewhere, so the rule refuses them from the types alone.
+func meetsArithmetic(c, a class) bool {
+	return c != classText && c != classBlob && comparable(c, a)
+}
+
 // expressionName of an expression of the class c in a message: "an expression of type integer".
 func expressionName(c class) string {
 	return fmt.Sprint("an expression of type ", c)

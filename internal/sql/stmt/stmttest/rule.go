@@ -230,38 +230,68 @@ func SelectText(s *stmt.Select, args []any, orderBy string) (string, []any) {
 }
 
 // whereText of the conditions of a WHERE, whose scalar subqueries are subs, with a ? for each value,
-// and a subquery as [subqueryText] writes it, after " where ", or "" for no condition, and the
-// arguments of its parameters, as [FoundQuery] gives them. A condition that says
-// [stmt.Condition.ValueFirst] is written so, with the ? on the left and the operator as the text
-// wrote it, so that a statement of the text runs the form that its conditions came from.
+// a subquery as [subqueryText] writes it, and an arithmetic expression as [ExpressionText] writes it,
+// after " where ", or "" for no condition, and the arguments of its parameters, as [FoundQuery] gives
+// them. A condition that says [stmt.Condition.ValueFirst] is written so, with the value on the left
+// and the operator as the text wrote it, so that a statement of the text runs the form that its
+// conditions came from.
 func whereText(where []stmt.Condition, subs []stmt.Select, args []any) (string, []any) {
 	var conditions []string
 	var bound []any
 	for _, c := range where {
-		switch {
-		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
-			conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String())
-			continue
-		case c.Value.Subquery > 0:
-			text, inner := subqueryText(subs[c.Value.Subquery-1], args)
-			if c.ValueFirst {
-				conditions = append(conditions, text+" "+c.Operator.Swapped().String()+" "+Quote(c.Column.Value))
-			} else {
-				conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" "+text)
-			}
-			bound = append(bound, inner...)
-			continue
-		case c.ValueFirst:
-			conditions = append(conditions, "? "+c.Operator.Swapped().String()+" "+Quote(c.Column.Value))
-		default:
-			conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" ?")
+		tested, testedArgs := Quote(c.Column.Value), []any(nil)
+		if c.Expression.Present() {
+			tested, testedArgs = ExpressionText(c.Expression, args)
 		}
-		bound = append(bound, boundValue(c.Value, args))
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+			conditions, bound = append(conditions, tested+" "+c.Operator.String()), append(bound, testedArgs...)
+			continue
+		}
+		value, valueArgs := TermText(c.Value, subs, args)
+		if c.ValueFirst {
+			conditions, bound = append(conditions, value+" "+c.Operator.Swapped().String()+" "+tested), append(append(bound, valueArgs...), testedArgs...)
+		} else {
+			conditions, bound = append(conditions, tested+" "+c.Operator.String()+" "+value), append(append(bound, testedArgs...), valueArgs...)
+		}
 	}
 	if len(conditions) == 0 {
 		return "", nil
 	}
 	return " where " + strings.Join(conditions, " and "), bound
+}
+
+// TermText of the term t of a statement whose scalar subqueries are subs, with the arguments args of
+// the statement: a ? for a literal or a parameter, a subquery as [subqueryText] writes it, and an
+// arithmetic expression as [ExpressionText] writes it, and the arguments of its parameters.
+func TermText(t stmt.Term, subs []stmt.Select, args []any) (string, []any) {
+	switch {
+	case t.Expression.Present():
+		return ExpressionText(t.Expression, args)
+	case t.Subquery > 0:
+		return subqueryText(subs[t.Subquery-1], args)
+	}
+	return "?", []any{BoundValue(t, args)}
+}
+
+// ExpressionText of the arithmetic expression e with the arguments args of the statement that holds
+// it: every column in double quotes, a ? for every literal and parameter, a negation as -( ), and
+// every binary operator in parentheses, so that SQLite reads the tree of e, and the arguments of its
+// ?, each literal as SQLite binds it, in the order of the text.
+func ExpressionText(e stmt.Expression, args []any) (string, []any) {
+	switch e.Kind {
+	case stmt.ExprValue:
+		return "?", []any{BoundValue(stmt.Term{Value: e.Value}, args)}
+	case stmt.ExprParameter:
+		return "?", []any{args[e.Parameter-1]}
+	case stmt.ExprColumn:
+		return Quote(e.Column.Value), nil
+	case stmt.ExprNegate:
+		text, bound := ExpressionText(e.Operands[0], args)
+		return "-(" + text + ")", bound
+	}
+	left, leftArgs := ExpressionText(e.Operands[0], args)
+	right, rightArgs := ExpressionText(e.Operands[1], args)
+	return "(" + left + " " + e.Kind.String() + " " + right + ")", append(leftArgs, rightArgs...)
 }
 
 // subqueryText of the scalar subquery q, of slice 15, with the arguments args of the statement that
@@ -291,9 +321,9 @@ func subqueryText(q stmt.Select, args []any) (string, []any) {
 	return "(" + text + ")", bound
 }
 
-// boundValue of a term, a literal or the argument of args for its parameter, as SQLite binds it: an
+// BoundValue of a term, a literal or the argument of args for its parameter, as SQLite binds it: an
 // int64, a float64, a string, a []byte, or nil.
-func boundValue(term stmt.Term, args []any) any {
+func BoundValue(term stmt.Term, args []any) any {
 	switch v := term.Value.(type) {
 	case stmt.Integer:
 		return int64(v)
@@ -322,8 +352,9 @@ func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs
 	table := Quote(u.Table.Value)
 	var sets []string
 	for _, a := range u.Set {
-		sets = append(sets, Quote(a.Column.Value)+" = ?")
-		oneArgs = append(oneArgs, boundValue(a.Value, args))
+		value, valueArgs := TermText(a.Value, u.Subqueries, args)
+		sets = append(sets, Quote(a.Column.Value)+" = "+value)
+		oneArgs = append(oneArgs, valueArgs...)
 	}
 	found = "create temp table s4ql_found as select " + Quote(key) + " as k from " + table + conditions + " order by " + Quote(key)
 	one = "update " + table + " set " + strings.Join(sets, ", ") + " where " + Quote(key) + " = (select k from temp.s4ql_found order by rowid limit 1 offset ?)"
