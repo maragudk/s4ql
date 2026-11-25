@@ -4,7 +4,7 @@ Guidance for AI agents working in this repository. What the project is and what 
 
 ## Memory
 
-Do not use your harness's internal or automatic memory for this project. Anything about how to work in this repository that is worth remembering between sessions goes in this section, so that it is versioned, visible to Markus, and shared by every agent. Add, update, and remove entries here as things change.
+Do not use your harness's internal or automatic memory for this project. Anything about how to work in this repository that is worth remembering between sessions goes in this section, so that it is versioned, visible to Markus, and shared by every agent. Add, update, and remove entries here as things change. Use the `memory` skill before adding, changing, or removing entries.
 
 ### The project is named s4ql
 
