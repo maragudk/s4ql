@@ -1267,8 +1267,8 @@ func (p *pair) step(c stmttest.Call) string {
 		if failure := p.checkOrder(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
-		// The access of a select with arithmetic is that of its conditions without an expression with a
-		// column, which the rules of stmttest do not tell apart; the engine's own tests pin it.
+		// The access of a select with arithmetic is that of its conditions that are not computed for
+		// each row, which checkAccess compares with the model's choice for its reduced select.
 		if failure := p.checkAccess(sel, args, got); failure != "" {
 			return fmt.Sprintf("%q with the arguments %v: %v", src, args, failure)
 		}
