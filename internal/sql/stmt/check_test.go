@@ -3125,9 +3125,22 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
 			verify(t, src)
 		}
+		// IS NULL is two levels too, also where every condition is one.
+		isNull := func(n int) string {
+			return "select * from t where v is null" + strings.Repeat(" and v is null", n-1)
+		}
+		src := isNull(999)
+		_, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		src = isNull(1000)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len("and v is null")), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
 		// A sign in the second condition takes a level too, on either side of its column, and in the
 		// third none.
-		_, err := stmt.Check(where("v = 1 and -1 = v", 998))
+		_, err = stmt.Check(where("v = 1 and -1 = v", 998))
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
 		_, err = stmt.Check(where("v = 1 and v = -1", 998))
 		is.True(t, errors.Is(err, stmt.ErrNotSupported))
