@@ -663,7 +663,7 @@ footer ul {
         <span class="process"><span class="ko">Written by agents, trusted with simulation testing.</span></span>
       </h1>
       <div class="claim-body">
-      <p class="lede">s4ql is an embedded database engine in the spirit of SQLite. Your Go application talks to the bucket directly, and there is no server to run. AI agents write every line, and no human reviews the code.</p>
+      <p class="lede">s4ql is an embedded database engine in the spirit of SQLite, with no server to run. Writes commit to S3, and reads come from a local SQLite cache. AI agents write every line, and no human reviews the code.</p>
       <div class="actions">
         <a class="btn" href="simulator/">Try in simulator <span class="bars" aria-hidden="true"></span></a>
         <a href="https://github.com/maragudk/s4ql">See on GitHub</a>
@@ -671,7 +671,7 @@ footer ul {
       <ul class="state caps" aria-label="Project state">
         <li class="on">Experiment</li>
         <li>Storage built</li>
-        <li>First SQL built</li>
+        <li>SQL on one table built</li>
         <li>Not ready for use</li>
       </ul>
       </div>
@@ -682,8 +682,8 @@ footer ul {
         <div><dt class="caps">Writers</dt><dd>1 per database</dd></div>
         <div><dt class="caps">Databases</dt><dd>Unlimited per bucket</dd></div>
         <div><dt class="caps">Dialect</dt><dd>A subset of SQLite's</dd></div>
-        <div><dt class="caps">Written by</dt><dd>AI agents</dd></div>
-        <div><dt class="caps">Tested with</dt><dd>Simulation and SQLite as oracle</dd></div>
+        <div><dt class="caps">Reads</dt><dd>Local SQLite cache</dd></div>
+        <div><dt class="caps">Interface</dt><dd>database/sql (cgo)</dd></div>
         <div><dt class="caps">Pattern seed</dt><dd><button class="seed-btn" id="pattern-seed" type="button" aria-label="Pattern seed 0x7334716c. Draw the background from a new seed.">0x7334716c</button></dd></div>
       </dl>
     </aside>
@@ -700,7 +700,7 @@ footer ul {
       <div><dt class="caps">Nothing to operate</dt><dd>There is no server, no cluster, and no replica to look after. The bucket is the only infrastructure and the source of truth.</dd></div>
       <div><dt class="caps">A database per user</dt><dd>Each database is a key prefix, so one bucket holds as many databases as you like. One database per user costs nothing extra, and write-heavy work spreads across them.</dd></div>
       <div><dt class="caps">SQLite's SQL, strictly</dt><dd>s4ql speaks a strict subset of SQLite's SQL. Whatever it accepts behaves exactly as in SQLite. Everything else is rejected, never reinterpreted.</dd></div>
-      <div><dt class="caps">Trust without reading</dt><dd>AI agents write and own the code. <a href="https://www.maragu.dev/">Markus</a> sets the goals and takes part in design and architecture; he does not review code. The bet is that a database can earn trust when its correctness is checked, not read.</dd></div>
+      <div><dt class="caps">Trust without reading</dt><dd><a href="https://www.maragu.dev/">Markus</a> sets the goals and takes part in design and architecture; he does not review code. The bet is that a database can earn trust when its correctness is checked, not read.</dd></div>
     </dl>
   </div>
 </section>
@@ -752,13 +752,12 @@ footer ul {
     </div>
 
     <dl class="sheet">
-      <div><dt class="caps">Interface</dt><dd>Go's <code>database/sql</code>, with the package <code>maragu.dev/s4ql</code> as the driver.</dd></div>
+      <div><dt class="caps">Interface</dt><dd><code>s4ql.Open(ctx, s4ql.Options{Bucket: "app", Prefix: "users/42", CacheDir: "cache"})</code> returns a standard <code>*sql.DB</code>.</dd></div>
       <div><dt class="caps">Transactions</dt><dd>ACID within one database. No transaction spans databases.</dd></div>
       <div><dt class="caps">Writes</dt><dd>One write transaction at a time per database. A second writer waits until the first has committed or rolled back.</dd></div>
-      <div><dt class="caps">Reads</dt><dd>In parallel, from a local SQLite cache, without contacting S3. Each read sees one consistent state, even while a write is in progress.</dd></div>
-      <div><dt class="caps">Cache</dt><dd>Holds the same tables and rows as the database, is never ahead of S3, and can be rebuilt from the log at any time.</dd></div>
-      <div><dt class="caps">Lease</dt><dd>One instance at a time holds the database's lease, recorded in the manifest. A spare instance waits and takes over when the lease times out.</dd></div>
-      <div><dt class="caps">S3 must offer</dt><dd>Strong consistency, compare-and-swap, and create-if-absent.</dd></div>
+      <div><dt class="caps">Reads</dt><dd>In parallel, from a local SQLite cache, without contacting S3. Each read sees one consistent state. The cache is never ahead of S3 and can be rebuilt from the log at any time.</dd></div>
+      <div><dt class="caps">Lease</dt><dd>One instance at a time holds the database's lease, recorded in the manifest. A spare instance waits and takes over when the lease is released or times out.</dd></div>
+      <div><dt class="caps">S3 must offer</dt><dd>Strong consistency, compare-and-swap, and create-if-absent, as Amazon S3 and Tigris do.</dd></div>
     </dl>
   </div>
 </section>
@@ -807,28 +806,38 @@ footer ul {
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>SQL front end</h3><p>A tokenizer and a parser of s4ql's own. The parser takes all of SQLite's grammar, and agrees with SQLite on which statements parse, on the message of each syntax error, and on the shape of the syntax tree. A pass after it rejects what is not supported yet.</p></div>
+        <div><h3>SQL front end</h3><p>A tokenizer and a parser of s4ql's own for all of SQLite's grammar, checked against SQLite on the statements of its own tests.</p></div>
         <span class="where caps">Built</span>
       </li>
       <li class="built">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>SQL on one table</h3><p>Strict tables with a primary key, defaults, and indexes. Reads from one table with <code>select</code>, <code>where</code>, <code>order by</code>, <code>limit</code>, and a scalar subquery in the <code>where</code>. Writes with <code>insert</code> of one row, <code>update</code>, <code>delete</code>, and <code>returning</code>. Arguments and transactions, through <code>database/sql</code>.</p></div>
-        <span class="where caps">Built in 15 slices</span>
+        <div><h3>SQL on one table</h3><p><code>strict, without rowid</code> tables with a primary key, defaults, and indexes. <code>select</code> with <code>where</code>, <code>order by</code>, and <code>limit</code>. <code>insert</code> of one row, <code>update</code>, <code>delete</code>, and <code>returning</code>. A scalar subquery, also of another table, in the <code>where</code> of <code>select</code>, <code>update</code>, and <code>delete</code>. Arguments and transactions. Built in 15 slices.</p></div>
+        <span class="where caps">Built</span>
       </li>
       <li class="next">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Expressions</h3><p>Operators and functions, from an evaluator of s4ql's own, in Go. For every expression it gives SQLite's answer or an error, never a different answer.</p></div>
+        <div><h3>Expressions</h3><p>Operators and functions. Each expression gives SQLite's answer or an error, never a different answer.</p></div>
         <span class="where caps">Next</span>
       </li>
       <li class="next">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>Grouping and joining</h3><p>Operators of s4ql's own, in Go, on top of the cache's ordered scans and lookups by key. A statement that would hold more rows in memory than a set limit fails with a clear error.</p></div>
+        <div><h3>Grouping and joining</h3><p><code>group by</code>, aggregates, and <code>join</code>.</p></div>
         <span class="where caps">Next</span>
       </li>
       <li class="next">
         <span class="glyph" aria-hidden="true"></span>
-        <div><h3>More ways to write</h3><p>Upserts with <code>on conflict (key) do nothing</code> and <code>do update</code>, several rows per <code>insert</code>, and several statements in one <code>Exec</code>.</p></div>
+        <div><h3>A memory limit</h3><p>A statement that would hold more rows in memory than a set limit fails with a clear error and changes nothing.</p></div>
         <span class="where caps">Next</span>
+      </li>
+      <li class="next">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>Upserts and batches</h3><p>Upserts with <code>on conflict (key) do nothing</code> and <code>do update</code>, several rows per <code>insert</code>, and several statements in one <code>Exec</code>.</p></div>
+        <span class="where caps">Next</span>
+      </li>
+      <li class="later">
+        <span class="glyph" aria-hidden="true"></span>
+        <div><h3>More SQL</h3><p>More of SQLite's SQL, piece by piece, and large intermediate results spooled to the cache.</p></div>
+        <span class="where caps">Later</span>
       </li>
       <li class="later">
         <span class="glyph" aria-hidden="true"></span>
