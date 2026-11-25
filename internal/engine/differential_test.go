@@ -24,6 +24,7 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/corpus"
@@ -361,6 +362,8 @@ func errText(t testing.TB, src string, err error) string {
 		return "no statement"
 	case errors.Is(err, engine.ErrArguments):
 		return wrongArguments
+	case errors.Is(err, expr.ErrEvaluation):
+		return evaluationError
 	}
 	t.Fatalf("%q: the engine gives %v", src, err)
 	return ""
@@ -369,6 +372,10 @@ func errText(t testing.TB, src string, err error) string {
 // wrongArguments is the err of an [answer] of the engine's error of another number of arguments
 // than the statement has parameters.
 const wrongArguments = "wrong number of arguments"
+
+// evaluationError is the err of an [answer] of the engine's error of an arithmetic expression whose
+// value s4ql does not give, an [*expr.Error], whose message says its kind and its operator.
+const evaluationError = "evaluation error"
 
 // errAnswer of an error of the engine, with its message.
 func errAnswer(t testing.TB, src string, err error) answer {
