@@ -610,8 +610,8 @@ func mattnText(tb testing.TB, err error) string {
 // firstStatement of src: the text up to the end of its first semicolon, or all of it. It is what
 // the oracle runs of a text that s4ql runs or answers with SQLite's error, which holds one statement
 // and maybe semicolons, spaces, and comments after it: Query and Prepare refuse a second statement,
-// and a text of several statements in an Exec runs as its statements, each a step of its own, as
-// [pair.several] says. mattn runs every statement of a text, and one that is only a comment too, and then gives
+// and a text of several statements in an Exec is [pair.several]'s. mattn runs every statement of a
+// text, and one that is only a comment too, and then gives
 // the result of the last: 0 rows affected after `insert into t1 (v1) values (1); -- c`, and no rows
 // for `select * from t1; -- c`. SQLite's sqlite3_prepare_v2 prepares the first statement, and so
 // does the engine's oracle.
@@ -738,7 +738,8 @@ func statementKind(src string) string {
 
 // reach counts in the tally what the text src with the arguments of each run, whose outcome of s4ql
 // is got, reaches, under "reached: ", on the tables that SQLite has on o, where the call runs,
-// before it runs there. For an insert: each argument by its kind, as [argumentKind] names it, each
+// before it runs there. For a text of several statements through a call that refuses it: the call
+// and its outcome; [pair.reachSeveral] counts what one through Exec reaches. For an insert: each argument by its kind, as [argumentKind] names it, each
 // literal by its kind, as [stmttest.LiteralKind] names it, and, for an insert into a table that
 // SQLite has, the outcome of each run by the type of the key column; of each run that reaches the
 // instance, by what it reaches of NULL, as [stmttest.NullCases] gives it, and of defaults, as
