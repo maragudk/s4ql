@@ -12,6 +12,7 @@
 package expr
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/bits"
@@ -340,7 +341,10 @@ func evalNode(nodes []node, i int32, row, args []*s4qlpb.Value) (Value, error) {
 func arithmetic(op stmt.ExpressionKind, l, r Value, n *node) (Value, error) {
 	if l.kind == kindInteger && r.kind == kindInteger {
 		v, kind := integerArithmetic(op, int64(l.bits), int64(r.bits))
-		if kind != nil {
+		switch {
+		case errors.Is(kind, ErrInternal):
+			return Value{}, kind
+		case kind != nil:
 			return Value{}, &Error{Kind: kind, Op: n.kind, Span: n.span}
 		}
 		return integerValue(v), nil
@@ -371,7 +375,7 @@ func arithmetic(op stmt.ExpressionKind, l, r Value, n *node) (Value, error) {
 }
 
 // integerArithmetic of the operator op on a and b: the result, or the kind of the error, an
-// overflow or a division by zero.
+// overflow or a division by zero, or an internal error for an operator that is not arithmetic.
 func integerArithmetic(op stmt.ExpressionKind, a, b int64) (int64, error) {
 	switch op {
 	case stmt.ExprAdd:

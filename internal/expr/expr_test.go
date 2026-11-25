@@ -459,6 +459,21 @@ func TestBound_Eval_faults(t *testing.T) {
 		}
 	})
 
+	t.Run("should give an internal error for arithmetic of an operator that no program holds, of integers and of reals", func(t *testing.T) {
+		for _, c := range []struct {
+			l, r expr.Value
+		}{
+			{expr.IntegerValue(1), expr.IntegerValue(2)},
+			{expr.RealValue(1), expr.IntegerValue(2)},
+		} {
+			v, err := expr.Arithmetic(stmt.ExprNegate, c.l, c.r)
+			is.True(t, errors.Is(err, expr.ErrInternal), err)
+			is.True(t, !errors.Is(err, expr.ErrEvaluation), err)
+			is.Equal(t, "s4ql: internal error: arithmetic of the operator -", err.Error())
+			is.Equal(t, expr.Value{}, v)
+		}
+	})
+
 	t.Run("should give an internal error for the zero Bound", func(t *testing.T) {
 		_, err := expr.Bound{}.Eval(zeros)
 		is.True(t, errors.Is(err, expr.ErrInternal), err)
