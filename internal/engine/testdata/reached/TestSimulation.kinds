@@ -164,27 +164,27 @@
 2	statements with subqueries refused in a transaction whose values are checked against SQLite's
 # The generated checks of arithmetic, of 2026-11-25: a third of the total that day of the kinds of
 # arithmeticKinds and of the events of run.arithmetic that a run reaches three times.
-2	deletes with arithmetic that changed rows in a transaction
+3	deletes with arithmetic that changed rows in a transaction
 2	deletes with arithmetic that changed rows of their own
-12	deletes with arithmetic that succeeded in a transaction
-6	deletes with arithmetic that succeeded of their own
-34	evaluation errors that SQLite's result of their operator justifies
-61	selects with arithmetic that succeeded in a transaction
-36	selects with arithmetic that succeeded of their own
-547	statements with arithmetic
-78	statements with arithmetic refused by the rules of its types
-49	statements with arithmetic refused for its types in a transaction
-28	statements with arithmetic refused for its types of their own
-69	statements with arithmetic refused or failed in a transaction, checked by the rules
+13	deletes with arithmetic that succeeded in a transaction
+9	deletes with arithmetic that succeeded of their own
+33	evaluation errors that SQLite's result of their operator justifies
+65	selects with arithmetic that succeeded in a transaction
+35	selects with arithmetic that succeeded of their own
+553	statements with arithmetic
+81	statements with arithmetic refused by the rules of its types
+50	statements with arithmetic refused for its types in a transaction
+31	statements with arithmetic refused for its types of their own
+70	statements with arithmetic refused or failed in a transaction, checked by the rules
 8	statements with arithmetic that failed: s4ql: division by zero in a transaction
 6	statements with arithmetic that failed: s4ql: division by zero of their own
 5	statements with arithmetic that failed: s4ql: integer overflow in a transaction
 5	statements with arithmetic that failed: s4ql: integer overflow of their own
-5	statements with arithmetic that failed: s4ql: real result that is not finite in a transaction
+6	statements with arithmetic that failed: s4ql: real result that is not finite in a transaction
 2	statements with arithmetic that failed: s4ql: real result that is not finite of their own
 184	statements with arithmetic with SQLite's error
-13	updates with arithmetic that changed rows in a transaction
-7	updates with arithmetic that changed rows of their own
+12	updates with arithmetic that changed rows in a transaction
+4	updates with arithmetic that changed rows of their own
 36	updates with arithmetic that succeeded in a transaction
-26	updates with arithmetic that succeeded of their own
-25	writes with arithmetic in the log
+23	updates with arithmetic that succeeded of their own
+26	writes with arithmetic in the log

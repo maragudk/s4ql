@@ -684,69 +684,70 @@
 # arithmetic that a run reaches three times, by where an expression is, whether it has a column,
 # and the outcome, and of the cases of pair.reachOfArithmetic.
 35	reached: arithmetic of a select whose due errors the model's access decides
-7	reached: arithmetic with a column in SET of a update, NOT NULL constraint failed
+6	reached: arithmetic with a column in SET of a update, NOT NULL constraint failed
 3	reached: arithmetic with a column in SET of a update, UNIQUE constraint failed
 1	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: division by zero
-10	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: integer overflow
+9	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: integer overflow
 1	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: real result that is not finite
 6	reached: arithmetic with a column in SET of a update, no such column
 12	reached: arithmetic with a column in SET of a update, no such table
-29	reached: arithmetic with a column in SET of a update, not supported
-74	reached: arithmetic with a column in SET of a update, ok
+32	reached: arithmetic with a column in SET of a update, not supported
+73	reached: arithmetic with a column in SET of a update, ok
 1	reached: arithmetic with a column in SET of a update, string or blob too big
 2	reached: arithmetic with a column in SET of a update, wrong number of arguments
+1	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: division by zero
 2	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: integer overflow
-11	reached: arithmetic with a column in WHERE of a delete, no such table
-15	reached: arithmetic with a column in WHERE of a delete, not supported
-18	reached: arithmetic with a column in WHERE of a delete, ok
-1	reached: arithmetic with a column in WHERE of a delete, string or blob too big
-13	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: division by zero
-5	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: integer overflow
+1	reached: arithmetic with a column in WHERE of a delete, no such column
+12	reached: arithmetic with a column in WHERE of a delete, no such table
+18	reached: arithmetic with a column in WHERE of a delete, not supported
+19	reached: arithmetic with a column in WHERE of a delete, ok
+2	reached: arithmetic with a column in WHERE of a select, 1/1: row value misused
+14	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: division by zero
+6	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: integer overflow
 4	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: real result that is not finite
-8	reached: arithmetic with a column in WHERE of a select, no such column
-24	reached: arithmetic with a column in WHERE of a select, no such table
-45	reached: arithmetic with a column in WHERE of a select, not supported
-70	reached: arithmetic with a column in WHERE of a select, ok
-1	reached: arithmetic with a column in WHERE of a select, string or blob too big
+9	reached: arithmetic with a column in WHERE of a select, no such column
+25	reached: arithmetic with a column in WHERE of a select, no such table
+47	reached: arithmetic with a column in WHERE of a select, not supported
+77	reached: arithmetic with a column in WHERE of a select, ok
+2	reached: arithmetic with a column in WHERE of a select, string or blob too big
 5	reached: arithmetic with a column in WHERE of a select, wrong number of arguments
 1	reached: arithmetic with a column in WHERE of a update, UNIQUE constraint failed
 4	reached: arithmetic with a column in WHERE of a update, an evaluation error: s4ql: integer overflow
 1	reached: arithmetic with a column in WHERE of a update, an evaluation error: s4ql: real result that is not finite
-10	reached: arithmetic with a column in WHERE of a update, no such column
-7	reached: arithmetic with a column in WHERE of a update, no such table
-31	reached: arithmetic with a column in WHERE of a update, not supported
-24	reached: arithmetic with a column in WHERE of a update, ok
+9	reached: arithmetic with a column in WHERE of a update, no such column
+8	reached: arithmetic with a column in WHERE of a update, no such table
+35	reached: arithmetic with a column in WHERE of a update, not supported
+30	reached: arithmetic with a column in WHERE of a update, ok
 1	reached: arithmetic with a column in WHERE of a update, string or blob too big
 1	reached: arithmetic with a column in WHERE of a update, wrong number of arguments
 1	reached: arithmetic with a column in a subquery of a delete, an evaluation error: s4ql: real result that is not finite
-3	reached: arithmetic with a column in a subquery of a delete, ok
-1	reached: arithmetic with a column in a subquery of a select, no such table
-2	reached: arithmetic with a column in a subquery of a select, not supported
+4	reached: arithmetic with a column in a subquery of a delete, not supported
+1	reached: arithmetic with a column in a subquery of a delete, ok
+4	reached: arithmetic with a column in a subquery of a select, not supported
 3	reached: arithmetic with a column in a subquery of a select, ok
-3	reached: arithmetic with a column in a subquery of a update, not supported
-2	reached: arithmetic with a column in a subquery of a update, ok
+4	reached: arithmetic with a column in a subquery of a update, not supported
+3	reached: arithmetic with a column in a subquery of a update, ok
 1	reached: arithmetic without a column in SET of a update, NOT NULL constraint failed
 3	reached: arithmetic without a column in SET of a update, an evaluation error: s4ql: division by zero
 4	reached: arithmetic without a column in SET of a update, an evaluation error: s4ql: integer overflow
 1	reached: arithmetic without a column in SET of a update, an evaluation error: s4ql: real result that is not finite
-1	reached: arithmetic without a column in SET of a update, no such column
+2	reached: arithmetic without a column in SET of a update, no such column
 2	reached: arithmetic without a column in SET of a update, no such table
 12	reached: arithmetic without a column in SET of a update, not supported
-8	reached: arithmetic without a column in SET of a update, ok
+7	reached: arithmetic without a column in SET of a update, ok
 1	reached: arithmetic without a column in SET of a update, string or blob too big
 4	reached: arithmetic without a column in WHERE of a delete, an evaluation error: s4ql: integer overflow
 1	reached: arithmetic without a column in WHERE of a delete, an evaluation error: s4ql: real result that is not finite
 6	reached: arithmetic without a column in WHERE of a delete, no such table
-6	reached: arithmetic without a column in WHERE of a delete, not supported
-15	reached: arithmetic without a column in WHERE of a delete, ok
+7	reached: arithmetic without a column in WHERE of a delete, not supported
+14	reached: arithmetic without a column in WHERE of a delete, ok
 1	reached: arithmetic without a column in WHERE of a delete, wrong number of arguments
-1	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: division by zero
-6	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: integer overflow
+5	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: integer overflow
 2	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: real result that is not finite
 2	reached: arithmetic without a column in WHERE of a select, no such column
 13	reached: arithmetic without a column in WHERE of a select, no such table
-20	reached: arithmetic without a column in WHERE of a select, not supported
-62	reached: arithmetic without a column in WHERE of a select, ok
+22	reached: arithmetic without a column in WHERE of a select, not supported
+60	reached: arithmetic without a column in WHERE of a select, ok
 1	reached: arithmetic without a column in WHERE of a select, wrong number of arguments
 2	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: division by zero
 4	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: integer overflow
@@ -754,53 +755,55 @@
 5	reached: arithmetic without a column in WHERE of a update, no such column
 5	reached: arithmetic without a column in WHERE of a update, no such table
 13	reached: arithmetic without a column in WHERE of a update, not supported
-15	reached: arithmetic without a column in WHERE of a update, ok
-1	reached: arithmetic without a column in a subquery of a delete, not supported
+14	reached: arithmetic without a column in WHERE of a update, ok
+4	reached: arithmetic without a column in a subquery of a delete, not supported
+1	reached: arithmetic without a column in a subquery of a delete, ok
 1	reached: arithmetic without a column in a subquery of a select, no such table
-1	reached: arithmetic without a column in a subquery of a select, not supported
-4	reached: arithmetic without a column in a subquery of a select, ok
+4	reached: arithmetic without a column in a subquery of a select, not supported
+3	reached: arithmetic without a column in a subquery of a select, ok
 1	reached: arithmetic without a column in a subquery of a update, no such column
 5	reached: arithmetic without a column in a subquery of a update, not supported
-3	reached: arithmetic without a column in a subquery of a update, ok
+4	reached: arithmetic without a column in a subquery of a update, ok
 18	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
 5	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
 14	reached: arithmetic: constant expression that serves a bound of the key
 12	reached: arithmetic: constant expression that serves a get of one key
 2	reached: arithmetic: constant expression that serves the pins of an index
 9	reached: arithmetic: expression compared with a plain value, ok
-12	reached: arithmetic: expression compared with a subquery, ok
-10	reached: arithmetic: refused a plain value compared with an expression
-7	reached: arithmetic: refused a subquery compared with an expression
-5	reached: arithmetic: refused an expression of type integer for a REAL column
-13	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
+30	reached: arithmetic: expression compared with a subquery, ok
+12	reached: arithmetic: refused a plain value compared with an expression
+21	reached: arithmetic: refused a subquery compared with an expression
+4	reached: arithmetic: refused an expression of type integer for a REAL column
+15	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
 3	reached: arithmetic: refused an expression of type null for a TEXT or BLOB column
 3	reached: arithmetic: s4ql: division by zero in SET
 3	reached: arithmetic: s4ql: division by zero in SET of an expression without a column
-17	reached: arithmetic: s4ql: division by zero in WHERE
-14	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
+18	reached: arithmetic: s4ql: division by zero in WHERE
+15	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
 2	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
 7	reached: arithmetic: s4ql: integer overflow in SET
 2	reached: arithmetic: s4ql: integer overflow in SET of an expression with a column
 4	reached: arithmetic: s4ql: integer overflow in SET of an expression without a column
-16	reached: arithmetic: s4ql: integer overflow in WHERE
+15	reached: arithmetic: s4ql: integer overflow in WHERE
 6	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
-10	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
+9	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
 1	reached: arithmetic: s4ql: real result that is not finite in SET
+1	reached: arithmetic: s4ql: real result that is not finite in SET of an expression without a column
 7	reached: arithmetic: s4ql: real result that is not finite in WHERE
 4	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression with a column
 3	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression without a column
 18	reached: arithmetic: select with LIMIT that failed on a row
-5	reached: arithmetic: select with LIMIT that gave rows where a row that it did not read fails
+4	reached: arithmetic: select with LIMIT that gave rows where a row that it did not read fails
 2	reached: arithmetic: update that computes its key from its row that changed rows
 3	reached: arithmetic: update that copies another column alone that changed rows
-16	reached: arithmetic: update that sets a column from itself that changed rows
-10	reached: arithmetic: update whose SET reads a column that it sets before that changed rows
-89	reached: select with arithmetic read by the access that the model chooses
+15	reached: arithmetic: update that sets a column from itself that changed rows
+9	reached: arithmetic: update whose SET reads a column that it sets before that changed rows
+90	reached: select with arithmetic read by the access that the model chooses
 # Left out by the fixes after the review of the workload of 2026-11-25, which no run reaches three
-# times since, so that none can be required: "arithmetic with a column in WHERE of a delete, an
-# evaluation error: s4ql: division by zero"; "arithmetic with a column in a subquery of a delete, no
-# such table"; "arithmetic without a column in SET of a update, UNIQUE constraint failed";
-# "arithmetic without a column in WHERE of a select, string or blob too big"; "arithmetic without a
-# column in a subquery of a select, no such column"; "arithmetic: constant expression that serves a
-# bound of an index"; "arithmetic: s4ql: division by zero in SET of an expression with a column";
-# "evaluation error by one path and not by another".
+# times since, so that none can be required: "arithmetic with a column in a subquery of a delete, no
+# such table"; "arithmetic with a column in a subquery of a select, no such table"; "arithmetic
+# without a column in SET of a update, UNIQUE constraint failed"; "arithmetic without a column in
+# WHERE of a select, an evaluation error: s4ql: division by zero"; "arithmetic without a column in
+# WHERE of a select, string or blob too big"; "arithmetic without a column in a subquery of a
+# select, no such column". "evaluation error by one path and not by another" is required by
+# TestConn_differential since.

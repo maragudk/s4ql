@@ -2671,10 +2671,12 @@ func (q *Sequence) arithmeticInner() {
 }
 
 // arithmeticWhere gives the conditions cs of a WHERE of table, of a select, an update, a delete, or a
-// subquery, with one comparison in [Profile.Arithmetic] that is not a test for NULL made one of
-// arithmetic: as [Sequence.arithmeticCondition] draws it, or, for one whose value is a subquery, with
-// the expression of [Sequence.testedOf] in place of its column, which the subquery is compared with.
-// The others are as they were.
+// subquery, with one comparison in [Profile.Arithmetic] that is not a test for NULL and has no
+// subquery as its value made one of arithmetic, as [Sequence.arithmeticCondition] draws it. One
+// comparison in half of [Profile.Arithmetic] whose value is a subquery tests in place of its column
+// the expression of [Sequence.testedOf], of another class one time in two, which the subquery is then
+// compared with; of a TEXT or a BLOB column only as a fault of the area, since s4ql refuses
+// arithmetic there. The others are as they were.
 func (q *Sequence) arithmeticWhere(table stmt.Name, cs []stmt.Condition) []stmt.Condition {
 	r, p := q.rArithmetic, q.profile
 	if len(cs) == 0 {
@@ -2686,15 +2688,21 @@ func (q *Sequence) arithmeticWhere(table stmt.Name, cs []stmt.Condition) []stmt.
 		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || c.Expression.Present() || c.Value.Expression.Present() {
 			continue
 		}
-		if r.IntN(p.Arithmetic) != 0 {
-			continue
-		}
 		if c.Value.Subquery > 0 {
+			if r.IntN(max(1, p.Arithmetic/2)) != 0 {
+				continue
+			}
 			column := columnOfShape(shape, nameOf(c.Column.Raw, 0).Fold())
-			cs[i].Column, cs[i].Expression = stmt.Name{}, q.testedOf(r, shape, c.Column.Raw, classOf(column, nil))
+			class := classOf(column, nil)
+			if (class == classText || class == classBlob) && !q.fault(r, areaArithmetic, 6) {
+				continue
+			}
+			cs[i].Column, cs[i].Expression = stmt.Name{}, q.testedOf(r, shape, c.Column.Raw, class, 2)
 			continue
 		}
-		cs[i] = q.arithmeticCondition(r, shape, c)
+		if r.IntN(p.Arithmetic) == 0 {
+			cs[i] = q.arithmeticCondition(r, shape, c)
+		}
 	}
 	return cs
 }
@@ -2764,7 +2772,7 @@ func (q *Sequence) arithmeticCondition(r Rand, shape []stmt.Column, c stmt.Condi
 		c.Column, c.Expression = stmt.Name{}, operatorNode(stmt.ExprMultiply, columnNode(raw), valueNode(q.small(r, class)))
 		c.Value, c.ValueFirst = stmt.Term{Expression: operatorNode(stmt.ExprMultiply, columnNode(q.otherColumn(r, shape, class)), valueNode(q.small(r, class)))}, false
 	case n < 13:
-		c.Column, c.Expression = stmt.Name{}, q.testedOf(r, shape, raw, class)
+		c.Column, c.Expression = stmt.Name{}, q.testedOf(r, shape, raw, class, 3)
 		c.Value = stmt.Term{Value: q.plainOf(r, v, class)}
 	default:
 		if q.fault(r, areaArithmetic, 2) {
@@ -2788,14 +2796,14 @@ func otherClass(class string) string {
 // tests against a plain value or a subquery: an expression that keeps the value of the column, `raw +
 // 0`, `raw - 0`, `1 * raw`, or `raw / 1`, with numbers of the class; one time in six `raw + ?` with
 // NULL, of the class of NULL, which meets every class of numbers; and, as a fault of the area one
-// time in three, an expression of another class of numbers, `raw + 0.0` for an integer, and for a
+// time in wrong, an expression of another class of numbers, `raw + 0.0` for an integer, and for a
 // real an integer column of the shape times 1, where the shape has one.
-func (q *Sequence) testedOf(r Rand, shape []stmt.Column, raw, class string) stmt.Expression {
+func (q *Sequence) testedOf(r Rand, shape []stmt.Column, raw, class string, wrong int) stmt.Expression {
 	zero := stmt.Value(stmt.Integer(0))
 	if class == classReal {
 		zero = stmt.Real(0)
 	}
-	if q.fault(r, areaArithmetic, 3) {
+	if q.fault(r, areaArithmetic, wrong) {
 		if class != classReal {
 			return operatorNode(stmt.ExprAdd, columnNode(raw), valueNode(stmt.Real(0)))
 		}

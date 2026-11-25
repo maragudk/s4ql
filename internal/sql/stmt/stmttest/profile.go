@@ -216,7 +216,7 @@ var (
 	// [ArithmeticRefused] are those that the statement pass refuses. Its test begins transactions more
 	// often, where a statement that fails leaves the transaction usable.
 	Arithmetic = &Profile{Name: "arithmetic", Faults: []string{areaArithmetic}, Aim: 3, Weights: weights(3, 12, 12, 1, 11, 4, 4, 1), Where: 3, Indexes: 2, Columns: 3,
-		Parameters: 3, Transactions: 3, Order: 1, Limit: 2, Keys: 2, Returning: 4, ByKey: 4, NewKey: 6, EveryRow: 3, Subquery: 6, Arithmetic: 2}
+		Parameters: 3, Transactions: 3, Order: 1, Limit: 2, Keys: 2, Returning: 4, ByKey: 4, NewKey: 6, EveryRow: 3, Subquery: 5, Arithmetic: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].

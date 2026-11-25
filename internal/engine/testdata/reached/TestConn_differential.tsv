@@ -6,14 +6,15 @@
 mixed	7	2	delete attempt to write a readonly database
 mixed	103	=	excused: a value of another type than its column, checked against s4ql's rule
 mixed	2	=	excused: already exists after the start of a table, accepted
-mixed	58	=	excused: an argument that no column holds, checked against s4ql's rule
-mixed	17	=	excused: arithmetic refused by the rule of exact types
+mixed	59	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	15	=	excused: arithmetic refused by the rule of exact types
 mixed	4	=	excused: evaluation error that SQLite's result of its operator justifies
-mixed	123	=	excused: the wrong number of arguments, checked against s4ql's rule
-mixed	8	2	reached: LIMIT by an argument ok
+mixed	122	=	excused: the wrong number of arguments, checked against s4ql's rule
+mixed	9	3	reached: LIMIT by an argument ok
 mixed	3	1	reached: NULL given for a column with a default, which takes NULL ok in a write transaction
-mixed	35	11	reached: WHERE run by every path on a table with an index
+mixed	36	12	reached: WHERE run by every path on a table with an index
 mixed	3	1	reached: arithmetic: constant expression that serves a get of one key
+mixed	3	1	reached: arithmetic: expression compared with a subquery, ok
 mixed	3	1	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
 mixed	325	108	reached: changed both ways
 mixed	75	25	reached: changed both ways in a read-only transaction
@@ -40,19 +41,19 @@ mixed	7	2	reached: insert that leaves out a column with a default that an index 
 mixed	3	1	reached: insert that leaves out the key with a default ok in a write transaction
 mixed	16	5	reached: insert with RETURNING through Query attempt to write a readonly database in a read-only transaction
 mixed	10	3	reached: insert with RETURNING through Query ok in a write transaction
-mixed	10	3	reached: path that delivers the order
-mixed	34	11	reached: path that sorts
+mixed	11	3	reached: path that delivers the order
+mixed	36	12	reached: path that sorts
 mixed	215	71	reached: read both ways
 mixed	50	16	reached: read both ways in a read-only transaction
 mixed	3	1	reached: roll back of a transaction whose statement with RETURNING gave rows
 mixed	3	1	reached: roll back of a transaction whose update or delete changed rows
 mixed	89	29	reached: select read by the access that the model chooses
-mixed	7	2	reached: select with a subquery ok in a write transaction
+mixed	8	2	reached: select with a subquery ok in a write transaction
 mixed	11	3	reached: select with a value on the left ok, no row found in a write transaction
 mixed	8	2	reached: select with arithmetic read by the access that the model chooses
 mixed	9	3	reached: select without ORDER BY whose rows came in the order of the key of its access
 mixed	10	3	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
-mixed	4	1	reached: subquery that the engine did not compute, of an update or a delete
+mixed	5	1	reached: subquery that the engine did not compute, of an update or a delete
 mixed	6	2	reached: subquery whose value was that of its one first row
 mixed	4	1	reached: update with RETURNING through Query ok in a write transaction
 mixed	6	2	reached: update with a value on the left a value of another type in a write transaction
@@ -318,35 +319,35 @@ subquery	7	2	reached: update with a value on the left a value of another type in
 subquery	3	1	reached: update with a value on the left ok, rows changed in a write transaction
 subquery	11	3	update attempt to write a readonly database
 subquery	32	10	update with a parameter attempt to write a readonly database
-arithmetic	10	3	delete attempt to write a readonly database
-arithmetic	46	=	excused: a value of another type than its column, checked against s4ql's rule
-arithmetic	140	=	excused: arithmetic refused by the rule of exact types
-arithmetic	78	=	excused: evaluation error that SQLite's result of its operator justifies
-arithmetic	21	7	reached: LIMIT by an argument ok
+arithmetic	9	3	delete attempt to write a readonly database
+arithmetic	47	=	excused: a value of another type than its column, checked against s4ql's rule
+arithmetic	164	=	excused: arithmetic refused by the rule of exact types
+arithmetic	75	=	excused: evaluation error that SQLite's result of its operator justifies
+arithmetic	20	6	reached: LIMIT by an argument ok
 arithmetic	7	2	reached: LIMIT that cuts
 arithmetic	4	1	reached: ORDER BY that gives rows in a write transaction after a change of rows
-arithmetic	105	35	reached: WHERE run by every path on a table with an index
-arithmetic	23	7	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
-arithmetic	11	3	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
+arithmetic	96	32	reached: WHERE run by every path on a table with an index
+arithmetic	22	7	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
+arithmetic	10	3	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
 arithmetic	3	1	reached: arithmetic: constant expression that serves a bound of an index
 arithmetic	12	4	reached: arithmetic: constant expression that serves a bound of the key
 arithmetic	12	4	reached: arithmetic: constant expression that serves a get of one key
 arithmetic	3	1	reached: arithmetic: constant expression that serves the pins of an index
-arithmetic	46	15	reached: arithmetic: evaluation error in a write transaction
-arithmetic	22	7	reached: arithmetic: expression compared with a plain value, ok
-arithmetic	25	8	reached: arithmetic: expression compared with a subquery, ok
-arithmetic	16	5	reached: arithmetic: refused a plain value compared with an expression
-arithmetic	5	1	reached: arithmetic: refused a subquery compared with an expression
-arithmetic	5	1	reached: arithmetic: refused an expression of type integer for a REAL column
-arithmetic	22	7	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
+arithmetic	45	15	reached: arithmetic: evaluation error in a write transaction
+arithmetic	20	6	reached: arithmetic: expression compared with a plain value, ok
+arithmetic	45	15	reached: arithmetic: expression compared with a subquery, ok
+arithmetic	14	4	reached: arithmetic: refused a plain value compared with an expression
+arithmetic	37	12	reached: arithmetic: refused a subquery compared with an expression
+arithmetic	6	2	reached: arithmetic: refused an expression of type integer for a REAL column
+arithmetic	24	8	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
 arithmetic	5	1	reached: arithmetic: refused an expression of type null for a TEXT or BLOB column
 arithmetic	4	1	reached: arithmetic: s4ql: division by zero in SET
 arithmetic	3	1	reached: arithmetic: s4ql: division by zero in SET of an expression with a column
 arithmetic	27	9	reached: arithmetic: s4ql: division by zero in WHERE
-arithmetic	18	6	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
-arithmetic	9	3	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
-arithmetic	13	4	reached: arithmetic: s4ql: integer overflow in SET
-arithmetic	7	2	reached: arithmetic: s4ql: integer overflow in SET of an expression with a column
+arithmetic	19	6	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
+arithmetic	8	2	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
+arithmetic	11	3	reached: arithmetic: s4ql: integer overflow in SET
+arithmetic	5	1	reached: arithmetic: s4ql: integer overflow in SET of an expression with a column
 arithmetic	6	2	reached: arithmetic: s4ql: integer overflow in SET of an expression without a column
 arithmetic	13	4	reached: arithmetic: s4ql: integer overflow in WHERE
 arithmetic	4	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
@@ -357,44 +358,44 @@ arithmetic	3	1	reached: arithmetic: s4ql: real result that is not finite in WHER
 arithmetic	26	8	reached: arithmetic: select with LIMIT that failed on a row
 arithmetic	5	1	reached: arithmetic: select with LIMIT that gave rows where a row that it did not read fails
 arithmetic	4	1	reached: arithmetic: update that computes its key from its row that changed rows
-arithmetic	8	2	reached: arithmetic: update that copies another column alone that changed rows
-arithmetic	23	7	reached: arithmetic: update that sets a column from itself that changed rows
+arithmetic	7	2	reached: arithmetic: update that copies another column alone that changed rows
+arithmetic	24	8	reached: arithmetic: update that sets a column from itself that changed rows
 arithmetic	14	4	reached: arithmetic: update whose SET reads a column that it sets before that changed rows
-arithmetic	508	169	reached: changed both ways
-arithmetic	124	41	reached: changed both ways in a read-only transaction
+arithmetic	513	171	reached: changed both ways
+arithmetic	127	42	reached: changed both ways in a read-only transaction
 arithmetic	11	3	reached: chosen every row, sorted
 arithmetic	30	10	reached: commit of a transaction whose statement with RETURNING gave rows
-arithmetic	39	13	reached: commit of a transaction whose update or delete changed rows
+arithmetic	40	13	reached: commit of a transaction whose update or delete changed rows
 arithmetic	31	10	reached: commit of a transaction with a create index or a drop index
-arithmetic	19	6	reached: commit of a transaction with an evaluation error
+arithmetic	18	6	reached: commit of a transaction with an evaluation error
 arithmetic	19	6	reached: create index attempt to write a readonly database
-arithmetic	4	1	reached: delete with RETURNING through Query attempt to write a readonly database in a read-only transaction
+arithmetic	3	1	reached: delete with RETURNING through Query attempt to write a readonly database in a read-only transaction
 arithmetic	9	3	reached: delete with RETURNING through Query ok in a write transaction
 arithmetic	3	1	reached: delete with RETURNING whose rows came in the order of the key
 arithmetic	4	1	reached: drop index attempt to write a readonly database
+arithmetic	4	1	reached: evaluation error by one path and not by another
 arithmetic	27	9	reached: insert with RETURNING through Query attempt to write a readonly database in a read-only transaction
 arithmetic	41	13	reached: insert with RETURNING through Query ok in a write transaction
 arithmetic	23	7	reached: path that delivers the order
-arithmetic	98	32	reached: path that sorts
-arithmetic	407	135	reached: read both ways
+arithmetic	92	30	reached: path that sorts
+arithmetic	409	136	reached: read both ways
 arithmetic	109	36	reached: read both ways in a read-only transaction
 arithmetic	9	3	reached: roll back of a transaction whose statement with RETURNING gave rows
 arithmetic	11	3	reached: roll back of a transaction whose update or delete changed rows
 arithmetic	11	3	reached: roll back of a transaction with a create index or a drop index
 arithmetic	8	2	reached: roll back of a transaction with an evaluation error
-arithmetic	122	40	reached: select read by the access that the model chooses
-arithmetic	3	1	reached: select with a subquery ok in a read-only transaction
+arithmetic	117	39	reached: select read by the access that the model chooses
 arithmetic	5	1	reached: select with a subquery ok in a write transaction
-arithmetic	117	39	reached: select with arithmetic read by the access that the model chooses
-arithmetic	11	3	reached: select without ORDER BY whose rows came in the order of the key of its access
-arithmetic	9	3	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
-arithmetic	33	11	reached: statement that succeeded in a write transaction after an evaluation error in it
-arithmetic	5	1	reached: subquery that the engine did not compute, of an update or a delete
-arithmetic	17	5	reached: subquery whose value was that of its one first row
+arithmetic	116	38	reached: select with arithmetic read by the access that the model chooses
+arithmetic	9	3	reached: select without ORDER BY whose rows came in the order of the key of its access
+arithmetic	11	3	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+arithmetic	32	10	reached: statement that succeeded in a write transaction after an evaluation error in it
+arithmetic	3	1	reached: subquery that the engine did not compute, of an update or a delete
+arithmetic	15	5	reached: subquery whose value was that of its one first row
 arithmetic	8	2	reached: update with RETURNING through Query attempt to write a readonly database in a read-only transaction
-arithmetic	13	4	reached: update with RETURNING through Query ok in a write transaction
-arithmetic	3	1	reached: update with RETURNING whose rows came in the order of the key
-arithmetic	3	1	reached: update with RETURNING whose rows came in the reverse of the order of the key
-arithmetic	6	2	reached: update with a subquery ok in a write transaction
-arithmetic	21	7	update attempt to write a readonly database
-arithmetic	48	16	update with a parameter attempt to write a readonly database
+arithmetic	12	4	reached: update with RETURNING through Query ok in a write transaction
+arithmetic	4	1	reached: update with RETURNING whose rows came in the order of the key
+arithmetic	4	1	reached: update with a subquery attempt to write a readonly database in a read-only transaction
+arithmetic	4	1	reached: update with a subquery ok in a write transaction
+arithmetic	20	6	update attempt to write a readonly database
+arithmetic	49	16	update with a parameter attempt to write a readonly database

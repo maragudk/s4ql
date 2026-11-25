@@ -99,26 +99,26 @@
 # The generated checks of arithmetic, of 2026-11-25: a third of the total that day of the cases of
 # pair.reachOfArithmetic, and of a write transaction that stays usable after an evaluation error.
 7	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
-4	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
+3	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
 1	reached: arithmetic: constant expression that serves a bound of an index
 4	reached: arithmetic: constant expression that serves a bound of the key
 5	reached: arithmetic: constant expression that serves a get of one key
 1	reached: arithmetic: constant expression that serves the pins of an index
 15	reached: arithmetic: evaluation error in a write transaction
-7	reached: arithmetic: expression compared with a plain value, ok
-8	reached: arithmetic: expression compared with a subquery, ok
+6	reached: arithmetic: expression compared with a plain value, ok
+16	reached: arithmetic: expression compared with a subquery, ok
 5	reached: arithmetic: refused a plain value compared with an expression
-2	reached: arithmetic: refused a subquery compared with an expression
-1	reached: arithmetic: refused an expression of type integer for a REAL column
-8	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
+12	reached: arithmetic: refused a subquery compared with an expression
+2	reached: arithmetic: refused an expression of type integer for a REAL column
+9	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
 1	reached: arithmetic: refused an expression of type null for a TEXT or BLOB column
 1	reached: arithmetic: s4ql: division by zero in SET
 1	reached: arithmetic: s4ql: division by zero in SET of an expression with a column
 9	reached: arithmetic: s4ql: division by zero in WHERE
 6	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
-3	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
-4	reached: arithmetic: s4ql: integer overflow in SET
-2	reached: arithmetic: s4ql: integer overflow in SET of an expression with a column
+2	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
+3	reached: arithmetic: s4ql: integer overflow in SET
+1	reached: arithmetic: s4ql: integer overflow in SET of an expression with a column
 2	reached: arithmetic: s4ql: integer overflow in SET of an expression without a column
 5	reached: arithmetic: s4ql: integer overflow in WHERE
 1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
@@ -136,6 +136,6 @@
 3	reached: roll back of a transaction with an evaluation error
 41	reached: select with arithmetic read by the access that the model chooses
 11	reached: statement that succeeded in a write transaction after an evaluation error in it
-# Left out by the fixes after the review of the workload of 2026-11-25, which no run reaches three
-# times since, so that none can be required: "arithmetic: s4ql: real result that is not finite in
-# SET"; "arithmetic: s4ql: real result that is not finite in SET of an expression without a column".
+# Required here since the fixes after the review of the workload of 2026-11-25, where
+# TestDifferential no longer reaches it three times in a run: a third of the total that day.
+1	reached: evaluation error by one path and not by another
