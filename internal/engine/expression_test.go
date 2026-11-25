@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -978,4 +979,226 @@ func reachArithmetic(s stmt.Statement, got answer, count func(string)) {
 		constant := map[bool]string{true: "with a column", false: "without a column"}[site.root.HasColumn()]
 		count(fmt.Sprint("arithmetic ", constant, " in ", where, " of a ", kind, ", ", outcome))
 	}
+}
+
+func TestNewPlan_arithmetic(t *testing.T) {
+	t.Run("should plan arithmetic as an Arithmetic, with each binary operator in parentheses, and a condition that tests an expression by it", func(t *testing.T) {
+		for _, c := range []struct{ src, want string }{
+			{"update t set v = v + 1, w = -(? * 2.5) where k = 1 - ? returning *", "update t set v = (v + 1), w = -(?1 * 2.5) returning *\n  filter k = (1 - ?2)\n    scan t\n"},
+			{"select * from t where a * 2 < b * 3 and 4 >= a - -1", "query\n  project *\n    filter (a * 2) < (b * 3) and (a - -1) <= 4\n      scan t\n"},
+			{"delete from t where a = b and k + 1 = (select k from u where x / 2 = ?)", "delete from t\n  filter a = b and (k + 1) = (subquery 1)\n    scan t\n  subquery 1\n    project k\n      filter (x / 2) = ?1\n        scan u\n"},
+			{"update t set a = b", "update t set a = b\n  scan t\n"},
+		} {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err, c.src)
+			is.Equal(t, c.want, engine.Format(engine.NewPlan(s)), c.src)
+		}
+	})
+}
+
+func TestEngine_arithmetic(t *testing.T) {
+	setUp := func(t *testing.T, i *instance) {
+		t.Helper()
+		for _, src := range []string{
+			"create table t (k int primary key, a int, b int, r real, s text, n int not null) strict, without rowid",
+			"create index t_a on t (a)",
+			"insert into t values (1, 10, 0, 1.5, 'x', 1)",
+			"insert into t values (2, 20, 2, 2.5, 'y', 2)",
+			"insert into t values (3, 30, 3, null, null, 3)",
+			"insert into t values (4, null, 4, 4.5, 'z', 4)",
+		} {
+			is.Equal(t, "", i.exec(src).err, src)
+		}
+	}
+	// read runs the query src with args, and gives the access of its event, the rows that it read,
+	// and its rows, or its error.
+	read := func(t *testing.T, i *instance, h *events, src string, args ...any) string {
+		t.Helper()
+		got := i.queryValues(src, values(args))
+		if got.err != "" {
+			return got.message
+		}
+		e, _ := h.last(t)
+		access := e[engine.AttrAccess]
+		if e[engine.AttrIndex] != "" {
+			access += " " + e[engine.AttrIndex]
+		}
+		return fmt.Sprint(access, " reads ", e[engine.AttrRowsRead], " gives ", strings.Join(slices.Sorted(slices.Values(got.rows)), " "))
+	}
+
+	t.Run("should serve the key and the bounds of an index with an expression without a column, as with an argument, and read by neither with one with a column", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		setUp(t, i)
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{"select k from t where k = 1 + 1", nil, "primary_key reads 1 gives 2"},
+			{"select k from t where k = ? * 2", []any{int64(2)}, "primary_key reads 1 gives 4"},
+			{"select k from t where 3 - 1 = k", nil, "primary_key reads 1 gives 2"},
+			{"select k from t where k = 1 + ?", []any{nil}, "none reads 0 gives "},
+			{"select k from t where k > 4 / 2", nil, "primary_key reads 2 gives 3 4"},
+			{"select k from t where a = 5 * 4", nil, "index t_a reads 1 gives 2"},
+			{"select k from t where a >= 10 + 5 and a < 2 * 20", nil, "index t_a reads 2 gives 2 3"},
+			{"select k from t where k + 0 = 2", nil, "full_scan reads 4 gives 2"},
+			{"select k from t where a = k * 10", nil, "full_scan reads 4 gives 1 2 3"},
+			{"select k from t where k = a / 10", nil, "full_scan reads 4 gives 1 2 3"},
+			{"select k from t where k = b", nil, "full_scan reads 4 gives 2 3 4"},
+			{"select k from t where k = 3 and a + 0 = 30", nil, "primary_key reads 1 gives 3"},
+			{"select k from t where a + 0 = 30 and k > 1 + 1", nil, "primary_key reads 2 gives 3"},
+		} {
+			is.Equal(t, c.want, read(t, i, h, c.src, c.args...), c.src)
+		}
+	})
+
+	t.Run("should evaluate the conditions of a row in the order of the text and stop at the first that is not true, and a bound guards every condition", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		setUp(t, i)
+		for _, c := range []struct{ src, want string }{
+			// b is 0 in the row of k = 1.
+			{"select k from t where b <> 0 and a / b > 1", "full_scan reads 4 gives 2 3"},
+			{"select k from t where a / b > 1 and b <> 0", "s4ql: division by zero in / (at offset 22)"},
+			// The key's bound reads no row with b = 0, wherever it stands.
+			{"select k from t where a / b > 1 and k > 1", "primary_key reads 3 gives 2 3"},
+			{"select k from t where a / b > 1 and k = 2", "primary_key reads 1 gives 2"},
+			// An index's bound too.
+			{"select k from t where a / b > 1 and a >= 20", "index t_a reads 2 gives 2 3"},
+			// A NULL does not stop the other side of its comparison.
+			{"select k from t where a + 1 > b / (b - b)", "s4ql: division by zero in / (at offset 30)"},
+		} {
+			is.Equal(t, c.want, read(t, i, h, c.src), c.src)
+		}
+		// By a path that reads every row, the bound does not guard.
+		i.e.SetPath(engine.Path{Full: true})
+		is.Equal(t, "s4ql: division by zero in / (at offset 22)", read(t, i, h, "select k from t where a / b > 1 and k > 1"))
+		i.e.SetPath(engine.Path{})
+	})
+
+	t.Run("should read no row after the last that a LIMIT gives, so the direction decides whether a row that fails is reached", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		setUp(t, i)
+		const src = "select k from t where 10 / (k - 1) > 0 limit 1"
+		i.e.SetPath(engine.Path{Backward: true})
+		is.Equal(t, "full_scan reads 1 gives 4", read(t, i, h, src))
+		i.e.SetPath(engine.Path{Forward: true})
+		is.Equal(t, "s4ql: division by zero in / (at offset 22)", read(t, i, h, src))
+		i.e.SetPath(engine.Path{})
+	})
+
+	t.Run("should compute an expression without a column once, after the checks, also where no row is read, but in a subquery only where the subquery is computed", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		setUp(t, i)
+		maxInt := int64(math.MaxInt64)
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{"select k from t where k = 99 and a = 1 + ?", []any{maxInt}, "s4ql: integer overflow in + (at offset 37)"},
+			{"select k from t where k = 1 + ? limit 0", []any{maxInt}, "s4ql: integer overflow in + (at offset 26)"},
+			{"select k from t where k is null and a = ? * 2", []any{maxInt}, "s4ql: integer overflow in * (at offset 40)"},
+			// The key is never NULL, so the subquery is not computed, nor its expression.
+			{"select k from t where k is null and k = (select k from t where a = ? * 2)", []any{maxInt}, "none reads 0 gives "},
+			{"select k from t where k = (select k from t where a = ? * 2)", []any{maxInt}, "s4ql: integer overflow in * (at offset 53)"},
+			// The names, the lengths, and the types come before.
+			{"select k from t where k = 1 + ? and x = 1", []any{maxInt}, "1/1: no such column: x"},
+			{"select k from t where k = 1 + ? and s = 1", []any{maxInt}, "s4ql: not supported: an integer literal compared with the column t.s of type TEXT"},
+		} {
+			got := i.queryValues(c.src, values(c.args))
+			text := got.message
+			if got.err == "" {
+				text = read(t, i, h, c.src, c.args...)
+			} else if !strings.HasPrefix(text, "s4ql:") {
+				text = got.err
+			}
+			is.Equal(t, c.want, text, c.src)
+		}
+		got := i.execValues("update t set a = 2 * ? where k = 99", values([]any{maxInt}))
+		is.Equal(t, "s4ql: integer overflow in * (at offset 17)", got.message)
+		got = i.execValues("delete from t where k = 99 and a = ? - 1", values([]any{int64(math.MinInt64)}))
+		is.Equal(t, "s4ql: integer overflow in - (at offset 35)", got.message)
+	})
+
+	t.Run("should give SQLite's errors of the names of arithmetic where SQLite gives them, and the refusals of its types after them", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		setUp(t, i)
+		for _, c := range []struct{ src, want string }{
+			{"update t set z = x", "1/1: no such column: x"},
+			{"update t set a = x, z = 1", "1/1: no such column: x"},
+			{"update t set z = 1, a = x", "1/1: no such column: z"},
+			{`update t set a = a + "x"`, `1/1: no such column: "x" - should this be a string literal in single-quotes?`},
+			{"update t set a = x + 1 where y = 1", "1/1: no such column: x"},
+			{"update t set a = 1 where a + x = 1", "1/1: no such column: x"},
+			{"select k from t where x is null and a + y = 1", "1/1: no such column: x"},
+			{"select k from t where k is null and a + y = 1", "1/1: no such column: y"},
+			{"select k from t where y = a + x", "1/1: no such column: y"},
+			{"select k from t where a + x = y", "1/1: no such column: x"},
+			{"select k from t where s + 1 = x", "1/1: no such column: x"},
+			{"select k from t where s + 1 = 1", "not supported: column of type TEXT in arithmetic (at offset 22)"},
+			{"select k from t where k = ? + s", "not supported: column of type TEXT in arithmetic (at offset 30)"},
+			{"select k from t where s = k + 1", "not supported: an expression of type integer compared with the column t.s of type TEXT"},
+			{"select k from t where s = k + ?", "not supported: an expression of type null compared with the column t.s of type TEXT"},
+			{"select k from t where r = k + 1", "not supported: an expression of type integer compared with the column t.r of type REAL"},
+			{"select k from t where k = r * 1", "not supported: an expression of type real compared with the column t.k of type INT"},
+			{"select k from t where k + 0 = 1.5", "not supported: a real literal compared with an expression of type integer"},
+			{"select k from t where k + 0 = 'a'", "not supported: a string literal compared with an expression of type integer"},
+			{"select k from t where k * 1 = r * 1", "not supported: an expression of type real compared with an expression of type integer"},
+			{"select k from t where k = s", "not supported: the column t.s of type TEXT compared with the column t.k of type INT"},
+			{"select k from t where k + 0 = (select s from t)", "not supported: subquery 1, of the column t.s of type TEXT, compared with an expression of type integer"},
+			{"update t set s = k + 1", "not supported: an expression of type integer for the column t.s of type TEXT"},
+			{"update t set a = r + 1", "not supported: an expression of type real for the column t.a of type INT"},
+			{"update t set a = s", "not supported: the column t.s of type TEXT for the column t.a of type INT"},
+			{"update t set a = 1.5, b = b + 1.5", "not supported: a real literal for the column t.a of type INT"},
+			{"update t set b = b + 1.5, a = 1.5", "not supported: a real literal for the column t.a of type INT"},
+		} {
+			args := []any{}
+			if strings.Contains(c.src, "?") {
+				args = []any{nil}
+			}
+			got := i.execValues(c.src, values(args))
+			text := got.err
+			if got.err == "not supported" {
+				text = strings.TrimPrefix(got.message, "s4ql: ")
+			}
+			is.Equal(t, c.want, text, c.src)
+		}
+		got := i.queryValues("select k from t where k + ? = 1", values([]any{"1"}))
+		is.Equal(t, "s4ql: not supported: argument 1 in arithmetic, which is text (at offset 26)", got.message)
+		got = i.queryValues("select k from t where k = 2 + ?", values([]any{nil}))
+		is.Equal(t, "", got.err)
+	})
+
+	t.Run("should set every column from the row as it was, check NOT NULL on each row with a value per row, change nothing where one row fails, and leave the count of changes then", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		setUp(t, i)
+		is.Equal(t, `columns "k INT, a INT, b INT", rows ["1,0,10" "2,2,20" "3,3,30" "4,4,null"]`, i.queryValues("update t set a = b, b = a returning k, a, b", nil).String())
+		is.Equal(t, `columns "k INT, n INT", rows ["1,10" "2,20" "3,30"]`, i.queryValues("update t set n = b where b is not null returning k, n", nil).String())
+		before := i.state()
+		changes := i.changes
+		got := i.execValues("update t set n = b", nil)
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.n", got.err)
+		is.Equal(t, int64(0), i.changes)
+		is.Equal(t, before, i.state())
+		i.changes = changes
+		got = i.execValues("update t set a = a * 4611686018427387904 returning a", nil)
+		is.Equal(t, "s4ql: integer overflow in * (at offset 17)", got.message)
+		is.Equal(t, changes, i.changes)
+		is.Equal(t, before, i.state())
+		e, _ := h.last(t)
+		is.Equal(t, "evaluation_error", e[engine.AttrOutcome])
+		is.Equal(t, "s4ql: integer overflow in * (at offset 17)", e[engine.AttrError])
+		// A transaction goes on after the failure, with what it did before.
+		is.NotError(t, i.c.Begin(t.Context()))
+		is.Equal(t, "", i.execValues("update t set n = n + 1 where k = 1", nil).err)
+		is.Equal(t, evaluationError, i.execValues("update t set a = a / (k - 1)", nil).err)
+		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
+		is.NotError(t, i.c.Commit(t.Context()))
+		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
+	})
 }
