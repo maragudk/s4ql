@@ -2173,7 +2173,10 @@ func (r *run) arithmetic(o *oracle, a *attempt, readOnly bool) string {
 		return ""
 	}
 	ee := a.answer.eval
-	if _, isSelect := s.(*stmt.Select); readOnly && !isSelect || ee == nil {
+	if ee == nil {
+		return fmt.Sprintf("gives %q, which is no evaluation error of the evaluator", a.answer.message)
+	}
+	if _, isSelect := s.(*stmt.Select); readOnly && !isSelect {
 		return fmt.Sprintf("gives %q in a read-only transaction, which computes nothing for a write", a.answer.message)
 	}
 	var computed []stmt.Term
