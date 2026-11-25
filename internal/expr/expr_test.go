@@ -349,6 +349,11 @@ func TestProgram_Bind(t *testing.T) {
 			is.True(t, errors.Is(err, expr.ErrInternal), err)
 		}
 	})
+
+	t.Run("should give an internal error for the zero Program", func(t *testing.T) {
+		_, err := (&expr.Program{}).Bind(nil)
+		is.True(t, errors.Is(err, expr.ErrInternal), err)
+	})
 }
 
 func TestBound_Eval_faults(t *testing.T) {

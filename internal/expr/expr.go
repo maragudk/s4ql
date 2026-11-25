@@ -55,6 +55,7 @@ type Column struct {
 
 // Program of a checked expression, with its columns resolved to their positions in a row, in the
 // form that [Bound.Eval] computes. It is not changed after [Check], so it is safe for concurrent use.
+// The zero Program is not checked, and its [Program.Bind] fails.
 type Program struct {
 	// nodes of the expression, each operator after its operands, so that the last is the root.
 	nodes []node
@@ -264,6 +265,9 @@ type Bound struct {
 // argument before, gives what the arithmetic gives, an error that the result is not finite or a
 // value. An expression without a parameter takes any args, also nil, and allocates nothing.
 func (x *Program) Bind(args []*s4qlpb.Value) (Bound, error) {
+	if len(x.nodes) == 0 {
+		return Bound{}, internalError("a program that is not checked")
+	}
 	if x.typ != 0 {
 		return Bound{x: x, args: args, typ: x.typ}, nil
 	}
