@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -24,7 +25,8 @@ import (
 //
 //   - Debug: a statement that succeeded; one that failed with SQLite's error, which is an answer to
 //     the application and nothing that went wrong; one that is not supported, which includes one
-//     that reads on a connection whose rows of an earlier query are open; a text without a
+//     that reads on a connection whose rows of an earlier query are open; one whose arithmetic
+//     failed with an evaluation error, such as an integer overflow; a text without a
 //     statement; one with another number of arguments than it has parameters; one that the state of
 //     the transaction of its connection does not allow; a commit that is too large; one that the
 //     core refused for lack of a valid lease or because the instance has stopped, which the core
@@ -162,6 +164,9 @@ func outcomeOf(err error) (string, slog.Level) {
 	case errors.Is(err, stmt.ErrNotSupported), errors.Is(err, core.ErrReaderBusy), errors.Is(err, ErrRowsOpen):
 		// A connection runs one read at a time, and a second one is what the caller asked for.
 		return "not_supported", slog.LevelDebug
+	case errors.Is(err, expr.ErrEvaluation):
+		// An arithmetic expression whose value s4ql does not give, an answer to the application.
+		return "evaluation_error", slog.LevelDebug
 	case errors.Is(err, ErrTxOpen), errors.Is(err, ErrNoTx), errors.Is(err, ErrTxDone):
 		// The caller ran something that the transaction of the connection does not allow.
 		return "tx_state", slog.LevelDebug

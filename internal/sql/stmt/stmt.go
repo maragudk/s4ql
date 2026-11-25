@@ -328,7 +328,8 @@ type Term struct {
 	Subquery int
 	// Expression that gives the value, or the zero Expression for a plain value; see
 	// [Expression.Present]. With one, Value is nil, Parameter 0, and Subquery 0. It is an operator,
-	// or, as the value of an [Assignment] only, a column alone, as in `set a = b`.
+	// or, as the value of an [Assignment] or of a [Condition] that tests a column alone, a column
+	// alone, as in `set a = b` and `where a = b`.
 	Expression Expression
 	// Span of the value in the text, its sign included, or of the parameter, or of the subquery from
 	// its opening parenthesis to the end of its closing one, or of the expression with the parentheses
@@ -529,8 +530,9 @@ type OrderColumn struct {
 //
 // The side that the condition tests is the side with a column. Where both sides have one, it is the
 // side that is a column alone, or the left side if neither is, so that Expression is present only
-// where neither side is a column alone. The two sides of a comparison never are both a column alone,
-// and never are both without a column.
+// where neither side is a column alone. Where both sides are a column alone, the condition tests
+// the left one, and its Value is the right one, an [Expression] of [ExprColumn]. The two sides of a
+// comparison never are both without a column.
 type Condition struct {
 	// Column that the condition tests, or the zero Name if Expression is present. Whether the table
 	// has it is not decided here.

@@ -244,6 +244,48 @@ func TestConditionRule(t *testing.T) {
 	}
 }
 
+func TestHasExpression(t *testing.T) {
+	columns := []stmttest.TableColumn{
+		{Name: "a", Type: "TEXT", Nullable: true},
+		{Name: "k", Type: "INT", PrimaryKey: true},
+	}
+	for src, want := range map[string]bool{
+		"select * from t where k = a":                                 true,
+		"select * from t where k + 1 = 2":                             true,
+		"select * from t where 2 = -k":                                true,
+		"select * from t where k = 1 + ?":                             true,
+		"select * from t where k = (select k from t where k * 2 = 2)": true,
+		"update t set k = a":                                          true,
+		"update t set a = 'x' where k - 1 = 0":                        true,
+		"delete from t where k / 2 = 1":                               true,
+		"select * from t where k = 1 and a is null":                   false,
+		"select * from t where k = (select k from t where a = 'x')":   false,
+		"update t set a = 'x' where k = ?":                            false,
+		"delete from t where k = 1":                                   false,
+		"insert into t values ('x', 1)":                               false,
+	} {
+		t.Run(src, func(t *testing.T) {
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.Equal(t, want, stmttest.HasExpression(s))
+			sel, ok := s.(*stmt.Select)
+			if !want || !ok || sel.Subqueries != nil {
+				// The expression of a subquery is in the WHERE of the subquery.
+				return
+			}
+			// The rules give no model for one, and panic, with a message that names it, where a caller
+			// passes one, as a fuzz test of the driver check did with `where v1 = s1`.
+			_, chosen := stmttest.ChosenAccess(columns, nil, sel, []any{int64(1)}[:sel.Parameters()])
+			is.True(t, !chosen)
+			is.Equal(t, "", stmttest.KeyAccess(columns, sel, []any{int64(1)}[:sel.Parameters()]))
+			defer func() {
+				is.True(t, strings.Contains(fmt.Sprint(recover()), "see HasExpression"))
+			}()
+			stmttest.WhereRule("t", columns, sel.Where, []any{int64(1)}[:sel.Parameters()])
+		})
+	}
+}
+
 func TestUpdateRule(t *testing.T) {
 	// The table t (a text, k int primary key, b real not null, c blob), as SQLite has it.
 	columns := []stmttest.TableColumn{

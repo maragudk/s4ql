@@ -8,6 +8,14 @@
 # the colon if it failed; "op with null" one with a NULL operand; "- of ..." a negation; "case: ..."
 # the outcome of a whole case. A sum or a difference of an integer and a real cannot be infinite,
 # nor a real divided by an integer, so those kinds are not here.
+#
+# The edges at the end: "x op y: exactly the largest integer" or "... smallest integer" is an
+# integer result that is that bound; "x op y: subnormal, not zero" a real result below the
+# smallest normal real that is not zero; "the smallest integer / a negative integer other than -1"
+# a quotient of the smallest integer that fits; and "an error on the right of null" an operator
+# whose left operand is NULL and whose right one fails, where SQLite gives NULL. A quotient that is
+# exactly the largest integer and a real divided by an integer that is subnormal are too rare in
+# the seeds to require. They start from a third of the totals on 2026-11-25, after the review.
 822	- of integer
 174	- of integer: integer overflow
 218	- of null
@@ -65,3 +73,18 @@
 562	real + integer
 1328	real + real
 66	real + real: real result that is not finite
+156	an error on the right of null
+59	the smallest integer / a negative integer other than -1
+16	integer * integer: exactly the largest integer
+47	integer * integer: exactly the smallest integer
+42	integer + integer: exactly the largest integer
+28	integer + integer: exactly the smallest integer
+32	integer - integer: exactly the largest integer
+27	integer - integer: exactly the smallest integer
+50	integer / integer: exactly the smallest integer
+96	real * real: subnormal, not zero
+19	real / real: subnormal, not zero
+10	real + real: subnormal, not zero
+15	real - real: subnormal, not zero
+10	real * integer: subnormal, not zero
+10	integer * real: subnormal, not zero

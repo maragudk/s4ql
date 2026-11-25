@@ -1269,15 +1269,15 @@ internal/engine/bugs.go changedOneByOne condition: err != nil => false #3
 	The planted bug ownChanges then goes on past an error of the subqueries computed again, which the runs of the planted bugs do not meet; the bug stays, and the tests find it as before.
 internal/engine/bugs.go changedOneByOne remove statement: return int64(len(done)), err => #3
 	As the mutant above: an error of the subqueries computed again, which the runs of the planted bugs do not meet.
-internal/engine/operator.go build.bind condition: b.subs != nil => true
+internal/engine/operator.go build.computeAndReach condition: b.subs != nil => true
 	The planted bug ownChanges then also changes the rows of a statement without a subquery one at a time, which a change of the key can make differ from changeRows: another bug in the same place, and the tests of the planted bugs find ownChanges by the statements with a subquery.
-internal/engine/operator.go build.bind condition: err != nil => true #5
+internal/engine/operator.go build.computeAndReach condition: err != nil => true #3
 	The planted bug ownChanges then computes the subqueries again but keeps the access of their first values, another bug in the same place, which the tests of the planted bugs find as they find ownChanges.
-internal/engine/operator.go build.bind operator: err != nil => err == nil #5
+internal/engine/operator.go build.computeAndReach operator: err != nil => err == nil #3
 	As the mutant above where the subqueries are computed again without an error, which is so in every run of the planted bugs.
-internal/engine/operator.go build.bind condition: err != nil => false #5
+internal/engine/operator.go build.computeAndReach condition: err != nil => false #3
 	The planted bug ownChanges then goes on past an error of the subqueries computed again, which the runs of the planted bugs do not meet.
-internal/engine/operator.go build.bind remove statement: return err =>
+internal/engine/operator.go build.computeAndReach remove statement: return err =>
 	As the mutant above: an error of the subqueries computed again, which the runs of the planted bugs do not meet.
 internal/engine/subquery.go build.compute condition: b.how.e != nil => true
 	The planted bug keepValue runs only on an engine, whose reading has e; only a reading of a test has none.

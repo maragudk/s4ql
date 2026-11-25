@@ -6,6 +6,7 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
@@ -33,13 +34,35 @@ func (e *Error) Error() string {
 }
 
 // The errors of s4ql's own, which an error of the driver matches with [errors.Is]. An error matches
-// at most one of them. Its message says more, such as what is not supported or why the instance
-// stopped.
+// at most one of them, but for an evaluation error, which matches [ErrEvaluation] and one of its
+// kinds. Its message says more, such as what is not supported or why the instance stopped.
 var (
 	// ErrNotSupported is matched by the error of SQL that SQLite accepts and s4ql does not support,
 	// and of a call of database/sql that s4ql does not support. The message starts with
 	// "s4ql: not supported: " and names what is not supported. The statement was not run.
 	ErrNotSupported = errors.New("s4ql: not supported")
+
+	// ErrEvaluation is matched by the error of a statement whose arithmetic has no value that s4ql
+	// gives, where SQLite would give a value that s4ql refuses as a quirk: an integer overflow, where
+	// SQLite gives a real; a division by zero, where SQLite gives NULL; and a real result that is not
+	// finite, where SQLite gives an infinity. The error also matches the kind: [ErrOverflow],
+	// [ErrDivisionByZero], or [ErrNotFinite]. Its message names the kind, the operator, and its offset
+	// in the text, such as "s4ql: integer overflow in + (at offset 42)", and no value. The statement
+	// changed nothing, and a transaction that it ran in stays open, as after SQLite's error of a
+	// constraint.
+	ErrEvaluation = errors.New("s4ql: evaluation error")
+
+	// ErrOverflow is matched by the error of an integer result of arithmetic that does not fit 64
+	// bits, which also matches [ErrEvaluation].
+	ErrOverflow = errors.New("s4ql: integer overflow")
+
+	// ErrDivisionByZero is matched by the error of a division of arithmetic by 0, 0.0, or -0.0, which
+	// also matches [ErrEvaluation].
+	ErrDivisionByZero = errors.New("s4ql: division by zero")
+
+	// ErrNotFinite is matched by the error of a real result of arithmetic that is not finite, which
+	// also matches [ErrEvaluation].
+	ErrNotFinite = errors.New("s4ql: real result that is not finite")
 
 	// ErrNotServing is matched by the error of a statement that the instance refused because it
 	// does not hold a valid lease of the database now: it has just started, another instance holds
@@ -70,9 +93,10 @@ var (
 )
 
 // failure is an error of s4ql's own: one that matches is with [errors.Is], if is is not nil, and
-// that unwraps to its cause, if it has one.
+// kind, if kind is not nil, and that unwraps to its cause, if it has one.
 type failure struct {
 	is      error
+	kind    error
 	message string
 	cause   error
 }
@@ -82,7 +106,7 @@ func (f *failure) Error() string {
 }
 
 func (f *failure) Is(target error) bool {
-	return f.is != nil && target == f.is
+	return f.is != nil && target == f.is || f.kind != nil && target == f.kind
 }
 
 func (f *failure) Unwrap() error {
@@ -116,6 +140,18 @@ func publicError(err error) error {
 		// An argument that the engine does not support, or a value of another type than its column,
 		// whose message starts with "s4ql: not supported: ".
 		return &failure{is: ErrNotSupported, message: err.Error(), cause: err}
+	}
+	if ee, ok := errors.AsType[*expr.Error](err); ok {
+		f := &failure{is: ErrEvaluation, message: ee.Error(), cause: err}
+		switch {
+		case errors.Is(ee, expr.ErrOverflow):
+			f.kind = ErrOverflow
+		case errors.Is(ee, expr.ErrDivisionByZero):
+			f.kind = ErrDivisionByZero
+		case errors.Is(ee, expr.ErrNotFinite):
+			f.kind = ErrNotFinite
+		}
+		return f
 	}
 	if errors.Is(err, engine.ErrNoStatement) {
 		return &failure{is: ErrNotSupported, message: "s4ql: not supported: a text that holds no statement", cause: err}

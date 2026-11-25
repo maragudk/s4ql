@@ -584,7 +584,7 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 	}
 	names := slices.Clone(result)
 	for _, c := range q.Where {
-		names = append(names, c.Column)
+		names = append(names, conditionColumns(c)...)
 	}
 	for _, c := range q.OrderBy {
 		names = append(names, c.Name)
@@ -727,9 +727,7 @@ func TestSubqueryCandidates(t *testing.T) {
 func parametersIn(q stmt.Select) []int {
 	var ps []int
 	for _, c := range q.Where {
-		if c.Value.Parameter > 0 {
-			ps = append(ps, c.Value.Parameter)
-		}
+		ps = append(ps, conditionParameters(c)...)
 	}
 	if q.Limit.Parameter > 0 {
 		ps = append(ps, q.Limit.Parameter)
@@ -816,21 +814,14 @@ func (sc *subqueryCall) flatten(values []*s4qlpb.Value) (string, []any) {
 	var terms []stmt.Term
 	switch s := sc.s.(type) {
 	case *stmt.Select:
-		for _, c := range s.Where {
-			terms = append(terms, c.Value)
-		}
-		terms = append(terms, s.Limit)
+		terms = append(conditionTerms(s.Where), s.Limit)
 	case *stmt.Update:
 		for _, a := range s.Set {
 			terms = append(terms, a.Value)
 		}
-		for _, c := range s.Where {
-			terms = append(terms, c.Value)
-		}
+		terms = append(terms, conditionTerms(s.Where)...)
 	case *stmt.Delete:
-		for _, c := range s.Where {
-			terms = append(terms, c.Value)
-		}
+		terms = conditionTerms(s.Where)
 	}
 	src := sc.src
 	var args []any
@@ -839,8 +830,13 @@ func (sc *subqueryCall) flatten(values []*s4qlpb.Value) (string, []any) {
 		case term.Subquery > 0:
 			src = src[:term.Span.Start] + "?" + src[term.Span.End:]
 			args = append(args, goValue(values[term.Subquery-1]))
-		case term.Parameter > 0:
-			args = append(args, sc.args[term.Parameter-1])
+		default:
+			// The parameters of the term, an arithmetic expression among them, in the order of the text,
+			// which args holds reversed until the end.
+			ps := termParameters(term)
+			for j := len(ps) - 1; j >= 0; j-- {
+				args = append(args, sc.args[ps[j]-1])
+			}
 		}
 	}
 	slices.Reverse(args)
@@ -960,7 +956,7 @@ func correlatedRule(t testing.TB, o *oracle, where []stmt.Condition, subs []stmt
 		var names []stmt.Name
 		names = append(names, subs[q-1].Columns...)
 		for _, c := range subs[q-1].Where {
-			names = append(names, c.Column)
+			names = append(names, conditionColumns(c)...)
 		}
 		for _, c := range subs[q-1].OrderBy {
 			names = append(names, c.Name)

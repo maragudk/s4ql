@@ -981,10 +981,7 @@ func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	r.accept(b)
 	left := r.operand(b.X)
 	r.take(b.Op)
-	switch {
-	case left.column && isColumn(b.Y):
-		r.reject("column compared with a column")
-	case !left.hasColumn() && isValue(b.Y):
+	if !left.hasColumn() && isValue(b.Y) {
 		r.reject("value compared with a value")
 	}
 	right := r.operand(b.Y)
@@ -999,6 +996,11 @@ func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	}
 	c := Condition{Operator: op}
 	switch {
+	case left.column && right.column:
+		// A column compared with a column tests the left one, whose value is the right one, a column
+		// alone.
+		span := spanOf(b.Y)
+		c.Column, c.Value = left.name, Term{Expression: Expression{Kind: ExprColumn, Column: right.name, Span: span}, Span: span}
 	case left.column:
 		c.Column, c.Value = left.name, right.term
 	case right.column:
@@ -1055,12 +1057,6 @@ func (r *recognizer) operand(e ast.Expr) comparand {
 	}
 	x, height := r.expression(e, "WHERE deeper than SQLite's limit")
 	return comparand{term: Term{Expression: x, Span: spanOf(e)}, height: height}
-}
-
-// isColumn reports whether e is a name, and not the bare word TRUE or FALSE.
-func isColumn(e ast.Expr) bool {
-	ref, ok := e.(*ast.ColumnRef)
-	return ok && !isTrueOrFalse(ref)
 }
 
 // spanOf the expression e in the text.
@@ -1209,7 +1205,7 @@ func (r *recognizer) unary(u *ast.Unary, deep string) (Expression, int) {
 // parenthesized expression p: parentheses around an operator, at most [maxParentheses] of them open
 // at once. Parentheses around a single literal, parameter, column, or subquery, or around
 // parentheses, are not supported: SQLite reads them as what they hold, so they hold nothing of their
-// own, and a column in parentheses would be compared with a column.
+// own.
 func (r *recognizer) parenthesized(p *ast.Paren, deep string) (Expression, int) {
 	if r.parentheses == maxParentheses {
 		r.reject("parentheses deeper than 100")

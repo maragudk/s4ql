@@ -439,12 +439,15 @@ func TestPrepare(t *testing.T) {
 		is.NotError(t, p.Close())
 		_, err = db.PrepareContext(t.Context(), "delete from t1 returning v1 + 1")
 		is.Equal(t, "result column other than a column or * (at offset 25)", notSupported(t, err))
-		// A statement with an arithmetic expression, which the pass supports and the engine does not
-		// evaluate yet, is refused when it is prepared, at its expression.
-		_, err = db.PrepareContext(t.Context(), "update t1 set v1 = v1 + 1")
-		is.Equal(t, "expression (at offset 19)", notSupported(t, err))
-		_, err = db.PrepareContext(t.Context(), "select * from t1 where v1 * 2 = ?")
-		is.Equal(t, "expression (at offset 23)", notSupported(t, err))
+		// A statement with an arithmetic expression is prepared, and one with a token of an expression
+		// that the pass does not support is refused for that token.
+		for _, src := range []string{"update t1 set v1 = v1 + 1", "select * from t1 where v1 * 2 = ?"} {
+			p, err = db.PrepareContext(t.Context(), src)
+			is.NotError(t, err, src)
+			is.NotError(t, p.Close())
+		}
+		_, err = db.PrepareContext(t.Context(), "update t1 set v1 = v1 / 0")
+		is.Equal(t, "division by zero (at offset 24)", notSupported(t, err))
 		// A statement with a subquery is prepared, and one with a token of its subquery that the pass
 		// does not support is refused for that token.
 		p, err = db.PrepareContext(t.Context(), "select * from t1 where v1 = (select v1 from t1 where v1 > ?)")
@@ -2762,6 +2765,181 @@ func TestSubquery(t *testing.T) {
 		_, err = db.QueryContext(t.Context(), "select id from goqite where queue = (select priority from goqite)")
 		is.Equal(t, "subquery 1, of the column goqite.priority of type INTEGER, compared with the column goqite.queue of type TEXT", typeRefused(t, err))
 	})
+}
+
+func TestArithmetic(t *testing.T) {
+	const (
+		table = "create table goqite (id text primary key, created text not null, updated text not null, queue text not null, " +
+			"body blob not null, timeout text not null, received integer not null, priority integer not null) strict, without rowid"
+		index   = "create index goqite_queue_priority_created_idx on goqite (queue, priority desc, created)"
+		send    = "insert into goqite (id, created, updated, queue, body, timeout, received, priority) values (?, ?, ?, ?, ?, ?, 0, ?) returning id"
+		receive = "update goqite set timeout = ?, received = received + 1 where queue = ? and id = (select id from goqite where queue = ? and ? >= timeout and received < ? order by priority desc, created limit 1) returning id, body, received"
+		now     = "2026-11-25T12:00:00.000Z"
+	)
+	// at is the time of the n-th minute after now.
+	at := func(n int) string {
+		return fmt.Sprintf("2026-11-25T12:%02d:00.000Z", n)
+	}
+
+	t.Run("should run goqite's whole receive, which counts received up until the message is received as often as allowed, directly, prepared, in a transaction, and after a restart with an empty cache", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table, index)
+		is.Equal(t, "id TEXT, body BLOB, received INTEGER: ", rowsText(t, db, receive, at(1), "default", "default", now, 3))
+		for _, m := range []struct {
+			id, created string
+			priority    int
+		}{{"m_1", "2026-11-25T11:50:00.000Z", 0}, {"m_2", "2026-11-25T11:51:00.000Z", 1}} {
+			is.Equal(t, "id TEXT: "+m.id, rowsText(t, db, send, m.id, m.created, m.created, "default", []byte("body "+m.id), now, m.priority))
+		}
+
+		// m_2 has the higher priority; once received, it is not visible until its timeout.
+		is.Equal(t, "id TEXT, body BLOB, received INTEGER: m_2 [98 111 100 121 32 109 95 50] 1", rowsText(t, db, receive, at(1), "default", "default", now, 3))
+		p, err := db.PrepareContext(t.Context(), receive)
+		is.NotError(t, err)
+		var id string
+		var body []byte
+		var received int64
+		is.NotError(t, p.QueryRowContext(t.Context(), at(1), "default", "default", now, 3).Scan(&id, &body, &received))
+		is.Equal(t, "m_1 1", fmt.Sprint(id, " ", received))
+		err = p.QueryRowContext(t.Context(), at(2), "default", "default", now, 3).Scan(&id, &body, &received)
+		is.Error(t, sql.ErrNoRows, err)
+
+		// After the timeout, m_2 is received again, and its count goes up, in a transaction too, and back
+		// after its roll back.
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		is.NotError(t, tx.StmtContext(t.Context(), p).QueryRowContext(t.Context(), at(2), "default", "default", at(1), 3).Scan(&id, &body, &received))
+		is.Equal(t, "m_2 2", fmt.Sprint(id, " ", received))
+		is.NotError(t, tx.Rollback())
+		for _, want := range []string{"m_2 2", "m_1 2"} {
+			is.NotError(t, p.QueryRowContext(t.Context(), at(2), "default", "default", at(1), 3).Scan(&id, &body, &received))
+			is.Equal(t, want, fmt.Sprint(id, " ", received))
+		}
+		res, err := p.ExecContext(t.Context(), at(3), "default", "default", at(2), 3)
+		is.Equal(t, int64(1), affected(t, res, err))
+		is.Equal(t, "id TEXT, received INTEGER: m_1 2; m_2 3", rowsText(t, db, "select id, received from goqite"))
+		// m_2 has been received three times, and is received no more.
+		is.Equal(t, "id TEXT, body BLOB, received INTEGER: m_1 [98 111 100 121 32 109 95 49] 3", rowsText(t, db, receive, at(4), "default", "default", at(3), 3))
+		is.Equal(t, "id TEXT, body BLOB, received INTEGER: ", rowsText(t, db, receive, at(5), "default", "default", at(4), 3))
+		is.NotError(t, p.Close())
+		notes := annotations(t, w)
+		is.Equal(t, receive+` with "2026-11-25T12:04:00.000Z" with "default" with "default" with "2026-11-25T12:03:00.000Z" with 3`, notes[len(notes)-1])
+
+		// Another instance, with an empty cache, replays the receives, which the commits hold as rows.
+		is.NotError(t, db.Close())
+		other := w.serve(t, "b")
+		is.Equal(t, "id TEXT, received INTEGER, timeout TEXT: m_1 3 2026-11-25T12:04:00.000Z; m_2 3 2026-11-25T12:03:00.000Z", rowsText(t, other, "select id, received, timeout from goqite"))
+		is.Equal(t, "id TEXT: m_1; m_2", rowsText(t, other, "select id from goqite where received + 0 = 3 and received * 2 > ? - 1", 5))
+	})
+
+	t.Run("should give an evaluation error that matches ErrEvaluation and its kind through Exec, Query, and QueryRow, change nothing, and leave a transaction usable", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, "create table t (k int primary key, a int, r real) strict, without rowid", "insert into t values (1, 9223372036854775807, 1e308)", "insert into t values (2, 0, 2.5)")
+		cases := []struct {
+			src  string
+			args []any
+			kind error
+			msg  string
+		}{
+			{"update t set a = a + 1 returning k", nil, s4ql.ErrOverflow, "s4ql: integer overflow in + (at offset 17)"},
+			{"update t set a = 1 / a returning k", nil, s4ql.ErrDivisionByZero, "s4ql: division by zero in / (at offset 17)"},
+			{"update t set r = r * ? where k = 1 returning k", []any{10}, s4ql.ErrNotFinite, "s4ql: real result that is not finite in * (at offset 17)"},
+			{"delete from t where k = 1 + ? returning k", []any{int64(math.MaxInt64)}, s4ql.ErrOverflow, "s4ql: integer overflow in + (at offset 24)"},
+			{"select k from t where k > 0 and k / a > 0", nil, s4ql.ErrDivisionByZero, "s4ql: division by zero in / (at offset 32)"},
+			{"select k from t where k = (select k from t where a - ? < 0)", []any{int64(math.MinInt64)}, s4ql.ErrOverflow, "s4ql: integer overflow in - (at offset 49)"},
+		}
+		state := "k INT, a INT, r REAL: 1 9223372036854775807 1e+308; 2 0 2.5"
+		check := func(how, src string, err error, kind error, msg string) {
+			t.Helper()
+			is.Error(t, s4ql.ErrEvaluation, err, how+": "+src)
+			is.Error(t, kind, err, how+": "+src)
+			is.Equal(t, msg, err.Error(), how+": "+src)
+			_, isSQLite := errors.AsType[*s4ql.Error](err)
+			is.True(t, !isSQLite, how+": "+src)
+			for _, other := range []error{s4ql.ErrNotSupported, s4ql.ErrOverflow, s4ql.ErrDivisionByZero, s4ql.ErrNotFinite} {
+				is.True(t, other == kind || !errors.Is(err, other), how+": "+src)
+			}
+		}
+		for _, c := range cases {
+			_, err := db.ExecContext(t.Context(), c.src, c.args...)
+			check("Exec", c.src, err, c.kind, c.msg)
+			_, err = rowsInOrder(t, db, c.src, c.args...)
+			check("Query", c.src, err, c.kind, c.msg)
+			var k int64
+			check("QueryRow", c.src, db.QueryRowContext(t.Context(), c.src, c.args...).Scan(&k), c.kind, c.msg)
+
+			tx, err := db.BeginTx(t.Context(), nil)
+			is.NotError(t, err)
+			_, err = tx.ExecContext(t.Context(), "insert into t values (3, -3, 3.5)")
+			is.NotError(t, err)
+			_, err = tx.ExecContext(t.Context(), c.src, c.args...)
+			check("Exec in a transaction", c.src, err, c.kind, c.msg)
+			check("QueryRow in a transaction", c.src, tx.QueryRowContext(t.Context(), c.src, c.args...).Scan(&k), c.kind, c.msg)
+			// The transaction is usable, and holds its insert and nothing of the failed statements.
+			res, err := tx.ExecContext(t.Context(), "update t set a = a - 1 where k = 3")
+			is.Equal(t, int64(1), affected(t, res, err))
+			is.Equal(t, state+"; 3 -4 3.5", rowsText(t, tx, "select * from t"))
+			is.NotError(t, tx.Rollback())
+			is.Equal(t, state, rowsText(t, db, "select * from t"))
+		}
+	})
+
+	t.Run("should store -0.0 from arithmetic in a REAL column as 0.0, as SQLite does, in the cache, in the commit object, after a replay, and through RETURNING", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		setUp := []string{"create table t (k int primary key, r real) strict, without rowid", "insert into t values (1, 1.5)"}
+		exec(t, db, setUp...)
+		o := newOracle(t, setUp...)
+		for _, src := range []string{"update t set r = -0.0 * 1 returning r", "select r from t", "select r from t where r = 0.0 * -1"} {
+			want, se := o.rows(t, src)
+			is.True(t, se == nil, src)
+			got, err := rowsInOrder(t, db, src)
+			is.NotError(t, err, src)
+			is.EqualSlice(t, want, got, src)
+			is.EqualSlice(t, []string{"float64 0"}, got, src)
+		}
+		var r float64
+		is.NotError(t, db.QueryRowContext(t.Context(), "update t set r = r * -1 returning r").Scan(&r))
+		is.True(t, r == 0 && !math.Signbit(r))
+		is.EqualSlice(t, []string{"real 0"}, committedReals(t, w))
+		is.NotError(t, db.Close())
+		other := w.serve(t, "b")
+		is.NotError(t, other.QueryRowContext(t.Context(), "select r from t").Scan(&r))
+		is.True(t, r == 0 && !math.Signbit(r))
+	})
+}
+
+// committedReals of the last commit object of the log of w: each real of each row that it upserts, as
+// "real" and its value, with the sign of a zero, in the order of the commit object.
+func committedReals(t *testing.T, w *world) []string {
+	t.Helper()
+	data, _, ok := w.store.Object("db/manifest.json")
+	is.True(t, ok)
+	m, err := format.ParseManifest(data)
+	is.NotError(t, err)
+	key := m.Head.String()
+	data, _, ok = w.store.Object("db/commits/" + key[:2] + "/" + key)
+	is.True(t, ok, key)
+	r := format.NewCommitReader(bytes.NewReader(data), m.Head)
+	_, err = r.Header()
+	is.NotError(t, err)
+	var reals []string
+	for {
+		c, _, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			return reals
+		}
+		is.NotError(t, err)
+		for _, row := range c.GetUpsertRows().GetRows() {
+			for _, v := range row.GetValues() {
+				if v.HasReal() {
+					reals = append(reals, "real "+strconv.FormatFloat(v.GetReal(), 'g', -1, 64))
+				}
+			}
+		}
+	}
 }
 
 // sqliteMessage of err, which must be SQLite's error: its message.

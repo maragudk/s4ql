@@ -159,7 +159,12 @@ func ConditionRule(table string, columns []TableColumn, s *stmt.Select, args []a
 // `NOT NULL constraint failed` first when the update finds a row. The rule is "" where every value
 // has the type of its column, and where SQLite gives its own error first: for a column of SET, and
 // then of WHERE, that the table does not have, and for another number of arguments than parameters.
+// It panics for an update with an expression, which [HasExpression] reports, as it has no rule for
+// one.
 func UpdateRule(table string, columns []TableColumn, u *stmt.Update, args []any, found func() bool) string {
+	if HasExpression(u) {
+		panic("stmttest: UpdateRule of an update with an arithmetic expression or a column alone, which the rules of this package do not take: see HasExpression")
+	}
 	if len(args) != u.Parameters() {
 		return ""
 	}
@@ -197,6 +202,45 @@ func UpdateRule(table string, columns []TableColumn, u *stmt.Update, args []any,
 	return ""
 }
 
+// HasExpression reports whether the statement s has an arithmetic expression or a column alone, as
+// in `where a = b` or `set a = b`: as the value of an assignment of its SET, or as either side of a
+// condition of its WHERE or of the WHERE of one of its scalar subqueries. The statement pass takes
+// them since the engine step of arithmetic. The rules of this package do not: [WhereRule],
+// [ConditionRule], [UpdateRule], and [DeleteRule] panic for such a statement, and [ChosenAccess]
+// gives no access for it. The engine computes or refuses it by rules of its own, which the
+// differential pair of the engine checks.
+func HasExpression(s stmt.Statement) bool {
+	var where []stmt.Condition
+	var subqueries []stmt.Select
+	switch s := s.(type) {
+	case *stmt.Select:
+		where, subqueries = s.Where, s.Subqueries
+	case *stmt.Update:
+		where, subqueries = s.Where, s.Subqueries
+		for _, a := range s.Set {
+			if a.Value.Expression.Present() {
+				return true
+			}
+		}
+	case *stmt.Delete:
+		where, subqueries = s.Where, s.Subqueries
+	}
+	if slices.ContainsFunc(where, conditionExpressed) {
+		return true
+	}
+	for _, q := range subqueries {
+		if slices.ContainsFunc(q.Where, conditionExpressed) {
+			return true
+		}
+	}
+	return false
+}
+
+// conditionExpressed reports whether the condition c tests an expression or has one as its value.
+func conditionExpressed(c stmt.Condition) bool {
+	return c.Expression.Present() || c.Value.Expression.Present()
+}
+
 // DeleteRule of the delete d of the table of the name and the columns, with the arguments args, as
 // [ConditionRule] gives it for a select with the same WHERE.
 func DeleteRule(table string, columns []TableColumn, d *stmt.Delete, args []any) string {
@@ -230,38 +274,68 @@ func SelectText(s *stmt.Select, args []any, orderBy string) (string, []any) {
 }
 
 // whereText of the conditions of a WHERE, whose scalar subqueries are subs, with a ? for each value,
-// and a subquery as [subqueryText] writes it, after " where ", or "" for no condition, and the
-// arguments of its parameters, as [FoundQuery] gives them. A condition that says
-// [stmt.Condition.ValueFirst] is written so, with the ? on the left and the operator as the text
-// wrote it, so that a statement of the text runs the form that its conditions came from.
+// a subquery as [subqueryText] writes it, and an arithmetic expression as [ExpressionText] writes it,
+// after " where ", or "" for no condition, and the arguments of its parameters, as [FoundQuery] gives
+// them. A condition that says [stmt.Condition.ValueFirst] is written so, with the value on the left
+// and the operator as the text wrote it, so that a statement of the text runs the form that its
+// conditions came from.
 func whereText(where []stmt.Condition, subs []stmt.Select, args []any) (string, []any) {
 	var conditions []string
 	var bound []any
 	for _, c := range where {
-		switch {
-		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
-			conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String())
-			continue
-		case c.Value.Subquery > 0:
-			text, inner := subqueryText(subs[c.Value.Subquery-1], args)
-			if c.ValueFirst {
-				conditions = append(conditions, text+" "+c.Operator.Swapped().String()+" "+Quote(c.Column.Value))
-			} else {
-				conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" "+text)
-			}
-			bound = append(bound, inner...)
-			continue
-		case c.ValueFirst:
-			conditions = append(conditions, "? "+c.Operator.Swapped().String()+" "+Quote(c.Column.Value))
-		default:
-			conditions = append(conditions, Quote(c.Column.Value)+" "+c.Operator.String()+" ?")
+		tested, testedArgs := Quote(c.Column.Value), []any(nil)
+		if c.Expression.Present() {
+			tested, testedArgs = ExpressionText(c.Expression, args)
 		}
-		bound = append(bound, boundValue(c.Value, args))
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+			conditions, bound = append(conditions, tested+" "+c.Operator.String()), append(bound, testedArgs...)
+			continue
+		}
+		value, valueArgs := TermText(c.Value, subs, args)
+		if c.ValueFirst {
+			conditions, bound = append(conditions, value+" "+c.Operator.Swapped().String()+" "+tested), append(append(bound, valueArgs...), testedArgs...)
+		} else {
+			conditions, bound = append(conditions, tested+" "+c.Operator.String()+" "+value), append(append(bound, testedArgs...), valueArgs...)
+		}
 	}
 	if len(conditions) == 0 {
 		return "", nil
 	}
 	return " where " + strings.Join(conditions, " and "), bound
+}
+
+// TermText of the term t of a statement whose scalar subqueries are subs, with the arguments args of
+// the statement: a ? for a literal or a parameter, a subquery as [subqueryText] writes it, and an
+// arithmetic expression as [ExpressionText] writes it, and the arguments of its parameters.
+func TermText(t stmt.Term, subs []stmt.Select, args []any) (string, []any) {
+	switch {
+	case t.Expression.Present():
+		return ExpressionText(t.Expression, args)
+	case t.Subquery > 0:
+		return subqueryText(subs[t.Subquery-1], args)
+	}
+	return "?", []any{BoundValue(t, args)}
+}
+
+// ExpressionText of the arithmetic expression e with the arguments args of the statement that holds
+// it: every column in double quotes, a ? for every literal and parameter, a negation as -( ), and
+// every binary operator in parentheses, so that SQLite reads the tree of e, and the arguments of its
+// ?, each literal as SQLite binds it, in the order of the text.
+func ExpressionText(e stmt.Expression, args []any) (string, []any) {
+	switch e.Kind {
+	case stmt.ExprValue:
+		return "?", []any{BoundValue(stmt.Term{Value: e.Value}, args)}
+	case stmt.ExprParameter:
+		return "?", []any{args[e.Parameter-1]}
+	case stmt.ExprColumn:
+		return Quote(e.Column.Value), nil
+	case stmt.ExprNegate:
+		text, bound := ExpressionText(e.Operands[0], args)
+		return "-(" + text + ")", bound
+	}
+	left, leftArgs := ExpressionText(e.Operands[0], args)
+	right, rightArgs := ExpressionText(e.Operands[1], args)
+	return "(" + left + " " + e.Kind.String() + " " + right + ")", append(leftArgs, rightArgs...)
 }
 
 // subqueryText of the scalar subquery q, of slice 15, with the arguments args of the statement that
@@ -291,9 +365,9 @@ func subqueryText(q stmt.Select, args []any) (string, []any) {
 	return "(" + text + ")", bound
 }
 
-// boundValue of a term, a literal or the argument of args for its parameter, as SQLite binds it: an
+// BoundValue of a term, a literal or the argument of args for its parameter, as SQLite binds it: an
 // int64, a float64, a string, a []byte, or nil.
-func boundValue(term stmt.Term, args []any) any {
+func BoundValue(term stmt.Term, args []any) any {
 	switch v := term.Value.(type) {
 	case stmt.Integer:
 		return int64(v)
@@ -322,8 +396,9 @@ func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs
 	table := Quote(u.Table.Value)
 	var sets []string
 	for _, a := range u.Set {
-		sets = append(sets, Quote(a.Column.Value)+" = ?")
-		oneArgs = append(oneArgs, boundValue(a.Value, args))
+		value, valueArgs := TermText(a.Value, u.Subqueries, args)
+		sets = append(sets, Quote(a.Column.Value)+" = "+value)
+		oneArgs = append(oneArgs, valueArgs...)
 	}
 	found = "create temp table s4ql_found as select " + Quote(key) + " as k from " + table + conditions + " order by " + Quote(key)
 	one = "update " + table + " set " + strings.Join(sets, ", ") + " where " + Quote(key) + " = (select k from temp.s4ql_found order by rowid limit 1 offset ?)"
@@ -334,8 +409,12 @@ func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs
 // has, with the arguments args of the statement, by the numbers of the parameters: s4ql's "not
 // supported" for the first condition, in the order of the text, whose value is of another type than
 // its column, as [ConditionRule] gives it, or "". A scalar subquery, of slice 15, has the type of the
-// column of its table, which the conditions do not hold, so the rule passes over it.
+// column of its table, which the conditions do not hold, so the rule passes over it. It panics for a
+// condition with an expression, which [HasExpression] reports, as it has no rule for one.
 func WhereRule(table string, columns []TableColumn, where []stmt.Condition, args []any) string {
+	if slices.ContainsFunc(where, conditionExpressed) {
+		panic("stmttest: WhereRule of a condition with an arithmetic expression or a column alone, which the rules of this package do not take: see HasExpression")
+	}
 	for _, c := range where {
 		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || c.Value.Subquery > 0 {
 			continue
@@ -604,9 +683,10 @@ func LeavesOutIndexed(columns []TableColumn, indexes []TableIndex, insert *stmt.
 // are IS NULL and IS NOT NULL, or compare with one value by inverse operators, such as < and >=; and
 // how s4ql reads the rows, as [KeyAccess] gives it, after "WHERE that reads ". It is nil for a
 // select without WHERE, one of a column of the select list that the table does not have, and one
-// with another number of arguments than parameters.
+// with another number of arguments than parameters, and one with an expression, which
+// [HasExpression] reports.
 func WhereCases(columns []TableColumn, s *stmt.Select, args []any) []string {
-	if s.Where == nil || slices.ContainsFunc(s.Columns, func(n stmt.Name) bool { return ColumnOf(columns, n) < 0 }) {
+	if s.Where == nil || HasExpression(s) || slices.ContainsFunc(s.Columns, func(n stmt.Name) bool { return ColumnOf(columns, n) < 0 }) {
 		return nil
 	}
 	var cases []string
@@ -814,9 +894,10 @@ func SetCases(columns []TableColumn, u *stmt.Update, args []any) []string {
 // for a select that SQLite or s4ql refuses: for a column that the table does not have, another
 // number of arguments than parameters, or a value of another type than its column, as
 // [ConditionRule] gives it, and for a select with a scalar subquery of slice 15, whose access depends
-// on the value that the subquery gives.
+// on the value that the subquery gives, and for one with an expression, which [HasExpression]
+// reports.
 func KeyAccess(columns []TableColumn, s *stmt.Select, args []any) string {
-	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" || s.Subqueries != nil {
+	if _, missing := MissingColumn(columns, s); HasExpression(s) || missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" || s.Subqueries != nil {
 		return ""
 	}
 	type bound struct {
@@ -993,9 +1074,10 @@ type Access struct {
 //
 // It reports false for a select that SQLite or s4ql refuses, as [KeyAccess] gives "" for one, also
 // for a column of the ORDER BY that the table does not have, and for an argument of the LIMIT that is
-// no int64 from 0, which s4ql refuses, and for a select with a scalar subquery of slice 15.
+// no int64 from 0, which s4ql refuses, for a select with a scalar subquery of slice 15, and for one
+// with an expression, which [HasExpression] reports.
 func ChosenAccess(columns []TableColumn, indexes []TableIndex, s *stmt.Select, args []any) (Access, bool) {
-	if _, missing := MissingColumn(columns, s); missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" || s.Subqueries != nil {
+	if _, missing := MissingColumn(columns, s); HasExpression(s) || missing || len(args) != s.Parameters() || ConditionRule("t", columns, s, args) != "" || s.Subqueries != nil {
 		return Access{}, false
 	}
 	if s.Limit.Parameter > 0 {

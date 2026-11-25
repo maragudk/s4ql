@@ -2,7 +2,6 @@
 ▝▜██████▀  Fable 5.2 · Claude Ultra
  ▝▝   ▝▝   ~/Developer/s4ql
 
-⚠ Your login expires in 1 day · run /login to renew
   ⎿  SessionStart:startup says: Welcome to fabrik.
 
 ❯ I'd like the SQL query box and results table to be in their own section below 
@@ -22,7 +21,7 @@
   the builder. It will screenshot the page at phone, middle, and desktop
   widths, and I'll look at those before anything is merged.
 
-✻ Sautéed for 38s · done 10:16 AM
+✻ Sautéed for 38s · done Tuesday 10:16 AM
 
 › Message from fabrik:builder
   The SQL box now has a section of its own below Log and Commit objects. The
@@ -130,7 +129,7 @@
   f6409-2444-4c23-8123-ed5164204cd4/scratchpad/sql-section/ if you want to look
   before it is live.
 
-✻ Baked for 26s · done 10:24 AM
+✻ Baked for 26s · done Tuesday 10:24 AM
 
 › Message from general-purpose
   PR #133 is merged and cleaned up, but the Pages deploy failed, so
@@ -188,7 +187,7 @@
   main is up to date. No status, roadmap, or Bluesky update, since this is a
   site-only change.
 
-✻ Baked for 13m 42s · done 10:29 AM
+✻ Baked for 13m 42s · done Tuesday 10:29 AM
 
 ※ recap: The simulator's SQL box and results now sit in their own section below Log and Commit objects, merged as pull request 133 and live on www.s4ql.com/simulator/. Next: have a look and tell me if the layout needs changes. (turn off recaps in /config)
 
@@ -216,7 +215,7 @@
   Which move goes with which sound is the builder's call. I'll look at its
   screenshots of the poses before merging.
 
-✻ Baked for 32s · done 10:35 AM
+✻ Baked for 32s · done Tuesday 10:35 AM
 
 ❯ Lovely! BTW the sound doesn't always work (maybe only after a refresh), have  
   a separate subagent check that?                                               
@@ -239,7 +238,7 @@
 
   Both builders touch sound.js, so I'll merge them one after the other.
 
-✻ Churned for 25s · done 10:40 AM
+✻ Churned for 25s · done Tuesday 10:40 AM
 
 ❯ Safari on MacOS. Not sure when it happens.                                      ⎿  Message queued for delivery to ae6852d627a72f174 at its next tool 
      round. Sending this moved nothing it is running to the background just
@@ -252,7 +251,7 @@
   I asked it to say which parts it observed and which it could only infer from
   the code.
 
-✻ Cogitated for 7s · done 10:42 AM
+✻ Cogitated for 7s · done Tuesday 10:42 AM
 
 ❯ I think it started after we built persistent storage in the browser.          
   ⎿  Message queued for delivery to ae6852d627a72f174 at its next tool 
@@ -269,7 +268,7 @@
   is now created or resumed after an await instead of inside the click, which
   Safari refuses. That would also fit your "maybe only after a refresh".
 
-✻ Cooked for 6s · done 10:42 AM
+✻ Cooked for 6s · done Tuesday 10:42 AM
 
 › Message from fabrik:builder
   I reproduced it in WebKit and in Chrome, but the cause is not in the audio
@@ -406,7 +405,7 @@
   One question that would tell us whether there is a second bug: does the sound
   ever fail for you on a first visit in a new tab, or right after Reset?
 
-✻ Worked for 12s · done 10:51 AM
+✻ Worked for 12s · done Tuesday 10:51 AM
 
 ⏺ Agent "Diagnose simulator sound bug" finished · 10m 32s
 
@@ -418,7 +417,7 @@
   and whether the sound ever fails on a first visit or right after Reset. The
   stick figure builder is still running.
 
-✻ Crunched for 2s · done 10:51 AM
+✻ Crunched for 2s · done Tuesday 10:51 AM
 
 ❯ No, that's not it. Also when the delay has passed (6 seconds in turbo mode)   
   there's still no sound.                                                       
@@ -459,7 +458,7 @@
   against Safari suspending or interrupting the context. Your answers to steps 1
   and 2 would tell it which of those is the real cause.
 
-✻ Brewed for 54s · done 10:52 AM
+✻ Brewed for 54s · done Tuesday 10:52 AM
 
 › Message from fabrik:builder
   The stick figure is built on branch `worktree-agent-a158c8013597fb083`, in 4
@@ -686,7 +685,7 @@
   Your console results from the silent tab are still the quickest route to the
   cause, if you have them.
 
-✻ Cooked for 58s · done 10:57 AM
+✻ Cooked for 58s · done Tuesday 10:57 AM
 
 ❯ > const b = document.querySelector("#sound");                                 
   [b.getAttribute("aria-pressed"), b.dataset.audio]                             
@@ -717,7 +716,7 @@
   Then step 4: turn Sound off and on again, and tell me whether the sound comes
   back.
 
-✻ Brewed for 11s · done 10:59 AM
+✻ Brewed for 11s · done Tuesday 10:59 AM
 
 ❯ [Log] {"played":{"blip":1,"up":1,"failing":1,"recovered":1},"dropped":{},"rec 
   ent":[["blip",0],["up",6.562666666666667],["failing",6.688],["recovered",11.1 
@@ -778,7 +777,7 @@
   If any of those goes the other way, the hypothesis is wrong and that is worth
   knowing.
 
-✻ Churned for 32s · done 11:00 AM
+✻ Churned for 32s · done Tuesday 11:00 AM
 
 ❯ Toggled sound, still nothing                                                  
   ⎿  Message queued for delivery to ae6852d627a72f174 at its next tool 
@@ -795,7 +794,7 @@
   tab (I predict still silent), and the simulator in a new tab with Sound then
   Play (I predict it sounds).
 
-✻ Worked for 6s · done 11:00 AM
+✻ Worked for 6s · done Tuesday 11:00 AM
 
 ❯ Reset -> play still stilent                                                   
   ⎿  Message queued for delivery to ae6852d627a72f174 at its next tool 
@@ -822,7 +821,7 @@
   After that the tab has given us what it can. The new-tab test is the last one:
   Sound, then Play, in a fresh tab.
 
-✻ Sautéed for 11s · done 11:01 AM
+✻ Sautéed for 11s · done Tuesday 11:01 AM
 
 ❯ new tab, sound plays                                                          
   ⎿  Message queued for delivery to ae6852d627a72f174 at its next tool 
@@ -843,7 +842,7 @@
 
   You can close the silent tab; it has told us what it can.
 
-✻ Sautéed for 8s · done 11:01 AM
+✻ Sautéed for 8s · done Tuesday 11:01 AM
 
 ❯ > import(performance.getEntriesByType("resource").find(r =>                   
   r.name.includes("sound.js")).name).then(s =>                                  
@@ -884,7 +883,7 @@
   at the start, before it went silent, or was it silent from the first click on
   Sound?
 
-✻ Crunched for 23s · done 11:02 AM
+✻ Crunched for 23s · done Tuesday 11:02 AM
 
 ❯ I think it was playing before the refresh. I'll check in a new tab.           
 
@@ -900,7 +899,7 @@
      the blip and then one or two sounds there and then nothing, one of those
      sounds is what kills it.
 
-✻ Cogitated for 5s · done 11:03 AM
+✻ Cogitated for 5s · done Tuesday 11:03 AM
 
 ❯ Interesting.                                                                  
   1. No simulator open at all.                                                  
@@ -936,7 +935,7 @@
   standing on the top right of the Log and Commit objects frame in the tabs that
   sound, and in the silent one?
 
-✻ Brewed for 36s · done 11:04 AM
+✻ Brewed for 36s · done Tuesday 11:04 AM
 
 ❯ Second and third tab can also refresh and still play sound. Is state borked   
   on the first tab?                                                             
@@ -960,7 +959,7 @@
     audio for that tab, or the tab is muted: check for a speaker icon in the tab
     or address bar, and whether the Window menu offers "Unmute This Tab".
 
-✻ Crunched for 12s · done 11:05 AM
+✻ Crunched for 12s · done Tuesday 11:05 AM
 
 › Message from general-purpose
   Merged and deployed, but the builder's worktree and its local branch are still
@@ -1018,7 +1017,7 @@
 
   The sound builder is still working, with everything you have reported so far.
 
-✻ Cooked for 13s · done 11:05 AM
+✻ Cooked for 13s · done Tuesday 11:05 AM
 
 ❯ Hard refresh first tab: still no sound (but now with stick figure)            
   ⎿  Message queued for delivery to ae6852d627a72f174 at its next tool 
@@ -1057,7 +1056,7 @@
   And did the audio output change at some point today (headphones, display,
   sleep)?
 
-✻ Baked for 30s · done 11:06 AM
+✻ Baked for 30s · done Tuesday 11:06 AM
 
 ❯ dances in silence                                                             
 
@@ -1075,7 +1074,7 @@
   and sound.js is cleared. If you hear it, the fault is still in our sound
   graph.
 
-✻ Brewed for 3s · done 11:06 AM
+✻ Brewed for 3s · done Tuesday 11:06 AM
 
 ❯ > const c = new AudioContext(), o = c.createOscillator(), g = c.createGain(); 
   g.gain.value = 0.2; o.connect(g).connect(c.destination); o.start();           
@@ -1096,7 +1095,7 @@
   It should log running and beep for half a second. Tell me what it logs and
   whether you hear it.
 
-✻ Crunched for 5s · done 11:07 AM
+✻ Crunched for 5s · done Tuesday 11:07 AM
 
 ❯ > document.addEventListener("click", () => { const c = new AudioContext(), o  
   = c.createOscillator(), g = c.createGain(); g.gain.value = 0.2;               
@@ -1109,7 +1108,7 @@
   console should then log running (or suspended), and you either hear a
   half-second beep or you don't.
 
-✻ Worked for 1s · done 11:07 AM
+✻ Worked for 1s · done Tuesday 11:07 AM
 
 ❯ running                                                                       
 
@@ -1117,7 +1116,7 @@
   beep means the tab's process is dead for audio and sound.js is cleared;
   running with a beep means our sound graph is still the suspect.
 
-✻ Brewed for 1s · done 11:07 AM
+✻ Brewed for 1s · done Tuesday 11:07 AM
 
 ❯ No beep                                                                         ⎿  Message queued for delivery to ae6852d627a72f174 at its next tool 
      round. Sending this moved nothing it is running to the background just
@@ -1159,7 +1158,7 @@
 
   Then the same in a tab that sounds. If the two differ, the page can tell.
 
-✻ Sautéed for 25s · done 11:08 AM
+✻ Sautéed for 25s · done Tuesday 11:08 AM
 
 ❯ I quit Safari and relaunched and everything works now. Write it off as Safari 
   bug?                                                                          
@@ -1185,7 +1184,7 @@
     looks broken. My earlier suggestion stands: a log line saying what a is
     waiting for, and leave the wait itself alone. Want that, or leave it?
 
-✻ Sautéed for 7s · done 11:08 AM
+✻ Sautéed for 7s · done Tuesday 11:08 AM
 
 ❯ Maybe in the "S3 still holds db-4p2fj6: 72 commit objects.", it should say    
   "waiting for lease" too?                                                      
@@ -1218,7 +1217,7 @@
   - Reset: leaves both toggles alone, since it resets the simulation and not
     your preferences.
 
-✻ Cogitated for 44s · done 11:10 AM
+✻ Cogitated for 44s · done Tuesday 11:10 AM
 
 › Message from fabrik:builder
   The silence Markus reports is not caused by `sound.js`, and nothing on this
@@ -1384,7 +1383,7 @@
     the toggles alone. Until that first click the Sound button shows a third
     "remembered, waiting" state so it does not claim to be playing.
 
-✻ Worked for 56s · done 11:15 AM
+✻ Worked for 56s · done Tuesday 11:15 AM
 
 › Message from fabrik:builder
   The reload line in the log now says who waits for the lease and for how long.
@@ -1503,7 +1502,7 @@
   The builder is now rewording, then merging in main once the sound hardening
   lands there, since both change the site check.
 
-✻ Cogitated for 20s · done 11:20 AM
+✻ Cogitated for 20s · done Tuesday 11:20 AM
 
 ⏺ Agent "Log line for lease wait" is waiting on its own background work · 11m 6s
 
@@ -1514,7 +1513,7 @@
   Still running: the sound hardening's pull request, the lease-line rewording,
   and the toggle persistence.
 
-✻ Brewed for 2s · done 11:21 AM
+✻ Brewed for 2s · done Tuesday 11:21 AM
 
 › Message from general-purpose
   Pull request #135 is merged and live:
@@ -1548,7 +1547,7 @@
   Still running: the lease-line rewording, which can now merge in main, and the
   toggle persistence.
 
-✻ Brewed for 2s · done 11:22 AM
+✻ Brewed for 2s · done Tuesday 11:22 AM
 
 ⏺ Agent "Merge sound hardening PR" finished · 7m 24s
 
@@ -1580,7 +1579,7 @@
 
   Still running: that pull request, and the toggle persistence.
 
-✻ Baked for 13s · done 11:23 AM
+✻ Baked for 13s · done Tuesday 11:23 AM
 
 ⏺ Agent "Merge lease line PR" is waiting on its own background work · 3m 33s
 
@@ -1588,7 +1587,7 @@
   request is waiting on background work of its own, most likely the checks, and
   has not reported. The toggle persistence is also still running.
 
-✻ Sautéed for 2s · done 11:26 AM
+✻ Sautéed for 2s · done Tuesday 11:26 AM
 
 ⏺ Agent "Merge dancer PR" is waiting on its own background work · 30m 12s
 
@@ -1650,7 +1649,7 @@
   within a session should go on the list in docs/todo/. It needs a new event
   from the core, so it is your call.
 
-✻ Sautéed for 7s · done 11:30 AM
+✻ Sautéed for 7s · done Tuesday 11:30 AM
 
 › Message from fabrik:builder
   The page now remembers Sound and Turbo across reloads. `make site-check`
@@ -1799,7 +1798,7 @@
   the pull request's checks are the first test of it. If the site check fails
   there, the merge stops.
 
-✻ Churned for 28s · done 11:38 AM
+✻ Churned for 28s · done Tuesday 11:38 AM
 
 › Message from general-purpose
   The pull request merged and the cleanup is done, but the deploy failed, even
@@ -1885,7 +1884,7 @@
   - Still open: whether the silent wait after a crash and restart of a goes on
     the list in docs/todo/.
 
-✻ Crunched for 1h 14m 28s · done 11:49 AM
+✻ Crunched for 1h 14m 28s · done Tuesday 11:49 AM
 
 ※ recap: Five simulator page changes are live: SQL section, dancing figure, audio hardening, lease line, and remembered Sound and Turbo toggles. Next action is yours: say whether I should split the Pages workflow into build and deploy jobs to stop the failing deploys. (turn off recaps in /config)
 
@@ -1914,7 +1913,7 @@
   The Pages workflow race is still unfixed and waiting on your word, so this
   deploy may need a manual nudge like the last one.
 
-✻ Brewed for 27s · done 11:56 AM
+✻ Brewed for 27s · done Tuesday 11:56 AM
 
 ❯ Sounds good. What race?                                                       
 
@@ -1950,11 +1949,11 @@
   refuses pull requests that change workflows. The push itself triggers the
   workflow, so it tests itself. Shall I have it done?
 
-✻ Cooked for 7s · done 11:59 AM
+✻ Cooked for 7s · done Tuesday 11:59 AM
 
 ❯ Yes                                                                           
 
-⏺ Agent(Fix Pages deploy race) Opus 5.5
+⏺ Agent(Fix Pages deploy race)
   ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
 
 ⏺ An agent is on the workflow fix now. It splits pages.yml into a build job and
@@ -1967,7 +1966,7 @@
 
   Also running: the builder removing the blinking state from the Sound button.
 
-✻ Brewed for 14s · done 12:00 PM
+✻ Brewed for 14s · done Tuesday 12:00 PM
 
 ❯ And after that, make the stick figure be able to walk along the line when not 
   dancing.                                                                      
@@ -1988,7 +1987,7 @@
   - A crash still drops it flat on the line, wherever it happens to be.
   - Reduced motion: it stands still, as now.
 
-✻ Brewed for 14s · done 12:00 PM
+✻ Brewed for 14s · done Tuesday 12:00 PM
 
 › Message from general-purpose
   The Pages workflow is now split into a `build` job and a `deploy` job, and the
@@ -2074,7 +2073,7 @@
   Still running: the Sound button change. The walking stick figure starts after
   that merges.
 
-✻ Sautéed for 5s · done 12:04 PM
+✻ Sautéed for 5s · done Tuesday 12:04 PM
 
 ⏺ Agent "Fix Pages deploy race" finished · 3m 59s
 
@@ -2111,7 +2110,7 @@
 
   Also running: the Sound button change. The walking stick figure starts when
   that merges.
-✻ Baked for 1m 4s · done 12:06 PM
+✻ Baked for 1m 4s · done Tuesday 12:06 PM
 
 › Message from fabrik:builder
   After a reload, Sound remembered as on now looks exactly like Sound on:
@@ -2204,7 +2203,7 @@
 
   Running now: that pull request, the walker, and the favicons.
 
-✻ Cogitated for 50s · done 12:07 PM
+✻ Cogitated for 50s · done Tuesday 12:07 PM
 
 ❯ I always use https://realfavicongenerator.net myself, but your approach with  
   custom icons per size sounds better                                           
@@ -2218,7 +2217,7 @@
   and dark backgrounds. I'll look at it before merging and tell you where it
   is, so you can judge it against what the generator would have given you.
 
-✻ Sautéed for 4s · done 12:10 PM
+✻ Sautéed for 4s · done Tuesday 12:10 PM
 
 ❯ I don't need to see it first, just push it live when done                     
 
@@ -2226,7 +2225,7 @@
   bars need a pair of eyes at 16 pixels, and then push it live without waiting
   for you.
 
-✻ Cooked for 1s · done 12:10 PM
+✻ Cooked for 1s · done Tuesday 12:10 PM
 
 ❯ Do you consider yourself having a pair of eyes?                               
 
@@ -2242,7 +2241,7 @@
   not your display. So I judge the enlarged contact sheet, where each pixel is a
   visible block, and not the 16 pixel icon at its true size.
 
-✻ Churned for 4s · done 12:11 PM
+✻ Churned for 4s · done Tuesday 12:11 PM
 
 › Message from general-purpose
   PR #139 is merged and the deploy check passed.
@@ -2288,7 +2287,7 @@
 
   Still running: the walker and the favicons.
 
-✻ Baked for 8s · done 12:16 PM
+✻ Baked for 8s · done Tuesday 12:16 PM
 
 ❯ Can we also add some pixel-y twinkling stars on the background on the sim     
   page only?                                                                    
@@ -2328,7 +2327,7 @@
     measures the cost while the simulation plays in Turbo.
   - Not built: shooting stars, a moon, parallax, stars reacting to sound.
 
-✻ Brewed for 48s · done 12:19 PM
+✻ Brewed for 48s · done Tuesday 12:19 PM
 
 › Message from fabrik:builder
   The site now has the full set of favicons, drawn from the barcode logo, on
@@ -2454,7 +2453,7 @@
 
 ❯ It was actually 3. It won't actually show to any users ever if we do our job  
   properly, right?                                                              
-⏺ Explore(Facts on simulator's checker) Opus 5.5
+⏺ Explore(Facts on simulator's checker)
   ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
 
 ❯ But also 1                                                                    
@@ -2500,7 +2499,7 @@
   manifest, so an install from either page is one app that opens on the front
   page, and then it goes live.
 
-✻ Baked for 58s · done 12:21 PM
+✻ Baked for 58s · done Tuesday 12:21 PM
 
 ❯ Less code to carry mostly, especially for something that's essentially dead   
   code                                                                          
@@ -2516,7 +2515,7 @@
   I'll come back with that split, and the page's copy that would have to change,
   when the agent reports.
 
-✻ Crunched for 3s · done 12:23 PM
+✻ Crunched for 3s · done Tuesday 12:23 PM
 
 › Message from fabrik:builder
   Both changes are committed on `worktree-agent-a2db1a9f3f4f806d8`, not pushed.
@@ -2549,7 +2548,7 @@
   Running now: that pull request, the walker, the stars, and the agent gathering
   facts on the checker.
 
-✻ Sautéed for 16s · done 12:23 PM
+✻ Sautéed for 16s · done Tuesday 12:23 PM
 
 › Message from Explore
   One premise is wrong, so it comes first. **A violation does not halt the page,
@@ -2860,7 +2859,7 @@
   2. Go ahead? I'd start it after the walker lands, since both touch the
      dancer's moves and the sound code.
 
-✻ Cooked for 28s · done 12:26 PM
+✻ Cooked for 28s · done Tuesday 12:26 PM
 
 ⏺ Agent "Facts on simulator's checker" finished · 4m 39s
 
@@ -2882,7 +2881,7 @@
 
   Still running: the favicons' pull request, the walker, and the stars.
 
-✻ Baked for 6s · done 12:28 PM
+✻ Baked for 6s · done Tuesday 12:28 PM
 
 ❯ And obviously, don't touch the real non-browser checker                       
 
@@ -2894,7 +2893,7 @@
   The builder's report will have to show it: a diff that touches no file outside
   those two directories, apart from the diary.
 
-✻ Brewed for 2s · done 12:28 PM
+✻ Brewed for 2s · done Tuesday 12:28 PM
 
 › Message from general-purpose
   Merged and deployed, except that the builder's worktree and local branch are
@@ -2945,7 +2944,7 @@
   Still running: the walker and the stars. The checker's removal starts when the
   walker lands.
 
-✻ Baked for 6s · done 12:31 PM
+✻ Baked for 6s · done Tuesday 12:31 PM
 › Message from fabrik:builder
   The simulator page now has a sky of pixel stars that twinkle in steps. It is
   on branch `worktree-agent-aeaf3740b56311f8b` (3 commits on `2175351`, not
@@ -3125,7 +3124,7 @@
   Running now: the stars' pull request and the walker. The checker's removal
   follows the walker.
 
-✻ Baked for 47s · done 12:49 PM
+✻ Baked for 47s · done Tuesday 12:49 PM
 
 › Message from fabrik:builder
   ## Walker report
@@ -3328,7 +3327,7 @@
   outside internal/simulator and site/simulator, and its report must show the
   diff to prove it. It also reports the size of engine.wasm before and after.
 
-✻ Sautéed for 1m 9s · done 12:51 PM
+✻ Sautéed for 1m 9s · done Tuesday 12:51 PM
 
 › Message from general-purpose
   Pull request #141 is merged and the deploy is live, but I left the builder's
@@ -3385,14 +3384,14 @@
 
   Also running: the checker's removal.
 
-✻ Churned for 24s · done 12:53 PM
+✻ Churned for 24s · done Tuesday 12:53 PM
 
 ❯ I like the stars                                                              
 
 ⏺ Good, then they stay as they are. The stick figure gets to walk under them
   shortly.
 
-✻ Worked for 2s · done 1:00 PM
+✻ Worked for 2s · done Tuesday 1:00 PM
 
 ❯ Update the whole header section to just something like: "Try the real s4ql    
   compiled to WebAssembly.", and it should also have the stars as background.   
@@ -3428,7 +3427,7 @@
   One thing that follows from your own rule: the headline changes, so the
   simulator's link-preview image og.png gets redrawn with the new one.
 
-✻ Crunched for 31s · done 1:03 PM
+✻ Crunched for 31s · done Tuesday 1:03 PM
 
 ❯ Also, drop this: "One statement of what s4ql supports so far, see the         
   roadmap. The app's table barcodes is there to read; make tables of your own   
@@ -3453,7 +3452,7 @@
 
   It starts when the walker lands.
 
-✻ Baked for 13s · done 1:06 PM
+✻ Baked for 13s · done Tuesday 1:06 PM
 
 › Message from fabrik:builder
   Branch: `worktree-agent-a2bb79ffd29a314ac`. I reset it onto
@@ -3547,7 +3546,7 @@
   Running now: the walker's pull request, the redesign, and the checker's
   removal.
 
-✻ Brewed for 1m 1s · done 1:07 PM
+✻ Brewed for 1m 1s · done Tuesday 1:07 PM
 
 › Message from fabrik:builder
   The checker is gone from the simulator's Go code, from the page, from the site
@@ -3774,7 +3773,7 @@
 
   Running now: the walker's pull request, this one behind it, and the redesign.
 
-✻ Churned for 31s · done 1:12 PM
+✻ Churned for 31s · done Tuesday 1:12 PM
 
 › Message from general-purpose
   Pull request #142 is merged: https://github.com/maragudk/s4ql/pull/142. The
@@ -3812,7 +3811,7 @@
   Running now: the checker removal's pull request, which can merge now that the
   walker is in, and the redesign.
 
-✻ Churned for 3s · done 1:15 PM
+✻ Churned for 3s · done Tuesday 1:15 PM
 
 ⏺ Agent "Merge walker PR" finished · 8m 5s
 
@@ -3863,7 +3862,7 @@
 
   Also running: the redesign.
 
-✻ Baked for 53s · done 1:19 PM
+✻ Baked for 53s · done Tuesday 1:19 PM
 
 › Message from fabrik:builder
   The page is reshaped as asked and the checks pass: `make site-check` exits 0
@@ -4036,7 +4035,7 @@
 
   make site-check and the simulator's tests pass on the builder's branch.
 
-✻ Sautéed for 16s · done 1:24 PM
+✻ Sautéed for 16s · done Tuesday 1:24 PM
 
 › Message from general-purpose
   PR #143 is merged and live. Merge commit:
@@ -4083,7 +4082,7 @@
   its checks run against the page without the checker. An agent merges it when
   they pass, then checks the live page and the link preview, including whether
   the old preview image is still served from cache.
-✻ Sautéed for 28s · done 1:27 PM
+✻ Sautéed for 28s · done Tuesday 1:27 PM
 
 › Message from general-purpose
   Merged; all live checks pass.
@@ -4179,14 +4178,14 @@
   within a session goes on the list in docs/todo/. It would need a new event
   from the core.
 
-✻ Cogitated for 34m 37s · done 1:37 PM
+✻ Cogitated for 34m 37s · done Tuesday 1:37 PM
 
 ❯ Nah, drop that                                                                
 
 ⏺ Dropped. Nothing goes in docs/todo/, and nothing else is open from this
   session.
 
-✻ Sautéed for 1s · done 1:41 PM
+✻ Sautéed for 1s · done Tuesday 1:41 PM
 
 ❯ /export                                                                       
   ⎿  Conversation exported to /Users/maragubot/Developer/s4ql/2026-11-24-134109-
@@ -4200,7 +4199,7 @@
   docs/conversations/2026-11-24-simulator-dancer-stars-and-checker.txt,
   committed as bed0066 and pushed to main.
 
-✻ Baked for 15s · done 1:41 PM
+✻ Baked for 15s · done Tuesday 1:41 PM
 
 ※ recap: Today's goal was polishing the simulator page, and everything asked for is live: SQL section, strolling stick figure, stars, favicons, remembered toggles, one-line hero, and the page's checker removed. Nothing is pending; the next action is whatever you ask for. (turn off recaps in /config)
 
@@ -4233,7 +4232,7 @@
 
   Which do you want?
 
-✻ Churned for 14s · done 2:31 PM
+✻ Churned for 14s · done Tuesday 2:31 PM
 
 ※ recap: We're picking a cursor-following effect for the simulator page; I proposed four and recommend the stick figure walking to the pointer plus constellations between nearby stars. Next: tell me which to build.
 
@@ -4257,7 +4256,7 @@
   - Cost: no animation loop while the pointer is still.
   - No extras: no words on the page and no new site-check step.
 
-✻ Churned for 34s · done 2:53 PM
+✻ Churned for 34s · done Tuesday 2:53 PM
 
 ❯ What does that Cost mean?                                                     
 
@@ -4270,12 +4269,12 @@
   and a decoration that redraws 60 times a second forever would take time from
   them and drain laptop batteries.
 
-✻ Cogitated for 2s · done 2:55 PM
+✻ Cogitated for 2s · done Tuesday 2:55 PM
 
 ❯ Good point.                                                                   
 ⏺ The builder is still running; I'll report when the constellations are live.
 
-✻ Churned for 1s · done 2:55 PM
+✻ Churned for 1s · done Tuesday 2:55 PM
 
 › Message from fabrik:builder
   The constellations are built and committed on branch `constellations` (4
@@ -4413,7 +4412,7 @@
   - After a wheel scroll, the lines scroll with their stars until the next
     pointer move or the 0.9 s timer.
 
-✻ Baked for 26s · done 3:11 PM
+✻ Baked for 26s · done Tuesday 3:11 PM
 
 ⏺ Agent "Merge and deploy constellations" is waiting on its own background work 
   · 1m 3s
@@ -4421,7 +4420,7 @@
 ⏺ The merge agent is still waiting on the pull request's checks; nothing to
   report yet.
 
-✻ Baked for 19m 15s · done 3:12 PM
+✻ Baked for 19m 15s · done Tuesday 3:12 PM
 
 › Message from general-purpose
   PR #146 is merged and the deploy is live. One thing I did not check: the
@@ -4462,16 +4461,814 @@
   They are still only tested in Chromium, so tell me if anything looks off in
   Safari.
 
-✻ Sautéed for 19s · done 3:15 PM
+✻ Sautéed for 19s · done Tuesday 3:15 PM
 
 ❯ Nice. Works in Safari.                                                        
 
 ⏺ Good, then nothing is open from this session.
 
-✻ Sautéed for 1s · done 3:18 PM
+✻ Sautéed for 1s · done Tuesday 3:18 PM
 
 ❯ Good work bottie!                                                             
 
 ⏺ Thanks, Markus! That was a fun one.
 
-✻ Churned for 1s · done 3:23 PM
+✻ Churned for 1s · done Tuesday 3:23 PM
+
+❯ /export                                                                       
+  ⎿  Conversation exported to /Users/maragubot/Developer/s4ql/2026-11-24-152356-
+     id-like-the-sql-query-box-and-results-table-to-b.txt
+
+❯ exported                                                                      
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The new export replaces the earlier one at
+  docs/conversations/2026-11-24-simulator-dancer-stars-and-checker.txt,
+  committed as 927b2ff and pushed to main.
+
+✻ Baked for 8s · done Tuesday 3:24 PM
+
+❯ Can we ask the screen to stay on on mobile while the sim runs?                
+
+⏺ fabrik:builder(Build screen wake lock) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+⏺ Yes. Browsers have a Screen Wake Lock API for this, and a builder is adding it
+  now. It works in Safari on iOS 16.4 and later and in Chrome on Android.
+
+  What I asked for:
+
+  - When: the screen stays on while the simulation plays. The lock is released
+    on Pause, when the run stops, and when you leave the page. Browsers drop it
+    when the tab is hidden, so it's taken again when you come back while the
+    simulation is still playing.
+  - Where: desktop too. The reason is the same, it does no harm there, and it
+    saves a check for mobile.
+  - Silent: no button, no indicator, no words. Where the browser lacks the API
+    or refuses the request, nothing happens.
+
+  I'll merge and deploy it when the builder reports back.
+
+✻ Worked for 28s · done Tuesday 5:39 PM
+
+› Message from fabrik:builder
+  Branch `wake-lock`, one commit. Not pushed, no PR.
+
+  **What changed**
+  - `/site/simulator/page.js` has a new `keepAwake()`, called at the end of
+  `setPlaying`. That is the one place `playing` changes, so Play, Pause, halt,
+  end and Reset all go through it.
+  - While the page plays and is visible, it requests
+  `navigator.wakeLock.request("screen")` if it holds no lock and none is on its
+  way. When it stops playing, it releases the lock. If a request resolves after
+  a pause, the lock is released at once.
+  - The sentinel's `release` event clears the page's idea of the lock.
+  - Four listeners were added next to the Play button's listener:
+    - `visibilitychange` calls `keepAwake`.
+    - `pagehide` releases the lock.
+    - Capture-phase `click` and `keydown` call `keepAwake`, so a refused request
+  is retried at the next click or key, as `sound.js` does.
+  - A missing `navigator.wakeLock`, a rejected request and a synchronous throw
+  are all ignored silently. There is no text, button or indicator. I touched
+  nothing else on the site, nothing under `internal/`, and nothing in `docs/`
+  apart from the diary.
+  - The diary is `/docs/diary/2026-11-24-wake-lock.md`.
+
+  **What I checked** (local site server, Chromium via playwright-cli,
+  `navigator.wakeLock.request` wrapped with counters)
+  - Real wake lock: one request per Play, Pause releases it, the next Play takes
+  it again, and no console errors.
+  - Browser take-back, with a stub that plays the browser's part:
+    - The browser releases the lock while the page is hidden, and nothing is
+  requested while hidden.
+    - On `visibilitychange` back to visible while playing, it requests the lock
+  again.
+    - A refused request at Play is retried by the next click, and later clicks
+  add no extra request.
+    - Reset releases the lock.
+  - With `navigator.wakeLock` undefined: the page plays and logs no errors.
+  - `make site-check` ends with `sitecheck: ok`, and `go test -tags s4ql_browser
+  -short -count 1 ./internal/simulator/...` passes.
+
+  **Not checked**
+  - A real phone (iOS Safari, Android Chrome).
+  - A real tab hiding. Headless Chromium does not hide a tab when you switch
+  tabs, so I simulated the hidden state and the browser's release with a stub.
+  - I did not run the code-review skill, because the diff is about 40 lines in
+  one file.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Build screen wake lock" finished · 3m 50s
+
+⏺ Agent(Merge and deploy wake lock) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The wake lock is built, and an agent is taking it through the pull request,
+  merge, and deploy now.
+
+  It's about 40 lines in page.js, all hooked into the one function that starts
+  and stops play, so Play, Pause, a stop, and Reset all take or release the
+  lock. If the browser refuses the lock, which happens before your first tap, it
+  asks again at your next tap or key press.
+
+  It was checked in Chromium, with the hidden-tab case simulated. It hasn't been
+  tested on a real phone yet. Once it's live, start the simulator on your phone
+  and leave it untouched past your auto-lock time: the screen should stay on.
+
+✻ Worked for 17s · done Tuesday 5:43 PM
+
+› Message from general-purpose
+  PR #148 "Keep the screen on while the simulator page plays" is merged.
+  - Checks: 18 in total. 3 passed (`changes`, `site`, `govulncheck /
+  govulncheck`), 15 were skipping, and none were pending or failed.
+  - State: `gh pr view` shows `MERGED`. The merge commit is
+  53d4271a97be3336909a29fee87efab6d13aa942.
+  - Cleanup: `main` was fast-forwarded, and I deleted the remote branch
+  `wake-lock`. The worktree and local branch are left for you.
+  - Deploy: the pages run 45441089300 succeeded on the first try, with no
+  re-run.
+  - Curl: `https://www.s4ql.com/simulator/` contains the full merge SHA (3
+  matches). `page.js?v=<sha>` contains `wakeLock` (2 matches).
+  - No watches or background commands are still running. I stopped the polling
+  loop once the checks were in.
+  - Nothing is unconfirmed.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Merge and deploy wake lock" finished · 4m 31s
+
+⏺ The wake lock is live at www.s4ql.com/simulator/ (PR #148, merge commit
+  53d4271). All 18 checks were pass or skipped, and the Pages deploy succeeded
+  on the first try. The worktree and branches are removed.
+
+  To test it on your phone, start the simulator and leave it untouched past your
+  auto-lock time: the screen should stay on while it plays, and lock as usual
+  once you pause.
+
+✻ Cogitated for 9m 7s · done Tuesday 5:47 PM
+
+❯ Works!                                                                        
+
+⏺ Good, nothing is open from this session.
+
+✻ Crunched for 3s · done Tuesday 5:49 PM
+
+❯ Could you make the front page more concise and summarize some information? In 
+  particular the roadmap is getting way too long. We want to present the        
+  project properly to a new user, not give a detailed status.                   
+  ⎿  14 skills available
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+⏺ Answered Claude's questions:
+  ⎿  · The Status section lists 13 bullets of exact supported SQL plus 
+     'Checked', 'Not built', and 'Next'. For a new visitor, what should it 
+     become? → Fold into roadmap (Recommended)
+     · The front page's roadmap has 26 entries, 21 of them built (storage, 
+     parser, slices 1–15). AGENTS.md says built slices are never removed or 
+     folded, because you liked seeing progress. How should the site's roadmap 
+     look now? → Milestones (Recommended)
+
+⏺ fabrik:writer(Condense the front page)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ A writer is reworking the front page now. I'll show you screenshots before it
+  goes live.
+
+  - Roadmap: about six milestones. Storage on S3, the SQL front end, and basic
+    SQL on one table (shown as 15 slices) are built. Expressions, grouping and
+    joining, and the rest of what's decided next follow, with storage format
+    version 1 last. The page ends with a link to the full roadmap on GitHub.
+  - Status: the section goes. The hero's chips and the roadmap carry it, and
+    "not ready for use" stays visible.
+  - Everything else: tightened for a new visitor. The hero, "Why it exists", and
+    "How it is built" each say that agents write the code and nobody reviews
+    it, so that will be said once. Internal detail comes out, and the
+    interactive pieces stay. The headline stays, so the preview image doesn't
+    change.
+  - AGENTS.md: the rule that every built slice stays listed on the site changes.
+    The site's roadmap will change per milestone, and the slice-by-slice record
+    stays in docs/roadmap.md.
+
+✻ Crunched for 1m 15s · done 8:33 AM
+
+❯ And use a writer subagent and get a second opinion from Gemini                
+
+⏺ Skill(fabrik:second-opinion)
+  ⎿  Loaded skill
+
+  Made 1 scratchpad edit +15, ran 2 shell commands (ctrl+o to expand)
+
+⏺ Gemini (4 Carbon, high) is now reviewing the current front page, separately
+  from the writer. It doesn't know our plan, so its opinion won't be anchored on
+  it. The writer is already a writer sub-agent, as you asked.
+
+  When both are done, I'll compare Gemini's points with the writer's draft.
+  Where Gemini sees something the draft misses, a fresh writer folds it in. Then
+  I'll show you the result before it goes live.
+
+✻ Worked for 34s · done 8:34 AM
+
+› Message from fabrik:writer
+  The front page is reworked and checked, but three things you asked for are not
+  done: I did not commit, did not write the diary, and did not edit
+  `AGENTS.md`. My writer role forbids the first two (it leaves git state and
+  diary entries to the caller), and `CLAUDE.md` is a symlink to `AGENTS.md`,
+  which I may not change on an agent's instruction. The proposed entry is below
+  for you to apply.
+
+  ## State
+  - **Worktree:**
+  `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-ace43e7a99dd72d0c`
+  - **Branch:** `front-page`, at `c59b37b` with no commits. I ran `git reset
+  --hard main` (a no-op) and created the branch before I registered the conflict
+  with my role, and left it in place.
+  - **Uncommitted change:** `site/index.html` only (35 insertions, 240
+  deletions). Nothing in `site/simulator/` is touched.
+
+  ## Sections, before and after (words of page text)
+  | Section | Before | After |
+  | --- | --- | --- |
+  | Hero | 110 | 100 |
+  | Why it exists | 166 | 156 |
+  | What it does | 311 | 278 |
+  | How it is built | 232 | 195 |
+  | Status | 490 | removed |
+  | Roadmap | 1254 | 291 |
+  | Inspired by | 202 | 168 |
+  | Follow along | 34 | 19 |
+  | **Total** | **2799** | **1207** |
+
+  The file went from 1347 to 1142 lines.
+
+  ## What I cut or merged
+  - **Hero:** the lede drops "Trust has to come from verification", which the
+  `h1` already says. The `h1`, chips, rail, and `og:` tags are unchanged.
+  - **Why it exists:** "Nothing to operate" drops the sentence that repeated the
+  lede.
+  - **What it does:**
+    - "Interface" moves first and names the driver package `maragu.dev/s4ql`.
+    - "Lease" loses the 30 and 20 second figures.
+    - "Unknown outcome" is cut as internal detail.
+  - **How it is built:**
+    - The intro no longer repeats that agents write the code and nobody reviews
+  it.
+    - The "Deterministic simulation" item is folded into the intro, which said
+  the same.
+  - **Status:** removed, with the `.status-table` CSS. No link to `#status`
+  exists outside the old exports in `docs/conversations/`, which I left alone.
+  - **Roadmap:**
+    - 26 rows become 7.
+    - The legend and its CSS are gone; each row's label reads Built, Next, or
+  Later, and the row classes are now `built`, `next`, `later`.
+    - The intro now carries "s4ql is an experiment. It is not ready for use, and
+  anything in it may change."
+    - The section ends with a button to the full roadmap on GitHub.
+  - **Inspired by:** FoundationDB, Turbopuffer, and Litestream each lose a
+  trailing clause.
+  - **Follow along:** cut to one sentence; "How it is built" already lists what
+  is public.
+
+  ## New roadmap rows, verbatim
+  1. **Storage on S3** (Built): "The log of commits, the manifest swap, the
+  lease, recovery after a crash, the local cache, and the S3 client."
+  2. **SQL front end** (Built): "A tokenizer and a parser of s4ql's own. The
+  parser takes all of SQLite's grammar, and agrees with SQLite on which
+  statements parse, on the message of each syntax error, and on the shape of the
+  syntax tree. A pass after it rejects what is not supported yet."
+  3. **SQL on one table** (Built in 15 slices): "Strict tables with a primary
+  key, defaults, and indexes. Reads from one table with `select`, `where`,
+  `order by`, `limit`, and a scalar subquery in the `where`. Writes with
+  `insert` of one row, `update`, `delete`, and `returning`. Arguments and
+  transactions, through `database/sql`."
+  4. **Expressions** (Next): "Operators and functions, from an evaluator of
+  s4ql's own, in Go. For every expression it gives SQLite's answer or an error,
+  never a different answer."
+  5. **Grouping and joining** (Next): "Operators of s4ql's own, in Go, on top of
+  the cache's ordered scans and lookups by key. A statement that would hold
+  more rows in memory than a set limit fails with a clear error."
+  6. **More ways to write** (Next): "Upserts with `on conflict (key) do nothing`
+  and `do update`, several rows per `insert`, and several statements in one
+  `Exec`."
+  7. **Storage format version 1** (Later): "The formats are drafts until then.
+  From version 1 on, every version of s4ql reads what any older version wrote."
+
+  Then the button "Full roadmap on GitHub", to
+  `https://github.com/maragudk/s4ql/blob/main/docs/roadmap.md`.
+
+  ## Proposed `AGENTS.md` entry (not applied), replacing the entry on the site's
+  "Status" and "Roadmap" sections
+
+  ```markdown
+  ### On the public site, only the roadmap is kept up to date, at the level of
+  milestones
+
+  Do not update the public site in `site/` (served at www.s4ql.com) as a side
+  effect of other work, except the milestones in its "Roadmap" section.
+
+  - **Why:** Markus said on 2026-11-16: "you don't need to keep the public site
+  updated automatically, I'll do that once in a while", and then allowed updates
+  to the site's status "and the roadmap." On 2026-11-25 he had the front page's
+  "Status" section removed and its roadmap cut from a row for each slice to a
+  few milestones: "In particular the roadmap is getting way too long. We want to
+  present the project properly to a new user, not give a detailed status."
+  - **How to apply:** when a piece of the project is merged, update the "Status"
+  section of `README.md` and `docs/todo/`, as before. Update the section with
+  the id `roadmap` in `site/index.html` only when a milestone changes its state,
+  such as from next to built, or when its one-line summary would become wrong.
+  Built work stays visible on the site as built milestones, and the
+  slice-by-slice record stays in `docs/roadmap.md`; Markus on 2026-11-19: "don't
+  delete the old slices entirely from the roadmap? It's nice to see progress".
+  Leave everything else in `site/` alone unless Markus asks. Neither the lead
+  nor the builder makes these updates: the lead spawns a small sub-agent for
+  them after the work is merged, so that the lead's context stays clean and the
+  builder concentrates on the code. Markus: "I want to keep your context clean.
+  Delegate", and: "A small subagent after the work is done sounds better to me."
+  ```
+
+  I left out your example "such as the slice count of the built milestone".
+  `docs/roadmap.md` says the slices ended at 15 on 2026-11-24 and work is now
+  named by feature, so that count will not change.
+
+  ## What I checked
+  - **Facts:** every roadmap row against `docs/roadmap.md` ("At a glance" and
+  the areas), `README.md` Status, `docs/spec.md`, and
+  `docs/todo/expressions.md`.
+  - **Layout:** served `site/` with a static server and loaded the page at 1440
+  and 390 wide. There is no horizontal scroll at either width, and nothing in
+  `main` passes the right edge.
+  - **Console:** no errors. The only warnings came from my own canvas probe.
+  - **Interactive pieces:**
+    - The pattern seed redraws the hero field.
+    - Replaying a seed twice gives the same field and the "run 2" message, and
+  "New seed" changes it.
+    - A bad seed shows the error and `aria-invalid`.
+    - Hovering a commit lights it and its parent.
+    - The three bar codes and the mark draw.
+  - **Markup:** tags balance, ids are unique, and no in-page link is dangling.
+  - **Not run:** `make site-check`. It checks only `site/simulator/`, and the
+  Makefile has no check for the front page. I did not follow the simulator
+  links, because the static server had no built engine; their `href`s are
+  unchanged.
+
+  Screenshots:
+  - `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a1f6409-2444-4c23-
+  8123-ed5164204cd4/scratchpad/front-page-desktop-1440.png`
+  - `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a1f6409-2444-4c23-
+  8123-ed5164204cd4/scratchpad/front-page-phone-390.png`
+
+  ## Unsure, for your judgement
+  - **Inverted roadmap:** the roadmap now takes the white inverted frame that
+  Status had, since it carries the status and the design keeps one inverted
+  frame. I changed the glyph colours from `--lumin` to `--ink` so they show on
+  white. Removing `invert` from the section reverts it, but leaves the `.invert`
+  CSS unused.
+  - **Labels:** "Next" and "Later" replace "Agreed" and "Open". "Next" matches
+  the README's wording; "Later" for format version 1 is my word for what was
+  "Open".
+  - **Dropped row:** "More SQL, piece by piece" (Open) is gone; the intro covers
+  it.
+  - **Expressions row:** it says Next and does not mention that the arithmetic
+  evaluator in `internal/expr` is merged but not yet wired into the engine.
+  - **glue milestone:** `docs/roadmap.md` names glue as the first application,
+  but the site never mentioned it, so I did not add it.
+  - **Stale design notes:** `PRODUCT.md` and
+  `.impeccable/surfaces/site-index-html.md` still list "status" as page content.
+  I did not touch them.
+
+  ## For the diary, which is yours to write
+  - Nothing failed in the page work.
+  - One command was refused: a compound shell command with a here-doc, by the
+  worktree isolation ("too complex to verify that it stays inside the
+  worktree"). I split it into a script file and plain commands.
+  - The scratch scripts (word count, splice, tag balance) are in
+  `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a1f6409-2444-4c23-81
+  23-ed5164204cd4/scratchpad/front-page/`.
+
+  Read 1 file (ctrl+o to expand)
+⏺ Agent "Condense the front page" finished · 7m 5s
+
+⏺ The writer's draft is ready, and Gemini is still reviewing. I'll compare the
+  two once Gemini is done.
+
+  - Length: the page text drops from about 2,800 to 1,200 words.
+  - Roadmap: it goes from 26 rows to 7. Storage on S3, the SQL front end, and
+    SQL on one table ("built in 15 slices") are built. Expressions, grouping and
+    joining, and more ways to write are next. Storage format version 1 is
+    later. A button at the end links to the full roadmap.
+  - Status: the section is gone, and its line "not ready for use, anything may
+    change" now opens the roadmap.
+
+  Desktop screenshot: /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a
+  1f6409-2444-4c23-8123-ed5164204cd4/scratchpad/front-page-desktop-1440.png
+
+✻ Crunched for 10m 53s · done 8:40 AM
+
+⏺ Background command "Ask Gemini for a blind review of the front page" completed
+  (exit code 0)
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ Answered Claude's questions:
+  ⎿  · Gemini reviewed the current front page blind, and the writer's draft 
+     already does most of what it suggests: roadmap into milestones, Status 
+     gone, repetition cut. Four of its ideas would change the design or add 
+     content. Which do you want in the page? → I meant that it should be used as
+     a second opinion on the writer's output
+
+  Made 1 scratchpad edit +18, ran 2 shell commands (ctrl+o to expand)
+
+⏺ Understood. Gemini is now reviewing the writer's draft. It's looking for
+  what's still unclear or too long, any wrong facts, and whether the milestones
+  are the right ones.
+
+  When it's done, I'll check its claims against the repository. A fresh writer
+  then applies the points that hold up, and I'll show you the result before it
+  goes live.
+
+✻ Cooked for 57s · done 9:29 AM
+
+⏺ Background command "Ask Gemini to review the writer's draft adversarially"
+  completed (exit code 0)
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+⏺ fabrik:builder(Finish front page rework)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Gemini liked the draft's structure and found real problems in the details. I
+  checked its factual claims against the repository, and the ones below hold. A
+  builder is applying them to the draft now.
+
+  - Overstated claim: the draft said the parser agrees with SQLite on the shape
+    of the syntax tree and on every syntax error. The parser's README says the
+    tree follows the text, not SQLite's internal form, and docs/todo/ lists
+    known gaps in the error messages.
+  - Buried point: reads come from the local cache, but the hero never says so. A
+    newcomer reads "talks to the bucket directly" and assumes every query goes
+    to S3.
+  - Imprecise rows:
+    - Tables must be strict, without rowid, not just strict.
+    - A subquery can read another table.
+    - The memory limit covers any statement that holds rows, not just grouping
+      and joining.
+    - A spare instance takes over as soon as the lease is released, not only
+      when it times out.
+  - Builder language: the Next rows said "operators of s4ql's own"; they will
+    name group by, aggregates, and join instead. "Built in 15 slices" breaks the
+    Built, Next, Later labels.
+  - Small additions: a one-line s4ql.Open call in place of the prose about the
+    interface, Amazon S3 and Tigris as examples of stores that work, and cgo in
+    the hero's side panel.
+
+  Three of Gemini's suggestions change the design, so I left them for you:
+
+  - Replace the seed replay canvas in "How it is built" with a short pitch for
+    the simulator. Gemini thinks redrawing stripes from a seed makes the
+    simulation look like a gimmick.
+  - Add a link to @maragubot.com on Bluesky beside the GitHub button.
+  - Name glue as the goal the next milestones lead to.
+
+  Do you want any of these?
+
+✻ Cogitated for 1m 10s · done 9:36 AM
+
+› Message from fabrik:builder
+  The front page is reworked and committed on branch **`front-page-v2`**, not
+  `front-page`. A branch named `front-page` already existed, checked out in the
+  worktree `agent-ace43e7a99dd72d0c` at c59b37b with no commits of its own, so I
+  left it alone. Nothing is pushed.
+
+  There are three commits on `main`:
+  - ec219f7: the writer's draft, unchanged.
+  - 2e3b6bb: my changes, all in `site/index.html`.
+  - aa1ae87: the diary, `docs/diary/2026-11-25-front-page.md`. Step 1 is the
+  draft, step 2 is my changes, the checks and the review.
+
+  The page text is now **1,181 words** (header, main and footer).
+
+  **Hero, verbatim**
+  - Lede: "s4ql is an embedded database engine in the spirit of SQLite, with no
+  server to run. Writes commit to S3, and reads come from a local SQLite cache.
+  AI agents write every line, and no human reviews the code."
+  - Chips: Experiment | Storage built | SQL on one table built | Not ready for
+  use
+  - Rail: Infrastructure: S3 only | Writers: 1 per database | Databases:
+  Unlimited per bucket | Dialect: A subset of SQLite's | Reads: Local SQLite
+  cache | Interface: database/sql (cgo) | Pattern seed: 0x7334716c
+
+  **Roadmap rows, verbatim**
+  1. Storage on S3 (Built): "The log of commits, the manifest swap, the lease,
+  recovery after a crash, the local cache, and the S3 client."
+  2. SQL front end (Built): "A tokenizer and a parser of s4ql's own for all of
+  SQLite's grammar, checked against SQLite on the statements of its own tests."
+  3. SQL on one table (Built): "`strict, without rowid` tables with a primary
+  key, defaults, and indexes. `select` with `where`, `order by`, and `limit`.
+  `insert` of one row, `update`, `delete`, and `returning`. A scalar subquery,
+  also of another table, in the `where` of `select`, `update`, and `delete`.
+  Arguments and transactions. Built in 15 slices."
+  4. Expressions (Next): "Operators and functions. Each expression gives
+  SQLite's answer or an error, never a different answer."
+  5. Grouping and joining (Next): "`group by`, aggregates, and `join`."
+  6. A memory limit (Next): "A statement that would hold more rows in memory
+  than a set limit fails with a clear error and changes nothing."
+  7. Upserts and batches (Next): "Upserts with `on conflict (key) do nothing`
+  and `do update`, several rows per `insert`, and several statements in one
+  `Exec`."
+  8. More SQL (Later): "More of SQLite's SQL, piece by piece, and large
+  intermediate results spooled to the cache."
+  9. Storage format version 1 (Later): "The formats are drafts until then. From
+  version 1 on, every version of s4ql reads what any older version wrote."
+
+  **What I changed from your list, and why**
+  - **Row count:** the roadmap has 9 rows, not 7. The memory limit got its own
+  row, worded for any statement, so it isn't tied to grouping; that was shorter
+  than a clause naming `returning`. Spooling and more SQL share one Later row.
+  - **Chip:** at 390 wide the chips wrap to three rows instead of two.
+  "One-table SQL built" also took three rows; only a chip without "built" fits
+  two. I kept "SQL on one table built". It fits one row at 1440.
+  - **"S3 must offer":** it now ends "…, as Amazon S3 and Tigris do." That reads
+  better than "such as" after that label. Both stores are named in the doc
+  comment of `Options.Endpoint` in `s4ql.go`. `s3store/README.md` says nothing
+  has been run against AWS; the claim about AWS rests on AWS's own
+  documentation.
+  - **Interface:** the sheet shows `s4ql.Open(ctx, s4ql.Options{Bucket: "app",
+  Prefix: "users/42", CacheDir: "cache"})` returns a standard `*sql.DB`.
+  `Bucket` and `CacheDir` are the fields `s4ql.go` calls required. It is one
+  sentence, but it wraps to two lines at 1440 and three at 390.
+  - **Reads:** the merged row keeps "Each read sees one consistent state." as a
+  short middle sentence.
+  - Everything else on the list was done as asked.
+
+  **What I checked**
+  - **Facts:** each change was checked against `s4ql.go`, `docs/spec.md` (cgo,
+  lease release or timeout, reads from the cache),
+  `internal/sql/parser/README.md`, `docs/todo/sql-front-end.md`,
+  `internal/sql/corpus/README.md` (statements from SQLite's own tests),
+  `docs/roadmap.md` (slice 15, `strict, without rowid`, spooling later),
+  `docs/todo/operators.md` and `internal/store/s3store/README.md`.
+  - **Browser:** checked with playwright-cli at 1440 and 390 wide:
+    - Page width equals viewport width at both sizes, so there is no horizontal
+  scroll, and no element sticks out.
+    - The console shows no errors or warnings.
+    - The pattern seed redraws the hero field.
+    - Hovering a commit lights it and outlines its parent.
+    - Replaying the same seed twice gives identical canvases.
+    - New seed works, and an invalid seed shows the hint.
+  - **Self-review:** the code-review skill at low effort found no bugs.
+
+  **For you**
+  - `AGENTS.md` still tells the lead to update the site's section with the id
+  `status`, which this change removes.
+  - Not related to this change: on `main` too, an animated replay stops just
+  short of the full width (last pixel or so), so it differs slightly from the
+  first static draw. Two animated replays of the same seed are identical.
+
+  Files are in /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a1f6409-
+  2444-4c23-8123-ed5164204cd4/scratchpad:
+  - front-page-v2-1440.png
+  - front-page-v2-390.png
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Agent "Finish front page rework" finished · 5m 40s
+
+⏺ The reworked front page is ready on a branch. Have a look before it goes live:
+
+  - Desktop: /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a1f6409-24
+    44-4c23-8123-ed5164204cd4/scratchpad/front-page-v2-1440.png
+  - Phone: /private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a1f6409-2444
+    -4c23-8123-ed5164204cd4/scratchpad/front-page-v2-390.png
+
+  The page text is down from about 2,800 to 1,180 words, and Gemini's points are
+  applied. The roadmap now has 9 rows:
+
+  ┌──────────────────────────────┬───────┐
+  │          Milestone           │ State │
+  ├──────────────────────────────┼───────┤
+  │ Storage on S3                │ Built │
+  ├──────────────────────────────┼───────┤
+  │ SQL front end                │ Built │
+  ├──────────────────────────────┼───────┤
+  │ SQL on one table (15 slices) │ Built │
+  ├──────────────────────────────┼───────┤
+  │ Expressions                  │ Next  │
+  ├──────────────────────────────┼───────┤
+  │ Grouping and joining         │ Next  │
+  ├──────────────────────────────┼───────┤
+  │ A memory limit               │ Next  │
+  ├──────────────────────────────┼───────┤
+  │ Upserts and batches          │ Next  │
+  ├──────────────────────────────┼───────┤
+  │ More SQL                     │ Later │
+  ├──────────────────────────────┼───────┤
+  │ Storage format version 1     │ Later │
+  └──────────────────────────────┴───────┘
+
+  The memory limit got a row of its own because it covers any statement, not
+  just grouping. The hero now says that reads come from a local SQLite cache.
+
+  Ship it? You also haven't said yet whether you want any of the three design
+  ideas: the replay canvas, the Bluesky link, and glue.
+
+✻ Worked for 6m 46s · done 9:42 AM
+
+❯ I don't want either of the ideas. Ship it.                                    
+
+⏺ Agent(Merge and deploy front page) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+  Read 1 file, listed 1 directory (ctrl+o to expand)
+
+⏺ Update(AGENTS.md)
+  ⎿  Added 4 lines, removed 4 lines
+      62  - **Why:** Markus said on 2026-11-10: "If it's what we agreed y
+          ou can just commit. Less friction, I don't want to be the bottl
+          eneck in this project", and later the same day: "merge whenever
+           you like. We can always revert. But I'd like to stay involved
+          in high-level design, architecture, goals, etc." On 2026-11-12,
+           when asked to approve the wording of a comment in the schema:
+          "Remember, you own the code. I want to be part of high-level de
+          sign and architecture decisions (such as specs, data formats),
+          you handle the details." On 2026-11-18, when asked which litera
+          ls and errors the first slice of SQL includes: "I think you sho
+          uld decide on these low-level decisions. Use your best judgment
+          ." On 2026-11-25, when shown the names of new exported errors,
+          the order in which a row's conditions are evaluated, and a refu
+          sal of one kind of update: "I don't want to decide on error nam
+          es, that's details for you. The other stuff honestly looks like
+           implementation details too".
+      63  - **How to apply:** check the work yourself against what was ag
+          reed, and commit and merge it if it matches and CI passes. Deci
+          de implementation details yourself and tell him what you chose.
+           A detail inside a file he reviewed, such as a comment in the s
+          chema, is still a detail: fix it and do not ask. What a single
+          statement, literal, or error does within an agreed piece of wor
+          k is a detail too: decide it by SQLite's behaviour and the agre
+          ed rules, record it in the file of its piece of work in `docs/t
+          odo/` or the roadmap, and tell him. The names of exported error
+          s, when an error of evaluation comes, and which single forms of
+           a statement are refused are details in the same way: do not pu
+          t them to him as questions, and keep what he is told about them
+           to a line. Bring him questions of design, architecture, scope,
+           and goals, and anything that deviates from what was agreed. Wo
+          rding in `docs/spec.md` still needs his explicit agreement befo
+          re it is written.
+      64 
+      65 -### On the public site, only the "Status" and "Roadmap" section
+         -s are kept up to date                                          
+      65 +### On the public site, only the roadmap is kept up to date, at
+         + the level of milestones                                       
+      66 
+      67 -Do not update the public site in `site/` (served at www.s4ql.co
+         -m) as a side effect of other work, except its "Status" and "Roa
+         -dmap" sections.                                                
+      67 +Do not update the public site in `site/` (served at www.s4ql.co
+         +m) as a side effect of other work, except the milestones in its
+         + "Roadmap" section.                                            
+      68 
+      69 -- **Why:** Markus said on 2026-11-16: "you don't need to keep t
+         -he public site updated automatically, I'll do that once in a wh
+         -ile", and then: "feel free to update the Status section on the 
+         -site, but only that", "and the roadmap."                       
+      70 -- **How to apply:** when a piece of the project is merged, upda
+         -te the "Status" section of `README.md`, the section with the id
+         - `status` in `site/index.html`, and `docs/todo/`. Keep the site
+         -'s status as short as the README's, and by feature like it, not
+         - slice by slice. When `docs/roadmap.md` changes or a slice of i
+         -t is built, update the section with the id `roadmap` in `site/i
+         -ndex.html` to match. A slice that is built stays in both, marke
+         -d as built, and is never removed or folded into another; Markus
+         - on 2026-11-19: "don't delete the old slices entirely from the 
+         -roadmap? It's nice to see progress". Leave everything else in `
+         -site/` alone unless Markus asks. Neither the lead nor the build
+         -er makes these updates: the lead spawns a small sub-agent for t
+         -hem after the work is merged, so that the lead's context stays 
+         -clean and the builder concentrates on the code. Markus: "I want
+         - to keep your context clean. Delegate", and: "A small subagent 
+         -after the work is done sounds better to me."                   
+      69 +- **Why:** Markus said on 2026-11-16: "you don't need to keep t
+         +he public site updated automatically, I'll do that once in a wh
+         +ile", and then allowed updates to the site's status "and the ro
+         +admap." On 2026-11-25 he had the front page's "Status" section 
+         +removed and its roadmap cut from a row per slice to a few miles
+         +tones: "In particular the roadmap is getting way too long. We w
+         +ant to present the project properly to a new user, not give a d
+         +etailed status."                                               
+      70 +- **How to apply:** when a piece of the project is merged, upda
+         +te the "Status" section of `README.md` and `docs/todo/`. Update
+         + the section with the id `roadmap` in `site/index.html` only wh
+         +en a milestone changes its state, such as from next to built, o
+         +r when its one-line summary would become wrong. Built work stay
+         +s visible on the site as built milestones, and the slice-by-sli
+         +ce record stays in `docs/roadmap.md`; Markus on 2026-11-19: "do
+         +n't delete the old slices entirely from the roadmap? It's nice 
+         +to see progress". Leave everything else in `site/` alone unless
+         + Markus asks. Neither the lead nor the builder makes these upda
+         +tes: the lead spawns a small sub-agent for them after the work 
+         +is merged, so that the lead's context stays clean and the build
+         +er concentrates on the code. Markus: "I want to keep your conte
+         +xt clean. Delegate", and: "A small subagent after the work is d
+         +one sounds better to me."                                      
+      71 
+      72  ### On the site, design before words
+      73 
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Shipping now. An agent is taking the front page through the pull request,
+  merge, and deploy. None of the three design ideas went in.
+
+  I've also updated the site rule in AGENTS.md (commit 4e7240e, pushed to main).
+  The site's roadmap now changes only when a milestone changes state or its
+  one-line summary would become wrong. The slice-by-slice record stays in
+  docs/roadmap.md, and the site no longer has a status to keep up to date.
+
+✻ Worked for 39s · done 9:47 AM
+
+› Message from general-purpose
+  PR #152 is merged, the Pages deploy succeeded, and the live page shows the new
+  content. Nothing is left unconfirmed.
+
+  - **PR and checks:** 18 checks in total. `changes` passed, and so did `site`
+  and `govulncheck`. The other 15 were skipping, and none was pending.
+  - **Merge:** merge commit `7a72e0378e4cbbfff7c2b96af633e22813d35cb7`, and `gh
+  pr view` confirmed `MERGED`. `main` is fast-forwarded to it. I deleted the
+  remote branch `front-page-v2` myself, because GitHub had not.
+  - **Deploy:** the pages run 45579789366 for the merge commit finished
+  successfully, and `gh run watch` exited 0.
+  - **Curl:** `https://www.s4ql.com/` contains "SQL on one table built" (1
+  match) and has no `id="status"` (0 matches). That holds both with a
+  cache-busting query and without one.
+
+  I left no watches or background commands running, and I did not touch
+  worktrees or local branches.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Merge and deploy front page" finished · 3m 34s
+
+⏺ The new front page is live at www.s4ql.com (PR #152, merge commit 7a72e03).
+  All 18 checks were pass or skipped, the Pages deploy succeeded, and the live
+  page has the milestone roadmap and no Status section. The worktree and
+  branches are removed.
+✻ Sautéed for 3m 54s · done 9:51 AM
+
+❯ Get rid of the EXPERIMENT STORAGE BUILT etc. box in the hero                  
+
+⏺ Agent(Remove hero state chips) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ An agent is removing the hero's chip row and its CSS, then taking the change
+  through the pull request, merge, and deploy. "Experiment, not ready for use"
+  stays at the top of the roadmap.
+
+✻ Cooked for 16s · done 9:52 AM
+
+› Message from general-purpose
+  The chips are gone from the hero, PR #153 is merged, and the pages deploy
+  succeeded. The live page no longer contains `class="state caps"`.
+
+  - **Removed:** the `<ul class="state caps" aria-label="Project state">` markup
+  with its 4 `<li>` chips, and the three CSS rules `.state li { background:
+  var(--void); }`, `.state { ... }` and `.state li` plus `.state li.on`. No
+  script code used `.state`, so no JS changed. The word "state" elsewhere on the
+  page is ordinary prose and a CSS comment, left alone.
+  - **Visual check:** at 1440 and 390 wide there is no gap or broken spacing
+  below the action buttons, so no spacing fix was needed. The console showed 0
+  errors and 0 warnings.
+  - **PR:** #153. Checks were 3 `pass` and 15 `skipping`, and `changes` passed.
+  - **Merge:** state is `MERGED`, merge SHA
+  `8cb7d7701c17df49c74bec82cae6f6e93a3767e6`. The remote branch `hero-chips` was
+  not deleted by GitHub, so I deleted it myself.
+  - **Deploy:** the "pages" run 45580630876 for the merge commit succeeded on
+  the first try, with no re-run.
+  - **Curl:** `curl -s "https://www.s4ql.com/?x=$RANDOM"` returned 0 matches for
+  `class="state caps"`.
+  - **Screenshot:** `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a1
+  f6409-2444-4c23-8123-ed5164204cd4/scratchpad/hero-no-chips.png`. There is also
+  a 390-wide one at `/private/tmp/claude-502/-Users-maragubot-Developer-s4ql/3a
+  1f6409-2444-4c23-8123-ed5164204cd4/scratchpad/hero-390.png`.
+  - **Local state:** local branch is `hero-chips`, in worktree
+  `/Users/maragubot/Developer/s4ql/.claude/worktrees/agent-a26f73c2ba57f6618`,
+  both kept as asked. All watches are stopped.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Remove hero state chips" finished · 4m 14s
+
+⏺ The chip row is gone from the hero on www.s4ql.com (PR #153, merge commit
+  8cb7d77). Its markup and CSS came out, and no script used it. The layout
+  closes up cleanly at desktop and phone widths, the deploy succeeded, and the
+  worktree and branches are removed.
+
+✻ Crunched for 4m 39s · done 9:57 AM
+
+❯ Good job bottie.                                                              
+
+⏺ Thanks, Markus! Nothing is open from this session.
+
+✻ Cogitated for 8s · done 10:41 AM
