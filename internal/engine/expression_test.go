@@ -1105,6 +1105,12 @@ func TestEngine_arithmetic(t *testing.T) {
 			// The key is never NULL, so the subquery is not computed, nor its expression.
 			{"select k from t where k is null and k = (select k from t where a = ? * 2)", []any{maxInt}, "none reads 0 gives "},
 			{"select k from t where k = (select k from t where a = ? * 2)", []any{maxInt}, "s4ql: integer overflow in * (at offset 53)"},
+			// A comparison with NULL keeps the subquery from being computed only where it is a constant, or
+			// serves the access, and not where it is computed for each row.
+			{"select k from t where k = ? + 0 and k = (select k from t where k = 1 + ?)", []any{nil, maxInt}, "none reads 0 gives "},
+			{"select k from t where k = ? and k = (select k from t where k = 1 + ?)", []any{nil, maxInt}, "none reads 0 gives "},
+			{"select k from t where b = ? and k = (select k from t where k = 1 + ?)", []any{nil, maxInt}, "none reads 0 gives "},
+			{"select k from t where k + 0 = ? and k = (select k from t where k = 1 + ?)", []any{nil, maxInt}, "s4ql: integer overflow in + (at offset 67)"},
 			// The names, the lengths, and the types come before.
 			{"select k from t where k = 1 + ? and x = 1", []any{maxInt}, "1/1: no such column: x"},
 			{"select k from t where k = 1 + ? and s = 1", []any{maxInt}, "s4ql: not supported: an integer literal compared with the column t.s of type TEXT"},
@@ -1202,6 +1208,79 @@ func TestEngine_arithmetic(t *testing.T) {
 		got := d.run("select k from t where k + ? = 1", strings.Repeat("a", 1000))
 		got.is("not supported")
 		is.Equal(t, "s4ql: not supported: argument 1 in arithmetic, which is text (at offset 26)", got.got.message)
+		d.same()
+	})
+
+	t.Run("should name the first column in the order of the table that gets NULL and does not take it, as SQLite does, whatever the order of SET", func(t *testing.T) {
+		d := newDuo(t, 0,
+			"create table t (k int primary key, a int not null, b int not null) strict, without rowid",
+			"insert into t values (1, 1, 1)")
+		d.run("update t set b = a + ?, a = b + ?", nil, nil).is("19/1299: NOT NULL constraint failed: t.a")
+		d.run("update t set a = b + ?, b = a + ?", nil, nil).is("19/1299: NOT NULL constraint failed: t.a")
+		d.run("update t set b = ?, a = b + ?", nil, nil).is("19/1299: NOT NULL constraint failed: t.a")
+		d.run("update t set b = a + ?, a = b", nil).is("19/1299: NOT NULL constraint failed: t.b")
+		d.run("update t set b = a * 2, a = b + ?", nil).is("19/1299: NOT NULL constraint failed: t.a")
+		d.run("update t set b = a + 1, a = b + 1 returning *").ok()
+		d.same()
+	})
+
+	t.Run("should compute the constants of SET, then of WHERE, then of each subquery, each in the order of the text, and the two sides of a comparison left to right", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		setUp(t, i)
+		maxInt := int64(math.MaxInt64)
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			// SET before WHERE, and the text's order within each.
+			{"update t set a = ? + 1 where k = ? * 2", []any{maxInt, maxInt}, "s4ql: integer overflow in + (at offset 17)"},
+			{"update t set a = 1, b = ? * 2 where k = ? + 1", []any{maxInt, maxInt}, "s4ql: integer overflow in * (at offset 24)"},
+			{"update t set b = ? + 1, a = ? * 2", []any{maxInt, maxInt}, "s4ql: integer overflow in + (at offset 17)"},
+			{"select k from t where k = ? + 1 and a = ? * 2", []any{maxInt, maxInt}, "s4ql: integer overflow in + (at offset 26)"},
+			{"select k from t where a = ? * 2 and k = ? + 1", []any{maxInt, maxInt}, "s4ql: integer overflow in * (at offset 26)"},
+			{"delete from t where k = 1 / ? and a = ? * 2", []any{int64(0), maxInt}, "s4ql: division by zero in / (at offset 24)"},
+			// The constants of the WHERE of the statement before those of its subquery, wherever it stands.
+			{"select k from t where k = (select k from t where k = ? + 1) and a = ? * 2", []any{maxInt, maxInt}, "s4ql: integer overflow in * (at offset 68)"},
+			// The two sides of a comparison that are computed for each row, left to right, on every row.
+			{"select k from t where k + 9223372036854775807 = k / (k - k)", nil, "s4ql: integer overflow in + (at offset 22)"},
+			{"select k from t where k / (k - k) = k + 9223372036854775807", nil, "s4ql: division by zero in / (at offset 22)"},
+			{"select k from t where k + 9223372036854775807 = (k - k) / k", nil, "s4ql: integer overflow in + (at offset 22)"},
+		} {
+			got := i.queryValues(c.src, values(c.args))
+			if !strings.HasPrefix(c.src, "select") {
+				got = i.execValues(c.src, values(c.args))
+			}
+			is.Equal(t, c.want, got.message, c.src)
+		}
+	})
+
+	t.Run("should give SQLite's attempt to write a readonly database for an update or a delete in a read-only transaction, and compute no constant there", func(t *testing.T) {
+		d := newDuo(t, 0,
+			"create table t (k int primary key, a int, s text) strict, without rowid",
+			"insert into t values (1, 1, 'x')")
+		is.NotError(t, d.i.c.BeginReadOnly(t.Context()))
+		for _, src := range oracleBegin(true) {
+			is.Equal(t, "", d.o.run(t, src).err, src)
+		}
+		maxInt := int64(math.MaxInt64)
+		const readOnly = "8/8: attempt to write a readonly database"
+		d.run("delete from t where k = 1 + ?", maxInt).is(readOnly)
+		d.run("delete from t where k = 99 and a = 1 + ?", maxInt).is(readOnly)
+		d.run("update t set a = ? * 2", maxInt).is(readOnly)
+		d.run("update t set a = ? * 2 where k = 1", maxInt).is(readOnly)
+		d.run("update t set a = a + 1 where k = 1 + ?", maxInt).is(readOnly)
+		d.run("update t set a = a + 1").is(readOnly)
+		d.run("update t set a = a * 9223372036854775807 where k = 1").is(readOnly)
+		d.run("delete from t where a / (a - a) = 1").is(readOnly)
+		d.run("delete from t where k = (select k from t where a = 1 + ?)", maxInt).is(readOnly)
+		// The names come first, and a select computes its constants as outside a transaction.
+		d.run("update t set a = x + 1").is("1/1: no such column: x")
+		is.Equal(t, "s4ql: integer overflow in + (at offset 26)", d.i.queryValues("select k from t where k = 1 + ?", values([]any{maxInt})).message)
+		is.NotError(t, d.i.c.Rollback(t.Context()))
+		for _, src := range oracleEnd(true, false) {
+			is.Equal(t, "", d.o.run(t, src).err, src)
+		}
 		d.same()
 	})
 
