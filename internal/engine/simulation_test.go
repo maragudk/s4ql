@@ -361,7 +361,7 @@ type run struct {
 	// q is the sequence of statements that every caller takes its next statement from, so that
 	// they meet at the same tables.
 	q *sequence
-	// crashed databases, which stay open: see [run.crash].
+	// crashed databases, whose files [simulate] closes after the run: see [run.crash].
 	crashed []*core.DB
 	// checks is the number of integrity checks of caches: see [run.checkCache].
 	checks int
@@ -1250,9 +1250,8 @@ func (r *run) endKept(ctx context.Context, n *node, e *engine.Engine) (served, o
 }
 
 // crash a random live node, and start a new node on a copy of what its cache left on disk, or on an
-// empty cache. The crashed database stays open until the test binary ends: only the core's own tests
-// can close the cache of a crashed instance, so the address sanitizer, which reports what is left
-// open, runs no crashes.
+// empty cache. The crashed database stays open until the end of the run, when [simulate] closes its
+// files, as the operating system would. The address sanitizer runs no crashes.
 func (r *run) crash(ctx context.Context, i int) []host.Task {
 	// The victim is a node that runs a statement, if one does within ten seconds, so that a crash
 	// often cuts a statement.
@@ -2420,6 +2419,13 @@ func simulate(t *testing.T, seed uint64, w workload) simulation {
 			s.r = w.do(ctx, world, seed, dir, t)
 		})
 		s.lines = world.Lines()
+		// The operating system would have closed the files of a crashed process. Nothing reads them
+		// after the run: the checks of a crashed cache are at its crash.
+		if s.r != nil {
+			for _, d := range s.r.crashed {
+				d.CloseCache()
+			}
+		}
 	})
 	return s
 }
