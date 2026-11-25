@@ -82,6 +82,8 @@ func TestSubqueries(t *testing.T) {
 		}
 		internal(t, "the subquery 2 of a statement with 1", s.lengths(build{}, &Subquery{Number: 2}))
 		internal(t, "the subquery 2 of a statement with 1", s.types(build{}, &Subquery{Number: 2}, outer, 0))
+		f := &Filter{Conditions: []Condition{{Column: stmt.Name{Value: "k"}, Operator: stmt.OpEqual, Value: &Subquery{Number: 2}}}}
+		internal(t, "the subquery 2 of a statement with 1", build{r: fakeTx{newTables()}, subs: s}.compute(t.Context(), f, &scan{table: outer}, make([]condition, 1), false))
 	})
 
 	t.Run("should find the table of a subquery once, with its width, and pass on the error of the lookup", func(t *testing.T) {
