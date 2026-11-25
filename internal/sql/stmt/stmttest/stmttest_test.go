@@ -730,3 +730,72 @@ func TestGenerator_Subquery(t *testing.T) {
 		}
 	})
 }
+
+func TestGenerator_Expression(t *testing.T) {
+	pools, err := stmttest.NamePools()
+	is.NotError(t, err)
+	// count the selects, updates, and deletes of g, which must each be the statement that the pass
+	// gives for its text, by where their expressions are and what they hold.
+	count := func(g *stmttest.Generator) map[string]int {
+		kinds := map[string]int{}
+		var walk func(e stmt.Expression)
+		walk = func(e stmt.Expression) {
+			kinds[e.Kind.String()+" node"]++
+			for _, o := range e.Operands {
+				walk(o)
+			}
+		}
+		for _, k := range []stmttest.Kind{stmttest.KindSelect, stmttest.KindUpdate, stmttest.KindDelete} {
+			for range 300 {
+				src, s, args := g.CallOf(k)
+				got, err := stmt.Check(src)
+				is.NotError(t, err, src)
+				is.Equal(t, fmt.Sprintf("%#v", s), fmt.Sprintf("%#v", got), src)
+				is.Equal(t, len(args), s.Parameters(), src)
+				var where []stmt.Condition
+				switch s := s.(type) {
+				case *stmt.Select:
+					where = s.Where
+				case *stmt.Update:
+					where = s.Where
+					for _, a := range s.Set {
+						if a.Value.Expression.Present() {
+							kinds["in set"]++
+							walk(a.Value.Expression)
+						}
+					}
+				case *stmt.Delete:
+					where = s.Where
+				}
+				for _, c := range where {
+					if c.Expression.Present() {
+						kinds[fmt.Sprint("tested, value first ", c.ValueFirst)]++
+						walk(c.Expression)
+					}
+					if e := c.Value.Expression; e.Present() {
+						kinds[fmt.Sprint("value with a column ", e.HasColumn(), ", value first ", c.ValueFirst)]++
+						walk(e)
+					}
+				}
+			}
+		}
+		return kinds
+	}
+
+	t.Run("should write an expression only with Expression", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(25, 26)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.Changes, g.ValueFirst = 3, 3, 3, 4, 3, 3
+		is.Equal(t, 0, len(count(g)))
+	})
+
+	t.Run("should write expressions in set and on either side of a comparison, with every kind of node, with Expression", func(t *testing.T) {
+		g := stmttest.NewGenerator(rand.New(rand.NewPCG(25, 26)), pools)
+		g.Parameters, g.Columns, g.Nulls, g.Conditions, g.Changes, g.ValueFirst, g.Subquery, g.Expression = 3, 3, 3, 4, 3, 3, 4, 2
+		kinds := count(g)
+		for _, k := range []string{"in set", "tested, value first true", "tested, value first false", "value with a column true, value first true",
+			"value with a column true, value first false", "value with a column false, value first true", "value with a column false, value first false",
+			"value node", "parameter node", "column node", "+ node", "- node", "* node", "/ node"} {
+			is.True(t, kinds[k] > 5, fmt.Sprint(k, " ", kinds))
+		}
+	})
+}

@@ -310,11 +310,23 @@ type Generator struct {
 	// [Generator.Order] gives them. The generator writes it in parentheses in place of the value, and
 	// numbers it among the subqueries of the statement in the order of the text.
 	Inner func(n int) stmt.Select
+	// Expression, if not 0, makes the generator write the arithmetic expressions of the piece of work
+	// arithmetic, of +, -, *, /, and a negation, on columns from the pool of [SelectColumn], integer
+	// and real literals, and, with [Generator.Parameters], parameters, up to three levels of operators
+	// deep, with parentheses where SQLite needs them and now and then where it does not. One value of
+	// an assignment at random of an update in Expression is an expression, or one time in four a
+	// column alone. One comparison of a WHERE at random in Expression tests an expression of its
+	// column, compared with a value without a column, and, drawn apart from that, the value of one
+	// comparison at random in Expression is an expression, with a column or without one where the
+	// comparison tests a column alone. With 0 the generator draws as it did before arithmetic.
+	Expression int
 	// subqueries of the statement that the generator writes, in the order of the text, and inner
 	// reports whether it writes the select of one.
 	subqueries []stmt.Select
 	inner      bool
-	b          strings.Builder
+	// open reports whether the last token of an expression is an opening parenthesis.
+	open bool
+	b    strings.Builder
 }
 
 // NewGenerator with the random numbers of r and a pool of names for each [Position]. Each name of a
@@ -713,19 +725,30 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.N
 			c = g.condition(columns, conditions)
 		}
 		test := c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull
+		// With Expression, a comparison at random tests an expression of its column.
+		subject := !test && random && g.Expression > 0 && g.r.IntN(g.Expression) == 0
 		if !test && (c.ValueFirst || g.ValueFirst > 0 && g.turned.IntN(g.ValueFirst) == 0) {
 			// The value on the left, the operator swapped, and the column on the right, which reads as
 			// the condition c.
 			w := stmt.Condition{Operator: c.Operator, ValueFirst: true}
-			w.Value, args = g.conditionValue(random, table, c.Value, args)
+			w.Value, args = g.conditionValue(random, table, c.Value, !subject, args)
 			g.gap(false)
 			g.punct(g.spelling(c.Operator.Swapped()))
 			g.gap(false)
-			w.Column = g.write(c.Column.Raw)
+			if subject {
+				w.Expression, args = g.subjectOf(c.Column.Raw, args)
+			} else {
+				w.Column = g.write(c.Column.Raw)
+			}
 			conditions = append(conditions, w)
 			continue
 		}
-		w := stmt.Condition{Column: g.write(c.Column.Raw), Operator: c.Operator}
+		w := stmt.Condition{Operator: c.Operator}
+		if subject {
+			w.Expression, args = g.subjectOf(c.Column.Raw, args)
+		} else {
+			w.Column = g.write(c.Column.Raw)
+		}
 		var spellings []string
 		for _, o := range operators {
 			if o.op == c.Operator {
@@ -748,7 +771,7 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.N
 			g.gap(false)
 			g.punct(spellings[g.r.IntN(len(spellings))])
 			g.gap(false)
-			w.Value, args = g.conditionValue(random, table, c.Value, args)
+			w.Value, args = g.conditionValue(random, table, c.Value, !subject, args)
 		}
 		conditions = append(conditions, w)
 	}
@@ -758,16 +781,22 @@ func (g *Generator) conditions(given []stmt.Condition, random bool, table stmt.N
 // conditionValue of a comparison of a WHERE of the table, after the arguments args of the
 // parameters before it: if random, one time in [Generator.Subquery] a subquery, as
 // [Generator.subquery] writes it, outside the select of a subquery; if not random, the subquery that
-// [Generator.Inner] gives for a given term that names one, outside the select of a subquery; and
-// otherwise the term of the value of given, as [Generator.term] writes it. It gives the arguments
-// with those of the value.
-func (g *Generator) conditionValue(random bool, table stmt.Name, given stmt.Term, args []any) (stmt.Term, []any) {
+// [Generator.Inner] gives for a given term that names one, outside the select of a subquery; if
+// random, one time in [Generator.Expression] an expression, with a column or without one if columns,
+// and otherwise without one; and otherwise the term of the value of given, as [Generator.term] writes
+// it. It gives the arguments with those of the value.
+func (g *Generator) conditionValue(random bool, table stmt.Name, given stmt.Term, columns bool, args []any) (stmt.Term, []any) {
 	switch {
 	case random && g.Subquery > 0 && !g.inner && g.r.IntN(g.Subquery) == 0:
 		return g.subquery(table, nil, args)
 	case !random && given.Subquery > 0 && g.Inner != nil && !g.inner:
 		q := g.Inner(given.Subquery)
 		return g.subquery(table, &q, args)
+	case random && g.Expression > 0 && g.r.IntN(g.Expression) == 0:
+		if columns {
+			return g.expressionTerm(anyColumn, false, args)
+		}
+		return g.expressionTerm(noColumn, false, args)
 	}
 	return g.term(given.Value, args)
 }
@@ -834,7 +863,10 @@ func (g *Generator) subquery(table stmt.Name, given *stmt.Select, args []any) (s
 func (g *Generator) condition(columns []stmt.Name, before []stmt.Condition) stmt.Condition {
 	names := slices.Clone(columns)
 	for _, c := range before {
-		names = append(names, c.Column)
+		// A condition that tests an expression has no column of its own.
+		if c.Column.Raw != "" {
+			names = append(names, c.Column)
+		}
 	}
 	var c stmt.Condition
 	if len(names) > 0 && g.r.IntN(3) == 0 {
@@ -894,7 +926,11 @@ func (g *Generator) update(c *stmt.Update) []any {
 			g.punct("=")
 		}
 		g.gap(false)
-		w.Value, args = g.term(a.Value.Value, args)
+		if g.Update == nil && g.Expression > 0 && g.r.IntN(g.Expression) == 0 {
+			w.Value, args = g.expressionTerm(anyColumn, true, args)
+		} else {
+			w.Value, args = g.term(a.Value.Value, args)
+		}
 		c.Set = append(c.Set, w)
 	}
 	// A condition at random can test a column of the assignments that SQLite reads as a column in
@@ -938,7 +974,9 @@ func (g *Generator) order(s *stmt.Select, args []any) ([]stmt.OrderColumn, stmt.
 	var named []stmt.Name
 	named = append(named, s.Columns...)
 	for _, c := range s.Where {
-		named = append(named, c.Column)
+		if c.Column.Raw != "" {
+			named = append(named, c.Column)
+		}
 	}
 	var columns []stmt.OrderColumn
 	seen := map[string]bool{}
@@ -1331,7 +1369,10 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 			named = append(named, a.Column)
 		}
 		for _, w := range c.Where {
-			named = append(named, w.Column)
+			// A condition that tests an expression has no column of its own.
+			if w.Column.Raw != "" {
+				named = append(named, w.Column)
+			}
 		}
 		c.Returning = g.returning(c.Table, named)
 		s, span = c, &c.Span
@@ -1350,7 +1391,10 @@ func (g *Generator) statement(k Kind) (string, stmt.Statement, []any) {
 		c.Subqueries = g.subqueries
 		var named []stmt.Name
 		for _, w := range c.Where {
-			named = append(named, w.Column)
+			// A condition that tests an expression has no column of its own.
+			if w.Column.Raw != "" {
+				named = append(named, w.Column)
+			}
 		}
 		c.Returning = g.returning(c.Table, named)
 		s, span = c, &c.Span

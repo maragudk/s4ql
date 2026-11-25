@@ -60,6 +60,7 @@ func newGenerator(t testing.TB, seed uint64) *stmttest.Generator {
 	g.OrderBy = 3
 	g.Returning = 3
 	g.Subquery = 4
+	g.Expression = 4
 	return g
 }
 
@@ -148,7 +149,7 @@ func TestGenerate_mutants(t *testing.T) {
 		}
 	}
 	t.Logf("%v mutants: %v", n**mutantsEach, c)
-	excused(t, c, 35, 139)
+	excused(t, c, 34, 165)
 	var names []string
 	for k := range kinds {
 		names = append(names, k)
@@ -1055,9 +1056,10 @@ func TestGenerate_nearMisses(t *testing.T) {
 		n /= 10
 	}
 	// The forms of the near misses write the value of an insert themselves, so the generator writes no
-	// parameter.
+	// parameter, and no expression, whose text would be a value of the forms.
 	g := newGenerator(t, *seed+3)
 	g.Parameters = 0
+	g.Expression = 0
 	c := counts{}
 	for range n {
 		src, s := g.Statement()
