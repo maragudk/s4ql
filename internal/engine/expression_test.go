@@ -183,29 +183,12 @@ func (p *pair) checkArithmetic(c stmttest.Call, s stmt.Statement, args []any, go
 
 // arithmeticRefusals of the select, the update, or the delete s with arithmetic, which SQLite
 // prepares, with the arguments args as SQLite binds them, on the database of o: every "not supported"
-// that s4ql's rules give for it, whatever their order: those of [stmttest.ArithmeticRefusals], of a
-// correlated subquery, and of an argument of LIMIT that is not an integer from 0, of the select and
-// of its subqueries.
+// that s4ql's rules give for it, whatever their order, as [stmttest.ArithmeticRefusals] gives them.
 func arithmeticRefusals(t testing.TB, o *oracle, s stmt.Statement, args []any, readOnly bool) []string {
 	t.Helper()
-	table, where := tableWhere(s)
-	subs := subqueriesIn(s)
+	table, _ := tableWhere(s)
 	name, columns := o.columns(t, table.Value)
-	refusals := stmttest.ArithmeticRefusals(name, columns, s, args, readOnly, func(name string) (string, []stmttest.TableColumn) { return o.columns(t, name) })
-	for _, q := range subs {
-		if rule := limitRule(&q, args); rule != "" {
-			refusals = append(refusals, rule)
-		}
-	}
-	if rule := correlatedRule(t, o, where, subs); rule != "" {
-		refusals = append(refusals, rule)
-	}
-	if sel, ok := s.(*stmt.Select); ok {
-		if rule := limitRule(sel, args); rule != "" {
-			refusals = append(refusals, rule)
-		}
-	}
-	return refusals
+	return stmttest.ArithmeticRefusals(name, columns, s, args, readOnly, func(name string) (string, []stmttest.TableColumn) { return o.columns(t, name) })
 }
 
 // computedTerms of the values that the engine computed for the subqueries of the statement of the
@@ -1019,6 +1002,9 @@ func (p *pair) reachOfArithmetic(c stmttest.Call, s stmt.Statement, got answer) 
 		_, columns := o.columns(t, s.Table.Value)
 		for i, a := range s.Set {
 			names := expressionColumns(a.Value.Expression)
+			if a.Value.Expression.Kind == stmt.ExprColumn && a.Value.Expression.Column.Fold() != a.Column.Fold() {
+				p.count("arithmetic: update that copies another column alone " + outcome)
+			}
 			if slices.ContainsFunc(names, func(n stmt.Name) bool { return n.Fold() == a.Column.Fold() }) && a.Value.Expression.Kind != stmt.ExprColumn {
 				p.count("arithmetic: update that sets a column from itself " + outcome)
 				if position := stmttest.ColumnOf(columns, a.Column); position >= 0 && columns[position].PrimaryKey {

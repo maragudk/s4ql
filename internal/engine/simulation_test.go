@@ -812,6 +812,21 @@ func arithmeticKinds(a *attempt, kind string) []string {
 	return kinds
 }
 
+// arithmeticFinds are the violations by which [TestSimulation_plantedBugs] finds a planted bug of
+// arithmetic that gives a wrong value or a wrong row, own, the bug's own, first: the rows that differ
+// from SQLite's, and the states, the commits, the counts of changes, the rows of RETURNING, and the
+// evaluation errors that no row justifies that follow from a write that changed rows wrongly.
+func arithmeticFinds(own string) []string {
+	finds := []string{own}
+	for _, f := range []string{", and in SQLite", "which began at commit", "the replay of the log holds", "fails in SQLite", "rows in SQLite, and its caller was told",
+		"justifies it for no row", "gives the rows of RETURNING", "is in no commit, and changes"} {
+		if f != own {
+			finds = append(finds, f)
+		}
+	}
+	return finds
+}
+
 // subqueryFinds are the violations by which [TestSimulation_plantedBugs] finds a planted bug of the
 // scalar subqueries of slice 15, own, the bug's own, first: a value that is not among SQLite's
 // candidates, and the answers, the counts of changes, and the states that follow from a wrong value.
@@ -3218,6 +3233,36 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// The first row of the access of the conditions alone, and not of the ORDER BY: 174 seeds, all by
 		// their own violation.
 		{"orderIgnored", hammerWorkload, "hammer", stmttest.Subquery, subqueryFinds("gives the subquery")},
+		// The bugs of arithmetic, on the profile of arithmetic in the hammer environment, which runs more
+		// statements on one instance than the default one, of 1000 seeds on 2026-11-25, each bug in a
+		// process of its own. A wrong value or a wrong row of arithmetic shows as the rows of a select
+		// that differ from SQLite's on the state that it saw, of its own or in a transaction, and then as
+		// what follows from the rows that a write changed wrongly: the replay of the log, a commit of the
+		// log that fails in SQLite, a count of changes, the rows of RETURNING, and an evaluation error
+		// that no row of SQLite justifies, on the rows that differ; see [arithmeticFinds].
+		//
+		// The values of SET computed from the row as the assignments before left it: 334 seeds, 278 of
+		// them by their own violation.
+		{"setFromNew", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
+		// A comparison with a side that is NULL true: 262 seeds, 244 of them by their own violation.
+		{"nullCompares", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
+		// An update that stops at its evaluation error and succeeds with the rows before it: 202 seeds,
+		// 168 of them by their own violation; its commit in the log fails in SQLite, which computes the
+		// quirk on every row, in 86.
+		{"evalStops", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
+		// A row whose comparison fails with an evaluation error left out: 287 seeds, 271 of them by their
+		// own violation.
+		{"errorSkipsRow", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
+		// A copy of a column alone into a column of another class: 222 seeds, 119 of them by the storage
+		// core, which refuses the value of another kind than its column; the rules of the types refuse
+		// the update that succeeded in a transaction, or whose commit the log holds; and a copy into
+		// the key compares the new key of another kind with the old one, as in seed 11085, which fails as
+		// an internal error.
+		{"copyAcross", hammerWorkload, "hammer", stmttest.Arithmetic, []string{"the storage core refused a call that the engine had checked",
+			"the rules of the types of arithmetic refuse it", "has arithmetic that the rules of its types refuse", "internal error: a comparison of a value of kind"}},
+		// A copy of a column alone that keeps the value of the column that it sets: 174 seeds, 136 of
+		// them by their own violation.
+		{"copySelf", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {

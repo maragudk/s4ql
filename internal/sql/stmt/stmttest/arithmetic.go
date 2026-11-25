@@ -81,26 +81,96 @@ func plainName(t stmt.Term, args []any) string {
 // ArithmeticRefusals of the select, the update, or the delete s with arithmetic, of the table of the
 // name, as the table stores it, and of the columns, in the order of the table, which SQLite prepares,
 // with the arguments args as SQLite binds them, one for each parameter: every "not supported" that
-// s4ql's rules of types give for it, whatever their order, which is the engine's own. They are the
-// refusals of the values of its conditions and of those of its subqueries that are of another class
-// than what they are compared with, by the rule of exact types, of an operand of arithmetic that is a
-// column of type TEXT or BLOB or an argument that is text or a blob, and, but in a read-only
-// transaction, which refuses the write first, of the values of SET of another class than their
-// columns. columnsOf gives the name and the columns of the table of a subquery, as for the table of s,
-// or nil columns for a table that SQLite does not have. A condition with a column that its table does
-// not have, which is correlated, is left out, and so are the refusals of a correlated subquery and of
-// an argument of LIMIT, which the caller's rules of the subqueries and of LIMIT give.
+// s4ql's rules give for it, whatever their order, which is the engine's own. They are the refusals of
+// the values of its conditions and of those of its subqueries that are of another class than what
+// they are compared with, by the rule of exact types, of an operand of arithmetic that is a column of
+// type TEXT or BLOB or an argument that is text or a blob, of a correlated subquery, as
+// [CorrelatedRefusal] gives it, of an argument of a LIMIT, of the select or of a subquery, that is no
+// integer from 0, as [LimitRefusal] gives it, and, but in a read-only transaction, which refuses the
+// write first, of the values of SET of another class than their columns. columnsOf gives the name
+// and the columns of the table of a subquery, as for the table of s, or nil columns for a table that
+// SQLite does not have. A condition of a subquery with a column that its table does not have, which
+// is correlated, has no refusal of its types.
 func ArithmeticRefusals(table string, columns []TableColumn, s stmt.Statement, args []any, readOnly bool, columnsOf func(name string) (string, []TableColumn)) []string {
 	where, subs := whereOf(s)
 	refusals := whereRefusals(table, columns, where, subs, args, columnsOf)
 	for _, q := range subs {
 		inner, innerColumns := columnsOf(q.Table.Value)
 		refusals = append(refusals, whereRefusals(inner, innerColumns, q.Where, nil, args, columnsOf)...)
+		if rule := LimitRefusal(q.Limit.Parameter, args); rule != "" {
+			refusals = append(refusals, rule)
+		}
 	}
-	if u, ok := s.(*stmt.Update); ok && !readOnly {
-		refusals = append(refusals, setRefusals(table, columns, u.Set, args)...)
+	if rule := CorrelatedRefusal(where, subs, columnsOf); rule != "" {
+		refusals = append(refusals, rule)
+	}
+	switch s := s.(type) {
+	case *stmt.Select:
+		if rule := LimitRefusal(s.Limit.Parameter, args); rule != "" {
+			refusals = append(refusals, rule)
+		}
+	case *stmt.Update:
+		if !readOnly {
+			refusals = append(refusals, setRefusals(table, columns, s.Set, args)...)
+		}
 	}
 	return refusals
+}
+
+// CorrelatedRefusal of the conditions where of a statement whose scalar subqueries are subs: s4ql's
+// "not supported" of the first subquery, in the order of the text, that names a column that its table
+// does not have, which SQLite reads as one of the table of the statement, at the first such name, in
+// its select list, its WHERE, and its ORDER BY; or "". columnsOf is as for [ArithmeticRefusals].
+func CorrelatedRefusal(where []stmt.Condition, subs []stmt.Select, columnsOf func(name string) (string, []TableColumn)) string {
+	for _, c := range where {
+		q := c.Value.Subquery
+		if q == 0 {
+			continue
+		}
+		_, inner := columnsOf(subs[q-1].Table.Value)
+		names := slices.Clone(subs[q-1].Columns)
+		for _, c := range subs[q-1].Where {
+			names = append(names, conditionNames(c)...)
+		}
+		for _, c := range subs[q-1].OrderBy {
+			names = append(names, c.Name)
+		}
+		for _, n := range names {
+			if ColumnOf(inner, n) < 0 {
+				return fmt.Sprintf("s4ql: not supported: correlated subquery (at offset %v)", n.Offset)
+			}
+		}
+	}
+	return ""
+}
+
+// LimitRefusal of the argument of the parameter of the number parameter of a LIMIT, of a select or
+// of a scalar subquery, among the arguments args, each as SQLite binds it: s4ql's "not supported" for
+// one that is no integer from 0, which SQLite would convert, take for no limit, or refuse with
+// `datatype mismatch`; or "", also for a LIMIT without a parameter, of the number 0.
+func LimitRefusal(parameter int, args []any) string {
+	if parameter == 0 {
+		return ""
+	}
+	var which string
+	switch v := args[parameter-1].(type) {
+	case int64:
+		if v >= 0 {
+			return ""
+		}
+		which = "a negative integer"
+	case nil:
+		which = "NULL"
+	case float64:
+		which = "a real"
+	case string:
+		which = "text"
+	case []byte:
+		which = "a blob"
+	default:
+		return ""
+	}
+	return fmt.Sprintf("s4ql: not supported: argument %v, which is %v, for LIMIT, which takes an integer from 0", parameter, which)
 }
 
 // whereOf the select, the update, or the delete s: its conditions and its subqueries.
@@ -452,20 +522,22 @@ func Justify(s stmt.Statement, args []any, kind error, op stmt.ExpressionKind, o
 var evaluationPattern = regexp.MustCompile(`^s4ql: (integer overflow|division by zero|real result that is not finite) in ([-+*/]) \(at offset (\d+)\)$`)
 
 // EvaluationOf the message of an evaluation error, as [expr.Error] writes it, such as "s4ql: integer
-// overflow in + (at offset 17)": its kind, of [EvaluationKinds], its operator, and the offset of the
-// node of its operator, and true; or false for another message. A - is a subtraction or a negation,
-// which the message does not tell apart, and is given as [stmt.ExprSubtract].
-func EvaluationOf(message string) (kind error, op stmt.ExpressionKind, offset int, ok bool) {
+// overflow in + (at offset 17)": the error with its kind, of [EvaluationKinds], its operator, and
+// the start of the span of the node of its operator, which the message gives, and true; or nil and
+// false for another message. A - is a subtraction or a negation, which the message does not tell
+// apart, and is given as [stmt.ExprSubtract].
+func EvaluationOf(message string) (*expr.Error, bool) {
 	m := evaluationPattern.FindStringSubmatch(message)
 	if m == nil {
-		return nil, 0, 0, false
+		return nil, false
 	}
+	e := &expr.Error{Op: map[string]stmt.ExpressionKind{"+": stmt.ExprAdd, "-": stmt.ExprSubtract, "*": stmt.ExprMultiply, "/": stmt.ExprDivide}[m[2]]}
 	for _, k := range EvaluationKinds {
 		if strings.HasSuffix(k.Error(), m[1]) {
-			kind = k
+			e.Kind = k
 		}
 	}
-	op = map[string]stmt.ExpressionKind{"+": stmt.ExprAdd, "-": stmt.ExprSubtract, "*": stmt.ExprMultiply, "/": stmt.ExprDivide}[m[2]]
 	offset, err := strconv.Atoi(m[3])
-	return kind, op, offset, err == nil && kind != nil
+	e.Span.Start = offset
+	return e, err == nil && e.Kind != nil
 }

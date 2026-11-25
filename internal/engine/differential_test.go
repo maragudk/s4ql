@@ -4116,6 +4116,16 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"swapSubqueries", stmttest.Subquery, 1, []string{"and SQLite one of"}, 12},
 		{"limitZeroRow", stmttest.Subquery, 4, []string{"and SQLite one of"}, 0},
 		{"orderIgnored", stmttest.Subquery, 2, []string{"and SQLite one of"}, 12},
+		// The bugs of arithmetic, on the profile of arithmetic, each found by any difference from SQLite
+		// or from s4ql's rules for arithmetic but constantsServeNothing, whose rows and errors are
+		// SQLite's and which [pair.checkAccess] finds: on 2026-11-25 10, 6, 5, 10, 4, 15, and 4 of 30.
+		{"setFromNew", stmttest.Arithmetic, 3, nil, 0},
+		{"nullCompares", stmttest.Arithmetic, 2, nil, 0},
+		{"evalStops", stmttest.Arithmetic, 1, nil, 0},
+		{"errorSkipsRow", stmttest.Arithmetic, 3, nil, 0},
+		{"copyAcross", stmttest.Arithmetic, 1, nil, 0},
+		{"constantsServeNothing", stmttest.Arithmetic, 5, []string{"and the model chooses"}, 0},
+		{"copySelf", stmttest.Arithmetic, 1, nil, 0},
 	} {
 		t.Run(b.name, func(t *testing.T) {
 			// own is the number of the sequences that find the bug by its own failure.

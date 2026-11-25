@@ -211,8 +211,8 @@ var (
 	// a TEXT or BLOB column in arithmetic, and an argument that is text or a blob. Its texts of
 	// [ArithmeticRefused] are those that the statement pass refuses. Its test begins transactions more
 	// often, where a statement that fails leaves the transaction usable.
-	Arithmetic = &Profile{Name: "arithmetic", Faults: []string{areaArithmetic}, Aim: 3, Weights: weights(3, 12, 12, 1, 11, 4, 4, 1), Where: 3, Indexes: 2, Columns: 2,
-		Parameters: 3, Transactions: 3, Order: 1, Limit: 2, Keys: 2, Returning: 4, ByKey: 4, NewKey: 6, Arithmetic: 2}
+	Arithmetic = &Profile{Name: "arithmetic", Faults: []string{areaArithmetic}, Aim: 3, Weights: weights(3, 12, 12, 1, 11, 4, 4, 1), Where: 3, Indexes: 2, Columns: 3,
+		Parameters: 3, Transactions: 3, Order: 1, Limit: 2, Keys: 2, Returning: 4, ByKey: 4, NewKey: 6, EveryRow: 3, Arithmetic: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].

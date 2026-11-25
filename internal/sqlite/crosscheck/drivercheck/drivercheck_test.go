@@ -557,6 +557,20 @@ func s4qlText(tb testing.TB, err error) string {
 		}
 		return err.Error()
 	}
+	if errors.Is(err, s4ql.ErrEvaluation) {
+		// An evaluation error of arithmetic matches its kind, one of three, and no other sentinel, and
+		// its message names the kind, the operator, and the offset of its node.
+		kinds := 0
+		for _, kind := range []error{s4ql.ErrOverflow, s4ql.ErrDivisionByZero, s4ql.ErrNotFinite} {
+			if errors.Is(err, kind) {
+				kinds++
+			}
+		}
+		if _, ok := stmttest.EvaluationOf(err.Error()); kinds != 1 || !ok || errors.Is(err, s4ql.ErrNotSupported) {
+			tb.Fatalf("s4ql gives the evaluation error %q, which matches %v of its kinds", err, kinds)
+		}
+		return err.Error()
+	}
 	if strings.HasPrefix(err.Error(), wrongArguments) {
 		// Another number of arguments than the statement has parameters, which is an error of s4ql's
 		// own and matches none of its sentinels.
@@ -570,7 +584,7 @@ func s4qlText(tb testing.TB, err error) string {
 // noSentinel fails the test if err, an error of s4ql's own, matches one of s4ql's sentinels.
 func noSentinel(tb testing.TB, err error) {
 	tb.Helper()
-	for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped, s4ql.ErrTooLarge} {
+	for _, sentinel := range []error{s4ql.ErrNotSupported, s4ql.ErrNotServing, s4ql.ErrOutcomeUnknown, s4ql.ErrStopped, s4ql.ErrTooLarge, s4ql.ErrEvaluation} {
 		if errors.Is(err, sentinel) {
 			tb.Fatalf("s4ql gives %q, which matches %v", err, sentinel)
 		}
@@ -1004,13 +1018,14 @@ func (p *pair) reachSubquery(src string, s stmt.Statement, runs [][]any, got out
 		_, inner := p.columnsIn(o, sub.Table.Value)
 		names := slices.Clone(sub.Columns)
 		for _, c := range sub.Where {
-			names = append(names, c.Column)
+			names = append(names, conditionNames(c)...)
 		}
 		for _, c := range sub.OrderBy {
 			names = append(names, c.Name)
 		}
+		// A subquery with arithmetic, whose rows decide its errors, is not counted.
 		if inner == nil || sub.Columns == nil && len(inner) != 1 || slices.ContainsFunc(names, func(n stmt.Name) bool { return stmttest.ColumnOf(inner, n) < 0 }) ||
-			limitArgument(sub.Limit.Parameter, bound) != "" || stmttest.WhereRule("t", inner, sub.Where, bound) != "" {
+			stmttest.HasExpression(&stmt.Select{Where: sub.Where}) || limitArgument(sub.Limit.Parameter, bound) != "" || stmttest.WhereRule("t", inner, sub.Where, bound) != "" {
 			continue
 		}
 		var by []string
@@ -1451,6 +1466,16 @@ const (
 	// plan codes first, and s4ql refuses at the second: it is checked against s4ql's rule as
 	// [pair.subqueryRefusal] gives it.
 	excusedWideSubqueries = "two subqueries of * of more than one column, checked against s4ql's rule"
+	// excusedArithmetic is a statement with arithmetic, or a column compared with or set from a column,
+	// that s4ql refuses by the rule of exact types, where SQLite converts by affinity or reads text and
+	// blobs as numbers: it is checked against s4ql's rules by [pair.checkRefused], as
+	// [stmttest.ArithmeticRefusals] gives them, and not run in SQLite.
+	excusedArithmetic = "arithmetic refused by the rules of its types, checked against s4ql's rules"
+	// excusedEvaluation is a statement with arithmetic that fails with s4ql's evaluation error, an
+	// integer overflow, a division by zero, or a real result that is not finite, where SQLite gives a
+	// real, NULL, or an infinity: it is checked by [pair.checkEvaluation] against SQLite's own result
+	// of the operator that failed, as [stmttest.Justify] says, and not run in SQLite.
+	excusedEvaluation = "an evaluation error of arithmetic, which SQLite's result of its operator justifies"
 )
 
 // rowsOpen is the error of s4ql for a statement in a transaction while the rows of a query of the
@@ -1579,9 +1604,6 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 	case callCommit, callRollback:
 		return p.end(c)
 	}
-	if st, _ := stmt.Check(src); stmttest.HasExpression(st) {
-		return p.leaveOut(c)
-	}
 	s, o, scope := p.where(c, src)
 	if p.tx != nil && p.tx.sRows != nil {
 		return p.whileRowsOpen(src, c, supported, runs, s, o, scope)
@@ -1604,24 +1626,6 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 		}
 	}
 	return got, failure
-}
-
-// leftOutExpression is the error of the outcome of a call that [pair.leaveOut] leaves out.
-const leftOutExpression = "a statement with an arithmetic expression or a column alone, which the driver check has no rules for yet"
-
-// leaveOut the call c of a statement with an arithmetic expression or a column alone, as
-// [stmttest.HasExpression] reports it, which the statement pass takes since the engine step of
-// arithmetic: it runs on neither side, so the two keep the same state, and its outcome is the failed
-// step "left out" with [leftOutExpression], which the tally counts under "left out: " and the text of
-// the outcome shows. s4ql computes such a statement, or refuses it, by rules of its own, as an
-// evaluation error or by the classes of the rule of exact types, which the rules of this check do not
-// have, and which the differential pair of the engine checks against SQLite. The driver's generated
-// checks of arithmetic are open in docs/todo/generated-workload.md; they replace this.
-func (p *pair) leaveOut(c call) (outcome, string) {
-	if p.y != nil {
-		p.y["left out: "+leftOutExpression]++
-	}
-	return outcome{call: c, failed: "left out", err: leftOutExpression}, ""
 }
 
 // where the call c of src runs: s4ql's and SQLite's, and the scope that the tally counts it in. It is
@@ -2099,6 +2103,9 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, args, got)
 			}
 		}
+		if stmttest.HasExpression(s) && slices.ContainsFunc(got.runs(), evaluated) {
+			return p.checkEvaluation(src, c, s, runs, got, o)
+		}
 	}
 
 	if subqueriesIn(s) != nil {
@@ -2389,10 +2396,19 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 		sel = s
 	case *stmt.Update:
 		// A name of SET that the table does not have gets SQLite's error first, without the question, in
-		// both builds.
+		// both builds, but for a name of the value of an assignment, which SQLite looks up before the
+		// column of the assignment, in double quotes.
 		_, columns := p.columnsIn(o, s.Table.Value)
-		if columns == nil || slices.ContainsFunc(s.Set, func(a stmt.Assignment) bool { return stmttest.ColumnOf(columns, a.Column) < 0 }) {
+		if columns == nil {
 			return "", false
+		}
+		for _, a := range s.Set {
+			if at := slices.IndexFunc(expressionNames(a.Value.Expression), func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 }); at >= 0 {
+				return p.quoted(src, got, expressionNames(a.Value.Expression)[at])
+			}
+			if stmttest.ColumnOf(columns, a.Column) < 0 {
+				return "", false
+			}
 		}
 		sel = &stmt.Select{Table: s.Table, Where: s.Where}
 	case *stmt.Delete:
@@ -2431,7 +2447,7 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 			name = ci.Columns[at].Name
 		}
 	}
-	if !missing || name.Raw[0] != '"' {
+	if !missing {
 		return "", false
 	}
 	want := fmt.Sprintf(`1/1: no such column: "%v" - should this be a string literal in single-quotes?`, name.Value)
@@ -2440,6 +2456,18 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 		// comparison with mattn's SQLite checks it.
 		return "", false
 	}
+	return p.quoted(src, got, name)
+}
+
+// quoted is [pair.checkQuoted] of the text src, whose outcome of s4ql is got, and whose first name
+// that its table does not have is name: excused, if name is in double quotes and s4ql gives the
+// pinned build's error of it in each run, failed if it is in double quotes and s4ql gives another,
+// and left to the comparison with mattn's SQLite otherwise.
+func (p *pair) quoted(src string, got outcome, name stmt.Name) (string, bool) {
+	if name.Raw[0] != '"' {
+		return "", false
+	}
+	want := fmt.Sprintf(`1/1: no such column: "%v" - should this be a string literal in single-quotes?`, name.Value)
 	for _, r := range got.runs() {
 		if r.failed == "" || r.failed == "prepare" || r.err != want {
 			return fmt.Sprintf("%q: s4ql gives %v, and the pinned build of SQLite %q when the statement runs", src, got, want), true
@@ -2495,7 +2523,9 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 // [argumentRefusal] gives it: an error of s4ql's own, where SQLite binds every type and value, and
 // mattn takes a name. If it has none, it must fail with the "not supported" of a value of another
 // type than its column, as [pair.typeRefusal] gives it, where SQLite converts the value or refuses it
-// with an error of its own, on the tables that SQLite has on o, where the call runs.
+// with an error of its own, on the tables that SQLite has on o, where the call runs; or, for a
+// statement with arithmetic or a column alone, as [stmttest.HasExpression] reports it, with one of
+// the refusals of [pair.arithmeticRefusals].
 func (p *pair) checkRefused(src string, s stmt.Statement, runs [][]any, got outcome, o runner) string {
 	if len(got.runs()) != len(runs) {
 		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
@@ -2504,9 +2534,21 @@ func (p *pair) checkRefused(src string, s stmt.Statement, runs [][]any, got outc
 	for i, r := range got.runs() {
 		args := runs[i]
 		want := argumentRefusal(args)
-		if want != "" {
+		switch {
+		case want != "":
 			kind = excusedArgument
-		} else if len(args) == s.Parameters() {
+		case len(args) == s.Parameters() && stmttest.HasExpression(s):
+			// The engine gives the refusals of arithmetic in an order of its own, so the rule is that the
+			// refusal is one of them.
+			refusals := p.arithmeticRefusals(src, s, boundArgs(args), o)
+			want = fmt.Sprintf("one of %q", refusals)
+			if slices.Contains(refusals, r.err) {
+				want = r.err
+			}
+			if kind == excusedType {
+				kind = excusedArithmetic
+			}
+		case len(args) == s.Parameters():
 			want = p.typeRefusal(src, s, args, o)
 			if kind == excusedType {
 				// A refusal of an argument of an earlier run keeps its excuse.
@@ -2629,13 +2671,7 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 	default:
 		return ""
 	}
-	var bound []any
-	for _, a := range args {
-		if v, ok := stmttest.Integers([]any{a}); ok {
-			a = v[0]
-		}
-		bound = append(bound, converted(a))
-	}
+	bound := boundArgs(args)
 	if subqueriesIn(s) != nil {
 		return p.subqueryRefusal(src, s, bound, o)
 	}
@@ -2671,6 +2707,131 @@ func (p *pair) typeRefusal(src string, s stmt.Statement, args []any, o runner) s
 		})
 	}
 	return stmttest.TypeRule(name, columns, s.(*stmt.Insert), bound)
+}
+
+// conditionNames of the condition c: the column that it tests, or the columns of the expression that
+// it tests, and those of its value.
+func conditionNames(c stmt.Condition) []stmt.Name {
+	var names []stmt.Name
+	if !c.Expression.Present() {
+		names = append(names, c.Column)
+	}
+	return append(append(names, expressionNames(c.Expression)...), expressionNames(c.Value.Expression)...)
+}
+
+// expressionNames of the columns of the expression e, in the order of the text.
+func expressionNames(e stmt.Expression) []stmt.Name {
+	if e.Kind == stmt.ExprColumn {
+		return []stmt.Name{e.Column}
+	}
+	var names []stmt.Name
+	for _, o := range e.Operands {
+		names = append(names, expressionNames(o)...)
+	}
+	return names
+}
+
+// boundArgs are the arguments args as SQLite binds them: an integer of any Go type as an int64, and
+// each other as [converted] gives it.
+func boundArgs(args []any) []any {
+	var bound []any
+	for _, a := range args {
+		if v, ok := stmttest.Integers([]any{a}); ok {
+			a = v[0]
+		}
+		bound = append(bound, converted(a))
+	}
+	return bound
+}
+
+// arithmeticRefusals of the statement s with arithmetic or a column alone, as [stmttest.HasExpression]
+// reports it, of the text src, with the arguments args as SQLite binds them, on o, where the call
+// runs: where SQLite prepares the text, every "not supported" that s4ql's rules give for it, as
+// [stmttest.ArithmeticRefusals] gives them, but those of SET in a read-only transaction, which
+// refuses the write first; and where it does not, the refusal of two subqueries of * of more than
+// one column, as [pair.subqueryRefusal] gives it, or none, for SQLite's own error.
+func (p *pair) arithmeticRefusals(src string, s stmt.Statement, args []any, o runner) []string {
+	tb := p.tb
+	tb.Helper()
+	ps, err := o.PrepareContext(tb.Context(), firstStatement(src))
+	if err != nil {
+		if subqueriesIn(s) != nil {
+			if rule := p.subqueryRefusal(src, s, args, o); rule != "" {
+				return []string{rule}
+			}
+		}
+		return nil
+	}
+	is.NotError(tb, ps.Close())
+	table, _ := tableWhere(s)
+	name, columns := p.columnsIn(o, table.Value)
+	return stmttest.ArithmeticRefusals(name, columns, s, args, p.tx != nil && p.tx.readOnly, func(name string) (string, []stmttest.TableColumn) { return p.columnsIn(o, name) })
+}
+
+// evaluated reports whether the run r failed with s4ql's evaluation error of arithmetic.
+func evaluated(r outcome) bool {
+	_, ok := stmttest.EvaluationOf(r.err)
+	return r.failed != "" && ok
+}
+
+// checkEvaluation of the call c of the text src, which holds the statement s with arithmetic, with
+// the arguments of each run, whose outcome of s4ql is got, a run of which failed with an evaluation
+// error, on o, where the call runs, as SQLite has the tables before the call. A run that failed so
+// changed nothing, and must be justified by SQLite's own result of the operator that failed, as
+// [stmttest.Justify] says, on the state of o, and not in a read-only transaction for an update or a
+// delete, which computes nothing; it is not run in SQLite. Every other run, of a prepared statement
+// run several times, runs in SQLite, in its order, and must give what s4ql gave. It gives what
+// differs, or "".
+func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]any, got outcome, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	if len(got.runs()) != len(runs) {
+		return fmt.Sprintf("%q with %v runs: s4ql gives %v", src, len(runs), got)
+	}
+	_, isSelect := s.(*stmt.Select)
+	rows := func(q string, args []any) bool {
+		rs, err := o.QueryContext(tb.Context(), q, args...)
+		is.NotError(tb, err)
+		defer func() { is.NotError(tb, rs.Close()) }()
+		found := rs.Next()
+		is.NotError(tb, rs.Err())
+		return found
+	}
+	var outs []outcome
+	for i, r := range got.runs() {
+		r.call, r.next = "", nil
+		if !evaluated(r) {
+			if c != callPrepareExecRuns {
+				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v", src, runs, got)
+			}
+			var w outcome
+			if res, err := o.ExecContext(tb.Context(), firstStatement(src), runs[i]...); err != nil {
+				w.failed, w.err = "exec", mattnText(tb, err)
+			} else {
+				w = result(tb, w, res)
+			}
+			outs = append(outs, w)
+			continue
+		}
+		if p.tx != nil && p.tx.readOnly && !isSelect {
+			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v in a read-only transaction, which computes nothing for a write", src, runs[i], r)
+		}
+		e, _ := stmttest.EvaluationOf(r.err)
+		if why := stmttest.Justify(s, boundArgs(runs[i]), e.Kind, e.Op, e.Span.Start, nil, rows); why != "" {
+			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %q, which %v", src, runs[i], r.err, why)
+		}
+		if p.y != nil {
+			p.y["reached: evaluation error justified by SQLite's result of its operator: "+e.Kind.Error()]++
+		}
+		outs = append(outs, r)
+	}
+	want := outs[0]
+	want.call, want.next = c, outs[1:]
+	if want.full() != got.full() {
+		return fmt.Sprintf("%q with the arguments %#v: s4ql gives\n%v\nand SQLite, but for the runs that failed with an evaluation error,\n%v", src, runs, got.full(), want.full())
+	}
+	p.y.excused(excusedEvaluation)
+	return ""
 }
 
 // subqueriesIn the select, the update, or the delete s: its scalar subqueries, of slice 15, in the
@@ -2742,6 +2903,7 @@ func (p *pair) namesOf(s stmt.Statement, o runner) ([]scopeName, bool) {
 		}
 	case *stmt.Update:
 		for _, a := range s.Set {
+			names = append(names, expressionNames(a.Value.Expression)...)
 			names = append(names, a.Column)
 		}
 		names = append(names, s.Returning.Columns...)
@@ -2749,7 +2911,7 @@ func (p *pair) namesOf(s stmt.Statement, o runner) ([]scopeName, bool) {
 		names = append(names, s.Returning.Columns...)
 	}
 	for _, c := range where {
-		names = append(names, c.Column)
+		names = append(names, conditionNames(c)...)
 	}
 	var scoped []scopeName
 	for _, n := range names {
@@ -2764,7 +2926,7 @@ func (p *pair) namesOf(s stmt.Statement, o runner) ([]scopeName, bool) {
 		}
 		names := slices.Clone(q.Columns)
 		for _, c := range q.Where {
-			names = append(names, c.Column)
+			names = append(names, conditionNames(c)...)
 		}
 		for _, c := range q.OrderBy {
 			names = append(names, c.Name)
@@ -2851,6 +3013,15 @@ func (p *pair) subqueryRefusal(src string, s stmt.Statement, args []any, o runne
 	}
 	is.NotError(tb, ps.Close())
 	name, columns := p.columnsIn(o, table.Value)
+	if stmttest.HasExpression(s) {
+		// The refusals of a statement with arithmetic come in the engine's own order: one of them, as
+		// [pair.arithmeticRefusals] gives them.
+		refusals := stmttest.ArithmeticRefusals(name, columns, s, args, p.tx != nil && p.tx.readOnly, func(name string) (string, []stmttest.TableColumn) { return p.columnsIn(o, name) })
+		if len(refusals) == 0 {
+			return ""
+		}
+		return refusals[0]
+	}
 	for _, c := range where {
 		q := c.Value.Subquery
 		if q == 0 {
@@ -3281,21 +3452,33 @@ const (
 // sequences written by hand, which cover every statement of slice 1, every error that an
 // application can get from it, and each call.
 var sequences = map[string][]step{
-	// The statement pass takes these since the engine step of arithmetic; the check leaves them out, as
-	// [pair.leaveOut] says, where `select * from t2 where v2 = s2` made stmttest.WhereRule panic.
-	"a column compared with a column, and arithmetic, which the check leaves out": {
-		{callExec, "create table t2 (v2 int primary key, s2 text, i2 int) strict, without rowid", "exec: 0 affected, last insert id 0"},
-		{callExec, "insert into t2 values (1, 'a', 1)", "exec: 1 affected, last insert id 0"},
-		{callQuery, "select * from t2 where v2 = s2", "query: left out failed with " + leftOutExpression},
-		{callQueryRow, "select * from t2 where v2 = i2", "query row: left out failed with " + leftOutExpression},
-		{callPrepareQuery, "select * from t2 where v2 + 1 = 2", "prepare, query: left out failed with " + leftOutExpression},
-		{callQuery, "select * from t2 where v2 / (v2 - v2) = 1", "query: left out failed with " + leftOutExpression},
-		{callQuery, "select * from t2 where v2 = (select v2 from t2 where i2 * 2 = 2)", "query: left out failed with " + leftOutExpression},
-		{callExec, "update t2 set i2 = i2 + 1", "exec: left out failed with " + leftOutExpression},
-		{callExec, "update t2 set i2 = s2", "exec: left out failed with " + leftOutExpression},
-		{callExec, "delete from t2 where -i2 < 0", "exec: left out failed with " + leftOutExpression},
-		{callQuery, "select * from t2", `query: columns "v2,s2,i2" of types "INT,TEXT,INT", rows ["int64:1" "string:a" "int64:1"]`},
-		{callExec, "drop table t2", "exec: 1 affected, last insert id 0"},
+	// Arithmetic, and a column compared with and set from a column: what s4ql computes is SQLite's,
+	// its refusals of types are those of its rules, and an evaluation error, which changes nothing, is
+	// justified by SQLite's own result of the operator, also in one run of a prepared statement run
+	// several times.
+	"arithmetic, and a column compared with a column": {
+		{callExec, "create table t2 (v2 int primary key, s2 text, i2 int, r2 real) strict, without rowid", "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t2 values (1, 'a', 1, 0.5)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t2 values (2, 'b', null, 1e308)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t2 values (3, 'c', 9223372036854775807, -2.5)", "exec: 1 affected, last insert id 0"},
+		{callQuery, "select * from t2 where v2 = s2", "query: query failed with s4ql: not supported: the column t2.s2 of type TEXT compared with the column t2.v2 of type INT"},
+		{callQueryRow, "select v2 from t2 where v2 = i2", `query row: row ["int64:1"]`},
+		{callPrepareQuery, "select v2 from t2 where v2 + 1 = 2", `prepare, query: columns "v2" of types "INT", rows ["int64:1"]`},
+		{callQuery, "select v2 from t2 where v2 / (v2 - v2) = 1", "query: rows failed with s4ql: division by zero in / (at offset 24)"},
+		{callQuery, "select v2 from t2 where v2 = (select v2 from t2 where i2 * 2 = 2)",
+			// The subquery reads up to its first row, in the direction that the engine draws, and the
+			// row of the largest integer fails before the row of 1 where it comes first.
+			oneOf(`query: columns "v2" of types "INT", rows ["int64:1"]`, "query: query failed with s4ql: integer overflow in * (at offset 54)")},
+		{callQuery, "select v2 from t2 where s2 + 1 = 2", "query: query failed with s4ql: not supported: column of type TEXT in arithmetic (at offset 24)"},
+		{callExec, "update t2 set i2 = i2 + 1", "exec: exec failed with s4ql: integer overflow in + (at offset 19)"},
+		{callExec, "update t2 set r2 = r2 * 10", "exec: exec failed with s4ql: real result that is not finite in * (at offset 19)"},
+		{callExec, "update t2 set i2 = s2", "exec: exec failed with s4ql: not supported: the column t2.s2 of type TEXT for the column t2.i2 of type INT"},
+		{callExec, "update t2 set r2 = i2", "exec: exec failed with s4ql: not supported: the column t2.i2 of type INT for the column t2.r2 of type REAL"},
+		{callExec, "update t2 set i2 = v2 * 2, v2 = v2 + 10 where v2 < 3", "exec: 2 affected, last insert id 0"},
+		{callPrepareExecRuns, "update t2 set i2 = i2 + 4611686018427387904 * ? where v2 = 11", "prepare, exec several times: 1 affected, last insert id 0; then: exec failed with s4ql: integer overflow in * (at offset 24); then: exec failed with s4ql: integer overflow in + (at offset 19)"},
+		{callExec, "delete from t2 where -i2 < -100", "exec: 2 affected, last insert id 0"},
+		{callQuery, "select * from t2", `query: columns "v2,s2,i2,r2" of types "INT,TEXT,INT,REAL", rows ["int64:12" "string:b" "int64:4" "float64:1e+308"]`},
+		{callExec, "drop table t2", "exec: 2 affected, last insert id 0"},
 	},
 	"the example of slice 1": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
@@ -4693,7 +4876,8 @@ func TestGenerated(t *testing.T) {
 // update with RETURNING of several rows, and a delete with RETURNING through a prepared statement run
 // several times, each reached three to five times. The profile of the subqueries runs 60 for goqite's
 // receive with its subquery, and for the statements with subqueries through a prepared statement run
-// several times.
+// several times. The profile of arithmetic runs 40 for its evaluation errors of each kind, in SET and
+// in WHERE, and for its refusals of types, each reached in a few sequences in ten.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:
@@ -4714,6 +4898,8 @@ func generatedOf(p *stmttest.Profile) uint64 {
 		return 50
 	case stmttest.Subquery:
 		return 60
+	case stmttest.Arithmetic:
+		return 40
 	case stmttest.Returning:
 		return 50
 	case stmttest.Tables:

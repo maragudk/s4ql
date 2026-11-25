@@ -540,3 +540,8 @@
 # profile left it reached 1 and 2 times: a select with a subquery of * of more than one column
 # through query, row value misused, which TestDifferential of the engine reaches and TestEngine_subquery
 # pins against SQLite.
+# The generated checks of arithmetic, of 2026-11-25: a third of the total that day of the evaluation
+# errors of each kind that pair.checkEvaluation justifies.
+9	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
+10	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
+1	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite

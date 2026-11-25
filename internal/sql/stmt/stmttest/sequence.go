@@ -2769,24 +2769,41 @@ func otherClass(class string) string {
 // given arithmetic, drawn from the stream of the area. An assignment of a TEXT or a BLOB column stays
 // as it is, but as a fault of the area. Otherwise, of the class of the column, as [classOf] gives it:
 // three times in ten the column that it sets and a number, as `n = n + 1`, also of the key, which the
-// update then computes; one time in ten another column and a number, and one time in ten another
-// column alone, as [Sequence.otherColumn] gives it; one time in ten an expression without a column
-// equal to its value, as [Sequence.constantOf] draws it; two times in ten a value that fails for every
-// row, for some, or for none, as [Sequence.failing] draws it; one time in ten an expression of the
-// column and another, three operators deep; and otherwise the column and a number, of the other class
-// as a fault of the area one time in two. An assignment after the first is, one time in three of
-// those, a column that the SET sets before and a number, which reads the value of the row before the
-// statement.
+// update then computes; one time in ten another column, as [Sequence.otherColumn] gives it, and a
+// number, of the other class as a fault of the area one time in two; two times in ten another column
+// alone, of its class or, as a fault of the area one time in two, of any; one time in ten an
+// expression without a column equal to its value, as [Sequence.constantOf] draws it; two times in ten
+// a value that fails for every row, for some, or for none, as [Sequence.failing] draws it; and one
+// time in ten an expression of the column and another, three operators deep. One assignment after the first in 2*[Profile.Arithmetic],
+// before the draw of the others, is a column of its class that the SET sets before and a number,
+// which reads the value of the row before the statement; and one SET in 2*[Profile.Arithmetic] gets
+// one more such assignment at its end, of the first column of a class of numbers that it does not
+// set, from the first column of the class that it sets.
 func (q *Sequence) arithmeticSet(table stmt.Name, set []stmt.Assignment) []stmt.Assignment {
 	r, p := q.rArithmetic, q.profile
 	shape := q.shapeOf(table)
 	set = slices.Clone(set)
 	for i, a := range set {
-		if a.Value.Expression.Present() || r.IntN(p.Arithmetic) != 0 {
+		if a.Value.Expression.Present() {
 			continue
 		}
 		column := columnOfShape(shape, nameOf(a.Column.Raw, 0).Fold())
 		class := classOf(column, a.Value.Value)
+		if i > 0 && r.IntN(2*p.Arithmetic) == 0 {
+			// A column of its class that the SET sets before, and a number, whose value before the
+			// statement the assignment reads.
+			j := slices.IndexFunc(set[:i], func(b stmt.Assignment) bool {
+				return classOf(columnOfShape(shape, nameOf(b.Column.Raw, 0).Fold()), b.Value.Value) == class
+			})
+			if j >= 0 && (class == classInteger || class == classReal) {
+				k := []stmt.ExpressionKind{stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply}[r.IntN(3)]
+				set[i].Value = stmt.Term{Expression: operatorNode(k, columnNode(set[j].Column.Raw), valueNode(q.small(r, class)))}
+				continue
+			}
+		}
+		if r.IntN(p.Arithmetic) != 0 {
+			continue
+		}
 		if (class == classText || class == classBlob) && !q.fault(r, areaArithmetic, 6) {
 			continue
 		}
@@ -2797,30 +2814,57 @@ func (q *Sequence) arithmeticSet(table stmt.Name, set []stmt.Assignment) []stmt.
 		k := []stmt.ExpressionKind{stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide}[r.IntN(4)]
 		var e stmt.Expression
 		switch n := r.IntN(10); {
-		case i > 0 && r.IntN(3) == 0:
-			// A column that the SET sets before, whose value before the statement the assignment reads.
-			e = operatorNode(k, columnNode(set[r.IntN(i)].Column.Raw), valueNode(q.small(r, class)))
 		case n < 3:
 			e = q.nested(r, operatorNode(k, columnNode(self), valueNode(q.small(r, class))), class)
 		case n < 4:
-			e = operatorNode(k, columnNode(q.otherColumn(r, shape, class)), valueNode(q.small(r, class)))
-		case n < 5:
-			e = columnNode(q.otherColumn(r, shape, class))
-		case n < 6:
-			e = q.constantOf(r, a.Value.Value, class)
-		case n < 8:
-			e = q.failing(r, shape, class, self)
-		case n < 9:
-			sum := operatorNode(stmt.ExprAdd, columnNode(self), columnNode(q.otherColumn(r, shape, class)))
-			e = operatorNode(stmt.ExprSubtract, operatorNode(stmt.ExprMultiply, sum, valueNode(q.small(r, class))), operatorNode(stmt.ExprDivide, columnNode(self), valueNode(q.small(r, class))))
-		default:
 			other := class
 			if q.fault(r, areaArithmetic, 2) {
 				other = otherClass(class)
 			}
-			e = operatorNode(k, columnNode(self), valueNode(q.small(r, other)))
+			e = operatorNode(k, columnNode(q.otherColumn(r, shape, class)), valueNode(q.small(r, other)))
+		case n < 6:
+			// A column alone, of the class or, as a fault of the area one time in two, of any class, which
+			// s4ql refuses where it is of another class; another than the one that it sets where the shape
+			// has one.
+			of := shape
+			if !q.fault(r, areaArithmetic, 2) {
+				of = slices.DeleteFunc(slices.Clone(shape), func(c stmt.Column) bool { return classOf(&c, nil) != class })
+			}
+			if others := slices.DeleteFunc(slices.Clone(of), func(c stmt.Column) bool { return column != nil && c.Name.Value == column.Name.Value }); len(others) > 0 {
+				of = others
+			}
+			if len(of) == 0 {
+				of = shape
+			}
+			e = columnNode(q.spell(r, of[r.IntN(len(of))].Name.Value))
+		case n < 7:
+			e = q.constantOf(r, a.Value.Value, class)
+		case n < 9:
+			e = q.failing(r, shape, class, self)
+		default:
+			sum := operatorNode(stmt.ExprAdd, columnNode(self), columnNode(q.otherColumn(r, shape, class)))
+			e = operatorNode(stmt.ExprSubtract, operatorNode(stmt.ExprMultiply, sum, valueNode(q.small(r, class))), operatorNode(stmt.ExprDivide, columnNode(self), valueNode(q.small(r, class))))
 		}
 		set[i].Value = stmt.Term{Expression: e}
+	}
+	if r.IntN(2*p.Arithmetic) == 0 {
+		// One more assignment, of a column that the SET does not set, from a column of its class that it
+		// sets before, which reads the value of the row before the statement.
+		for _, c := range shape {
+			class := classOf(&c, nil)
+			if class != classInteger && class != classReal || slices.ContainsFunc(set, func(a stmt.Assignment) bool { return nameOf(a.Column.Raw, 0).Fold() == c.Name.Value }) {
+				continue
+			}
+			j := slices.IndexFunc(set, func(a stmt.Assignment) bool {
+				return classOf(columnOfShape(shape, nameOf(a.Column.Raw, 0).Fold()), nil) == class && columnOfShape(shape, nameOf(a.Column.Raw, 0).Fold()) != nil
+			})
+			if j < 0 {
+				continue
+			}
+			k := []stmt.ExpressionKind{stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply}[r.IntN(3)]
+			value := operatorNode(k, columnNode(set[j].Column.Raw), valueNode(q.small(r, class)))
+			return append(set, stmt.Assignment{Column: stmt.Name{Raw: q.spell(r, c.Name.Value)}, Value: stmt.Term{Expression: value}})
+		}
 	}
 	return set
 }

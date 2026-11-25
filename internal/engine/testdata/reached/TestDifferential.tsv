@@ -6,19 +6,19 @@
 mixed	16	5	createtable duplicate column name
 mixed	1	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
 mixed	2	=	excused: a literal longer than the length limit, checked against s4ql's rule
-mixed	295	=	excused: a value of another type than its column, checked against s4ql's rule
+mixed	292	=	excused: a value of another type than its column, checked against s4ql's rule
 mixed	17	=	excused: already exists after the start of a table, accepted
-mixed	226	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	227	=	excused: an argument that no column holds, checked against s4ql's rule
 mixed	4	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
-mixed	45	=	excused: arithmetic refused by the rule of exact types
-mixed	17	=	excused: evaluation error that SQLite's result of its operator justifies
-mixed	569	=	excused: the wrong number of arguments, checked against s4ql's rule
+mixed	51	=	excused: arithmetic refused by the rule of exact types
+mixed	23	=	excused: evaluation error that SQLite's result of its operator justifies
+mixed	564	=	excused: the wrong number of arguments, checked against s4ql's rule
 mixed	41	13	insert  values for 
 mixed	108	36	insert NOT NULL constraint failed
 mixed	38	12	insert values were supplied
-mixed	92	30	insert with a parameter UNIQUE constraint failed
+mixed	93	31	insert with a parameter UNIQUE constraint failed
 mixed	168	56	insert with a parameter not supported
-mixed	340	113	insert with a parameter ok
+mixed	339	113	insert with a parameter ok
 mixed	144	48	insert with a parameter wrong number of arguments
 mixed	73	24	insert wrong number of arguments
 mixed	9	3	reached: != on another column ok
@@ -83,29 +83,28 @@ mixed	26	8	reached: ORDER BY or LIMIT with arguments that s4ql refuses wrong num
 mixed	4	1	reached: ORDER BY over rows with NULL in its columns
 mixed	119	39	reached: ORDER BY run by every path
 mixed	74	24	reached: ORDER BY without WHERE ok
-mixed	20	6	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
-mixed	15	5	reached: SET of NULL for a column that does not take it ok, no row found
-mixed	20	6	reached: SET of a column in double quotes that the table does not have no such column
-mixed	41	13	reached: SET of a column that the table does not have no such column
+mixed	21	7	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+mixed	16	5	reached: SET of NULL for a column that does not take it ok, no row found
+mixed	18	6	reached: SET of a column in double quotes that the table does not have no such column
+mixed	36	12	reached: SET of a column that the table does not have no such column
 mixed	16	5	reached: SET of every column ok, rows changed
-mixed	13	4	reached: SET of the key NOT NULL constraint failed
+mixed	14	4	reached: SET of the key NOT NULL constraint failed
 mixed	23	7	reached: SET of the key UNIQUE constraint failed
 mixed	23	7	reached: SET of the key ok, rows changed
-mixed	33	11	reached: SET with a value of another type a value of another type
-mixed	11	3	reached: SET with argument []uint8 ok, no row found
-mixed	4	1	reached: SET with argument float64 ok, rows changed
+mixed	29	9	reached: SET with a value of another type a value of another type
+mixed	12	4	reached: SET with argument []uint8 ok, no row found
 mixed	10	3	reached: SET with argument int64 ok, rows changed
-mixed	3	1	reached: SET with argument nil ok, rows changed
+mixed	4	1	reached: SET with argument nil ok, rows changed
 mixed	4	1	reached: SET with argument string ok, rows changed
 mixed	6	2	reached: SET with literal blob ok, rows changed
-mixed	21	7	reached: SET with literal integer ok, rows changed
+mixed	22	7	reached: SET with literal integer ok, rows changed
 mixed	3	1	reached: SET with literal null ok, rows changed
 mixed	3	1	reached: SET with literal real -0.0 ok, rows changed
 mixed	5	1	reached: SET with literal real ok, rows changed
-mixed	8	2	reached: SET with literal text ok, rows changed
-mixed	164	54	reached: WHERE run by a sample of its paths
-mixed	540	180	reached: WHERE run by every path
-mixed	196	65	reached: WHERE run by every path on a table with an index
+mixed	7	2	reached: SET with literal text ok, rows changed
+mixed	159	53	reached: WHERE run by a sample of its paths
+mixed	529	176	reached: WHERE run by every path
+mixed	190	63	reached: WHERE run by every path on a table with an index
 mixed	10	3	reached: WHERE that gives every row of a table with rows
 mixed	48	16	reached: WHERE that gives no row of a table with rows
 mixed	18	6	reached: WHERE that gives some rows of a table
@@ -125,8 +124,8 @@ mixed	3	1	reached: WHERE with a column that the table does not have under IS NUL
 mixed	4	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
 mixed	7	2	reached: WHERE with a literal longer than the length limit
 mixed	37	12	reached: WHERE with a value of another type a value of another type
-mixed	250	83	reached: WHERE with a value on the left run by every path
-mixed	96	32	reached: WHERE with a value on the left run by every path on a table with an index
+mixed	245	81	reached: WHERE with a value on the left run by every path
+mixed	93	31	reached: WHERE with a value on the left run by every path on a table with an index
 mixed	7	2	reached: WHERE with an argument that no column holds not supported
 mixed	16	5	reached: WHERE with contradicting conditions ok
 mixed	26	8	reached: WHERE with the wrong number of arguments wrong number of arguments
@@ -154,10 +153,10 @@ mixed	15	5	reached: argument uint64
 mixed	8	2	reached: argument uint64 above int64
 mixed	32	10	reached: arithmetic of a select whose due errors the model's access decides
 mixed	4	1	reached: arithmetic with a column in SET of a update, no such column
-mixed	34	11	reached: arithmetic with a column in SET of a update, no such table
-mixed	14	4	reached: arithmetic with a column in SET of a update, not supported
-mixed	17	5	reached: arithmetic with a column in SET of a update, ok
-mixed	6	2	reached: arithmetic with a column in SET of a update, wrong number of arguments
+mixed	22	7	reached: arithmetic with a column in SET of a update, no such table
+mixed	18	6	reached: arithmetic with a column in SET of a update, not supported
+mixed	23	7	reached: arithmetic with a column in SET of a update, ok
+mixed	4	1	reached: arithmetic with a column in SET of a update, wrong number of arguments
 mixed	13	4	reached: arithmetic with a column in WHERE of a delete, no such table
 mixed	3	1	reached: arithmetic with a column in WHERE of a delete, not supported
 mixed	11	3	reached: arithmetic with a column in WHERE of a delete, ok
@@ -168,17 +167,16 @@ mixed	38	12	reached: arithmetic with a column in WHERE of a select, no such tabl
 mixed	20	6	reached: arithmetic with a column in WHERE of a select, not supported
 mixed	41	13	reached: arithmetic with a column in WHERE of a select, ok
 mixed	13	4	reached: arithmetic with a column in WHERE of a select, wrong number of arguments
-mixed	4	1	reached: arithmetic with a column in WHERE of a update, no such column
-mixed	11	3	reached: arithmetic with a column in WHERE of a update, no such table
-mixed	8	2	reached: arithmetic with a column in WHERE of a update, not supported
-mixed	16	5	reached: arithmetic with a column in WHERE of a update, ok
-mixed	3	1	reached: arithmetic with a column in WHERE of a update, wrong number of arguments
+mixed	7	2	reached: arithmetic with a column in WHERE of a update, no such column
+mixed	14	4	reached: arithmetic with a column in WHERE of a update, no such table
+mixed	10	3	reached: arithmetic with a column in WHERE of a update, not supported
+mixed	11	3	reached: arithmetic with a column in WHERE of a update, ok
 mixed	3	1	reached: arithmetic with a column in a subquery of a delete, no such table
 mixed	6	2	reached: arithmetic with a column in a subquery of a select, no such table
 mixed	3	1	reached: arithmetic with a column in a subquery of a select, not supported
-mixed	6	2	reached: arithmetic with a column in a subquery of a update, not supported
-mixed	4	1	reached: arithmetic without a column in SET of a update, no such table
-mixed	3	1	reached: arithmetic without a column in SET of a update, wrong number of arguments
+mixed	7	2	reached: arithmetic without a column in SET of a update, no such table
+mixed	3	1	reached: arithmetic without a column in SET of a update, not supported
+mixed	5	1	reached: arithmetic without a column in SET of a update, ok
 mixed	3	1	reached: arithmetic without a column in WHERE of a delete, an evaluation error: s4ql: integer overflow
 mixed	13	4	reached: arithmetic without a column in WHERE of a delete, no such table
 mixed	10	3	reached: arithmetic without a column in WHERE of a delete, not supported
@@ -189,47 +187,45 @@ mixed	33	11	reached: arithmetic without a column in WHERE of a select, no such t
 mixed	15	5	reached: arithmetic without a column in WHERE of a select, not supported
 mixed	37	12	reached: arithmetic without a column in WHERE of a select, ok
 mixed	6	2	reached: arithmetic without a column in WHERE of a select, wrong number of arguments
-mixed	4	1	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: integer overflow
-mixed	7	2	reached: arithmetic without a column in WHERE of a update, no such column
+mixed	3	1	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: real result that is not finite
+mixed	11	3	reached: arithmetic without a column in WHERE of a update, no such column
 mixed	16	5	reached: arithmetic without a column in WHERE of a update, no such table
-mixed	11	3	reached: arithmetic without a column in WHERE of a update, not supported
-mixed	14	4	reached: arithmetic without a column in WHERE of a update, ok
-mixed	3	1	reached: arithmetic without a column in WHERE of a update, wrong number of arguments
+mixed	9	3	reached: arithmetic without a column in WHERE of a update, not supported
+mixed	13	4	reached: arithmetic without a column in WHERE of a update, ok
 mixed	3	1	reached: arithmetic without a column in a subquery of a select, no such column
-mixed	3	1	reached: arithmetic without a column in a subquery of a update, no such column
-mixed	3	1	reached: arithmetic without a column in a subquery of a update, no such table
 mixed	8	2	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
 mixed	5	1	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
 mixed	8	2	reached: arithmetic: constant expression that serves a bound of the key
 mixed	6	2	reached: arithmetic: constant expression that serves a get of one key
-mixed	5	1	reached: arithmetic: s4ql: division by zero in WHERE
-mixed	4	1	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
-mixed	8	2	reached: arithmetic: s4ql: integer overflow in WHERE
-mixed	3	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
-mixed	5	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
-mixed	3	1	reached: arithmetic: s4ql: real result that is not finite in WHERE
+mixed	6	2	reached: arithmetic: s4ql: division by zero in WHERE
+mixed	5	1	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
+mixed	7	2	reached: arithmetic: s4ql: integer overflow in WHERE
+mixed	4	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
+mixed	3	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
+mixed	5	1	reached: arithmetic: s4ql: real result that is not finite in WHERE
+mixed	4	1	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression without a column
 mixed	6	2	reached: arithmetic: select with LIMIT that failed on a row
-mixed	4	1	reached: arithmetic: update that sets a column from itself that changed rows
+mixed	3	1	reached: arithmetic: update that sets a column from itself that changed rows
 mixed	1168	389	reached: changed both ways
-mixed	176	58	reached: chosen a get
+mixed	172	57	reached: chosen a get
 mixed	64	21	reached: chosen a get by a value on the left
-mixed	16	5	reached: chosen a get of a table of several indexes
+mixed	15	5	reached: chosen a get of a table of several indexes
 mixed	8	2	reached: chosen a get, delivered forward
 mixed	3	1	reached: chosen an index with 0 pinned, delivered backward
 mixed	3	1	reached: chosen an index with 0 pinned, delivered forward
-mixed	6	2	reached: chosen an index with 1 pinned
+mixed	5	1	reached: chosen an index with 1 pinned
 mixed	4	1	reached: chosen an index with 1 pinned and a range
 mixed	3	1	reached: chosen an index with 1 pinned and a range by a value on the left
 mixed	4	1	reached: chosen an index with 1 pinned by a value on the left
 mixed	4	1	reached: chosen an index with 1 pinned of a table of several indexes
-mixed	56	18	reached: chosen every row
+mixed	54	18	reached: chosen every row
 mixed	18	6	reached: chosen every row, delivered backward
 mixed	21	7	reached: chosen every row, delivered forward
 mixed	32	10	reached: chosen every row, sorted
-mixed	104	34	reached: chosen no row
+mixed	109	36	reached: chosen no row
 mixed	15	5	reached: chosen no row, delivered forward
 mixed	132	44	reached: chosen the primary key with 0 pinned and a range
-mixed	52	17	reached: chosen the primary key with 0 pinned and a range by a value on the left
+mixed	51	17	reached: chosen the primary key with 0 pinned and a range by a value on the left
 mixed	6	2	reached: chosen the primary key with 0 pinned and a range, delivered backward
 mixed	5	1	reached: chosen the primary key with 0 pinned and a range, delivered forward
 mixed	3	1	reached: chosen the primary key with 0 pinned and a range, sorted
@@ -342,9 +338,9 @@ mixed	36	12	reached: insert into BLOB UNIQUE constraint failed
 mixed	46	15	reached: insert into BLOB a value of another type
 mixed	117	39	reached: insert into BLOB ok
 mixed	11	3	reached: insert into BLOB string or blob too big
-mixed	40	13	reached: insert into INT UNIQUE constraint failed
+mixed	41	13	reached: insert into INT UNIQUE constraint failed
 mixed	21	7	reached: insert into INT a value of another type
-mixed	155	51	reached: insert into INT ok
+mixed	154	51	reached: insert into INT ok
 mixed	49	16	reached: insert into INTEGER UNIQUE constraint failed
 mixed	21	7	reached: insert into INTEGER a value of another type
 mixed	165	55	reached: insert into INTEGER ok
@@ -405,7 +401,7 @@ mixed	55	18	reached: insert with the wrong number of values: values were supplie
 mixed	30	10	reached: insert with two faults: NOT NULL constraint failed
 mixed	12	4	reached: insert with two faults: a value of another type
 mixed	3	1	reached: insert with two faults: has no column named
-mixed	165	55	reached: insert without a list ok
+mixed	164	54	reached: insert without a list ok
 mixed	461	153	reached: literal blob
 mixed	130	43	reached: literal empty blob
 mixed	88	29	reached: literal empty text
@@ -415,27 +411,27 @@ mixed	588	196	reached: literal real
 mixed	96	32	reached: literal real -0.0
 mixed	506	168	reached: literal text
 mixed	119	39	reached: long value
-mixed	1124	374	reached: path backward
-mixed	1156	385	reached: path forward
-mixed	166	55	reached: path of an index of a descending column
-mixed	262	87	reached: path of an index that holds every column
-mixed	230	76	reached: path of an index with 0 pinned
+mixed	1107	369	reached: path backward
+mixed	1135	378	reached: path forward
+mixed	162	54	reached: path of an index of a descending column
+mixed	263	87	reached: path of an index that holds every column
+mixed	227	75	reached: path of an index with 0 pinned
 mixed	50	16	reached: path of an index with 0 pinned and a range
 mixed	18	6	reached: path of an index with 0 pinned and a range of a WHERE with a value on the left
-mixed	80	26	reached: path of an index with 1 pinned
-mixed	9	3	reached: path of an index with 1 pinned and a range
-mixed	7	2	reached: path of an index with 1 pinned and a range of a WHERE with a value on the left
+mixed	77	25	reached: path of an index with 1 pinned
+mixed	6	2	reached: path of an index with 1 pinned and a range
+mixed	5	1	reached: path of an index with 1 pinned and a range of a WHERE with a value on the left
 mixed	6	2	reached: path of an index with 2 pinned
-mixed	1127	375	reached: path of every row
-mixed	284	94	reached: path of the primary key with 0 pinned and a range
-mixed	134	44	reached: path of the primary key with 0 pinned and a range of a WHERE with a value on the left
-mixed	321	107	reached: path of the primary key with 1 pinned
-mixed	106	35	reached: path that delivers the order
+mixed	1113	371	reached: path of every row
+mixed	280	93	reached: path of the primary key with 0 pinned and a range
+mixed	131	43	reached: path of the primary key with 0 pinned and a range of a WHERE with a value on the left
+mixed	310	103	reached: path of the primary key with 1 pinned
+mixed	105	35	reached: path that delivers the order
 mixed	172	57	reached: path that reads no row
-mixed	288	96	reached: path that sorts
-mixed	7	2	reached: path with a pin of NULL
-mixed	16	5	reached: path with a range on a descending column
-mixed	611	203	reached: plan of the cache checked
+mixed	289	96	reached: path that sorts
+mixed	4	1	reached: path with a pin of NULL
+mixed	14	4	reached: path with a range on a descending column
+mixed	596	198	reached: plan of the cache checked
 mixed	919	306	reached: read both ways
 mixed	56	18	reached: replay of indexes into an empty cache
 mixed	55	18	reached: restart with indexes in the cache
@@ -466,10 +462,9 @@ mixed	50	16	reached: select without ORDER BY whose rows came in the reverse of t
 mixed	4	1	reached: subquery of another table in a select
 mixed	20	6	reached: subquery of the table of the statement in a delete
 mixed	43	14	reached: subquery of the table of the statement in a select
-mixed	17	5	reached: subquery of the table of the statement in a update
+mixed	19	6	reached: subquery of the table of the statement in a update
 mixed	4	1	reached: subquery on the left of != in a update
 mixed	3	1	reached: subquery on the left of < in a select
-mixed	3	1	reached: subquery on the left of < in a update
 mixed	3	1	reached: subquery on the left of <= in a select
 mixed	6	2	reached: subquery on the left of = in a delete
 mixed	14	4	reached: subquery on the left of = in a select
@@ -481,106 +476,106 @@ mixed	4	1	reached: subquery on the right of = in a delete
 mixed	13	4	reached: subquery on the right of = in a select
 mixed	6	2	reached: subquery that finds no row in a delete
 mixed	15	5	reached: subquery that finds no row in a select
-mixed	11	3	reached: subquery that finds no row in a update
+mixed	12	4	reached: subquery that finds no row in a update
 mixed	12	4	reached: subquery that finds one row in a select
 mixed	3	1	reached: subquery that finds one row in a update
 mixed	3	1	reached: subquery that finds several rows that tie for the first, of which it gave another, in a select
 mixed	8	2	reached: subquery that the engine did not compute, of an update or a delete
 mixed	8	2	reached: subquery whose ORDER BY decides the first of several rows in a select
-mixed	52	17	reached: subquery whose value was NULL
-mixed	28	9	reached: subquery whose value was that of its one first row
+mixed	54	18	reached: subquery whose value was NULL
+mixed	27	9	reached: subquery whose value was that of its one first row
 mixed	4	1	reached: subquery whose value was the NULL of a row
-mixed	9	3	reached: subquery with LIMIT 0
-mixed	16	5	reached: subquery with LIMIT ?
+mixed	10	3	reached: subquery with LIMIT 0
+mixed	17	5	reached: subquery with LIMIT ?
 mixed	5	1	reached: subquery with a LIMIT above 1
 mixed	3	1	reached: subquery with a parameter after it
-mixed	12	4	reached: subquery with a parameter before it
+mixed	14	4	reached: subquery with a parameter before it
 mixed	25	8	reached: subquery with a parameter in it
 mixed	3	1	reached: subquery with rows that tie for the first, whose value was that of SQLite's first
 mixed	5	1	reached: subquery with rows that tie for the first, whose value was that of another
 mixed	3	1	reached: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of SQLite's first
 mixed	5	1	reached: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of another
-mixed	19	6	reached: update WHERE that reads a get of one key ok, rows changed
-mixed	3	1	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
+mixed	20	6	reached: update WHERE that reads a get of one key ok, rows changed
+mixed	4	1	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
 mixed	3	1	reached: update WHERE that reads a scan from a lower bound ok, rows changed
-mixed	4	1	reached: update WHERE that reads a scan of every row ok, rows changed
-mixed	9	3	reached: update WHERE that reads a scan to an upper bound ok, rows changed
-mixed	22	7	reached: update WHERE that reads no row ok, no row found
+mixed	3	1	reached: update WHERE that reads a scan of every row ok, rows changed
+mixed	8	2	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+mixed	24	8	reached: update WHERE that reads no row ok, no row found
 mixed	7	2	reached: update WHERE with a column in double quotes that the table does not have no such column
-mixed	20	6	reached: update WHERE with a value of another type a value of another type
-mixed	8	2	reached: update WHERE with contradicting conditions ok, no row found
+mixed	18	6	reached: update WHERE with a value of another type a value of another type
+mixed	6	2	reached: update WHERE with contradicting conditions ok, no row found
 mixed	3	1	reached: update of a row whose record is too long
 mixed	41	13	reached: update that changes every row of a table with rows
-mixed	46	15	reached: update that changes no row of a table with rows
-mixed	22	7	reached: update that changes some rows of a table
-mixed	11	3	reached: update with RETURNING * ok
-mixed	5	1	reached: update with RETURNING of a name that the table does not have no such column
-mixed	21	7	reached: update with RETURNING of a name twice ok
-mixed	13	4	reached: update with RETURNING of names ok
-mixed	3	1	reached: update with RETURNING of the key that moves a row to another key
-mixed	45	15	reached: update with RETURNING read by the access that the model chooses
+mixed	40	13	reached: update that changes no row of a table with rows
+mixed	21	7	reached: update that changes some rows of a table
+mixed	8	2	reached: update with RETURNING * ok
+mixed	4	1	reached: update with RETURNING of a name that the table does not have no such column
+mixed	20	6	reached: update with RETURNING of a name twice ok
+mixed	10	3	reached: update with RETURNING of names ok
+mixed	37	12	reached: update with RETURNING read by the access that the model chooses
 mixed	3	1	reached: update with RETURNING that fails on a constraint where its WHERE finds two rows or more
 mixed	4	1	reached: update with RETURNING that gives a column of BLOB
-mixed	5	1	reached: update with RETURNING that gives a column of REAL
-mixed	28	9	reached: update with RETURNING that gives no row
-mixed	10	3	reached: update with RETURNING that gives one row
-mixed	11	3	reached: update with RETURNING that sets a column of an index ok
-mixed	23	7	reached: update with RETURNING that sets the key ok
+mixed	4	1	reached: update with RETURNING that gives a column of REAL
+mixed	22	7	reached: update with RETURNING that gives no row
+mixed	9	3	reached: update with RETURNING that gives one row
+mixed	8	2	reached: update with RETURNING that sets a column of an index ok
+mixed	21	7	reached: update with RETURNING that sets the key ok
 mixed	6	2	reached: update with RETURNING through Exec ok
-mixed	4	1	reached: update with RETURNING through Query NOT NULL constraint failed
-mixed	39	13	reached: update with RETURNING through Query ok
-mixed	10	3	reached: update with WHERE NOT NULL constraint failed
-mixed	10	3	reached: update with WHERE UNIQUE constraint failed
-mixed	50	16	reached: update with WHERE no such column
-mixed	112	37	reached: update with WHERE ok, no row found
-mixed	35	11	reached: update with WHERE ok, rows changed
-mixed	7	2	reached: update with a literal longer than the length limit in SET
-mixed	14	4	reached: update with a subquery through Exec ok
+mixed	5	1	reached: update with RETURNING through Query NOT NULL constraint failed
+mixed	32	10	reached: update with RETURNING through Query ok
+mixed	11	3	reached: update with WHERE NOT NULL constraint failed
+mixed	11	3	reached: update with WHERE UNIQUE constraint failed
+mixed	46	15	reached: update with WHERE no such column
+mixed	107	35	reached: update with WHERE ok, no row found
+mixed	34	11	reached: update with WHERE ok, rows changed
+mixed	6	2	reached: update with a literal longer than the length limit in SET
+mixed	4	1	reached: update with a subquery through Exec not supported
+mixed	15	5	reached: update with a subquery through Exec ok
 mixed	4	1	reached: update with a subquery through Query ok
-mixed	48	16	reached: update with a value on the left ok, no row found
-mixed	15	5	reached: update with a value on the left ok, rows changed
-mixed	15	5	reached: update with arguments that s4ql refuses not supported
-mixed	22	7	reached: update with arguments that s4ql refuses wrong number of arguments
+mixed	45	15	reached: update with a value on the left ok, no row found
+mixed	14	4	reached: update with a value on the left ok, rows changed
+mixed	17	5	reached: update with arguments that s4ql refuses not supported
+mixed	19	6	reached: update with arguments that s4ql refuses wrong number of arguments
 mixed	10	3	reached: update without WHERE NOT NULL constraint failed
-mixed	13	4	reached: update without WHERE UNIQUE constraint failed
-mixed	32	10	reached: update without WHERE ok, no row found
+mixed	12	4	reached: update without WHERE UNIQUE constraint failed
+mixed	30	10	reached: update without WHERE ok, no row found
 mixed	28	9	reached: update without WHERE ok, rows changed
 mixed	4	1	reached: value on the left NOT NULL constraint failed
-mixed	6	2	reached: value on the left UNIQUE constraint failed
-mixed	41	13	reached: value on the left compared with NULL finds no row
+mixed	7	2	reached: value on the left UNIQUE constraint failed
+mixed	43	14	reached: value on the left compared with NULL finds no row
 mixed	10	3	reached: value on the left of != a value of another type
 mixed	21	7	reached: value on the left of != finds no row
 mixed	6	2	reached: value on the left of != finds rows
-mixed	10	3	reached: value on the left of != no such column
+mixed	9	3	reached: value on the left of != no such column
 mixed	12	4	reached: value on the left of < a value of another type
-mixed	23	7	reached: value on the left of < finds no row
-mixed	5	1	reached: value on the left of < finds rows
+mixed	20	6	reached: value on the left of < finds no row
+mixed	4	1	reached: value on the left of < finds rows
 mixed	19	6	reached: value on the left of < no such column
 mixed	8	2	reached: value on the left of < not supported
 mixed	9	3	reached: value on the left of <= a value of another type
-mixed	30	10	reached: value on the left of <= finds no row
+mixed	32	10	reached: value on the left of <= finds no row
 mixed	3	1	reached: value on the left of <= finds rows
-mixed	10	3	reached: value on the left of <= no such column
+mixed	9	3	reached: value on the left of <= no such column
 mixed	5	1	reached: value on the left of <= not supported
 mixed	4	1	reached: value on the left of <= wrong number of arguments
-mixed	18	6	reached: value on the left of = a value of another type
-mixed	75	25	reached: value on the left of = finds no row
+mixed	20	6	reached: value on the left of = a value of another type
+mixed	74	24	reached: value on the left of = finds no row
 mixed	26	8	reached: value on the left of = finds rows
-mixed	21	7	reached: value on the left of = no such column
+mixed	22	7	reached: value on the left of = no such column
 mixed	10	3	reached: value on the left of = not supported
-mixed	7	2	reached: value on the left of = wrong number of arguments
-mixed	17	5	reached: value on the left of > a value of another type
+mixed	8	2	reached: value on the left of = wrong number of arguments
+mixed	18	6	reached: value on the left of > a value of another type
 mixed	33	11	reached: value on the left of > finds no row
 mixed	5	1	reached: value on the left of > finds rows
 mixed	13	4	reached: value on the left of > no such column
-mixed	3	1	reached: value on the left of > not supported
-mixed	6	2	reached: value on the left of > wrong number of arguments
-mixed	10	3	reached: value on the left of >= a value of another type
+mixed	4	1	reached: value on the left of > not supported
+mixed	5	1	reached: value on the left of > wrong number of arguments
+mixed	9	3	reached: value on the left of >= a value of another type
 mixed	26	8	reached: value on the left of >= finds no row
 mixed	6	2	reached: value on the left of >= finds rows
 mixed	16	5	reached: value on the left of >= no such column
 mixed	3	1	reached: value on the left of >= wrong number of arguments
-mixed	118	39	reached: value on the left on a table that a create table if not exists found
+mixed	121	40	reached: value on the left on a table that a create table if not exists found
 mixed	8	2	reached: value on the left string or blob too big
 mixed	64	21	select no such column
 mixed	51	17	select wrong number of arguments
@@ -3639,424 +3634,410 @@ subquery	4	1	reached: value on the left of >= finds rows
 subquery	5	1	reached: value on the left of >= not supported
 subquery	17	5	reached: value on the left string or blob too big
 subquery	12	4	select no such column
-arithmetic	3	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
+arithmetic	4	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
 arithmetic	1	=	excused: a literal longer than the length limit, checked against s4ql's rule
-arithmetic	1	=	excused: a sorted select that SQLite refuses for the length of what it sorts, checked against SQLite without the length limit
-arithmetic	2	=	excused: a statement with RETURNING, which SQLite refuses for the length of a row of RETURNING, checked against SQLite without the length limit
-arithmetic	138	=	excused: a value of another type than its column, checked against s4ql's rule
-arithmetic	8	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
-arithmetic	167	=	excused: arithmetic refused by the rule of exact types
-arithmetic	155	=	excused: evaluation error that SQLite's result of its operator justifies
-arithmetic	5	1	insert  values for 
+arithmetic	1	=	excused: a statement with RETURNING, which SQLite refuses for the length of a row of RETURNING, checked against SQLite without the length limit
+arithmetic	109	=	excused: a value of another type than its column, checked against s4ql's rule
+arithmetic	13	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+arithmetic	153	=	excused: arithmetic refused by the rule of exact types
+arithmetic	153	=	excused: evaluation error that SQLite's result of its operator justifies
+arithmetic	4	1	insert  values for 
 arithmetic	13	4	insert NOT NULL constraint failed
-arithmetic	4	1	insert values were supplied
-arithmetic	20	6	insert with a parameter UNIQUE constraint failed
-arithmetic	40	13	insert with a parameter not supported
-arithmetic	388	129	insert with a parameter ok
-arithmetic	14	4	reached: != on another column ok
-arithmetic	3	1	reached: != on the key a value of another type
-arithmetic	26	8	reached: != on the key ok
-arithmetic	21	7	reached: < on another column ok
-arithmetic	3	1	reached: < on the key a value of another type
-arithmetic	40	13	reached: < on the key ok
+arithmetic	21	7	insert with a parameter UNIQUE constraint failed
+arithmetic	37	12	insert with a parameter not supported
+arithmetic	458	152	insert with a parameter ok
+arithmetic	16	5	reached: != on another column ok
+arithmetic	23	7	reached: != on the key ok
+arithmetic	25	8	reached: < on another column ok
+arithmetic	4	1	reached: < on the key a value of another type
+arithmetic	38	12	reached: < on the key ok
 arithmetic	22	7	reached: <= on another column ok
-arithmetic	11	3	reached: <= on the key a value of another type
-arithmetic	45	15	reached: <= on the key ok
-arithmetic	50	16	reached: = on another column ok
+arithmetic	10	3	reached: <= on the key a value of another type
+arithmetic	34	11	reached: <= on the key ok
+arithmetic	61	20	reached: = on another column ok
 arithmetic	6	2	reached: = on the key a value of another type
-arithmetic	44	14	reached: = on the key ok
-arithmetic	21	7	reached: > on another column ok
-arithmetic	35	11	reached: > on the key ok
+arithmetic	28	9	reached: = on the key ok
+arithmetic	23	7	reached: > on another column ok
+arithmetic	31	10	reached: > on the key ok
 arithmetic	17	5	reached: >= on another column ok
-arithmetic	7	2	reached: >= on the key a value of another type
-arithmetic	44	14	reached: >= on the key ok
-arithmetic	12	4	reached: IS NOT NULL on another column ok
+arithmetic	4	1	reached: >= on the key a value of another type
+arithmetic	39	13	reached: >= on the key ok
+arithmetic	11	3	reached: IS NOT NULL on another column ok
 arithmetic	12	4	reached: IS NOT NULL on the key ok
-arithmetic	33	11	reached: IS NULL on another column ok
-arithmetic	21	7	reached: IS NULL on the key ok
-arithmetic	23	7	reached: LIMIT 0
-arithmetic	42	14	reached: LIMIT above the number of rows
-arithmetic	53	17	reached: LIMIT by an argument ok
-arithmetic	9	3	reached: LIMIT of the number of rows
-arithmetic	145	48	reached: LIMIT run by every path
-arithmetic	12	4	reached: LIMIT that cuts
-arithmetic	28	9	reached: NULL argument into a column that takes NULL ok
-arithmetic	5	1	reached: NULL argument into the key NOT NULL constraint failed
-arithmetic	8	2	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+arithmetic	32	10	reached: IS NULL on another column ok
+arithmetic	18	6	reached: IS NULL on the key ok
+arithmetic	22	7	reached: LIMIT 0
+arithmetic	33	11	reached: LIMIT above the number of rows
+arithmetic	46	15	reached: LIMIT by an argument ok
+arithmetic	4	1	reached: LIMIT of the number of rows
+arithmetic	123	41	reached: LIMIT run by every path
+arithmetic	13	4	reached: LIMIT that cuts
+arithmetic	4	1	reached: LIMIT with an argument that is a negative integer not supported
+arithmetic	3	1	reached: NULL argument into a column that takes NULL a value of another type
+arithmetic	54	18	reached: NULL argument into a column that takes NULL ok
+arithmetic	5	1	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
 arithmetic	5	1	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
-arithmetic	7	2	reached: NULL literal into a column that takes NULL a value of another type
-arithmetic	67	22	reached: NULL literal into a column that takes NULL ok
-arithmetic	31	10	reached: ORDER BY ascending ok
-arithmetic	31	10	reached: ORDER BY descending ok
-arithmetic	49	16	reached: ORDER BY of 1 columns ok
-arithmetic	35	11	reached: ORDER BY of 2 columns ok
-arithmetic	9	3	reached: ORDER BY of 3 columns ok
-arithmetic	47	15	reached: ORDER BY of a column of type BLOB ok
-arithmetic	13	4	reached: ORDER BY of a column of type INT ok
-arithmetic	21	7	reached: ORDER BY of a column of type INTEGER ok
-arithmetic	26	8	reached: ORDER BY of a column of type REAL ok
-arithmetic	39	13	reached: ORDER BY of a column of type TEXT ok
-arithmetic	42	14	reached: ORDER BY of a column that takes NULL ok
-arithmetic	12	4	reached: ORDER BY of a column that the WHERE pins ok
-arithmetic	4	1	reached: ORDER BY of a column that the table does not have no such column
-arithmetic	31	10	reached: ORDER BY of mixed directions ok
-arithmetic	10	3	reached: ORDER BY over rows with NULL in its columns
-arithmetic	92	30	reached: ORDER BY run by every path
-arithmetic	34	11	reached: ORDER BY without WHERE ok
-arithmetic	10	3	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
-arithmetic	11	3	reached: SET of NULL for a column that does not take it ok, no row found
-arithmetic	7	2	reached: SET of a column in double quotes that the table does not have no such column
-arithmetic	12	4	reached: SET of a column that the table does not have no such column
-arithmetic	13	4	reached: SET of every column ok, rows changed
-arithmetic	6	2	reached: SET of the key NOT NULL constraint failed
-arithmetic	12	4	reached: SET of the key UNIQUE constraint failed
-arithmetic	45	15	reached: SET of the key ok, rows changed
-arithmetic	21	7	reached: SET with a value of another type a value of another type
-arithmetic	17	5	reached: SET with argument []uint8 ok, no row found
-arithmetic	13	4	reached: SET with argument int64 ok, rows changed
-arithmetic	4	1	reached: SET with argument nil ok, rows changed
-arithmetic	13	4	reached: SET with argument string ok, rows changed
-arithmetic	26	8	reached: SET with literal blob ok, rows changed
-arithmetic	4	1	reached: SET with literal empty blob ok, rows changed
-arithmetic	19	6	reached: SET with literal integer ok, rows changed
-arithmetic	3	1	reached: SET with literal null ok, rows changed
+arithmetic	9	3	reached: NULL literal into a column that takes NULL a value of another type
+arithmetic	102	34	reached: NULL literal into a column that takes NULL ok
+arithmetic	32	10	reached: ORDER BY ascending ok
+arithmetic	33	11	reached: ORDER BY descending ok
+arithmetic	51	17	reached: ORDER BY of 1 columns ok
+arithmetic	22	7	reached: ORDER BY of 2 columns ok
+arithmetic	18	6	reached: ORDER BY of 3 columns ok
+arithmetic	44	14	reached: ORDER BY of a column of type BLOB ok
+arithmetic	15	5	reached: ORDER BY of a column of type INT ok
+arithmetic	18	6	reached: ORDER BY of a column of type INTEGER ok
+arithmetic	27	9	reached: ORDER BY of a column of type REAL ok
+arithmetic	45	15	reached: ORDER BY of a column of type TEXT ok
+arithmetic	60	20	reached: ORDER BY of a column that takes NULL ok
+arithmetic	14	4	reached: ORDER BY of a column that the WHERE pins ok
+arithmetic	3	1	reached: ORDER BY of a column that the table does not have no such column
+arithmetic	26	8	reached: ORDER BY of mixed directions ok
+arithmetic	15	5	reached: ORDER BY over rows with NULL in its columns
+arithmetic	91	30	reached: ORDER BY run by every path
+arithmetic	35	11	reached: ORDER BY without WHERE ok
+arithmetic	12	4	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+arithmetic	12	4	reached: SET of NULL for a column that does not take it ok, no row found
+arithmetic	3	1	reached: SET of a column in double quotes that the table does not have no such column
+arithmetic	11	3	reached: SET of a column that the table does not have no such column
+arithmetic	4	1	reached: SET of every column ok, rows changed
+arithmetic	3	1	reached: SET of the key NOT NULL constraint failed
+arithmetic	6	2	reached: SET of the key UNIQUE constraint failed
+arithmetic	21	7	reached: SET of the key ok, rows changed
+arithmetic	15	5	reached: SET with a value of another type a value of another type
+arithmetic	20	6	reached: SET with argument []uint8 ok, no row found
+arithmetic	4	1	reached: SET with argument float64 ok, rows changed
+arithmetic	8	2	reached: SET with argument int64 ok, rows changed
+arithmetic	18	6	reached: SET with argument string ok, rows changed
+arithmetic	20	6	reached: SET with literal blob ok, rows changed
+arithmetic	11	3	reached: SET with literal empty blob ok, rows changed
+arithmetic	5	1	reached: SET with literal empty text ok, rows changed
+arithmetic	27	9	reached: SET with literal integer ok, rows changed
+arithmetic	6	2	reached: SET with literal null ok, rows changed
 arithmetic	13	4	reached: SET with literal real ok, rows changed
-arithmetic	25	8	reached: SET with literal text ok, rows changed
-arithmetic	224	74	reached: WHERE run by a sample of its paths
-arithmetic	611	203	reached: WHERE run by every path
-arithmetic	253	84	reached: WHERE run by every path on a table with an index
-arithmetic	13	4	reached: WHERE that gives every row of a table with rows
-arithmetic	81	27	reached: WHERE that gives no row of a table with rows
-arithmetic	23	7	reached: WHERE that gives some rows of a table
-arithmetic	39	13	reached: WHERE that reads a get of one key ok
-arithmetic	21	7	reached: WHERE that reads a scan between two bounds ok
-arithmetic	12	4	reached: WHERE that reads a scan between two bounds that hold no key ok
-arithmetic	24	8	reached: WHERE that reads a scan from a lower bound ok
-arithmetic	89	29	reached: WHERE that reads a scan of every row ok
-arithmetic	32	10	reached: WHERE that reads a scan to an upper bound ok
-arithmetic	24	8	reached: WHERE that reads no row ok
-arithmetic	95	31	reached: WHERE that tests a column more than once ok
-arithmetic	3	1	reached: WHERE with a column in double quotes that the table does not have no such column
-arithmetic	4	1	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
-arithmetic	6	2	reached: WHERE with a literal longer than the length limit
-arithmetic	18	6	reached: WHERE with a value of another type a value of another type
-arithmetic	10	3	reached: WHERE with contradicting conditions ok
-arithmetic	100	33	reached: argument []uint8
-arithmetic	20	6	reached: argument empty []byte
-arithmetic	18	6	reached: argument empty string
-arithmetic	116	38	reached: argument float64
-arithmetic	11	3	reached: argument float64 -0.0
-arithmetic	210	70	reached: argument int64
-arithmetic	38	12	reached: argument nil
-arithmetic	109	36	reached: argument string
-arithmetic	75	25	reached: arithmetic of a select whose due errors the model's access decides
-arithmetic	4	1	reached: arithmetic with a column in SET of a update, NOT NULL constraint failed
-arithmetic	8	2	reached: arithmetic with a column in SET of a update, UNIQUE constraint failed
-arithmetic	5	1	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: division by zero
-arithmetic	17	5	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: integer overflow
+arithmetic	40	13	reached: SET with literal text ok, rows changed
+arithmetic	178	59	reached: WHERE run by a sample of its paths
+arithmetic	538	179	reached: WHERE run by every path
+arithmetic	200	66	reached: WHERE run by every path on a table with an index
+arithmetic	6	2	reached: WHERE that gives every row of a table with rows
+arithmetic	71	23	reached: WHERE that gives no row of a table with rows
+arithmetic	16	5	reached: WHERE that gives some rows of a table
+arithmetic	26	8	reached: WHERE that reads a get of one key ok
+arithmetic	23	7	reached: WHERE that reads a scan between two bounds ok
+arithmetic	10	3	reached: WHERE that reads a scan between two bounds that hold no key ok
+arithmetic	23	7	reached: WHERE that reads a scan from a lower bound ok
+arithmetic	91	30	reached: WHERE that reads a scan of every row ok
+arithmetic	24	8	reached: WHERE that reads a scan to an upper bound ok
+arithmetic	20	6	reached: WHERE that reads no row ok
+arithmetic	88	29	reached: WHERE that tests a column more than once ok
+arithmetic	4	1	reached: WHERE with a column in double quotes that the table does not have no such column
+arithmetic	5	1	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+arithmetic	7	2	reached: WHERE with a literal longer than the length limit
+arithmetic	22	7	reached: WHERE with a value of another type a value of another type
+arithmetic	8	2	reached: WHERE with contradicting conditions ok
+arithmetic	130	43	reached: argument []uint8
+arithmetic	27	9	reached: argument empty []byte
+arithmetic	22	7	reached: argument empty string
+arithmetic	117	39	reached: argument float64
+arithmetic	16	5	reached: argument float64 -0.0
+arithmetic	271	90	reached: argument int64
+arithmetic	70	23	reached: argument nil
+arithmetic	135	45	reached: argument string
+arithmetic	92	30	reached: arithmetic of a select whose due errors the model's access decides
+arithmetic	13	4	reached: arithmetic with a column in SET of a update, NOT NULL constraint failed
+arithmetic	6	2	reached: arithmetic with a column in SET of a update, UNIQUE constraint failed
+arithmetic	16	5	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: division by zero
+arithmetic	33	11	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: integer overflow
 arithmetic	4	1	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: real result that is not finite
-arithmetic	11	3	reached: arithmetic with a column in SET of a update, no such column
-arithmetic	10	3	reached: arithmetic with a column in SET of a update, no such table
-arithmetic	61	20	reached: arithmetic with a column in SET of a update, not supported
-arithmetic	137	45	reached: arithmetic with a column in SET of a update, ok
-arithmetic	5	1	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: division by zero
-arithmetic	7	2	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: integer overflow
-arithmetic	5	1	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: real result that is not finite
-arithmetic	5	1	reached: arithmetic with a column in WHERE of a delete, no such table
-arithmetic	7	2	reached: arithmetic with a column in WHERE of a delete, not supported
-arithmetic	55	18	reached: arithmetic with a column in WHERE of a delete, ok
-arithmetic	38	12	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: division by zero
-arithmetic	8	2	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: integer overflow
-arithmetic	13	4	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: real result that is not finite
-arithmetic	9	3	reached: arithmetic with a column in WHERE of a select, no such column
-arithmetic	5	1	reached: arithmetic with a column in WHERE of a select, no such table
-arithmetic	56	18	reached: arithmetic with a column in WHERE of a select, not supported
-arithmetic	154	51	reached: arithmetic with a column in WHERE of a select, ok
-arithmetic	7	2	reached: arithmetic with a column in WHERE of a update, an evaluation error: s4ql: division by zero
-arithmetic	13	4	reached: arithmetic with a column in WHERE of a update, an evaluation error: s4ql: integer overflow
-arithmetic	7	2	reached: arithmetic with a column in WHERE of a update, no such column
-arithmetic	27	9	reached: arithmetic with a column in WHERE of a update, not supported
-arithmetic	54	18	reached: arithmetic with a column in WHERE of a update, ok
-arithmetic	5	1	reached: arithmetic with a column in WHERE of a update, string or blob too big
-arithmetic	10	3	reached: arithmetic without a column in SET of a update, an evaluation error: s4ql: division by zero
-arithmetic	14	4	reached: arithmetic without a column in SET of a update, an evaluation error: s4ql: integer overflow
-arithmetic	5	1	reached: arithmetic without a column in SET of a update, an evaluation error: s4ql: real result that is not finite
-arithmetic	3	1	reached: arithmetic without a column in SET of a update, no such column
-arithmetic	7	2	reached: arithmetic without a column in SET of a update, not supported
-arithmetic	12	4	reached: arithmetic without a column in SET of a update, ok
-arithmetic	8	2	reached: arithmetic without a column in WHERE of a delete, an evaluation error: s4ql: integer overflow
-arithmetic	4	1	reached: arithmetic without a column in WHERE of a delete, an evaluation error: s4ql: real result that is not finite
-arithmetic	3	1	reached: arithmetic without a column in WHERE of a delete, no such column
-arithmetic	4	1	reached: arithmetic without a column in WHERE of a delete, no such table
-arithmetic	11	3	reached: arithmetic without a column in WHERE of a delete, not supported
-arithmetic	43	14	reached: arithmetic without a column in WHERE of a delete, ok
-arithmetic	10	3	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: division by zero
-arithmetic	13	4	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: integer overflow
-arithmetic	4	1	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: real result that is not finite
-arithmetic	6	2	reached: arithmetic without a column in WHERE of a select, no such column
-arithmetic	7	2	reached: arithmetic without a column in WHERE of a select, no such table
-arithmetic	53	17	reached: arithmetic without a column in WHERE of a select, not supported
-arithmetic	148	49	reached: arithmetic without a column in WHERE of a select, ok
-arithmetic	10	3	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: division by zero
-arithmetic	18	6	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: integer overflow
-arithmetic	4	1	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: real result that is not finite
-arithmetic	8	2	reached: arithmetic without a column in WHERE of a update, no such column
-arithmetic	4	1	reached: arithmetic without a column in WHERE of a update, no such table
-arithmetic	35	11	reached: arithmetic without a column in WHERE of a update, not supported
-arithmetic	78	26	reached: arithmetic without a column in WHERE of a update, ok
-arithmetic	37	12	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
-arithmetic	18	6	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
+arithmetic	16	5	reached: arithmetic with a column in SET of a update, no such column
+arithmetic	11	3	reached: arithmetic with a column in SET of a update, no such table
+arithmetic	51	17	reached: arithmetic with a column in SET of a update, not supported
+arithmetic	231	77	reached: arithmetic with a column in SET of a update, ok
+arithmetic	4	1	reached: arithmetic with a column in SET of a update, string or blob too big
+arithmetic	3	1	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: division by zero
+arithmetic	10	3	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: integer overflow
+arithmetic	7	2	reached: arithmetic with a column in WHERE of a delete, no such table
+arithmetic	10	3	reached: arithmetic with a column in WHERE of a delete, not supported
+arithmetic	41	13	reached: arithmetic with a column in WHERE of a delete, ok
+arithmetic	35	11	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: division by zero
+arithmetic	19	6	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: integer overflow
+arithmetic	12	4	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: real result that is not finite
+arithmetic	8	2	reached: arithmetic with a column in WHERE of a select, no such column
+arithmetic	6	2	reached: arithmetic with a column in WHERE of a select, no such table
+arithmetic	50	16	reached: arithmetic with a column in WHERE of a select, not supported
+arithmetic	155	51	reached: arithmetic with a column in WHERE of a select, ok
+arithmetic	4	1	reached: arithmetic with a column in WHERE of a select, string or blob too big
+arithmetic	9	3	reached: arithmetic with a column in WHERE of a update, an evaluation error: s4ql: integer overflow
+arithmetic	8	2	reached: arithmetic with a column in WHERE of a update, no such column
+arithmetic	31	10	reached: arithmetic with a column in WHERE of a update, not supported
+arithmetic	50	16	reached: arithmetic with a column in WHERE of a update, ok
+arithmetic	3	1	reached: arithmetic without a column in SET of a update, UNIQUE constraint failed
+arithmetic	15	5	reached: arithmetic without a column in SET of a update, an evaluation error: s4ql: division by zero
+arithmetic	19	6	reached: arithmetic without a column in SET of a update, an evaluation error: s4ql: integer overflow
+arithmetic	5	1	reached: arithmetic without a column in SET of a update, not supported
+arithmetic	25	8	reached: arithmetic without a column in SET of a update, ok
+arithmetic	14	4	reached: arithmetic without a column in WHERE of a delete, an evaluation error: s4ql: integer overflow
+arithmetic	5	1	reached: arithmetic without a column in WHERE of a delete, no such table
+arithmetic	14	4	reached: arithmetic without a column in WHERE of a delete, not supported
+arithmetic	46	15	reached: arithmetic without a column in WHERE of a delete, ok
+arithmetic	6	2	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: division by zero
+arithmetic	18	6	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: integer overflow
+arithmetic	3	1	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: real result that is not finite
+arithmetic	8	2	reached: arithmetic without a column in WHERE of a select, no such column
+arithmetic	8	2	reached: arithmetic without a column in WHERE of a select, no such table
+arithmetic	39	13	reached: arithmetic without a column in WHERE of a select, not supported
+arithmetic	172	57	reached: arithmetic without a column in WHERE of a select, ok
+arithmetic	3	1	reached: arithmetic without a column in WHERE of a select, string or blob too big
+arithmetic	7	2	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: division by zero
+arithmetic	15	5	reached: arithmetic without a column in WHERE of a update, an evaluation error: s4ql: integer overflow
+arithmetic	6	2	reached: arithmetic without a column in WHERE of a update, no such column
+arithmetic	3	1	reached: arithmetic without a column in WHERE of a update, no such table
+arithmetic	25	8	reached: arithmetic without a column in WHERE of a update, not supported
+arithmetic	53	17	reached: arithmetic without a column in WHERE of a update, ok
+arithmetic	52	17	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
+arithmetic	11	3	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
 arithmetic	5	1	reached: arithmetic: constant expression that serves a bound of an index
-arithmetic	34	11	reached: arithmetic: constant expression that serves a bound of the key
-arithmetic	25	8	reached: arithmetic: constant expression that serves a get of one key
-arithmetic	3	1	reached: arithmetic: constant expression that serves the pins of an index
-arithmetic	9	3	reached: arithmetic: s4ql: division by zero in SET
-arithmetic	8	2	reached: arithmetic: s4ql: division by zero in SET of an expression without a column
-arithmetic	59	19	reached: arithmetic: s4ql: division by zero in WHERE
-arithmetic	45	15	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
-arithmetic	14	4	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
-arithmetic	19	6	reached: arithmetic: s4ql: integer overflow in SET
-arithmetic	5	1	reached: arithmetic: s4ql: integer overflow in SET of an expression with a column
-arithmetic	14	4	reached: arithmetic: s4ql: integer overflow in SET of an expression without a column
-arithmetic	41	13	reached: arithmetic: s4ql: integer overflow in WHERE
-arithmetic	14	4	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
-arithmetic	27	9	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
-arithmetic	7	2	reached: arithmetic: s4ql: real result that is not finite in SET
-arithmetic	5	1	reached: arithmetic: s4ql: real result that is not finite in SET of an expression without a column
-arithmetic	20	6	reached: arithmetic: s4ql: real result that is not finite in WHERE
-arithmetic	12	4	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression with a column
-arithmetic	8	2	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression without a column
-arithmetic	47	15	reached: arithmetic: select with LIMIT that failed on a row
-arithmetic	7	2	reached: arithmetic: select with LIMIT that gave rows where a row that it did not read fails
-arithmetic	11	3	reached: arithmetic: update that computes its key from its row that changed rows
-arithmetic	51	17	reached: arithmetic: update that sets a column from itself that changed rows
-arithmetic	6	2	reached: arithmetic: update whose SET reads a column that it sets before that changed rows
-arithmetic	898	299	reached: changed both ways
-arithmetic	228	76	reached: chosen a get
-arithmetic	30	10	reached: chosen a get of a table of several indexes
-arithmetic	6	2	reached: chosen a get, delivered forward
-arithmetic	12	4	reached: chosen an index with 0 pinned and a range
-arithmetic	3	1	reached: chosen an index with 0 pinned, delivered backward
-arithmetic	4	1	reached: chosen an index with 0 pinned, delivered forward
-arithmetic	10	3	reached: chosen an index with 1 pinned
-arithmetic	11	3	reached: chosen an index with 1 pinned and a range
-arithmetic	3	1	reached: chosen an index with 1 pinned of a table of several indexes
-arithmetic	3	1	reached: chosen an index with 1 pinned, delivered forward
-arithmetic	4	1	reached: chosen an index with 2 pinned
-arithmetic	4	1	reached: chosen an index with 2 pinned and a range
-arithmetic	73	24	reached: chosen every row
-arithmetic	7	2	reached: chosen every row, delivered backward
-arithmetic	7	2	reached: chosen every row, delivered forward
-arithmetic	26	8	reached: chosen every row, sorted
+arithmetic	39	13	reached: arithmetic: constant expression that serves a bound of the key
+arithmetic	32	10	reached: arithmetic: constant expression that serves a get of one key
+arithmetic	6	2	reached: arithmetic: constant expression that serves the pins of an index
+arithmetic	17	5	reached: arithmetic: s4ql: division by zero in SET
+arithmetic	3	1	reached: arithmetic: s4ql: division by zero in SET of an expression with a column
+arithmetic	14	4	reached: arithmetic: s4ql: division by zero in SET of an expression without a column
+arithmetic	45	15	reached: arithmetic: s4ql: division by zero in WHERE
+arithmetic	38	12	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
+arithmetic	7	2	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
+arithmetic	26	8	reached: arithmetic: s4ql: integer overflow in SET
+arithmetic	11	3	reached: arithmetic: s4ql: integer overflow in SET of an expression with a column
+arithmetic	15	5	reached: arithmetic: s4ql: integer overflow in SET of an expression without a column
+arithmetic	48	16	reached: arithmetic: s4ql: integer overflow in WHERE
+arithmetic	17	5	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
+arithmetic	31	10	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
+arithmetic	16	5	reached: arithmetic: s4ql: real result that is not finite in WHERE
+arithmetic	11	3	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression with a column
+arithmetic	5	1	reached: arithmetic: s4ql: real result that is not finite in WHERE of an expression without a column
+arithmetic	46	15	reached: arithmetic: select with LIMIT that failed on a row
+arithmetic	15	5	reached: arithmetic: select with LIMIT that gave rows where a row that it did not read fails
+arithmetic	10	3	reached: arithmetic: update that computes its key from its row that changed rows
+arithmetic	16	5	reached: arithmetic: update that copies another column alone that changed rows
+arithmetic	55	18	reached: arithmetic: update that sets a column from itself that changed rows
+arithmetic	40	13	reached: arithmetic: update whose SET reads a column that it sets before that changed rows
+arithmetic	778	259	reached: changed both ways
+arithmetic	185	61	reached: chosen a get
+arithmetic	28	9	reached: chosen a get of a table of several indexes
+arithmetic	7	2	reached: chosen a get, delivered forward
+arithmetic	11	3	reached: chosen an index with 0 pinned and a range
+arithmetic	3	1	reached: chosen an index with 0 pinned of a table of several indexes, delivered forward
+arithmetic	3	1	reached: chosen an index with 1 pinned
+arithmetic	12	4	reached: chosen an index with 2 pinned
+arithmetic	9	3	reached: chosen an index with 2 pinned and a range
+arithmetic	62	20	reached: chosen every row
+arithmetic	3	1	reached: chosen every row of a table of several indexes, sorted
+arithmetic	4	1	reached: chosen every row, delivered backward
+arithmetic	8	2	reached: chosen every row, delivered forward
+arithmetic	34	11	reached: chosen every row, sorted
 arithmetic	28	9	reached: chosen no row
-arithmetic	4	1	reached: chosen no row, delivered forward
-arithmetic	108	36	reached: chosen the primary key with 0 pinned and a range
-arithmetic	3	1	reached: chosen the primary key with 0 pinned and a range, delivered backward
-arithmetic	13	4	reached: chosen the primary key with 0 pinned and a range, sorted
-arithmetic	36	12	reached: comparison with argument []uint8 ok
-arithmetic	4	1	reached: comparison with argument empty []byte ok
-arithmetic	6	2	reached: comparison with argument empty string ok
-arithmetic	21	7	reached: comparison with argument float64 ok
-arithmetic	21	7	reached: comparison with argument int64 ok
-arithmetic	31	10	reached: comparison with argument string ok
-arithmetic	75	25	reached: comparison with literal blob ok
-arithmetic	30	10	reached: comparison with literal empty blob ok
+arithmetic	102	34	reached: chosen the primary key with 0 pinned and a range
+arithmetic	3	1	reached: chosen the primary key with 0 pinned and a range, delivered forward
+arithmetic	14	4	reached: chosen the primary key with 0 pinned and a range, sorted
+arithmetic	25	8	reached: comparison with argument []uint8 ok
+arithmetic	8	2	reached: comparison with argument empty []byte ok
+arithmetic	11	3	reached: comparison with argument empty string ok
+arithmetic	4	1	reached: comparison with argument float64 -0.0 ok
+arithmetic	10	3	reached: comparison with argument float64 ok
+arithmetic	27	9	reached: comparison with argument int64 ok
+arithmetic	33	11	reached: comparison with argument string ok
+arithmetic	65	21	reached: comparison with literal blob ok
+arithmetic	19	6	reached: comparison with literal empty blob ok
 arithmetic	16	5	reached: comparison with literal empty text ok
-arithmetic	31	10	reached: comparison with literal integer ok
-arithmetic	3	1	reached: comparison with literal null ok
-arithmetic	26	8	reached: comparison with literal real ok
-arithmetic	75	25	reached: comparison with literal text ok
+arithmetic	36	12	reached: comparison with literal integer ok
+arithmetic	22	7	reached: comparison with literal real ok
+arithmetic	76	25	reached: comparison with literal text ok
 arithmetic	58	19	reached: create index already exists
-arithmetic	5	1	reached: create index no such column
+arithmetic	7	2	reached: create index no such column
 arithmetic	7	2	reached: create index no such table
-arithmetic	120	40	reached: create index of 1 columns ok
-arithmetic	55	18	reached: create index of 2 columns ok
-arithmetic	6	2	reached: create index of 3 columns ok
-arithmetic	45	15	reached: create index of a column of type BLOB ok
-arithmetic	44	14	reached: create index of a column of type INT ok
-arithmetic	49	16	reached: create index of a column of type INTEGER ok
-arithmetic	58	19	reached: create index of a column of type REAL ok
-arithmetic	52	17	reached: create index of a column of type TEXT ok
-arithmetic	106	35	reached: create index of a column that takes NULL ok
-arithmetic	70	23	reached: create index of a descending column ok
-arithmetic	181	60	reached: create index ok
-arithmetic	23	7	reached: create index that holds the primary key ok
+arithmetic	16	5	reached: create index of 1 columns ok
+arithmetic	151	50	reached: create index of 2 columns ok
+arithmetic	12	4	reached: create index of 3 columns ok
+arithmetic	67	22	reached: create index of a column of type BLOB ok
+arithmetic	60	20	reached: create index of a column of type INT ok
+arithmetic	72	24	reached: create index of a column of type INTEGER ok
+arithmetic	72	24	reached: create index of a column of type REAL ok
+arithmetic	83	27	reached: create index of a column of type TEXT ok
+arithmetic	165	55	reached: create index of a column that takes NULL ok
+arithmetic	103	34	reached: create index of a descending column ok
+arithmetic	179	59	reached: create index ok
+arithmetic	32	10	reached: create index that holds the primary key ok
 arithmetic	20	6	reached: create index there is already a table named
-arithmetic	144	48	reached: create table of 2 columns ok
-arithmetic	54	18	reached: create table of 3 columns ok
-arithmetic	92	30	reached: create table of mixed types ok
-arithmetic	96	32	reached: create table of which every column outside the key takes NULL ok
-arithmetic	89	29	reached: create table of which no column takes NULL ok
-arithmetic	13	4	reached: create table of which some columns outside the key take NULL ok
-arithmetic	75	25	reached: create table with the key at 0 ok
-arithmetic	106	35	reached: create table with the key at 1 ok
-arithmetic	18	6	reached: create table with the key at 2 ok
-arithmetic	135	45	reached: create table with two columns of a type ok
-arithmetic	18	6	reached: delete WHERE that reads a get of one key ok, rows changed
-arithmetic	5	1	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+arithmetic	198	66	reached: create table of 3 columns ok
+arithmetic	126	42	reached: create table of mixed types ok
+arithmetic	89	29	reached: create table of which every column outside the key takes NULL ok
+arithmetic	65	21	reached: create table of which no column takes NULL ok
+arithmetic	44	14	reached: create table of which some columns outside the key take NULL ok
+arithmetic	56	18	reached: create table with the key at 0 ok
+arithmetic	69	23	reached: create table with the key at 1 ok
+arithmetic	74	24	reached: create table with the key at 2 ok
+arithmetic	178	59	reached: create table with two columns of a type ok
+arithmetic	19	6	reached: delete WHERE that reads a get of one key ok, rows changed
+arithmetic	4	1	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
 arithmetic	8	2	reached: delete WHERE that reads a scan from a lower bound ok, rows changed
-arithmetic	6	2	reached: delete WHERE that reads a scan of every row ok, rows changed
-arithmetic	7	2	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
-arithmetic	5	1	reached: delete WHERE that reads no row ok, no row found
-arithmetic	5	1	reached: delete WHERE that tests a column more than once ok, rows changed
-arithmetic	5	1	reached: delete WHERE with a value of another type a value of another type
-arithmetic	3	1	reached: delete WHERE with contradicting conditions ok, no row found
-arithmetic	50	16	reached: delete that changes every row of a table with rows
-arithmetic	50	16	reached: delete that changes no row of a table with rows
-arithmetic	32	10	reached: delete that changes some rows of a table
-arithmetic	15	5	reached: delete with RETURNING * ok
-arithmetic	13	4	reached: delete with RETURNING of a name twice ok
-arithmetic	13	4	reached: delete with RETURNING of names ok
-arithmetic	27	9	reached: delete with RETURNING read by the access that the model chooses
-arithmetic	7	2	reached: delete with RETURNING that gives NULL
-arithmetic	4	1	reached: delete with RETURNING that gives a column of BLOB
+arithmetic	9	3	reached: delete WHERE that reads a scan of every row ok, rows changed
+arithmetic	9	3	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+arithmetic	6	2	reached: delete WHERE that reads no row ok, no row found
+arithmetic	4	1	reached: delete WHERE with a value of another type a value of another type
+arithmetic	4	1	reached: delete WHERE with contradicting conditions ok, no row found
+arithmetic	59	19	reached: delete that changes every row of a table with rows
+arithmetic	51	17	reached: delete that changes no row of a table with rows
+arithmetic	28	9	reached: delete that changes some rows of a table
+arithmetic	16	5	reached: delete with RETURNING * ok
+arithmetic	12	4	reached: delete with RETURNING of a name twice ok
+arithmetic	16	5	reached: delete with RETURNING of names ok
+arithmetic	30	10	reached: delete with RETURNING read by the access that the model chooses
+arithmetic	5	1	reached: delete with RETURNING that gives NULL
+arithmetic	7	2	reached: delete with RETURNING that gives a column of BLOB
+arithmetic	3	1	reached: delete with RETURNING that gives a column of INT
 arithmetic	3	1	reached: delete with RETURNING that gives a column of REAL
-arithmetic	6	2	reached: delete with RETURNING that gives a column of TEXT
-arithmetic	25	8	reached: delete with RETURNING that gives no row
-arithmetic	7	2	reached: delete with RETURNING that gives one row
-arithmetic	5	1	reached: delete with RETURNING that gives several rows
+arithmetic	7	2	reached: delete with RETURNING that gives a column of TEXT
+arithmetic	24	8	reached: delete with RETURNING that gives no row
+arithmetic	12	4	reached: delete with RETURNING that gives one row
+arithmetic	4	1	reached: delete with RETURNING that gives several rows
 arithmetic	4	1	reached: delete with RETURNING through Exec ok
-arithmetic	37	12	reached: delete with RETURNING through Query ok
-arithmetic	4	1	reached: delete with RETURNING whose rows came in the reverse of the order of the key
+arithmetic	40	13	reached: delete with RETURNING through Query ok
+arithmetic	4	1	reached: delete with RETURNING whose rows came in the order of the key
 arithmetic	88	29	reached: delete with WHERE ok, no row found
-arithmetic	41	13	reached: delete with WHERE ok, rows changed
-arithmetic	21	7	reached: delete without WHERE ok, no row found
-arithmetic	41	13	reached: delete without WHERE ok, rows changed
-arithmetic	38	12	reached: drop index no such index
-arithmetic	46	15	reached: drop index ok
-arithmetic	9	3	reached: insert into BLOB UNIQUE constraint failed
-arithmetic	5	1	reached: insert into BLOB a value of another type
-arithmetic	144	48	reached: insert into BLOB ok
-arithmetic	4	1	reached: insert into BLOB string or blob too big
-arithmetic	7	2	reached: insert into INT UNIQUE constraint failed
-arithmetic	25	8	reached: insert into INT a value of another type
-arithmetic	88	29	reached: insert into INT ok
-arithmetic	8	2	reached: insert into INTEGER UNIQUE constraint failed
-arithmetic	17	5	reached: insert into INTEGER a value of another type
-arithmetic	151	50	reached: insert into INTEGER ok
-arithmetic	7	2	reached: insert into REAL UNIQUE constraint failed
-arithmetic	17	5	reached: insert into REAL a value of another type
-arithmetic	124	41	reached: insert into REAL ok
+arithmetic	45	15	reached: delete with WHERE ok, rows changed
+arithmetic	20	6	reached: delete without WHERE ok, no row found
+arithmetic	42	14	reached: delete without WHERE ok, rows changed
+arithmetic	40	13	reached: drop index no such index
+arithmetic	44	14	reached: drop index ok
+arithmetic	3	1	reached: evaluation error by one path and not by another
+arithmetic	6	2	reached: insert into BLOB UNIQUE constraint failed
+arithmetic	15	5	reached: insert into BLOB a value of another type
+arithmetic	146	48	reached: insert into BLOB ok
+arithmetic	6	2	reached: insert into BLOB string or blob too big
+arithmetic	3	1	reached: insert into INT UNIQUE constraint failed
+arithmetic	15	5	reached: insert into INT a value of another type
+arithmetic	139	46	reached: insert into INT ok
+arithmetic	10	3	reached: insert into INTEGER UNIQUE constraint failed
+arithmetic	12	4	reached: insert into INTEGER a value of another type
+arithmetic	145	48	reached: insert into INTEGER ok
+arithmetic	8	2	reached: insert into REAL UNIQUE constraint failed
+arithmetic	90	30	reached: insert into REAL ok
 arithmetic	7	2	reached: insert into TEXT UNIQUE constraint failed
-arithmetic	8	2	reached: insert into TEXT a value of another type
-arithmetic	167	55	reached: insert into TEXT ok
-arithmetic	6	2	reached: insert into TEXT string or blob too big
-arithmetic	7	2	reached: insert of NULL beside a value of another type a value of another type
-arithmetic	3	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
-arithmetic	5	1	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
-arithmetic	4	1	reached: insert that leaves out a column that takes NULL a value of another type
-arithmetic	102	34	reached: insert that leaves out a column that takes NULL ok
-arithmetic	9	3	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
-arithmetic	3	1	reached: insert with NULL in the key: NOT NULL constraint failed
-arithmetic	59	19	reached: insert with RETURNING * ok
-arithmetic	4	1	reached: insert with RETURNING of a name that the table does not have no such column
-arithmetic	73	24	reached: insert with RETURNING of a name twice ok
-arithmetic	36	12	reached: insert with RETURNING of names ok
-arithmetic	34	11	reached: insert with RETURNING that gives NULL
-arithmetic	36	12	reached: insert with RETURNING that gives a column of BLOB
-arithmetic	27	9	reached: insert with RETURNING that gives a column of INT
-arithmetic	49	16	reached: insert with RETURNING that gives a column of INTEGER
-arithmetic	41	13	reached: insert with RETURNING that gives a column of REAL
-arithmetic	44	14	reached: insert with RETURNING that gives a column of TEXT
-arithmetic	27	9	reached: insert with RETURNING that gives a column that its list leaves out, without a default
-arithmetic	149	49	reached: insert with RETURNING that gives one row
-arithmetic	19	6	reached: insert with RETURNING through Exec ok
-arithmetic	10	3	reached: insert with RETURNING through Query UNIQUE constraint failed
-arithmetic	149	49	reached: insert with RETURNING through Query ok
+arithmetic	13	4	reached: insert into TEXT a value of another type
+arithmetic	176	58	reached: insert into TEXT ok
+arithmetic	8	2	reached: insert into TEXT string or blob too big
+arithmetic	12	4	reached: insert of NULL beside a value of another type a value of another type
+arithmetic	7	2	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+arithmetic	8	2	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+arithmetic	8	2	reached: insert that leaves out a column that takes NULL a value of another type
+arithmetic	166	55	reached: insert that leaves out a column that takes NULL ok
+arithmetic	7	2	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+arithmetic	4	1	reached: insert with NULL in the key: NOT NULL constraint failed
+arithmetic	63	21	reached: insert with RETURNING * ok
+arithmetic	3	1	reached: insert with RETURNING of a name that the table does not have no such column
+arithmetic	66	22	reached: insert with RETURNING of a name twice ok
+arithmetic	51	17	reached: insert with RETURNING of names ok
+arithmetic	44	14	reached: insert with RETURNING that gives NULL
+arithmetic	49	16	reached: insert with RETURNING that gives a column of BLOB
+arithmetic	44	14	reached: insert with RETURNING that gives a column of INT
+arithmetic	51	17	reached: insert with RETURNING that gives a column of INTEGER
+arithmetic	34	11	reached: insert with RETURNING that gives a column of REAL
+arithmetic	58	19	reached: insert with RETURNING that gives a column of TEXT
+arithmetic	31	10	reached: insert with RETURNING that gives a column that its list leaves out, without a default
+arithmetic	159	53	reached: insert with RETURNING that gives one row
+arithmetic	21	7	reached: insert with RETURNING through Exec ok
+arithmetic	4	1	reached: insert with RETURNING through Query NOT NULL constraint failed
+arithmetic	9	3	reached: insert with RETURNING through Query UNIQUE constraint failed
+arithmetic	159	53	reached: insert with RETURNING through Query ok
 arithmetic	6	2	reached: insert with a column that the table does not have: has no column named
-arithmetic	15	5	reached: insert with a column without a value: NOT NULL constraint failed
-arithmetic	11	3	reached: insert with a list in another order UNIQUE constraint failed
-arithmetic	16	5	reached: insert with a list in another order a value of another type
-arithmetic	159	53	reached: insert with a list in another order ok
-arithmetic	286	95	reached: insert with a list in the order of the table ok
-arithmetic	41	13	reached: insert with a value of another type in another column: a value of another type
-arithmetic	30	10	reached: insert with a value of another type in the key: a value of another type
-arithmetic	18	6	reached: insert with the wrong number of values:  values for 
-arithmetic	7	2	reached: insert with the wrong number of values: values were supplied
-arithmetic	3	1	reached: insert with two faults: NOT NULL constraint failed
-arithmetic	229	76	reached: insert without a list ok
-arithmetic	222	74	reached: literal blob
-arithmetic	43	14	reached: literal empty blob
-arithmetic	31	10	reached: literal empty text
-arithmetic	429	143	reached: literal integer
-arithmetic	94	31	reached: literal null
-arithmetic	193	64	reached: literal real
-arithmetic	20	6	reached: literal real -0.0
-arithmetic	254	84	reached: literal text
-arithmetic	39	13	reached: long value
-arithmetic	1185	395	reached: path backward
-arithmetic	1215	405	reached: path forward
-arithmetic	191	63	reached: path of an index of a descending column
-arithmetic	484	161	reached: path of an index that holds every column
-arithmetic	352	117	reached: path of an index with 0 pinned
-arithmetic	55	18	reached: path of an index with 0 pinned and a range
-arithmetic	64	21	reached: path of an index with 1 pinned
-arithmetic	30	10	reached: path of an index with 1 pinned and a range
-arithmetic	25	8	reached: path of an index with 2 pinned
-arithmetic	5	1	reached: path of an index with 2 pinned and a range
-arithmetic	1104	368	reached: path of every row
-arithmetic	269	89	reached: path of the primary key with 0 pinned and a range
-arithmetic	430	143	reached: path of the primary key with 1 pinned
-arithmetic	59	19	reached: path that delivers the order
-arithmetic	64	21	reached: path that reads no row
-arithmetic	257	85	reached: path that sorts
-arithmetic	30	10	reached: path with a pin of NULL
-arithmetic	22	7	reached: path with a range on a descending column
-arithmetic	692	230	reached: plan of the cache checked
+arithmetic	16	5	reached: insert with a column without a value: NOT NULL constraint failed
+arithmetic	7	2	reached: insert with a list in another order NOT NULL constraint failed
+arithmetic	13	4	reached: insert with a list in another order UNIQUE constraint failed
+arithmetic	21	7	reached: insert with a list in another order a value of another type
+arithmetic	235	78	reached: insert with a list in another order ok
+arithmetic	235	78	reached: insert with a list in the order of the table ok
+arithmetic	35	11	reached: insert with a value of another type in another column: a value of another type
+arithmetic	19	6	reached: insert with a value of another type in the key: a value of another type
+arithmetic	16	5	reached: insert with the wrong number of values:  values for 
+arithmetic	4	1	reached: insert with the wrong number of values: values were supplied
+arithmetic	226	75	reached: insert without a list ok
+arithmetic	259	86	reached: literal blob
+arithmetic	48	16	reached: literal empty blob
+arithmetic	38	12	reached: literal empty text
+arithmetic	565	188	reached: literal integer
+arithmetic	137	45	reached: literal null
+arithmetic	215	71	reached: literal real
+arithmetic	31	10	reached: literal real -0.0
+arithmetic	354	118	reached: literal text
+arithmetic	56	18	reached: long value
+arithmetic	1034	344	reached: path backward
+arithmetic	1086	362	reached: path forward
+arithmetic	185	61	reached: path of an index of a descending column
+arithmetic	368	122	reached: path of an index that holds every column
+arithmetic	278	92	reached: path of an index with 0 pinned
+arithmetic	53	17	reached: path of an index with 0 pinned and a range
+arithmetic	53	17	reached: path of an index with 1 pinned
+arithmetic	12	4	reached: path of an index with 1 pinned and a range
+arithmetic	29	9	reached: path of an index with 2 pinned
+arithmetic	18	6	reached: path of an index with 2 pinned and a range
+arithmetic	3	1	reached: path of an index with 3 pinned
+arithmetic	986	328	reached: path of every row
+arithmetic	250	83	reached: path of the primary key with 0 pinned and a range
+arithmetic	377	125	reached: path of the primary key with 1 pinned
+arithmetic	42	14	reached: path that delivers the order
+arithmetic	61	20	reached: path that reads no row
+arithmetic	264	88	reached: path that sorts
+arithmetic	22	7	reached: path with a pin of NULL
+arithmetic	16	5	reached: path with a range on a descending column
+arithmetic	620	206	reached: plan of the cache checked
 arithmetic	672	224	reached: read both ways
 arithmetic	36	12	reached: replay of indexes into an empty cache
-arithmetic	30	10	reached: restart with indexes in the cache
-arithmetic	127	42	reached: select * of 2 columns ok
-arithmetic	60	20	reached: select * of 3 columns ok
-arithmetic	27	9	reached: select * with NULL ok
-arithmetic	6	2	reached: select of a name that the table does not have no such column
-arithmetic	122	40	reached: select of a name twice ok
-arithmetic	69	23	reached: select of names in another order ok
-arithmetic	199	66	reached: select of names ok
-arithmetic	21	7	reached: select of names with NULL ok
-arithmetic	345	115	reached: select read by the access that the model chooses
-arithmetic	198	66	reached: select with arithmetic read by the access that the model chooses
-arithmetic	37	12	reached: select without ORDER BY whose rows came in the order of the key of its access
-arithmetic	40	13	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
-arithmetic	69	23	reached: update WHERE that reads a get of one key ok, rows changed
-arithmetic	3	1	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
-arithmetic	5	1	reached: update WHERE that reads a scan from a lower bound ok, rows changed
-arithmetic	5	1	reached: update WHERE that reads a scan of every row ok, rows changed
-arithmetic	4	1	reached: update WHERE that reads a scan to an upper bound ok, rows changed
-arithmetic	5	1	reached: update WHERE that reads no row ok, no row found
-arithmetic	24	8	reached: update WHERE with a value of another type a value of another type
-arithmetic	4	1	reached: update of a row whose record is too long
-arithmetic	55	18	reached: update that changes every row of a table with rows
-arithmetic	72	24	reached: update that changes no row of a table with rows
-arithmetic	58	19	reached: update that changes some rows of a table
-arithmetic	23	7	reached: update with RETURNING * ok
+arithmetic	31	10	reached: restart with indexes in the cache
+arithmetic	172	57	reached: select * of 3 columns ok
+arithmetic	31	10	reached: select * with NULL ok
+arithmetic	5	1	reached: select of a name that the table does not have no such column
+arithmetic	101	33	reached: select of a name twice ok
+arithmetic	73	24	reached: select of names in another order ok
+arithmetic	189	63	reached: select of names ok
+arithmetic	25	8	reached: select of names with NULL ok
+arithmetic	316	105	reached: select read by the access that the model chooses
+arithmetic	233	77	reached: select with arithmetic read by the access that the model chooses
+arithmetic	39	13	reached: select without ORDER BY whose rows came in the order of the key of its access
+arithmetic	36	12	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+arithmetic	51	17	reached: update WHERE that reads a get of one key ok, rows changed
+arithmetic	7	2	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+arithmetic	4	1	reached: update WHERE that reads no row ok, no row found
+arithmetic	6	2	reached: update WHERE with a value of another type a value of another type
+arithmetic	5	1	reached: update of a row whose record is too long
+arithmetic	75	25	reached: update that changes every row of a table with rows
+arithmetic	48	16	reached: update that changes no row of a table with rows
+arithmetic	36	12	reached: update that changes some rows of a table
+arithmetic	18	6	reached: update with RETURNING * ok
 arithmetic	4	1	reached: update with RETURNING of a name that the table does not have no such column
-arithmetic	27	9	reached: update with RETURNING of a name twice ok
+arithmetic	28	9	reached: update with RETURNING of a name twice ok
 arithmetic	16	5	reached: update with RETURNING of names ok
-arithmetic	6	2	reached: update with RETURNING of the key that moves a row to another key
-arithmetic	54	18	reached: update with RETURNING read by the access that the model chooses
-arithmetic	7	2	reached: update with RETURNING that gives a column of BLOB
-arithmetic	6	2	reached: update with RETURNING that gives a column of INT
-arithmetic	3	1	reached: update with RETURNING that gives a column of INTEGER
-arithmetic	8	2	reached: update with RETURNING that gives a column of REAL
-arithmetic	10	3	reached: update with RETURNING that gives a column of TEXT
-arithmetic	30	10	reached: update with RETURNING that gives no row
+arithmetic	42	14	reached: update with RETURNING read by the access that the model chooses
+arithmetic	3	1	reached: update with RETURNING that gives NULL
+arithmetic	9	3	reached: update with RETURNING that gives a column of BLOB
+arithmetic	7	2	reached: update with RETURNING that gives a column of INTEGER
+arithmetic	6	2	reached: update with RETURNING that gives a column of REAL
+arithmetic	13	4	reached: update with RETURNING that gives a column of TEXT
+arithmetic	29	9	reached: update with RETURNING that gives no row
 arithmetic	20	6	reached: update with RETURNING that gives one row
-arithmetic	8	2	reached: update with RETURNING that gives several rows
+arithmetic	7	2	reached: update with RETURNING that gives several rows
 arithmetic	25	8	reached: update with RETURNING that sets a column of an index ok
-arithmetic	23	7	reached: update with RETURNING that sets the key ok
-arithmetic	8	2	reached: update with RETURNING through Exec ok
-arithmetic	58	19	reached: update with RETURNING through Query ok
-arithmetic	4	1	reached: update with RETURNING whose rows came in the order of the key
-arithmetic	6	2	reached: update with RETURNING whose rows came in the reverse of the order of the key
+arithmetic	13	4	reached: update with RETURNING that sets the key ok
+arithmetic	6	2	reached: update with RETURNING through Exec ok
+arithmetic	56	18	reached: update with RETURNING through Query ok
+arithmetic	9	3	reached: update with RETURNING whose rows came in the order of the key
+arithmetic	3	1	reached: update with RETURNING whose rows came in the reverse of the order of the key
 arithmetic	5	1	reached: update with WHERE NOT NULL constraint failed
-arithmetic	3	1	reached: update with WHERE UNIQUE constraint failed
-arithmetic	13	4	reached: update with WHERE no such column
-arithmetic	123	41	reached: update with WHERE ok, no row found
-arithmetic	84	28	reached: update with WHERE ok, rows changed
-arithmetic	8	2	reached: update with a literal longer than the length limit in SET
-arithmetic	5	1	reached: update without WHERE NOT NULL constraint failed
-arithmetic	9	3	reached: update without WHERE UNIQUE constraint failed
-arithmetic	19	6	reached: update without WHERE ok, no row found
-arithmetic	29	9	reached: update without WHERE ok, rows changed
-arithmetic	14	4	select no such column
+arithmetic	10	3	reached: update with WHERE no such column
+arithmetic	92	30	reached: update with WHERE ok, no row found
+arithmetic	61	20	reached: update with WHERE ok, rows changed
+arithmetic	9	3	reached: update with a literal longer than the length limit in SET
+arithmetic	7	2	reached: update without WHERE NOT NULL constraint failed
+arithmetic	4	1	reached: update without WHERE UNIQUE constraint failed
+arithmetic	38	12	reached: update without WHERE ok, no row found
+arithmetic	50	16	reached: update without WHERE ok, rows changed
+arithmetic	8	2	select no such column
