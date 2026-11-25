@@ -1059,12 +1059,6 @@ func (r *recognizer) operand(e ast.Expr) comparand {
 	return comparand{term: Term{Expression: x, Span: spanOf(e)}, height: height}
 }
 
-// isColumn reports whether e is a name, and not the bare word TRUE or FALSE.
-func isColumn(e ast.Expr) bool {
-	ref, ok := e.(*ast.ColumnRef)
-	return ok && !isTrueOrFalse(ref)
-}
-
 // spanOf the expression e in the text.
 func spanOf(e ast.Expr) Span {
 	b := e.Bounds()

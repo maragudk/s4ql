@@ -838,7 +838,7 @@ func arithmeticCalls(r *rand.Rand, n int) []stmttest.Call {
 	pools := []pool{
 		{[]string{"k", "i", "j", "u"}, []string{"0", "1", "2", "-1", "3", "9223372036854775807", "-9223372036854775808", "4611686018427387904"},
 			[]any{int64(0), int64(1), int64(-2), int64(math.MaxInt64), int64(math.MinInt64), nil}},
-		{[]string{"r"}, []string{"0.5", "-2.5", "1e308", "0.0", "-0.0", "2.0", "1e-300"}, []any{0.5, -0.0, 1e308, -1e308, 2.0, nil}},
+		{[]string{"r"}, []string{"0.5", "-2.5", "1e308", "0.0", "-0.0", "2.0", "1e-300"}, []any{0.5, math.Copysign(0, -1), 1e308, -1e308, 2.0, nil}},
 	}
 	var args []any
 	var expression func(class, depth int, column bool) string
