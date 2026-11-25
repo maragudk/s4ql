@@ -9,7 +9,8 @@ import (
 
 var (
 	// ErrEvaluation is matched by every [*Error]: an operation of an expression whose operands give
-	// no value that s4ql gives, where SQLite gives one that it gives for backwards compatibility.
+	// no value in s4ql, where SQLite gives a value that s4ql refuses, a real for an integer overflow,
+	// NULL for a division by zero, or an infinity.
 	ErrEvaluation = errors.New("s4ql: evaluation error")
 
 	// ErrOverflow is the kind of an [*Error] of an operation on integers whose result does not fit a

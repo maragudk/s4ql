@@ -20,7 +20,7 @@ Wrote `/internal/expr`: `expr.go` (`Check`, `Program`, `Program.Bind`, `Bound`, 
 
 Measured SQLite through the binding in `TestBound_Eval` and `TestCheck` of `/internal/expr/expr_test.go`, then wrote the differential check in `/internal/expr/differential_test.go` (the oracle, the independent reference with `math/big`, the check of one case, `TestDifferential`, `FuzzExpr`) and the generator in `/internal/expr/generator_test.go`. The required kinds are in `/internal/expr/testdata/reached/TestDifferential.kinds`, the counts in `TestDifferential.tsv`, written with `S4QL_RECOUNT=1`. Added `internal/expr` to `FUZZDIRS` in `/Makefile`; `make fuzz-shards FUZZGROUP=c FUZZSHARDS=4` says the 4 shards hold each of the 38 fuzz tests once, so no workflow file changes.
 
-Planted 14 faults by hand in `expr.go` and `value.go`, one at a time, each reverted with `git checkout`.
+Planted 16 faults by hand in `expr.go` and `value.go`, one at a time, each reverted with `git checkout`.
 
 ### Why
 
@@ -41,7 +41,7 @@ The differential check passed on its first run, with 20,000 cases in 0.3 s, whic
 - NULL on the right not propagated; NULL on the left short-circuiting so that an error of the right operand is lost;
 - the span of a division by zero set to the divisor; a division by -0.0 missed; a sum of reals that is infinite missed.
 
-The pinned table `TestBound_Eval` found 9 of the 14 alone.
+The pinned table `TestBound_Eval` alone found 15 of the 16, all but the conversion too early, which only columns and arguments of the generated cases reached.
 
 ### What didn't work
 

@@ -6,8 +6,8 @@
 #
 # A kind "x op y" is an operator whose operands were of the types x and y, with what it gave after
 # the colon if it failed; "op with null" one with a NULL operand; "- of ..." a negation; "case: ..."
-# the outcome of a whole case. An operation of an integer and a real cannot be infinite, nor a real
-# divided by an integer, so those kinds are not here.
+# the outcome of a whole case. A sum or a difference of an integer and a real cannot be infinite,
+# nor a real divided by an integer, so those kinds are not here.
 822	- of integer
 174	- of integer: integer overflow
 218	- of null

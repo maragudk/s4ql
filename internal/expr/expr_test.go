@@ -129,7 +129,7 @@ func TestBound_Eval(t *testing.T) {
 			sqlite: expr.RealValue(0x1p53)},
 		{name: "should compute the integer operation of two integers that are also above 2^53", src: "a - b + c", row: row(integer(1<<53+1), integer(1<<53), float(0.5), float(0)),
 			sqlite: expr.RealValue(1.5)},
-		{name: "should give an integer for an integer divided by a real", src: "a / c", row: row(integer(7), integer(0), float(2), float(0)), sqlite: expr.RealValue(3.5)},
+		{name: "should give a real for an integer divided by a real", src: "a / c", row: row(integer(7), integer(0), float(2), float(0)), sqlite: expr.RealValue(3.5)},
 
 		{name: "should round the product before the difference, as no fused instruction does", src: "c * d - 1.0", row: row(integer(0), integer(0), float(0.1), float(10)),
 			sqlite: expr.RealValue(0)},
@@ -396,7 +396,11 @@ func TestBound_Eval_allocations(t *testing.T) {
 		want := 8 + -3.75
 		want -= -2.0 / 7
 		is.Equal(t, expr.RealValue(want), v)
-		is.Equal(t, 0.0, allocations)
+		// The address sanitizer moves values to the heap that the compiler keeps on the stack
+		// otherwise: 14 allocations here.
+		if !asanEnabled {
+			is.Equal(t, 0.0, allocations)
+		}
 	})
 }
 
