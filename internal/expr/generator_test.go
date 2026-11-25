@@ -156,6 +156,10 @@ func (g *generator) edge(n *gnode) {
 				x = math.MinInt64
 			}
 			y.SetInt64(int64(g.r.IntN(3) - 1))
+			if g.r.IntN(4) == 0 {
+				// A negative divisor other than -1, which fits also for the smallest integer.
+				y.SetInt64(-int64(2 + g.r.IntN(1000)))
+			}
 		}
 		if !y.IsInt64() {
 			y.SetInt64(g.integer())

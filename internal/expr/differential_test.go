@@ -295,6 +295,9 @@ func (r *reference) compute(e stmt.Expression) (expr.Value, *refError) {
 	}
 	rv, err := r.value(e.Operands[1])
 	if err != nil {
+		if l.Null() {
+			r.tally("an error on the right of null")
+		}
 		return expr.Value{}, err
 	}
 	op := e.Kind.String()
@@ -330,6 +333,15 @@ func (r *reference) compute(e stmt.Expression) (expr.Value, *refError) {
 			return fail(expr.ErrOverflow)
 		}
 		r.tally(pair)
+		switch {
+		case c.Int64() == math.MaxInt64:
+			r.tally(pair + ": exactly the largest integer")
+		case c.Int64() == math.MinInt64:
+			r.tally(pair + ": exactly the smallest integer")
+		}
+		if e.Kind == stmt.ExprDivide && x == math.MinInt64 && y < -1 {
+			r.tally("the smallest integer / a negative integer other than -1")
+		}
 		return expr.IntegerValue(c.Int64()), nil
 	}
 	fx, fy := r.float(l, "left"), r.float(rv, "right")
@@ -367,6 +379,9 @@ func (r *reference) compute(e stmt.Expression) (expr.Value, *refError) {
 		f = math.Copysign(0, map[bool]float64{true: -1, false: 1}[negative])
 	}
 	r.tally(pair)
+	if f != 0 && math.Abs(f) < 0x1p-1022 {
+		r.tally(pair + ": subnormal, not zero")
+	}
 	r.fused(e, f)
 	return expr.RealValue(f), nil
 }
