@@ -5163,3 +5163,174 @@ func FuzzSequence(f *testing.F) {
 		p.close()
 	})
 }
+
+// severalText of the outcome of an Exec of a text of several statements on r: the rows affected of
+// its result, or its error. If changes, it ends with the count of changes that SQLite has on the
+// connection of r after it, as `select changes()` gives it, which only mattn's SQLite answers.
+// mattn's own errors, such as `not enough args to execute query: want 1 got 0`, are given as they
+// are.
+func severalText(tb testing.TB, r runner, src string, args []any, changes bool) string {
+	tb.Helper()
+	ctx := tb.Context()
+	res, err := r.ExecContext(ctx, src, args...)
+	var text string
+	switch {
+	case err == nil:
+		o := result(tb, outcome{}, res)
+		text = "affected " + o.affected
+	case changes:
+		if _, ok := errors.AsType[sqlite3.Error](err); ok {
+			text = "failed with " + mattnText(tb, err)
+		} else {
+			text = "failed with " + err.Error()
+		}
+	default:
+		text = "failed with " + s4qlText(tb, err)
+	}
+	if changes {
+		var n int64
+		is.NotError(tb, r.QueryRowContext(ctx, "select changes()").Scan(&n))
+		text += fmt.Sprint(", changes() ", n)
+	}
+	return text
+}
+
+// TestSeveral runs texts of several statements through Exec on both sides, on a pinned connection
+// and in transactions, and compares what each gives and the tables after it. Where mattn's driver
+// gives what s4ql does not copy, the test pins both outcomes and what s4ql's rule leaves of the
+// tables, as the comment of the case says.
+func TestSeveral(t *testing.T) {
+	ins := func(v int) string { return fmt.Sprint("insert into t1 (v1) values (", v, ")") }
+	tests := []struct {
+		name  string
+		setup []string
+		src   string
+		args  []any
+		// s4ql and mattn are the outcomes of each, as severalText gives them. The count of changes of
+		// s4ql's result must be the changes() of mattn's SQLite after the same text, unless the case
+		// has an oracle.
+		s4ql, mattn string
+		// oracle, if set, is what mattn runs on the database that the tables are compared with, so
+		// that it holds what s4ql's rule leaves of them, and "-" for nothing. The text itself then runs
+		// in mattn on a database of its own, with the same set-up.
+		oracle string
+	}{
+		{name: "statements with arguments, a comment, an empty statement, and a select", src: t1 + "; ;-- c\n" + "insert into t1 (v1) values (?);\nupdate t1 set v1 = ? where v1 = ?; select * from t1 where v1 = ?",
+			args: []any{1, 2, 1, 2}, s4ql: "affected 1", mattn: "affected 1, changes() 1"},
+		{name: "a create table and a select after an insert", setup: []string{t1}, src: ins(1) + "; " + ins(2) + "; delete from t1; create table t2 (v1 int primary key) strict, without rowid; select * from t2",
+			s4ql: "affected 2", mattn: "affected 2, changes() 2"},
+		{name: "a failed insert in the middle, which sets the count to 0", setup: []string{t1}, src: ins(1) + "; " + ins(1) + "; " + ins(2),
+			s4ql: "failed with 19/1555: UNIQUE constraint failed: t1.v1", mattn: "failed with 19/1555: UNIQUE constraint failed: t1.v1, changes() 0"},
+		{name: "a syntax error in the middle", setup: []string{t1}, src: ins(1) + "; insert into t1 (v1) valus (2); " + ins(3),
+			s4ql: `failed with 1/1: near "valus": syntax error`, mattn: `failed with 1/1: near "valus": syntax error, changes() 1`},
+		{name: "an error of the names in the middle", setup: []string{t1}, src: ins(1) + "; insert into t9 (v1) values (2); " + ins(3),
+			s4ql: "failed with 1/1: no such table: t9", mattn: "failed with 1/1: no such table: t9, changes() 1"},
+		{name: "an incomplete statement at the end", setup: []string{t1}, src: ins(1) + "; insert into",
+			s4ql: "failed with 1/1: incomplete input", mattn: "failed with 1/1: incomplete input, changes() 1"},
+		{name: "a RETURNING in the middle", setup: []string{t1}, src: ins(1) + " returning v1; " + ins(2) + "; select * from t1",
+			s4ql: "affected 1", mattn: "affected 1, changes() 1"},
+		{name: "too few arguments, which runs the statements before the one that lacks them", setup: []string{t1},
+			src: "insert into t1 (v1) values (?); insert into t1 (v1) values (?)", args: []any{1},
+			s4ql:  "failed with s4ql: wrong number of arguments: 1 for a text whose statements up to the one at offset 32 have 2 parameters",
+			mattn: "failed with not enough args to execute query: want 1 got 0, changes() 1"},
+		// The empty statement at the end makes mattn give a result of 0 rows affected, which its
+		// issue 963 put there in place of no result; SQLite's count of changes is 1, which s4ql gives.
+		{name: "a comment at the end", setup: []string{t1}, src: ins(1) + "; -- c", s4ql: "affected 1", mattn: "affected 0, changes() 1", oracle: ins(1)},
+		{name: "a semicolon at the end", setup: []string{t1}, src: ins(1) + ";;", s4ql: "affected 1", mattn: "affected 0, changes() 1", oracle: ins(1)},
+		{name: "a semicolon and a space at the end", setup: []string{t1}, src: ins(1) + "; \n", s4ql: "affected 1", mattn: "affected 1, changes() 1"},
+		// mattn steps a statement with RETURNING once, and its result has the count of the statement
+		// before; SQLite's count after it is that of the RETURNING, which s4ql gives.
+		{name: "a RETURNING at the end", setup: []string{t1, ins(1), ins(2)}, src: ins(3) + "; delete from t1 returning v1",
+			s4ql: "affected 3", mattn: "affected 1, changes() 3", oracle: ins(3) + "; delete from t1"},
+		// Each of these, s4ql refuses before any statement runs.
+		{name: "more arguments than parameters, which mattn drops", setup: []string{t1}, src: "insert into t1 (v1) values (?); " + ins(2), args: []any{1, 9},
+			s4ql:  "failed with s4ql: wrong number of arguments: 2 for a text whose 2 statements have 1 parameter",
+			mattn: "affected 1, changes() 1", oracle: "-"},
+		{name: "a no-break space after a semicolon, which mattn's TrimSpace removes and SQLite reads as a name", setup: []string{t1}, src: ins(1) + "; " + ins(2),
+			s4ql:  "failed with s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 31)",
+			mattn: "affected 1, changes() 1", oracle: "-"},
+		{name: "a vertical tab after a semicolon, which SQLite does not read as a space where a token starts", setup: []string{t1}, src: ins(1) + ";\v" + ins(2),
+			s4ql:  "failed with s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 31)",
+			mattn: "affected 1, changes() 1", oracle: "-"},
+		{name: "a no-break space at the end", setup: []string{t1}, src: ins(1) + "; " + ins(2) + " ",
+			s4ql:  "failed with s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 62)",
+			mattn: "affected 1, changes() 1", oracle: "-"},
+		{name: "a block comment that the trim makes a slash", setup: []string{t1}, src: ins(1) + "; /* ",
+			s4ql:  "failed with s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 34)",
+			mattn: `failed with 1/1: near "/": syntax error, changes() 1`, oracle: "-"},
+		{name: "a string without its closing quote, whose spaces the trim takes from the message", setup: []string{t1}, src: ins(1) + "; select 'abc  ",
+			s4ql:  "failed with s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 43)",
+			mattn: `failed with 1/1: unrecognized token: "'abc", changes() 1`, oracle: "-"},
+		// A statement that s4ql does not support ends the run after the statements before it.
+		{name: "a statement that s4ql does not support in the middle", setup: []string{t1}, src: ins(1) + "; drop view if exists v; " + ins(2),
+			s4ql:  "failed with s4ql: not supported: DROP VIEW (at offset 37)",
+			mattn: "affected 1, changes() 1", oracle: ins(1)},
+	}
+	w := newWorld(t)
+	for _, test := range tests {
+		t.Run("should give what mattn gives for "+test.name, func(t *testing.T) {
+			p := newPair(t, w, true, nil)
+			defer p.close()
+			for _, s := range test.setup {
+				_, err := p.s.ExecContext(t.Context(), s)
+				is.NotError(t, err)
+				_, err = p.o.ExecContext(t.Context(), s)
+				is.NotError(t, err)
+			}
+			got := severalText(t, p.s, test.src, test.args, false)
+			is.Equal(t, test.s4ql, got)
+			if test.oracle == "" {
+				is.Equal(t, test.mattn, severalText(t, p.o, test.src, test.args, true))
+				if !strings.HasPrefix(got, "failed") {
+					is.Equal(t, "affected "+strings.TrimPrefix(test.mattn[strings.LastIndex(test.mattn, "changes() "):], "changes() "), got)
+				}
+			} else {
+				scratch, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "scratch.db"))
+				is.NotError(t, err)
+				defer func() { is.NotError(t, scratch.Close()) }()
+				scratch.SetMaxOpenConns(1)
+				for _, s := range test.setup {
+					_, err := scratch.ExecContext(t.Context(), s)
+					is.NotError(t, err)
+				}
+				is.Equal(t, test.mattn, severalText(t, scratch, test.src, test.args, true))
+				if test.oracle != "-" {
+					_, err := p.o.ExecContext(t.Context(), test.oracle)
+					is.NotError(t, err)
+				}
+			}
+			is.Equal(t, "", p.compareTables())
+		})
+	}
+
+	for _, commit := range []bool{true, false} {
+		t.Run(fmt.Sprintf("should keep the statements before one that fails in a transaction, which goes on, and commits them: %v", commit), func(t *testing.T) {
+			p := newPair(t, w, false, nil)
+			defer p.close()
+			for _, r := range []queryer{p.s, p.o} {
+				_, err := r.ExecContext(t.Context(), t1)
+				is.NotError(t, err)
+			}
+			var txs []*sql.Tx
+			for _, r := range []queryer{p.s, p.o} {
+				tx, err := r.BeginTx(t.Context(), nil)
+				is.NotError(t, err)
+				txs = append(txs, tx)
+			}
+			src := ins(1) + "; " + ins(2) + "; " + ins(1) + "; " + ins(3)
+			is.Equal(t, "failed with 19/1555: UNIQUE constraint failed: t1.v1", severalText(t, txs[0], src, nil, false))
+			is.Equal(t, "failed with 19/1555: UNIQUE constraint failed: t1.v1, changes() 0", severalText(t, txs[1], src, nil, true))
+			src = ins(4) + "; " + ins(5)
+			is.Equal(t, "affected 1", severalText(t, txs[0], src, nil, false))
+			is.Equal(t, "affected 1, changes() 1", severalText(t, txs[1], src, nil, true))
+			for _, tx := range txs {
+				if commit {
+					is.NotError(t, tx.Commit())
+				} else {
+					is.NotError(t, tx.Rollback())
+				}
+			}
+			is.Equal(t, "", p.compareTables())
+		})
+	}
+}
