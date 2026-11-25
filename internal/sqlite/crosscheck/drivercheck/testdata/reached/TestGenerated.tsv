@@ -3,83 +3,84 @@
 # required of it, a third, or = for a count that is pinned exactly, and the kind. The kinds are
 # those of testdata/reached/TestGenerated.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
 # Do not edit a number by hand.
-mixed	384	128	begin ok
-mixed	268	89	call begin
-mixed	18	6	call begin in a transaction
-mixed	16	5	call begin read-only in a transaction
-mixed	2001	667	call exec
-mixed	611	203	call exec with arguments
-mixed	896	298	call prepare, exec
-mixed	435	145	call prepare, exec several times
-mixed	133	44	call prepare, exec several times with arguments
-mixed	273	91	call prepare, exec with arguments
+mixed	391	130	begin ok
+mixed	278	92	call begin
+mixed	16	5	call begin in a transaction
+mixed	17	5	call begin read-only in a transaction
+mixed	2008	669	call exec
+mixed	603	201	call exec with arguments
+mixed	877	292	call prepare, exec
+mixed	438	146	call prepare, exec several times
+mixed	137	45	call prepare, exec several times with arguments
+mixed	267	89	call prepare, exec with arguments
 mixed	413	137	call prepare, query
-mixed	137	45	call prepare, query with arguments
-mixed	680	226	call query
-mixed	351	117	call query row
-mixed	128	42	call query row with arguments
-mixed	221	73	call query with arguments
-mixed	57	19	createindex already exists
-mixed	19	6	createindex attempt to write a readonly database
+mixed	143	47	call prepare, query with arguments
+mixed	677	225	call query
+mixed	356	118	call query row
+mixed	124	41	call query row with arguments
+mixed	223	74	call query with arguments
+mixed	61	20	createindex already exists
+mixed	22	7	createindex attempt to write a readonly database
 mixed	9	3	createindex no such column
-mixed	284	94	createindex no such table
-mixed	120	40	createindex ok
+mixed	276	92	createindex no such table
+mixed	123	41	createindex ok
 mixed	58	19	createindex there is already a table named
-mixed	232	77	createtable already exists
-mixed	6	2	createtable no rows
-mixed	379	126	createtable ok
-mixed	8	2	createtable there is already an index named
-mixed	34	11	createtable wrong number of arguments
-mixed	131	43	dropindex no such index
-mixed	63	21	dropindex ok
-mixed	98	32	droptable no such table
-mixed	127	42	droptable ok
-mixed	931	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
+mixed	243	81	createtable already exists
+mixed	8	2	createtable no rows
+mixed	382	127	createtable ok
+mixed	9	3	createtable there is already an index named
+mixed	35	11	createtable wrong number of arguments
+mixed	134	44	dropindex no such index
+mixed	64	21	dropindex ok
+mixed	97	32	droptable no such table
+mixed	128	42	droptable ok
+mixed	926	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
 mixed	30	=	excused: a begin on a connection whose transaction is open, refused by both with their own errors
 mixed	46	=	excused: a select, an update, a delete, a create index, or an insert with RETURNING with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error
-mixed	41	=	excused: a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it
-mixed	14	=	excused: a statement while the rows of the transaction are open, checked against s4ql's rule
+mixed	45	=	excused: a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it
+mixed	16	=	excused: a statement while the rows of the transaction are open, checked against s4ql's rule
 mixed	8	=	excused: a statement with a subquery with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked to fail on its names
 mixed	1	=	excused: a subquery of a column of another type than the column that it is compared with, checked against s4ql's rule
-mixed	159	=	excused: a value of another type than its column, checked against s4ql's rule
-mixed	7	=	excused: already exists after the start of a table, accepted
+mixed	162	=	excused: a value of another type than its column, checked against s4ql's rule
+mixed	8	=	excused: already exists after the start of a table, accepted
 mixed	2	=	excused: an argument of the LIMIT of a subquery that is no integer from 0, checked against s4ql's rule
-mixed	204	=	excused: an argument that s4ql does not support, checked against s4ql's rule
-mixed	8	=	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
-mixed	48	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
-mixed	18	=	excused: arithmetic refused by the rules of its types, checked against s4ql's rules
-mixed	297	=	excused: the wrong number of arguments, checked against s4ql's rule
-mixed	76	25	insert UNIQUE constraint failed
-mixed	37	12	insert has no column named
-mixed	3	1	insert no rows
-mixed	590	196	insert no such table
-mixed	156	52	insert ok
-mixed	42	14	insert with a parameter UNIQUE constraint failed
-mixed	86	28	insert with a parameter argument of a type not supported
-mixed	44	14	insert with a parameter named argument
-mixed	445	148	insert with a parameter no such table
-mixed	158	52	insert with a parameter ok
-mixed	99	33	insert with a parameter wrong number of arguments
-mixed	47	15	insert wrong number of arguments
+mixed	194	=	excused: an argument that s4ql does not support, checked against s4ql's rule
+mixed	6	=	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
+mixed	46	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
+mixed	26	=	excused: arithmetic refused by the rules of its types, checked against s4ql's rules
+mixed	298	=	excused: the wrong number of arguments, checked against s4ql's rule
+mixed	65	21	insert UNIQUE constraint failed
+mixed	34	11	insert has no column named
+mixed	4	1	insert no rows
+mixed	576	192	insert no such table
+mixed	159	53	insert ok
+mixed	43	14	insert with a parameter UNIQUE constraint failed
+mixed	90	30	insert with a parameter argument of a type not supported
+mixed	43	14	insert with a parameter named argument
+mixed	432	144	insert with a parameter no such table
+mixed	161	53	insert with a parameter ok
+mixed	98	32	insert with a parameter wrong number of arguments
+mixed	48	16	insert wrong number of arguments
 mixed	25	8	other incomplete input
-mixed	367	122	other not supported
+mixed	371	123	other not supported
 mixed	35	11	other syntax error
 mixed	9	3	reached: != on the key ok
-mixed	14	4	reached: < on the key ok
+mixed	19	6	reached: < on the key ok
 mixed	3	1	reached: <= on another column ok
 mixed	14	4	reached: <= on the key ok
-mixed	8	2	reached: = on another column ok
+mixed	7	2	reached: = on another column ok
 mixed	18	6	reached: = on the key ok
-mixed	6	2	reached: > on another column ok
-mixed	16	5	reached: > on the key ok
-mixed	8	2	reached: >= on the key ok
-mixed	3	1	reached: IS NOT NULL on the key ok
-mixed	4	1	reached: IS NULL on the key ok
-mixed	7	2	reached: LIMIT by an argument ok
-mixed	4	1	reached: LIMIT with an argument that is a negative integer not supported
+mixed	7	2	reached: > on another column ok
+mixed	17	5	reached: > on the key ok
+mixed	9	3	reached: >= on the key ok
+mixed	4	1	reached: IS NOT NULL on the key ok
+mixed	5	1	reached: IS NULL on the key ok
+mixed	8	2	reached: LIMIT by an argument ok
+mixed	5	1	reached: LIMIT with an argument that is a negative integer not supported
+mixed	3	1	reached: LIMIT with an argument that is a real not supported
 mixed	4	1	reached: LIMIT with an argument that is text not supported
 mixed	6	2	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
-mixed	4	1	reached: NULL argument into a column that takes NULL ok
+mixed	5	1	reached: NULL argument into a column that takes NULL ok
 mixed	3	1	reached: NULL argument into the key NOT NULL constraint failed
 mixed	17	5	reached: NULL given for a column with a default, which does not take NULL NOT NULL constraint failed
 mixed	8	2	reached: NULL given for a column with a default, which takes NULL ok
@@ -89,305 +90,307 @@ mixed	3	1	reached: NULL literal into a column that takes NULL a value of another
 mixed	13	4	reached: NULL literal into a column that takes NULL ok
 mixed	27	9	reached: NULL literal into the key NOT NULL constraint failed
 mixed	5	1	reached: ORDER BY that gives two rows or more
-mixed	12	4	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
-mixed	11	3	reached: SET of NULL for a column that does not take it ok, no row found
+mixed	14	4	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+mixed	12	4	reached: SET of NULL for a column that does not take it ok, no row found
 mixed	16	5	reached: SET of a column in double quotes that the table does not have no such column
 mixed	25	8	reached: SET of a column that the table does not have no such column
-mixed	8	2	reached: SET of the key NOT NULL constraint failed
-mixed	8	2	reached: SET of the key UNIQUE constraint failed
-mixed	9	3	reached: SET of the key ok, rows changed
-mixed	15	5	reached: SET with a value of another type a value of another type
+mixed	10	3	reached: SET of the key NOT NULL constraint failed
+mixed	9	3	reached: SET of the key UNIQUE constraint failed
+mixed	8	2	reached: SET of the key ok, rows changed
+mixed	18	6	reached: SET with a value of another type a value of another type
 mixed	3	1	reached: SET with argument nil ok, no row found
 mixed	12	4	reached: WHERE that gives no row of a table with rows
-mixed	7	2	reached: WHERE that gives some rows of a table
-mixed	12	4	reached: WHERE that reads a get of one key ok
+mixed	6	2	reached: WHERE that gives some rows of a table
+mixed	11	3	reached: WHERE that reads a get of one key ok
 mixed	5	1	reached: WHERE that reads a scan between two bounds ok
-mixed	3	1	reached: WHERE that reads a scan between two bounds that hold no key ok
+mixed	4	1	reached: WHERE that reads a scan between two bounds that hold no key ok
 mixed	8	2	reached: WHERE that reads a scan from a lower bound ok
 mixed	9	3	reached: WHERE that reads a scan of every row ok
-mixed	7	2	reached: WHERE that reads a scan to an upper bound ok
-mixed	4	1	reached: WHERE that reads no row ok
-mixed	30	10	reached: WHERE that tests a column more than once ok
+mixed	9	3	reached: WHERE that reads a scan to an upper bound ok
+mixed	5	1	reached: WHERE that reads no row ok
+mixed	33	11	reached: WHERE that tests a column more than once ok
 mixed	11	3	reached: WHERE with a column in double quotes that the table does not have no such column
 mixed	8	2	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
 mixed	3	1	reached: WHERE with a column that the table does not have in a comparison, alone no such column
 mixed	11	3	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
 mixed	22	7	reached: WHERE with a value of another type a value of another type
 mixed	20	6	reached: WHERE with arguments that s4ql refuses not supported
-mixed	13	4	reached: WHERE with arguments that s4ql refuses wrong number of arguments
-mixed	5	1	reached: WHERE with contradicting conditions ok
-mixed	5	1	reached: argument NULL as *[]uint8
+mixed	11	3	reached: WHERE with arguments that s4ql refuses wrong number of arguments
+mixed	6	2	reached: WHERE with contradicting conditions ok
+mixed	6	2	reached: argument NULL as *[]uint8
 mixed	7	2	reached: argument NULL as *float64
-mixed	9	3	reached: argument NULL as *int64
-mixed	10	3	reached: argument NULL as *sql.NullString
-mixed	10	3	reached: argument NULL as *string
+mixed	7	2	reached: argument NULL as *int64
+mixed	11	3	reached: argument NULL as *sql.NullString
+mixed	9	3	reached: argument NULL as *string
 mixed	11	3	reached: argument NULL as sql.NullFloat64
 mixed	8	2	reached: argument NULL as sql.NullInt64
-mixed	7	2	reached: argument NULL as sql.NullString
+mixed	9	3	reached: argument NULL as sql.NullString
 mixed	8	2	reached: argument NULL as sql.Null[[]uint8]
 mixed	4	1	reached: argument NaN
 mixed	143	47	reached: argument []uint8
 mixed	44	14	reached: argument empty []byte
 mixed	25	8	reached: argument empty string
 mixed	5	1	reached: argument float32
-mixed	6	2	reached: argument float32 that is not finite
-mixed	185	61	reached: argument float64
+mixed	7	2	reached: argument float32 that is not finite
+mixed	184	61	reached: argument float64
 mixed	23	7	reached: argument float64 -0.0
-mixed	8	2	reached: argument infinite float64
+mixed	9	3	reached: argument infinite float64
 mixed	6	2	reached: argument int
 mixed	6	2	reached: argument int32
-mixed	356	118	reached: argument int64
-mixed	44	14	reached: argument named
-mixed	5	1	reached: argument nil
-mixed	4	1	reached: argument nil []byte
-mixed	5	1	reached: argument nil []byte as *[]uint8
+mixed	352	117	reached: argument int64
+mixed	43	14	reached: argument named
+mixed	6	2	reached: argument nil
+mixed	5	1	reached: argument nil []byte
+mixed	4	1	reached: argument nil []byte as *[]uint8
 mixed	6	2	reached: argument nil []byte as sql.Null[[]uint8]
-mixed	197	65	reached: argument string
+mixed	190	63	reached: argument string
 mixed	20	6	reached: argument string that is not valid UTF-8
-mixed	14	4	reached: argument string with NUL
+mixed	15	5	reached: argument string with NUL
 mixed	9	3	reached: argument uint64
 mixed	4	1	reached: argument uint64 above int64
 mixed	11	3	reached: comparison with a subquery ok
 mixed	3	1	reached: comparison with argument []uint8 ok
-mixed	3	1	reached: comparison with argument float64 ok
-mixed	9	3	reached: comparison with argument int64 ok
-mixed	5	1	reached: comparison with argument string ok
-mixed	7	2	reached: comparison with literal blob ok
-mixed	6	2	reached: comparison with literal empty text ok
-mixed	30	10	reached: comparison with literal integer ok
-mixed	9	3	reached: comparison with literal real ok
-mixed	15	5	reached: comparison with literal text ok
+mixed	4	1	reached: comparison with argument float64 ok
+mixed	10	3	reached: comparison with argument int64 ok
+mixed	6	2	reached: comparison with argument string ok
+mixed	6	2	reached: comparison with literal blob ok
+mixed	7	2	reached: comparison with literal empty text ok
+mixed	32	10	reached: comparison with literal integer ok
+mixed	10	3	reached: comparison with literal real ok
+mixed	16	5	reached: comparison with literal text ok
 mixed	3	1	reached: create index if not exists attempt to write a readonly database
-mixed	30	10	reached: create index if not exists did its work
-mixed	12	4	reached: create index if not exists did nothing: an index of the name exists
-mixed	73	24	reached: create index if not exists no such table
+mixed	29	9	reached: create index if not exists did its work
+mixed	14	4	reached: create index if not exists did nothing: an index of the name exists
+mixed	72	24	reached: create index if not exists no such table
 mixed	13	4	reached: create index if not exists there is already a table named
-mixed	12	4	reached: create table if not exists attempt to write a readonly database
-mixed	96	32	reached: create table if not exists did its work
-mixed	92	30	reached: create table if not exists did nothing: a table of the name exists
+mixed	10	3	reached: create table if not exists attempt to write a readonly database
+mixed	95	31	reached: create table if not exists did its work
+mixed	95	31	reached: create table if not exists did nothing: a table of the name exists
 mixed	5	1	reached: delete WHERE that reads a get of one key ok, rows changed
 mixed	4	1	reached: delete WHERE with a column in double quotes that the table does not have no such column
-mixed	11	3	reached: delete WHERE with a value of another type a value of another type
+mixed	12	4	reached: delete WHERE with a value of another type a value of another type
 mixed	5	1	reached: delete with RETURNING * ok
 mixed	5	1	reached: delete with RETURNING of a name twice ok
-mixed	8	2	reached: delete with RETURNING that gives no row
-mixed	11	3	reached: delete with RETURNING through query ok
+mixed	7	2	reached: delete with RETURNING that gives no row
+mixed	9	3	reached: delete with RETURNING through query ok
 mixed	15	5	reached: delete with WHERE attempt to write a readonly database
 mixed	42	14	reached: delete with WHERE ok, no row found
-mixed	10	3	reached: delete with WHERE ok, rows changed
-mixed	5	1	reached: delete with a subquery: subquery that finds no row
-mixed	9	3	reached: delete with arguments that s4ql refuses not supported
+mixed	12	4	reached: delete with WHERE ok, rows changed
+mixed	4	1	reached: delete with a subquery: subquery that finds no row
+mixed	8	2	reached: delete with arguments that s4ql refuses not supported
 mixed	13	4	reached: delete with arguments that s4ql refuses wrong number of arguments
 mixed	14	4	reached: delete without WHERE ok, no row found
 mixed	14	4	reached: delete without WHERE ok, rows changed
 mixed	3	1	reached: drop index if exists did its work
 mixed	30	10	reached: drop index if exists did nothing: no index of the name exists
 mixed	9	3	reached: drop index if exists did nothing: no index of the name exists, and a table has it
-mixed	3	1	reached: drop table if exists attempt to write a readonly database
-mixed	23	7	reached: drop table if exists did its work
+mixed	24	8	reached: drop table if exists did its work
 mixed	40	13	reached: drop table if exists did nothing: no table of the name exists
 mixed	5	1	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
-mixed	4	1	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
-mixed	22	7	reached: insert into BLOB UNIQUE constraint failed
-mixed	41	13	reached: insert into BLOB a value of another type
-mixed	7	2	reached: insert into BLOB attempt to write a readonly database
-mixed	50	16	reached: insert into BLOB ok
+mixed	15	5	reached: insert into BLOB UNIQUE constraint failed
+mixed	40	13	reached: insert into BLOB a value of another type
+mixed	5	1	reached: insert into BLOB attempt to write a readonly database
+mixed	49	16	reached: insert into BLOB ok
 mixed	23	7	reached: insert into INT UNIQUE constraint failed
 mixed	23	7	reached: insert into INT a value of another type
-mixed	13	4	reached: insert into INT attempt to write a readonly database
-mixed	68	22	reached: insert into INT ok
-mixed	33	11	reached: insert into INTEGER UNIQUE constraint failed
+mixed	12	4	reached: insert into INT attempt to write a readonly database
+mixed	69	23	reached: insert into INT ok
+mixed	32	10	reached: insert into INTEGER UNIQUE constraint failed
 mixed	15	5	reached: insert into INTEGER a value of another type
-mixed	19	6	reached: insert into INTEGER attempt to write a readonly database
-mixed	79	26	reached: insert into INTEGER ok
-mixed	21	7	reached: insert into REAL UNIQUE constraint failed
-mixed	15	5	reached: insert into REAL a value of another type
+mixed	15	5	reached: insert into INTEGER attempt to write a readonly database
+mixed	81	27	reached: insert into INTEGER ok
+mixed	19	6	reached: insert into REAL UNIQUE constraint failed
+mixed	16	5	reached: insert into REAL a value of another type
 mixed	9	3	reached: insert into REAL attempt to write a readonly database
-mixed	55	18	reached: insert into REAL ok
+mixed	59	19	reached: insert into REAL ok
 mixed	19	6	reached: insert into TEXT UNIQUE constraint failed
-mixed	10	3	reached: insert into TEXT a value of another type
-mixed	16	5	reached: insert into TEXT attempt to write a readonly database
+mixed	11	3	reached: insert into TEXT a value of another type
+mixed	18	6	reached: insert into TEXT attempt to write a readonly database
 mixed	62	20	reached: insert into TEXT ok
 mixed	8	2	reached: insert of NULL beside a value of another type a value of another type
 mixed	10	3	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed
 mixed	4	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
-mixed	4	1	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
-mixed	8	2	reached: insert that leaves out a column that takes NULL a value of another type
-mixed	29	9	reached: insert that leaves out a column that takes NULL ok
-mixed	7	2	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok
+mixed	6	2	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+mixed	9	3	reached: insert that leaves out a column that takes NULL a value of another type
+mixed	30	10	reached: insert that leaves out a column that takes NULL ok
+mixed	8	2	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok
 mixed	9	3	reached: insert that leaves out a column with a default of blob ok
 mixed	3	1	reached: insert that leaves out a column with a default of integer attempt to write a readonly database
-mixed	19	6	reached: insert that leaves out a column with a default of integer ok
+mixed	20	6	reached: insert that leaves out a column with a default of integer ok
 mixed	24	8	reached: insert that leaves out a column with a default of real ok
 mixed	13	4	reached: insert that leaves out a column with a default of text ok
-mixed	17	5	reached: insert that leaves out a column with a default that an index holds ok
-mixed	3	1	reached: insert that leaves out the key with a default UNIQUE constraint failed
-mixed	11	3	reached: insert that leaves out the key with a default ok
+mixed	20	6	reached: insert that leaves out a column with a default that an index holds ok
+mixed	5	1	reached: insert that leaves out the key with a default UNIQUE constraint failed
+mixed	13	4	reached: insert that leaves out the key with a default ok
 mixed	11	3	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
 mixed	13	4	reached: insert with NULL in the key: NOT NULL constraint failed
 mixed	4	1	reached: insert with RETURNING * UNIQUE constraint failed
 mixed	18	6	reached: insert with RETURNING * ok
 mixed	7	2	reached: insert with RETURNING of a name that the table does not have no such column
 mixed	6	2	reached: insert with RETURNING of a name twice attempt to write a readonly database
-mixed	19	6	reached: insert with RETURNING of a name twice ok
+mixed	20	6	reached: insert with RETURNING of a name twice ok
 mixed	3	1	reached: insert with RETURNING through exec ok
 mixed	11	3	reached: insert with RETURNING through prepare, query ok
-mixed	20	6	reached: insert with RETURNING through query ok
+mixed	19	6	reached: insert with RETURNING through query ok
 mixed	5	1	reached: insert with RETURNING through query row ok
+mixed	4	1	reached: insert with RETURNING through query, rows left open ok
 mixed	18	6	reached: insert with a column that the table does not have: has no column named
-mixed	23	7	reached: insert with a column without a value: NOT NULL constraint failed
+mixed	22	7	reached: insert with a column without a value: NOT NULL constraint failed
 mixed	4	1	reached: insert with a column without a value: attempt to write a readonly database
-mixed	60	20	reached: insert with a list UNIQUE constraint failed
+mixed	55	18	reached: insert with a list UNIQUE constraint failed
 mixed	35	11	reached: insert with a list attempt to write a readonly database
-mixed	142	47	reached: insert with a list ok
-mixed	24	8	reached: insert with a value of another type in another column: a value of another type
+mixed	144	48	reached: insert with a list ok
+mixed	25	8	reached: insert with a value of another type in another column: a value of another type
 mixed	34	11	reached: insert with a value of another type in the key: a value of another type
-mixed	31	10	reached: insert with the wrong number of values:  values for 
+mixed	32	10	reached: insert with the wrong number of values:  values for 
 mixed	26	8	reached: insert with the wrong number of values: values were supplied
 mixed	17	5	reached: insert with two faults: NOT NULL constraint failed
 mixed	7	2	reached: insert with two faults: a value of another type
-mixed	29	9	reached: insert without a list UNIQUE constraint failed
-mixed	13	4	reached: insert without a list attempt to write a readonly database
-mixed	76	25	reached: insert without a list ok
+mixed	28	9	reached: insert without a list UNIQUE constraint failed
+mixed	12	4	reached: insert without a list attempt to write a readonly database
+mixed	79	26	reached: insert without a list ok
 mixed	266	88	reached: literal blob
-mixed	76	25	reached: literal empty blob
+mixed	75	25	reached: literal empty blob
 mixed	54	18	reached: literal empty text
-mixed	771	257	reached: literal integer
-mixed	202	67	reached: literal null
-mixed	363	121	reached: literal real
+mixed	766	255	reached: literal integer
+mixed	199	66	reached: literal null
+mixed	361	120	reached: literal real
 mixed	52	17	reached: literal real -0.0
-mixed	282	94	reached: literal text
-mixed	35	11	reached: select * of 1 columns ok
-mixed	41	13	reached: select * of 2 columns ok
-mixed	40	13	reached: select * of 3 columns ok
-mixed	10	3	reached: select * with NULL ok
+mixed	280	93	reached: literal text
+mixed	36	12	reached: select * of 1 columns ok
+mixed	46	15	reached: select * of 2 columns ok
+mixed	41	13	reached: select * of 3 columns ok
+mixed	12	4	reached: select * with NULL ok
 mixed	35	11	reached: select of a name that the table does not have no such column
-mixed	95	31	reached: select of names ok
+mixed	98	32	reached: select of names ok
 mixed	3	1	reached: select of names with NULL ok
-mixed	3	1	reached: select with a subquery through prepare, query ok
-mixed	3	1	reached: select with a subquery through query row no rows
+mixed	4	1	reached: select with a subquery through prepare, query ok
+mixed	3	1	reached: select with a subquery through query ok
 mixed	3	1	reached: select with a subquery: subquery of several rows
-mixed	7	2	reached: subquery compared by != on either side ok
-mixed	15	5	reached: subquery compared by = on either side ok
-mixed	10	3	reached: subquery compared by = with its value on the left ok
+mixed	6	2	reached: subquery compared by != on either side ok
+mixed	18	6	reached: subquery compared by = on either side ok
+mixed	11	3	reached: subquery compared by = with its value on the left ok
 mixed	7	2	reached: subquery compared by > on either side ok
 mixed	4	1	reached: subquery compared by >= on either side ok
 mixed	35	11	reached: subquery of the table of its statement ok
-mixed	25	8	reached: subquery that finds no row
-mixed	10	3	reached: subquery whose first row has a value
-mixed	163	54	reached: table read back after an update or a delete
+mixed	21	7	reached: subquery that finds no row
+mixed	12	4	reached: subquery whose first row has a value
+mixed	169	56	reached: table read back after an update or a delete
 mixed	6	2	reached: update WHERE that reads a get of one key ok, rows changed
 mixed	4	1	reached: update WHERE that reads no row ok, no row found
 mixed	7	2	reached: update WHERE with a column in double quotes that the table does not have no such column
 mixed	14	4	reached: update WHERE with a value of another type a value of another type
-mixed	9	3	reached: update with RETURNING * ok
-mixed	7	2	reached: update with RETURNING of a name twice ok
-mixed	8	2	reached: update with RETURNING that gives no row
+mixed	7	2	reached: update with RETURNING * ok
+mixed	9	3	reached: update with RETURNING of a name twice ok
+mixed	9	3	reached: update with RETURNING that gives no row
 mixed	6	2	reached: update with RETURNING through prepare, query ok
-mixed	6	2	reached: update with RETURNING through query ok
-mixed	4	1	reached: update with RETURNING through query, rows left open ok
+mixed	7	2	reached: update with RETURNING through query ok
+mixed	3	1	reached: update with RETURNING through query, rows left open ok
 mixed	4	1	reached: update with RETURNING with a subquery through prepare, exec several times ok
-mixed	8	2	reached: update with WHERE attempt to write a readonly database
-mixed	71	23	reached: update with WHERE ok, no row found
-mixed	11	3	reached: update with WHERE ok, rows changed
-mixed	4	1	reached: update with a subquery through exec ok
+mixed	7	2	reached: update with WHERE attempt to write a readonly database
+mixed	74	24	reached: update with WHERE ok, no row found
+mixed	12	4	reached: update with WHERE ok, rows changed
+mixed	3	1	reached: update with a subquery through exec ok
 mixed	5	1	reached: update with a subquery through prepare, exec several times ok
 mixed	7	2	reached: update with a subquery: subquery that finds no row
-mixed	20	6	reached: update with arguments that s4ql refuses not supported
-mixed	15	5	reached: update with arguments that s4ql refuses wrong number of arguments
-mixed	8	2	reached: update without WHERE ok, no row found
-mixed	14	4	reached: update without WHERE ok, rows changed
-mixed	3	1	reached: value on the left compared with NULL finds no row
-mixed	8	2	reached: value on the left of != a value of another type
-mixed	12	4	reached: value on the left of != finds no row
-mixed	7	2	reached: value on the left of != no such column
-mixed	4	1	reached: value on the left of < a value of another type
-mixed	12	4	reached: value on the left of < finds no row
-mixed	8	2	reached: value on the left of < no such column
-mixed	6	2	reached: value on the left of < not supported
+mixed	19	6	reached: update with arguments that s4ql refuses not supported
+mixed	19	6	reached: update with arguments that s4ql refuses wrong number of arguments
+mixed	9	3	reached: update without WHERE ok, no row found
+mixed	13	4	reached: update without WHERE ok, rows changed
+mixed	4	1	reached: value on the left compared with NULL finds no row
+mixed	7	2	reached: value on the left of != a value of another type
+mixed	13	4	reached: value on the left of != finds no row
+mixed	8	2	reached: value on the left of != no such column
+mixed	3	1	reached: value on the left of != not supported
+mixed	3	1	reached: value on the left of != wrong number of arguments
+mixed	10	3	reached: value on the left of < a value of another type
+mixed	13	4	reached: value on the left of < finds no row
+mixed	9	3	reached: value on the left of < no such column
+mixed	7	2	reached: value on the left of < not supported
 mixed	7	2	reached: value on the left of <= a value of another type
-mixed	11	3	reached: value on the left of <= finds no row
+mixed	9	3	reached: value on the left of <= finds no row
 mixed	4	1	reached: value on the left of <= no such column
-mixed	6	2	reached: value on the left of <= not supported
-mixed	3	1	reached: value on the left of <= wrong number of arguments
-mixed	10	3	reached: value on the left of = a value of another type
-mixed	23	7	reached: value on the left of = finds no row
-mixed	9	3	reached: value on the left of = finds rows
-mixed	22	7	reached: value on the left of = no such column
-mixed	9	3	reached: value on the left of = not supported
-mixed	8	2	reached: value on the left of = wrong number of arguments
+mixed	7	2	reached: value on the left of <= not supported
+mixed	4	1	reached: value on the left of <= wrong number of arguments
+mixed	13	4	reached: value on the left of = a value of another type
+mixed	24	8	reached: value on the left of = finds no row
+mixed	8	2	reached: value on the left of = finds rows
+mixed	21	7	reached: value on the left of = no such column
+mixed	13	4	reached: value on the left of = not supported
+mixed	9	3	reached: value on the left of = wrong number of arguments
 mixed	14	4	reached: value on the left of > a value of another type
-mixed	12	4	reached: value on the left of > finds no row
+mixed	16	5	reached: value on the left of > finds no row
 mixed	8	2	reached: value on the left of > no such column
 mixed	4	1	reached: value on the left of > not supported
-mixed	6	2	reached: value on the left of > wrong number of arguments
-mixed	6	2	reached: value on the left of >= a value of another type
-mixed	14	4	reached: value on the left of >= finds no row
+mixed	5	1	reached: value on the left of > wrong number of arguments
+mixed	8	2	reached: value on the left of >= a value of another type
+mixed	13	4	reached: value on the left of >= finds no row
 mixed	13	4	reached: value on the left of >= no such column
 mixed	5	1	reached: value on the left of >= not supported
-mixed	77	25	reached: value on the left on a table that a create table if not exists found
-mixed	140	46	read-only transaction begin ok
-mixed	51	17	read-only transaction commit ok on a pinned connection
+mixed	3	1	reached: value on the left of >= wrong number of arguments
+mixed	78	26	reached: value on the left on a table that a create table if not exists found
+mixed	136	45	read-only transaction begin ok
+mixed	47	15	read-only transaction commit ok on a pinned connection
 mixed	45	15	read-only transaction commit ok through the pool
 mixed	22	7	read-only transaction rollback ok on a pinned connection
 mixed	22	7	read-only transaction rollback ok through the pool
-mixed	59	19	read-only transaction: call prepare outside, exec in the transaction
-mixed	23	7	read-only transaction: call prepare outside, query in the transaction
+mixed	57	19	read-only transaction: call prepare outside, exec in the transaction
+mixed	19	6	read-only transaction: call prepare outside, query in the transaction
 mixed	17	5	read-only transaction: call prepare, exec several times with arguments
-mixed	24	8	read-only transaction: createtable already exists
-mixed	49	16	read-only transaction: createtable attempt to write a readonly database
-mixed	15	5	read-only transaction: droptable attempt to write a readonly database
-mixed	40	13	read-only transaction: insert attempt to write a readonly database
-mixed	78	26	read-only transaction: insert no such table
+mixed	31	10	read-only transaction: createtable already exists
+mixed	40	13	read-only transaction: createtable attempt to write a readonly database
+mixed	14	4	read-only transaction: droptable attempt to write a readonly database
+mixed	35	11	read-only transaction: insert attempt to write a readonly database
+mixed	74	24	read-only transaction: insert no such table
 mixed	24	8	read-only transaction: insert with a parameter attempt to write a readonly database
 mixed	3	1	read-only transaction: insert with a parameter while rows are open
-mixed	8	2	read-only transaction: rows left open
-mixed	10	3	read-only transaction: select ok with rows
-mixed	15	5	select no rows
-mixed	301	100	select no such table
-mixed	175	58	select ok
-mixed	54	18	select ok with rows
-mixed	29	9	select wrong number of arguments
-mixed	244	81	write transaction begin ok
+mixed	9	3	read-only transaction: rows left open
+mixed	12	4	read-only transaction: select ok with rows
+mixed	16	5	select no rows
+mixed	289	96	select no such table
+mixed	181	60	select ok
+mixed	60	20	select ok with rows
+mixed	28	9	select wrong number of arguments
+mixed	255	85	write transaction begin ok
 mixed	58	19	write transaction commit ok after a create table
 mixed	20	6	write transaction commit ok after a drop table
 mixed	135	45	write transaction commit ok after a failed call
-mixed	14	4	write transaction commit ok after a statement with RETURNING
-mixed	38	12	write transaction commit ok after an insert
-mixed	79	26	write transaction commit ok on a pinned connection
-mixed	91	30	write transaction commit ok through the pool
+mixed	13	4	write transaction commit ok after a statement with RETURNING
+mixed	35	11	write transaction commit ok after an insert
+mixed	84	28	write transaction commit ok on a pinned connection
+mixed	93	31	write transaction commit ok through the pool
 mixed	3	1	write transaction commit ok while rows are open
 mixed	24	8	write transaction rollback ok after a create table
-mixed	10	3	write transaction rollback ok after a drop table
-mixed	60	20	write transaction rollback ok after a failed call
-mixed	6	2	write transaction rollback ok after a statement with RETURNING
-mixed	16	5	write transaction rollback ok after an insert
-mixed	36	12	write transaction rollback ok on a pinned connection
-mixed	38	12	write transaction rollback ok through the pool
-mixed	117	39	write transaction: call exec with arguments
-mixed	22	7	write transaction: call prepare outside, exec in the transaction with arguments
-mixed	11	3	write transaction: call prepare outside, query in the transaction with arguments
-mixed	22	7	write transaction: call prepare, exec several times with arguments
-mixed	65	21	write transaction: call prepare, exec with arguments
-mixed	14	4	write transaction: call prepare, query with arguments
-mixed	30	10	write transaction: call query beside the transaction
+mixed	11	3	write transaction rollback ok after a drop table
+mixed	64	21	write transaction rollback ok after a failed call
+mixed	8	2	write transaction rollback ok after a statement with RETURNING
+mixed	18	6	write transaction rollback ok after an insert
+mixed	39	13	write transaction rollback ok on a pinned connection
+mixed	39	13	write transaction rollback ok through the pool
+mixed	111	37	write transaction: call exec with arguments
+mixed	21	7	write transaction: call prepare outside, exec in the transaction with arguments
+mixed	9	3	write transaction: call prepare outside, query in the transaction with arguments
+mixed	23	7	write transaction: call prepare, exec several times with arguments
+mixed	68	22	write transaction: call prepare, exec with arguments
+mixed	17	5	write transaction: call prepare, query with arguments
+mixed	32	10	write transaction: call query beside the transaction
 mixed	17	5	write transaction: call query row with arguments
 mixed	15	5	write transaction: call query with arguments
-mixed	194	64	write transaction: call query, rows left open
-mixed	58	19	write transaction: createtable already exists
-mixed	112	37	write transaction: createtable ok
-mixed	19	6	write transaction: droptable no such table
-mixed	38	12	write transaction: droptable ok
+mixed	205	68	write transaction: call query, rows left open
+mixed	56	18	write transaction: createtable already exists
+mixed	111	37	write transaction: createtable ok
+mixed	20	6	write transaction: droptable no such table
+mixed	39	13	write transaction: droptable ok
 mixed	17	5	write transaction: insert UNIQUE constraint failed
-mixed	116	38	write transaction: insert no such table
+mixed	123	41	write transaction: insert no such table
 mixed	37	12	write transaction: insert ok
-mixed	6	2	write transaction: insert while rows are open
-mixed	26	8	write transaction: insert with a parameter argument of a type not supported
-mixed	46	15	write transaction: insert with a parameter ok
-mixed	22	7	write transaction: insert with a parameter wrong number of arguments
-mixed	10	3	write transaction: other syntax error
-mixed	11	3	write transaction: rows left open
-mixed	3	1	write transaction: rows of RETURNING left open
+mixed	11	3	write transaction: insert while rows are open
+mixed	27	9	write transaction: insert with a parameter argument of a type not supported
+mixed	47	15	write transaction: insert with a parameter ok
+mixed	21	7	write transaction: insert with a parameter wrong number of arguments
+mixed	11	3	write transaction: other syntax error
+mixed	12	4	write transaction: rows left open
+mixed	5	1	write transaction: rows of RETURNING left open
 mixed	5	1	write transaction: select ok with rows after a write of the transaction
 tables	43	14	begin ok
 tables	40	13	call begin
@@ -1491,284 +1494,317 @@ defaults	7	2	write transaction: insert with a parameter argument of a type not s
 defaults	63	21	write transaction: insert with a parameter ok
 defaults	19	6	write transaction: rows left open
 defaults	20	6	write transaction: select ok with rows after a write of the transaction
-valuefirst	93	31	begin ok
-valuefirst	69	23	call begin
+valuefirst	191	63	begin ok
+valuefirst	156	52	call begin
 valuefirst	7	2	call begin in a transaction
-valuefirst	4	1	call begin read-only in a transaction
-valuefirst	649	216	call exec
-valuefirst	268	89	call exec with arguments
-valuefirst	271	90	call prepare, exec
-valuefirst	139	46	call prepare, exec several times
-valuefirst	53	17	call prepare, exec several times with arguments
-valuefirst	113	37	call prepare, exec with arguments
-valuefirst	68	22	call prepare, query
-valuefirst	34	11	call prepare, query with arguments
-valuefirst	162	54	call query
-valuefirst	72	24	call query row
-valuefirst	30	10	call query row with arguments
-valuefirst	72	24	call query with arguments
-valuefirst	47	15	createindex already exists
-valuefirst	16	5	createindex attempt to write a readonly database
-valuefirst	10	3	createindex no such table
-valuefirst	63	21	createindex ok
-valuefirst	11	3	createindex there is already a table named
-valuefirst	80	26	createtable already exists
-valuefirst	73	24	createtable ok
+valuefirst	6	2	call begin read-only in a transaction
+valuefirst	1261	420	call exec
+valuefirst	519	173	call exec with arguments
+valuefirst	520	173	call prepare, exec
+valuefirst	259	86	call prepare, exec several times
+valuefirst	112	37	call prepare, exec several times with arguments
+valuefirst	212	70	call prepare, exec with arguments
+valuefirst	160	53	call prepare, query
+valuefirst	71	23	call prepare, query with arguments
+valuefirst	348	116	call query
+valuefirst	169	56	call query row
+valuefirst	81	27	call query row with arguments
+valuefirst	164	54	call query with arguments
+valuefirst	75	25	createindex already exists
+valuefirst	24	8	createindex attempt to write a readonly database
+valuefirst	4	1	createindex no such column
+valuefirst	59	19	createindex no such table
+valuefirst	115	38	createindex ok
+valuefirst	15	5	createindex there is already a table named
+valuefirst	143	47	createtable already exists
+valuefirst	5	1	createtable no rows
+valuefirst	143	47	createtable ok
 valuefirst	7	2	createtable there is already an index named
-valuefirst	9	3	createtable wrong number of arguments
-valuefirst	9	3	dropindex attempt to write a readonly database
-valuefirst	28	9	dropindex no such index
-valuefirst	15	5	dropindex ok
-valuefirst	15	5	droptable no such table
-valuefirst	26	8	droptable ok
-valuefirst	97	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
-valuefirst	9	=	excused: a begin on a connection whose transaction is open, refused by both with their own errors
-valuefirst	28	=	excused: a select, an update, a delete, a create index, or an insert with RETURNING with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error
-valuefirst	3	=	excused: a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it
+valuefirst	26	8	createtable wrong number of arguments
+valuefirst	10	3	dropindex attempt to write a readonly database
+valuefirst	60	20	dropindex no such index
+valuefirst	25	8	dropindex ok
+valuefirst	42	14	droptable no such table
+valuefirst	45	15	droptable ok
+valuefirst	258	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
+valuefirst	11	=	excused: a begin on a connection whose transaction is open, refused by both with their own errors
+valuefirst	50	=	excused: a select, an update, a delete, a create index, or an insert with RETURNING with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error
+valuefirst	13	=	excused: a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it
 valuefirst	1	=	excused: a statement while the rows of the transaction are open, checked against s4ql's rule
-valuefirst	68	=	excused: a value of another type than its column, checked against s4ql's rule
-valuefirst	99	=	excused: an argument that s4ql does not support, checked against s4ql's rule
-valuefirst	13	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
-valuefirst	141	=	excused: the wrong number of arguments, checked against s4ql's rule
-valuefirst	30	10	insert UNIQUE constraint failed
-valuefirst	4	1	insert has no column named
-valuefirst	10	3	insert no such table
-valuefirst	89	29	insert ok
-valuefirst	42	14	insert with a parameter UNIQUE constraint failed
-valuefirst	19	6	insert with a parameter argument of a type not supported
-valuefirst	22	7	insert with a parameter named argument
-valuefirst	12	4	insert with a parameter no such table
-valuefirst	81	27	insert with a parameter ok
-valuefirst	37	12	insert with a parameter wrong number of arguments
-valuefirst	14	4	insert wrong number of arguments
-valuefirst	7	2	reached: != on another column ok
-valuefirst	13	4	reached: != on the key ok
-valuefirst	5	1	reached: < on another column ok
-valuefirst	32	10	reached: < on the key ok
-valuefirst	9	3	reached: <= on another column ok
-valuefirst	31	10	reached: <= on the key ok
-valuefirst	53	17	reached: = on another column ok
-valuefirst	39	13	reached: = on the key ok
-valuefirst	8	2	reached: > on another column ok
-valuefirst	30	10	reached: > on the key ok
-valuefirst	13	4	reached: >= on another column ok
-valuefirst	20	6	reached: >= on the key ok
-valuefirst	3	1	reached: IS NOT NULL on another column ok
-valuefirst	17	5	reached: IS NOT NULL on the key ok
-valuefirst	16	5	reached: IS NULL on another column ok
-valuefirst	10	3	reached: IS NULL on the key ok
+valuefirst	122	=	excused: a value of another type than its column, checked against s4ql's rule
+valuefirst	205	=	excused: an argument that s4ql does not support, checked against s4ql's rule
+valuefirst	36	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
+valuefirst	280	=	excused: the wrong number of arguments, checked against s4ql's rule
+valuefirst	53	17	insert UNIQUE constraint failed
+valuefirst	5	1	insert has no column named
+valuefirst	60	20	insert no such table
+valuefirst	140	46	insert ok
+valuefirst	74	24	insert with a parameter UNIQUE constraint failed
+valuefirst	46	15	insert with a parameter argument of a type not supported
+valuefirst	41	13	insert with a parameter named argument
+valuefirst	72	24	insert with a parameter no such table
+valuefirst	158	52	insert with a parameter ok
+valuefirst	64	21	insert with a parameter wrong number of arguments
+valuefirst	26	8	insert wrong number of arguments
+valuefirst	12	4	reached: != on another column ok
+valuefirst	18	6	reached: != on the key ok
+valuefirst	16	5	reached: < on another column ok
+valuefirst	51	17	reached: < on the key ok
+valuefirst	22	7	reached: <= on another column ok
+valuefirst	61	20	reached: <= on the key ok
+valuefirst	92	30	reached: = on another column ok
+valuefirst	61	20	reached: = on the key ok
+valuefirst	24	8	reached: > on another column ok
+valuefirst	56	18	reached: > on the key ok
+valuefirst	20	6	reached: >= on another column ok
+valuefirst	48	16	reached: >= on the key ok
+valuefirst	9	3	reached: IS NOT NULL on another column ok
+valuefirst	21	7	reached: IS NOT NULL on the key ok
+valuefirst	34	11	reached: IS NULL on another column ok
+valuefirst	24	8	reached: IS NULL on the key ok
 valuefirst	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
-valuefirst	6	2	reached: NULL argument into a column that takes NULL ok
-valuefirst	4	1	reached: NULL literal into a column that takes NULL attempt to write a readonly database
-valuefirst	16	5	reached: NULL literal into a column that takes NULL ok
-valuefirst	9	3	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
-valuefirst	25	8	reached: SET of NULL for a column that does not take it ok, no row found
-valuefirst	12	4	reached: SET of a column in double quotes that the table does not have no such column
-valuefirst	24	8	reached: SET of a column that the table does not have no such column
-valuefirst	6	2	reached: SET of the key NOT NULL constraint failed
-valuefirst	9	3	reached: SET of the key UNIQUE constraint failed
-valuefirst	18	6	reached: SET of the key ok, rows changed
-valuefirst	25	8	reached: SET with a value of another type a value of another type
-valuefirst	4	1	reached: SET with argument nil ok, no row found
-valuefirst	8	2	reached: WHERE that gives every row of a table with rows
-valuefirst	54	18	reached: WHERE that gives no row of a table with rows
-valuefirst	6	2	reached: WHERE that gives some rows of a table
-valuefirst	36	12	reached: WHERE that reads a get of one key ok
-valuefirst	9	3	reached: WHERE that reads a scan between two bounds ok
-valuefirst	13	4	reached: WHERE that reads a scan between two bounds that hold no key ok
-valuefirst	13	4	reached: WHERE that reads a scan from a lower bound ok
-valuefirst	56	18	reached: WHERE that reads a scan of every row ok
-valuefirst	25	8	reached: WHERE that reads a scan to an upper bound ok
-valuefirst	16	5	reached: WHERE that reads no row ok
-valuefirst	63	21	reached: WHERE that tests a column more than once ok
-valuefirst	18	6	reached: WHERE with a column in double quotes that the table does not have no such column
-valuefirst	7	2	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
-valuefirst	5	1	reached: WHERE with a column that the table does not have in a comparison, alone no such column
-valuefirst	12	4	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
-valuefirst	4	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
-valuefirst	6	2	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
-valuefirst	25	8	reached: WHERE with a value of another type a value of another type
-valuefirst	19	6	reached: WHERE with arguments that s4ql refuses not supported
-valuefirst	21	7	reached: WHERE with arguments that s4ql refuses wrong number of arguments
-valuefirst	14	4	reached: WHERE with contradicting conditions ok
-valuefirst	4	1	reached: argument NULL as sql.NullFloat64
-valuefirst	6	2	reached: argument NULL as sql.Null[[]uint8]
-valuefirst	36	12	reached: argument []uint8
-valuefirst	14	4	reached: argument empty []byte
-valuefirst	9	3	reached: argument empty string
-valuefirst	58	19	reached: argument float64
-valuefirst	4	1	reached: argument float64 -0.0
-valuefirst	92	30	reached: argument int64
-valuefirst	22	7	reached: argument named
-valuefirst	33	11	reached: argument string
-valuefirst	3	1	reached: argument string that is not valid UTF-8
-valuefirst	5	1	reached: argument string with NUL
-valuefirst	11	3	reached: comparison with argument []uint8 ok
-valuefirst	6	2	reached: comparison with argument empty []byte ok
-valuefirst	3	1	reached: comparison with argument empty string ok
-valuefirst	20	6	reached: comparison with argument float64 ok
-valuefirst	20	6	reached: comparison with argument int64 ok
-valuefirst	11	3	reached: comparison with argument string ok
-valuefirst	36	12	reached: comparison with literal blob ok
-valuefirst	7	2	reached: comparison with literal empty blob ok
-valuefirst	5	1	reached: comparison with literal empty text ok
-valuefirst	77	25	reached: comparison with literal integer ok
-valuefirst	4	1	reached: comparison with literal null ok
-valuefirst	9	3	reached: comparison with literal real -0.0 ok
-valuefirst	33	11	reached: comparison with literal real ok
-valuefirst	14	4	reached: comparison with literal text ok
-valuefirst	12	4	reached: delete WHERE that reads a get of one key ok, rows changed
-valuefirst	5	1	reached: delete WHERE with a column in double quotes that the table does not have no such column
-valuefirst	7	2	reached: delete WHERE with a value of another type a value of another type
-valuefirst	7	2	reached: delete with WHERE attempt to write a readonly database
-valuefirst	73	24	reached: delete with WHERE ok, no row found
-valuefirst	20	6	reached: delete with WHERE ok, rows changed
-valuefirst	12	4	reached: delete with arguments that s4ql refuses not supported
-valuefirst	9	3	reached: delete with arguments that s4ql refuses wrong number of arguments
-valuefirst	17	5	reached: delete without WHERE ok, no row found
-valuefirst	13	4	reached: delete without WHERE ok, rows changed
-valuefirst	10	3	reached: insert into BLOB UNIQUE constraint failed
+valuefirst	4	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+valuefirst	12	4	reached: NULL argument into a column that takes NULL ok
+valuefirst	9	3	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+valuefirst	13	4	reached: NULL literal into a column that takes NULL attempt to write a readonly database
+valuefirst	38	12	reached: NULL literal into a column that takes NULL ok
+valuefirst	17	5	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+valuefirst	28	9	reached: SET of NULL for a column that does not take it ok, no row found
+valuefirst	26	8	reached: SET of a column in double quotes that the table does not have no such column
+valuefirst	43	14	reached: SET of a column that the table does not have no such column
+valuefirst	12	4	reached: SET of the key NOT NULL constraint failed
+valuefirst	13	4	reached: SET of the key UNIQUE constraint failed
+valuefirst	26	8	reached: SET of the key ok, rows changed
+valuefirst	47	15	reached: SET with a value of another type a value of another type
+valuefirst	6	2	reached: SET with argument nil ok, no row found
+valuefirst	13	4	reached: SET with literal null ok, rows changed
+valuefirst	17	5	reached: WHERE that gives every row of a table with rows
+valuefirst	104	34	reached: WHERE that gives no row of a table with rows
+valuefirst	15	5	reached: WHERE that gives some rows of a table
+valuefirst	54	18	reached: WHERE that reads a get of one key ok
+valuefirst	18	6	reached: WHERE that reads a scan between two bounds ok
+valuefirst	22	7	reached: WHERE that reads a scan between two bounds that hold no key ok
+valuefirst	30	10	reached: WHERE that reads a scan from a lower bound ok
+valuefirst	98	32	reached: WHERE that reads a scan of every row ok
+valuefirst	38	12	reached: WHERE that reads a scan to an upper bound ok
+valuefirst	32	10	reached: WHERE that reads no row ok
+valuefirst	117	39	reached: WHERE that tests a column more than once ok
+valuefirst	31	10	reached: WHERE with a column in double quotes that the table does not have no such column
+valuefirst	15	5	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+valuefirst	6	2	reached: WHERE with a column that the table does not have in a comparison, alone no such column
+valuefirst	17	5	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+valuefirst	6	2	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
+valuefirst	7	2	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
+valuefirst	43	14	reached: WHERE with a value of another type a value of another type
+valuefirst	39	13	reached: WHERE with arguments that s4ql refuses not supported
+valuefirst	45	15	reached: WHERE with arguments that s4ql refuses wrong number of arguments
+valuefirst	27	9	reached: WHERE with contradicting conditions ok
+valuefirst	3	1	reached: argument NULL as *[]uint8
+valuefirst	3	1	reached: argument NULL as *int64
+valuefirst	5	1	reached: argument NULL as *sql.NullString
+valuefirst	5	1	reached: argument NULL as *string
+valuefirst	5	1	reached: argument NULL as sql.NullFloat64
+valuefirst	4	1	reached: argument NULL as sql.NullInt64
+valuefirst	8	2	reached: argument NULL as sql.Null[[]uint8]
+valuefirst	3	1	reached: argument NaN
+valuefirst	65	21	reached: argument []uint8
+valuefirst	16	5	reached: argument empty []byte
+valuefirst	19	6	reached: argument empty string
+valuefirst	99	33	reached: argument float64
+valuefirst	13	4	reached: argument float64 -0.0
+valuefirst	3	1	reached: argument infinite float64
+valuefirst	6	2	reached: argument int32
+valuefirst	216	72	reached: argument int64
+valuefirst	41	13	reached: argument named
+valuefirst	5	1	reached: argument nil
+valuefirst	4	1	reached: argument nil []byte
+valuefirst	68	22	reached: argument string
+valuefirst	5	1	reached: argument string that is not valid UTF-8
+valuefirst	9	3	reached: argument string with NUL
+valuefirst	3	1	reached: argument uint64
+valuefirst	6	2	reached: argument uint64 above int64
+valuefirst	16	5	reached: comparison with argument []uint8 ok
+valuefirst	8	2	reached: comparison with argument empty []byte ok
+valuefirst	4	1	reached: comparison with argument empty string ok
+valuefirst	3	1	reached: comparison with argument float64 -0.0 ok
+valuefirst	35	11	reached: comparison with argument float64 ok
+valuefirst	44	14	reached: comparison with argument int64 ok
+valuefirst	4	1	reached: comparison with argument nil ok
+valuefirst	16	5	reached: comparison with argument string ok
+valuefirst	52	17	reached: comparison with literal blob ok
+valuefirst	13	4	reached: comparison with literal empty blob ok
+valuefirst	12	4	reached: comparison with literal empty text ok
+valuefirst	156	52	reached: comparison with literal integer ok
+valuefirst	11	3	reached: comparison with literal null ok
+valuefirst	15	5	reached: comparison with literal real -0.0 ok
+valuefirst	59	19	reached: comparison with literal real ok
+valuefirst	33	11	reached: comparison with literal text ok
+valuefirst	24	8	reached: delete WHERE that reads a get of one key ok, rows changed
+valuefirst	3	1	reached: delete WHERE that reads a scan from a lower bound ok, rows changed
+valuefirst	3	1	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+valuefirst	9	3	reached: delete WHERE with a column in double quotes that the table does not have no such column
+valuefirst	14	4	reached: delete WHERE with a value of another type a value of another type
+valuefirst	9	3	reached: delete with WHERE attempt to write a readonly database
+valuefirst	106	35	reached: delete with WHERE ok, no row found
+valuefirst	38	12	reached: delete with WHERE ok, rows changed
+valuefirst	17	5	reached: delete with arguments that s4ql refuses not supported
+valuefirst	22	7	reached: delete with arguments that s4ql refuses wrong number of arguments
+valuefirst	22	7	reached: delete without WHERE ok, no row found
+valuefirst	20	6	reached: delete without WHERE ok, rows changed
+valuefirst	15	5	reached: insert into BLOB UNIQUE constraint failed
 valuefirst	5	1	reached: insert into BLOB a value of another type
 valuefirst	11	3	reached: insert into BLOB attempt to write a readonly database
-valuefirst	33	11	reached: insert into BLOB ok
-valuefirst	16	5	reached: insert into INT UNIQUE constraint failed
+valuefirst	51	17	reached: insert into BLOB ok
+valuefirst	18	6	reached: insert into INT UNIQUE constraint failed
 valuefirst	6	2	reached: insert into INT a value of another type
-valuefirst	5	1	reached: insert into INT attempt to write a readonly database
-valuefirst	31	10	reached: insert into INT ok
-valuefirst	26	8	reached: insert into INTEGER UNIQUE constraint failed
-valuefirst	5	1	reached: insert into INTEGER attempt to write a readonly database
-valuefirst	37	12	reached: insert into INTEGER ok
-valuefirst	13	4	reached: insert into REAL UNIQUE constraint failed
-valuefirst	48	16	reached: insert into REAL ok
-valuefirst	7	2	reached: insert into TEXT UNIQUE constraint failed
-valuefirst	8	2	reached: insert into TEXT a value of another type
-valuefirst	21	7	reached: insert into TEXT ok
+valuefirst	16	5	reached: insert into INT attempt to write a readonly database
+valuefirst	50	16	reached: insert into INT ok
+valuefirst	47	15	reached: insert into INTEGER UNIQUE constraint failed
+valuefirst	4	1	reached: insert into INTEGER a value of another type
+valuefirst	16	5	reached: insert into INTEGER attempt to write a readonly database
+valuefirst	76	25	reached: insert into INTEGER ok
+valuefirst	33	11	reached: insert into REAL UNIQUE constraint failed
+valuefirst	8	2	reached: insert into REAL a value of another type
+valuefirst	4	1	reached: insert into REAL attempt to write a readonly database
+valuefirst	77	25	reached: insert into REAL ok
+valuefirst	14	4	reached: insert into TEXT UNIQUE constraint failed
+valuefirst	12	4	reached: insert into TEXT a value of another type
+valuefirst	7	2	reached: insert into TEXT attempt to write a readonly database
+valuefirst	44	14	reached: insert into TEXT ok
 valuefirst	5	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
-valuefirst	6	2	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
-valuefirst	20	6	reached: insert that leaves out a column that takes NULL ok
+valuefirst	22	7	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+valuefirst	47	15	reached: insert that leaves out a column that takes NULL ok
 valuefirst	5	1	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
-valuefirst	4	1	reached: insert with a column that the table does not have: has no column named
+valuefirst	5	1	reached: insert with a column that the table does not have: has no column named
 valuefirst	10	3	reached: insert with a column without a value: NOT NULL constraint failed
-valuefirst	41	13	reached: insert with a list UNIQUE constraint failed
-valuefirst	16	5	reached: insert with a list attempt to write a readonly database
-valuefirst	112	37	reached: insert with a list ok
-valuefirst	13	4	reached: insert with a value of another type in another column: a value of another type
-valuefirst	6	2	reached: insert with a value of another type in the key: a value of another type
-valuefirst	4	1	reached: insert with the wrong number of values: values were supplied
+valuefirst	92	30	reached: insert with a list UNIQUE constraint failed
+valuefirst	37	12	reached: insert with a list attempt to write a readonly database
+valuefirst	203	67	reached: insert with a list ok
+valuefirst	19	6	reached: insert with a value of another type in another column: a value of another type
+valuefirst	15	5	reached: insert with a value of another type in the key: a value of another type
+valuefirst	4	1	reached: insert with the wrong number of values:  values for 
+valuefirst	5	1	reached: insert with the wrong number of values: values were supplied
 valuefirst	3	1	reached: insert with two faults: NOT NULL constraint failed
-valuefirst	31	10	reached: insert without a list UNIQUE constraint failed
-valuefirst	8	2	reached: insert without a list attempt to write a readonly database
-valuefirst	58	19	reached: insert without a list ok
-valuefirst	66	22	reached: literal blob
-valuefirst	16	5	reached: literal empty blob
-valuefirst	14	4	reached: literal empty text
-valuefirst	192	64	reached: literal integer
-valuefirst	32	10	reached: literal null
-valuefirst	105	35	reached: literal real
-valuefirst	16	5	reached: literal real -0.0
-valuefirst	64	21	reached: literal text
-valuefirst	75	25	reached: select * of 2 columns ok
-valuefirst	15	5	reached: select * of 3 columns ok
-valuefirst	20	6	reached: select of a name that the table does not have no such column
-valuefirst	78	26	reached: select of names ok
-valuefirst	3	1	reached: select of names with NULL ok
-valuefirst	220	73	reached: table read back after an update or a delete
-valuefirst	22	7	reached: update WHERE that reads a get of one key ok, rows changed
-valuefirst	7	2	reached: update WHERE that reads no row ok, no row found
-valuefirst	4	1	reached: update WHERE with a column in double quotes that the table does not have no such column
-valuefirst	13	4	reached: update WHERE with a value of another type a value of another type
-valuefirst	11	3	reached: update with WHERE attempt to write a readonly database
-valuefirst	86	28	reached: update with WHERE ok, no row found
-valuefirst	31	10	reached: update with WHERE ok, rows changed
-valuefirst	41	13	reached: update with arguments that s4ql refuses not supported
-valuefirst	44	14	reached: update with arguments that s4ql refuses wrong number of arguments
-valuefirst	11	3	reached: update without WHERE ok, no row found
-valuefirst	18	6	reached: update without WHERE ok, rows changed
-valuefirst	6	2	reached: value on the left compared with NULL finds no row
-valuefirst	6	2	reached: value on the left of != a value of another type
-valuefirst	3	1	reached: value on the left of != finds no row
-valuefirst	13	4	reached: value on the left of != no such column
-valuefirst	10	3	reached: value on the left of != not supported
-valuefirst	3	1	reached: value on the left of != wrong number of arguments
-valuefirst	7	2	reached: value on the left of < a value of another type
-valuefirst	16	5	reached: value on the left of < finds no row
-valuefirst	5	1	reached: value on the left of < finds rows
-valuefirst	22	7	reached: value on the left of < no such column
-valuefirst	3	1	reached: value on the left of < not supported
-valuefirst	7	2	reached: value on the left of < wrong number of arguments
-valuefirst	11	3	reached: value on the left of <= a value of another type
-valuefirst	18	6	reached: value on the left of <= finds no row
-valuefirst	3	1	reached: value on the left of <= finds rows
-valuefirst	17	5	reached: value on the left of <= no such column
-valuefirst	11	3	reached: value on the left of <= not supported
-valuefirst	6	2	reached: value on the left of <= wrong number of arguments
-valuefirst	16	5	reached: value on the left of = a value of another type
-valuefirst	13	4	reached: value on the left of = attempt to write a readonly database
-valuefirst	79	26	reached: value on the left of = finds no row
-valuefirst	21	7	reached: value on the left of = finds rows
-valuefirst	14	4	reached: value on the left of = no such column
-valuefirst	19	6	reached: value on the left of = not supported
-valuefirst	22	7	reached: value on the left of = wrong number of arguments
-valuefirst	10	3	reached: value on the left of > a value of another type
-valuefirst	23	7	reached: value on the left of > finds no row
-valuefirst	3	1	reached: value on the left of > finds rows
-valuefirst	18	6	reached: value on the left of > no such column
-valuefirst	6	2	reached: value on the left of > wrong number of arguments
-valuefirst	11	3	reached: value on the left of >= a value of another type
-valuefirst	17	5	reached: value on the left of >= finds no row
-valuefirst	3	1	reached: value on the left of >= finds rows
-valuefirst	24	8	reached: value on the left of >= no such column
-valuefirst	4	1	reached: value on the left of >= not supported
-valuefirst	6	2	reached: value on the left of >= wrong number of arguments
-valuefirst	31	10	read-only transaction begin ok
-valuefirst	13	4	read-only transaction commit ok on a pinned connection
-valuefirst	10	3	read-only transaction commit ok through the pool
-valuefirst	4	1	read-only transaction rollback ok on a pinned connection
-valuefirst	4	1	read-only transaction rollback ok through the pool
-valuefirst	11	3	read-only transaction: call prepare outside, exec in the transaction
-valuefirst	5	1	read-only transaction: call prepare outside, query in the transaction
-valuefirst	5	1	read-only transaction: call prepare, exec several times with arguments
-valuefirst	11	3	read-only transaction: createtable already exists
+valuefirst	35	11	reached: insert without a list UNIQUE constraint failed
+valuefirst	17	5	reached: insert without a list attempt to write a readonly database
+valuefirst	95	31	reached: insert without a list ok
+valuefirst	110	36	reached: literal blob
+valuefirst	26	8	reached: literal empty blob
+valuefirst	29	9	reached: literal empty text
+valuefirst	391	130	reached: literal integer
+valuefirst	72	24	reached: literal null
+valuefirst	175	58	reached: literal real
+valuefirst	23	7	reached: literal real -0.0
+valuefirst	147	49	reached: literal text
+valuefirst	130	43	reached: select * of 2 columns ok
+valuefirst	27	9	reached: select * of 3 columns ok
+valuefirst	8	2	reached: select * with NULL ok
+valuefirst	27	9	reached: select of a name that the table does not have no such column
+valuefirst	135	45	reached: select of names ok
+valuefirst	5	1	reached: select of names with NULL ok
+valuefirst	388	129	reached: table read back after an update or a delete
+valuefirst	39	13	reached: update WHERE that reads a get of one key ok, rows changed
+valuefirst	5	1	reached: update WHERE that reads a scan of every row ok, rows changed
+valuefirst	9	3	reached: update WHERE that reads no row ok, no row found
+valuefirst	6	2	reached: update WHERE with a column in double quotes that the table does not have no such column
+valuefirst	22	7	reached: update WHERE with a value of another type a value of another type
+valuefirst	16	5	reached: update with WHERE attempt to write a readonly database
+valuefirst	163	54	reached: update with WHERE ok, no row found
+valuefirst	61	20	reached: update with WHERE ok, rows changed
+valuefirst	78	26	reached: update with arguments that s4ql refuses not supported
+valuefirst	71	23	reached: update with arguments that s4ql refuses wrong number of arguments
+valuefirst	26	8	reached: update without WHERE ok, no row found
+valuefirst	33	11	reached: update without WHERE ok, rows changed
+valuefirst	9	3	reached: value on the left compared with NULL finds no row
+valuefirst	10	3	reached: value on the left of != a value of another type
+valuefirst	11	3	reached: value on the left of != finds no row
+valuefirst	16	5	reached: value on the left of != no such column
+valuefirst	12	4	reached: value on the left of != not supported
+valuefirst	9	3	reached: value on the left of != wrong number of arguments
+valuefirst	11	3	reached: value on the left of < a value of another type
+valuefirst	35	11	reached: value on the left of < finds no row
+valuefirst	9	3	reached: value on the left of < finds rows
+valuefirst	30	10	reached: value on the left of < no such column
+valuefirst	7	2	reached: value on the left of < not supported
+valuefirst	21	7	reached: value on the left of < wrong number of arguments
+valuefirst	15	5	reached: value on the left of <= a value of another type
+valuefirst	36	12	reached: value on the left of <= finds no row
+valuefirst	4	1	reached: value on the left of <= finds rows
+valuefirst	25	8	reached: value on the left of <= no such column
+valuefirst	16	5	reached: value on the left of <= not supported
+valuefirst	13	4	reached: value on the left of <= wrong number of arguments
+valuefirst	37	12	reached: value on the left of = a value of another type
+valuefirst	17	5	reached: value on the left of = attempt to write a readonly database
+valuefirst	137	45	reached: value on the left of = finds no row
+valuefirst	42	14	reached: value on the left of = finds rows
+valuefirst	21	7	reached: value on the left of = no such column
+valuefirst	34	11	reached: value on the left of = not supported
+valuefirst	37	12	reached: value on the left of = wrong number of arguments
+valuefirst	19	6	reached: value on the left of > a value of another type
+valuefirst	39	13	reached: value on the left of > finds no row
+valuefirst	10	3	reached: value on the left of > finds rows
+valuefirst	26	8	reached: value on the left of > no such column
+valuefirst	11	3	reached: value on the left of > not supported
+valuefirst	14	4	reached: value on the left of > wrong number of arguments
+valuefirst	18	6	reached: value on the left of >= a value of another type
+valuefirst	38	12	reached: value on the left of >= finds no row
+valuefirst	8	2	reached: value on the left of >= finds rows
+valuefirst	27	9	reached: value on the left of >= no such column
+valuefirst	11	3	reached: value on the left of >= not supported
+valuefirst	12	4	reached: value on the left of >= wrong number of arguments
+valuefirst	58	19	read-only transaction begin ok
+valuefirst	18	6	read-only transaction commit ok on a pinned connection
+valuefirst	24	8	read-only transaction commit ok through the pool
+valuefirst	8	2	read-only transaction rollback ok on a pinned connection
+valuefirst	8	2	read-only transaction rollback ok through the pool
+valuefirst	22	7	read-only transaction: call prepare outside, exec in the transaction
+valuefirst	15	5	read-only transaction: call prepare outside, query in the transaction
+valuefirst	6	2	read-only transaction: call prepare, exec several times with arguments
+valuefirst	12	4	read-only transaction: createtable already exists
+valuefirst	11	3	read-only transaction: createtable attempt to write a readonly database
 valuefirst	6	2	read-only transaction: droptable attempt to write a readonly database
-valuefirst	14	4	read-only transaction: insert attempt to write a readonly database
-valuefirst	10	3	read-only transaction: insert with a parameter attempt to write a readonly database
-valuefirst	15	5	select no rows
-valuefirst	17	5	select no such table
-valuefirst	107	35	select ok
-valuefirst	15	5	select ok with rows
-valuefirst	9	3	select wrong number of arguments
-valuefirst	62	20	write transaction begin ok
-valuefirst	12	4	write transaction commit ok after a create table
-valuefirst	5	1	write transaction commit ok after a drop table
-valuefirst	34	11	write transaction commit ok after a failed call
-valuefirst	19	6	write transaction commit ok after an insert
-valuefirst	23	7	write transaction commit ok on a pinned connection
-valuefirst	26	8	write transaction commit ok through the pool
-valuefirst	3	1	write transaction rollback ok after a create table
-valuefirst	3	1	write transaction rollback ok after a drop table
-valuefirst	10	3	write transaction rollback ok after a failed call
-valuefirst	8	2	write transaction rollback ok after an insert
-valuefirst	6	2	write transaction rollback ok on a pinned connection
-valuefirst	7	2	write transaction rollback ok through the pool
-valuefirst	47	15	write transaction: call exec with arguments
-valuefirst	7	2	write transaction: call prepare outside, exec in the transaction with arguments
-valuefirst	5	1	write transaction: call prepare outside, query in the transaction with arguments
-valuefirst	13	4	write transaction: call prepare, exec several times with arguments
-valuefirst	29	9	write transaction: call prepare, exec with arguments
-valuefirst	5	1	write transaction: call prepare, query with arguments
-valuefirst	9	3	write transaction: call query beside the transaction
-valuefirst	3	1	write transaction: call query row with arguments
-valuefirst	3	1	write transaction: call query with arguments
-valuefirst	39	13	write transaction: call query, rows left open
-valuefirst	19	6	write transaction: createtable already exists
-valuefirst	16	5	write transaction: createtable ok
-valuefirst	3	1	write transaction: droptable no such table
-valuefirst	9	3	write transaction: droptable ok
-valuefirst	14	4	write transaction: insert UNIQUE constraint failed
-valuefirst	28	9	write transaction: insert ok
-valuefirst	4	1	write transaction: insert with a parameter argument of a type not supported
-valuefirst	22	7	write transaction: insert with a parameter ok
-valuefirst	9	3	write transaction: insert with a parameter wrong number of arguments
+valuefirst	31	10	read-only transaction: insert attempt to write a readonly database
+valuefirst	9	3	read-only transaction: insert no such table
+valuefirst	23	7	read-only transaction: insert with a parameter attempt to write a readonly database
+valuefirst	3	1	read-only transaction: select ok with rows
+valuefirst	25	8	select no rows
+valuefirst	77	25	select no such table
+valuefirst	185	61	select ok
+valuefirst	27	9	select ok with rows
+valuefirst	22	7	select wrong number of arguments
+valuefirst	133	44	write transaction begin ok
+valuefirst	20	6	write transaction commit ok after a create table
+valuefirst	8	2	write transaction commit ok after a drop table
+valuefirst	69	23	write transaction commit ok after a failed call
+valuefirst	31	10	write transaction commit ok after an insert
+valuefirst	44	14	write transaction commit ok on a pinned connection
+valuefirst	57	19	write transaction commit ok through the pool
+valuefirst	7	2	write transaction rollback ok after a create table
+valuefirst	4	1	write transaction rollback ok after a drop table
+valuefirst	20	6	write transaction rollback ok after a failed call
+valuefirst	11	3	write transaction rollback ok after an insert
+valuefirst	19	6	write transaction rollback ok on a pinned connection
+valuefirst	13	4	write transaction rollback ok through the pool
+valuefirst	81	27	write transaction: call exec with arguments
+valuefirst	11	3	write transaction: call prepare outside, exec in the transaction with arguments
+valuefirst	9	3	write transaction: call prepare outside, query in the transaction with arguments
+valuefirst	30	10	write transaction: call prepare, exec several times with arguments
+valuefirst	45	15	write transaction: call prepare, exec with arguments
+valuefirst	8	2	write transaction: call prepare, query with arguments
+valuefirst	13	4	write transaction: call query beside the transaction
+valuefirst	11	3	write transaction: call query row with arguments
+valuefirst	6	2	write transaction: call query with arguments
+valuefirst	85	28	write transaction: call query, rows left open
+valuefirst	34	11	write transaction: createtable already exists
+valuefirst	29	9	write transaction: createtable ok
+valuefirst	7	2	write transaction: droptable no such table
+valuefirst	13	4	write transaction: droptable ok
+valuefirst	18	6	write transaction: insert UNIQUE constraint failed
+valuefirst	13	4	write transaction: insert no such table
+valuefirst	41	13	write transaction: insert ok
+valuefirst	7	2	write transaction: insert with a parameter argument of a type not supported
+valuefirst	36	12	write transaction: insert with a parameter ok
+valuefirst	14	4	write transaction: insert with a parameter wrong number of arguments
 valuefirst	6	2	write transaction: rows left open
 valuefirst	3	1	write transaction: select ok with rows after a write of the transaction
 transactions	146	48	begin ok
@@ -2396,7 +2432,7 @@ order	250	83	reached: literal real
 order	8	2	reached: literal real -0.0
 order	211	70	reached: literal text
 order	226	75	reached: select * of 3 columns ok
-order	57	19	reached: select * with NULL ok
+order	56	18	reached: select * with NULL ok
 order	13	4	reached: select of a name that the table does not have no such column
 order	237	79	reached: select of names ok
 order	34	11	reached: select of names with NULL ok
@@ -3028,257 +3064,291 @@ subquery	14	4	write transaction: insert ok
 subquery	46	15	write transaction: insert with a parameter ok
 subquery	3	1	write transaction: rows left open
 subquery	21	7	write transaction: rows of RETURNING left open
-arithmetic	141	47	begin ok
-arithmetic	108	36	call begin
+arithmetic	135	45	begin ok
+arithmetic	102	34	call begin
 arithmetic	3	1	call begin in a transaction
-arithmetic	5	1	call begin read-only in a transaction
-arithmetic	556	185	call exec
-arithmetic	207	69	call exec with arguments
-arithmetic	226	75	call prepare, exec
-arithmetic	137	45	call prepare, exec several times
+arithmetic	4	1	call begin read-only in a transaction
+arithmetic	584	194	call exec
+arithmetic	234	78	call exec with arguments
+arithmetic	225	75	call prepare, exec
+arithmetic	125	41	call prepare, exec several times
 arithmetic	48	16	call prepare, exec several times with arguments
-arithmetic	83	27	call prepare, exec with arguments
-arithmetic	124	41	call prepare, query
-arithmetic	74	24	call prepare, query with arguments
-arithmetic	208	69	call query
-arithmetic	135	45	call query row
-arithmetic	71	23	call query row with arguments
-arithmetic	92	30	call query with arguments
-arithmetic	31	10	createindex already exists
-arithmetic	17	5	createindex attempt to write a readonly database
-arithmetic	31	10	createindex no such table
-arithmetic	59	19	createindex ok
-arithmetic	4	1	createindex there is already a table named
-arithmetic	106	35	createtable already exists
-arithmetic	89	29	createtable ok
-arithmetic	41	13	dropindex no such index
+arithmetic	86	28	call prepare, exec with arguments
+arithmetic	122	40	call prepare, query
+arithmetic	75	25	call prepare, query with arguments
+arithmetic	226	75	call query
+arithmetic	144	48	call query row
+arithmetic	86	28	call query row with arguments
+arithmetic	112	37	call query with arguments
+arithmetic	27	9	createindex already exists
+arithmetic	15	5	createindex attempt to write a readonly database
+arithmetic	29	9	createindex no such table
+arithmetic	63	21	createindex ok
+arithmetic	5	1	createindex there is already a table named
+arithmetic	115	38	createtable already exists
+arithmetic	86	28	createtable ok
+arithmetic	38	12	dropindex no such index
 arithmetic	9	3	dropindex ok
 arithmetic	10	3	droptable no such table
-arithmetic	29	9	droptable ok
-arithmetic	143	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
-arithmetic	8	=	excused: a begin on a connection whose transaction is open, refused by both with their own errors
+arithmetic	26	8	droptable ok
+arithmetic	133	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
+arithmetic	6	=	excused: a begin on a connection whose transaction is open, refused by both with their own errors
 arithmetic	3	=	excused: a select, an update, a delete, a create index, or an insert with RETURNING with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error
-arithmetic	14	=	excused: a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it
-arithmetic	25	=	excused: a statement while the rows of the transaction are open, checked against s4ql's rule
-arithmetic	49	=	excused: a value of another type than its column, checked against s4ql's rule
-arithmetic	48	=	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
-arithmetic	16	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
-arithmetic	59	=	excused: arithmetic refused by the rules of its types, checked against s4ql's rules
-arithmetic	27	9	insert UNIQUE constraint failed
-arithmetic	40	13	insert no such table
-arithmetic	71	23	insert ok
-arithmetic	10	3	insert with a parameter UNIQUE constraint failed
-arithmetic	9	3	insert with a parameter argument of a type not supported
-arithmetic	62	20	insert with a parameter no such table
-arithmetic	125	41	insert with a parameter ok
-arithmetic	100	33	other not supported
-arithmetic	4	1	reached: != on another column ok
-arithmetic	10	3	reached: != on the key ok
-arithmetic	5	1	reached: < on another column ok
+arithmetic	10	=	excused: a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it
+arithmetic	19	=	excused: a statement while the rows of the transaction are open, checked against s4ql's rule
+arithmetic	3	=	excused: a statement with a subquery with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked to fail on its names
+arithmetic	1	=	excused: a subquery of a column of another type than the column that it is compared with, checked against s4ql's rule
+arithmetic	50	=	excused: a value of another type than its column, checked against s4ql's rule
+arithmetic	39	=	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
+arithmetic	18	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
+arithmetic	93	=	excused: arithmetic refused by the rules of its types, checked against s4ql's rules
+arithmetic	24	8	insert UNIQUE constraint failed
+arithmetic	39	13	insert no such table
+arithmetic	70	23	insert ok
+arithmetic	12	4	insert with a parameter UNIQUE constraint failed
+arithmetic	8	2	insert with a parameter argument of a type not supported
+arithmetic	53	17	insert with a parameter no such table
+arithmetic	138	46	insert with a parameter ok
+arithmetic	104	34	other not supported
+arithmetic	5	1	reached: != on another column ok
+arithmetic	6	2	reached: != on the key ok
+arithmetic	4	1	reached: < on another column ok
 arithmetic	13	4	reached: < on the key ok
 arithmetic	4	1	reached: <= on another column ok
-arithmetic	11	3	reached: <= on the key ok
-arithmetic	14	4	reached: = on another column ok
+arithmetic	7	2	reached: <= on the key ok
+arithmetic	15	5	reached: = on another column ok
 arithmetic	8	2	reached: = on the key ok
-arithmetic	7	2	reached: > on another column ok
-arithmetic	13	4	reached: > on the key ok
-arithmetic	9	3	reached: >= on another column ok
-arithmetic	12	4	reached: >= on the key ok
-arithmetic	6	2	reached: IS NOT NULL on another column ok
+arithmetic	4	1	reached: > on another column ok
+arithmetic	11	3	reached: > on the key ok
+arithmetic	5	1	reached: >= on another column ok
+arithmetic	10	3	reached: >= on the key ok
+arithmetic	5	1	reached: IS NOT NULL on another column ok
 arithmetic	4	1	reached: IS NOT NULL on the key ok
 arithmetic	4	1	reached: IS NULL on another column ok
-arithmetic	8	2	reached: IS NULL on the key ok
-arithmetic	33	11	reached: LIMIT by an argument ok
+arithmetic	7	2	reached: IS NULL on the key ok
+arithmetic	34	11	reached: LIMIT by an argument ok
 arithmetic	9	3	reached: LIMIT that cuts
 arithmetic	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
-arithmetic	4	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
-arithmetic	17	5	reached: NULL argument into a column that takes NULL ok
-arithmetic	7	2	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
-arithmetic	5	1	reached: NULL literal into a column that takes NULL a value of another type
-arithmetic	6	2	reached: NULL literal into a column that takes NULL attempt to write a readonly database
-arithmetic	37	12	reached: NULL literal into a column that takes NULL ok
-arithmetic	6	2	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
-arithmetic	6	2	reached: SET of NULL for a column that does not take it ok, no row found
-arithmetic	3	1	reached: SET of a column in double quotes that the table does not have no such column
-arithmetic	10	3	reached: SET of a column that the table does not have no such column
-arithmetic	3	1	reached: SET of the key NOT NULL constraint failed
-arithmetic	4	1	reached: SET of the key UNIQUE constraint failed
-arithmetic	16	5	reached: SET of the key ok, rows changed
-arithmetic	19	6	reached: SET with a value of another type a value of another type
+arithmetic	18	6	reached: NULL argument into a column that takes NULL ok
+arithmetic	10	3	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+arithmetic	6	2	reached: NULL literal into a column that takes NULL a value of another type
+arithmetic	5	1	reached: NULL literal into a column that takes NULL attempt to write a readonly database
+arithmetic	38	12	reached: NULL literal into a column that takes NULL ok
+arithmetic	5	1	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+arithmetic	5	1	reached: SET of NULL for a column that does not take it ok, no row found
+arithmetic	5	1	reached: SET of a column in double quotes that the table does not have no such column
+arithmetic	14	4	reached: SET of a column that the table does not have no such column
+arithmetic	5	1	reached: SET of the key NOT NULL constraint failed
+arithmetic	3	1	reached: SET of the key UNIQUE constraint failed
+arithmetic	14	4	reached: SET of the key ok, rows changed
+arithmetic	14	4	reached: SET with a value of another type a value of another type
 arithmetic	4	1	reached: SET with argument nil ok, no row found
-arithmetic	5	1	reached: SET with literal null ok, rows changed
-arithmetic	7	2	reached: WHERE that gives every row of a table with rows
-arithmetic	26	8	reached: WHERE that gives no row of a table with rows
-arithmetic	12	4	reached: WHERE that gives some rows of a table
-arithmetic	8	2	reached: WHERE that reads a get of one key ok
+arithmetic	6	2	reached: SET with literal null ok, rows changed
+arithmetic	4	1	reached: WHERE that gives every row of a table with rows
+arithmetic	32	10	reached: WHERE that gives no row of a table with rows
+arithmetic	14	4	reached: WHERE that gives some rows of a table
+arithmetic	5	1	reached: WHERE that reads a get of one key ok
 arithmetic	9	3	reached: WHERE that reads a scan between two bounds ok
 arithmetic	3	1	reached: WHERE that reads a scan between two bounds that hold no key ok
-arithmetic	9	3	reached: WHERE that reads a scan from a lower bound ok
-arithmetic	31	10	reached: WHERE that reads a scan of every row ok
-arithmetic	8	2	reached: WHERE that reads a scan to an upper bound ok
+arithmetic	6	2	reached: WHERE that reads a scan from a lower bound ok
+arithmetic	25	8	reached: WHERE that reads a scan of every row ok
+arithmetic	5	1	reached: WHERE that reads a scan to an upper bound ok
 arithmetic	7	2	reached: WHERE that reads no row ok
-arithmetic	32	10	reached: WHERE that tests a column more than once ok
-arithmetic	9	3	reached: WHERE with a value of another type a value of another type
+arithmetic	25	8	reached: WHERE that tests a column more than once ok
+arithmetic	7	2	reached: WHERE with a value of another type a value of another type
 arithmetic	5	1	reached: argument NULL as *[]uint8
 arithmetic	3	1	reached: argument NULL as *float64
-arithmetic	8	2	reached: argument NULL as *int64
-arithmetic	4	1	reached: argument NULL as *string
-arithmetic	5	1	reached: argument NULL as sql.NullFloat64
-arithmetic	5	1	reached: argument NULL as sql.NullString
-arithmetic	3	1	reached: argument NULL as sql.Null[[]uint8]
+arithmetic	7	2	reached: argument NULL as *int64
+arithmetic	3	1	reached: argument NULL as *string
+arithmetic	4	1	reached: argument NULL as sql.NullFloat64
+arithmetic	3	1	reached: argument NULL as sql.NullString
+arithmetic	5	1	reached: argument NULL as sql.Null[[]uint8]
 arithmetic	38	12	reached: argument []uint8
 arithmetic	16	5	reached: argument empty []byte
-arithmetic	14	4	reached: argument empty string
-arithmetic	47	15	reached: argument float64
-arithmetic	6	2	reached: argument float64 -0.0
-arithmetic	116	38	reached: argument int64
-arithmetic	7	2	reached: argument nil
-arithmetic	77	25	reached: argument string
-arithmetic	5	1	reached: comparison with argument []uint8 ok
+arithmetic	12	4	reached: argument empty string
+arithmetic	51	17	reached: argument float64
+arithmetic	5	1	reached: argument float64 -0.0
+arithmetic	120	40	reached: argument int64
+arithmetic	8	2	reached: argument nil
+arithmetic	73	24	reached: argument string
+arithmetic	7	2	reached: comparison with a subquery ok
+arithmetic	6	2	reached: comparison with argument []uint8 ok
 arithmetic	3	1	reached: comparison with argument empty string ok
-arithmetic	17	5	reached: comparison with argument int64 ok
-arithmetic	14	4	reached: comparison with argument string ok
-arithmetic	15	5	reached: comparison with literal blob ok
-arithmetic	7	2	reached: comparison with literal empty blob ok
+arithmetic	15	5	reached: comparison with argument int64 ok
+arithmetic	6	2	reached: comparison with argument string ok
+arithmetic	10	3	reached: comparison with literal blob ok
+arithmetic	3	1	reached: comparison with literal empty blob ok
 arithmetic	4	1	reached: comparison with literal empty text ok
 arithmetic	10	3	reached: comparison with literal integer ok
-arithmetic	3	1	reached: comparison with literal real ok
-arithmetic	27	9	reached: comparison with literal text ok
-arithmetic	4	1	reached: delete WHERE that reads a get of one key ok, rows changed
-arithmetic	7	2	reached: delete WHERE with a value of another type a value of another type
-arithmetic	7	2	reached: delete with RETURNING * ok
-arithmetic	3	1	reached: delete with RETURNING of a name twice ok
-arithmetic	6	2	reached: delete with RETURNING that gives no row
+arithmetic	6	2	reached: comparison with literal real ok
+arithmetic	18	6	reached: comparison with literal text ok
+arithmetic	3	1	reached: delete WHERE that reads a get of one key ok, rows changed
+arithmetic	4	1	reached: delete WHERE with a value of another type a value of another type
+arithmetic	5	1	reached: delete with RETURNING * ok
+arithmetic	4	1	reached: delete with RETURNING of a name twice ok
+arithmetic	7	2	reached: delete with RETURNING that gives no row
 arithmetic	6	2	reached: delete with RETURNING through query ok
-arithmetic	6	2	reached: delete with RETURNING through query, rows left open ok
+arithmetic	3	1	reached: delete with RETURNING through query, rows left open ok
 arithmetic	21	7	reached: delete with WHERE attempt to write a readonly database
-arithmetic	50	16	reached: delete with WHERE ok, no row found
-arithmetic	9	3	reached: delete with WHERE ok, rows changed
-arithmetic	12	4	reached: delete without WHERE ok, no row found
-arithmetic	10	3	reached: delete without WHERE ok, rows changed
-arithmetic	22	7	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
-arithmetic	27	9	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
-arithmetic	4	1	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite
-arithmetic	10	3	reached: insert into BLOB UNIQUE constraint failed
-arithmetic	10	3	reached: insert into BLOB a value of another type
-arithmetic	6	2	reached: insert into BLOB attempt to write a readonly database
-arithmetic	29	9	reached: insert into BLOB ok
-arithmetic	10	3	reached: insert into INT UNIQUE constraint failed
-arithmetic	12	4	reached: insert into INT attempt to write a readonly database
+arithmetic	46	15	reached: delete with WHERE ok, no row found
+arithmetic	11	3	reached: delete with WHERE ok, rows changed
+arithmetic	3	1	reached: delete with a subquery through exec ok
+arithmetic	5	1	reached: delete with a subquery through prepare, exec several times ok
+arithmetic	9	3	reached: delete without WHERE ok, no row found
+arithmetic	9	3	reached: delete without WHERE ok, rows changed
+arithmetic	13	4	reached: evaluation error justified by SQLite's result of its operator: s4ql: division by zero
+arithmetic	23	7	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
+arithmetic	6	2	reached: evaluation error justified by SQLite's result of its operator: s4ql: real result that is not finite
+arithmetic	11	3	reached: insert into BLOB UNIQUE constraint failed
+arithmetic	11	3	reached: insert into BLOB a value of another type
+arithmetic	4	1	reached: insert into BLOB attempt to write a readonly database
+arithmetic	31	10	reached: insert into BLOB ok
+arithmetic	15	5	reached: insert into INT UNIQUE constraint failed
+arithmetic	11	3	reached: insert into INT attempt to write a readonly database
 arithmetic	44	14	reached: insert into INT ok
-arithmetic	7	2	reached: insert into INTEGER UNIQUE constraint failed
+arithmetic	4	1	reached: insert into INTEGER UNIQUE constraint failed
 arithmetic	8	2	reached: insert into INTEGER a value of another type
-arithmetic	6	2	reached: insert into INTEGER attempt to write a readonly database
-arithmetic	55	18	reached: insert into INTEGER ok
-arithmetic	4	1	reached: insert into REAL UNIQUE constraint failed
-arithmetic	10	3	reached: insert into REAL ok
-arithmetic	6	2	reached: insert into TEXT UNIQUE constraint failed
+arithmetic	5	1	reached: insert into INTEGER attempt to write a readonly database
+arithmetic	57	19	reached: insert into INTEGER ok
+arithmetic	16	5	reached: insert into REAL ok
+arithmetic	5	1	reached: insert into TEXT UNIQUE constraint failed
 arithmetic	9	3	reached: insert into TEXT a value of another type
-arithmetic	18	6	reached: insert into TEXT attempt to write a readonly database
-arithmetic	58	19	reached: insert into TEXT ok
+arithmetic	16	5	reached: insert into TEXT attempt to write a readonly database
+arithmetic	60	20	reached: insert into TEXT ok
 arithmetic	8	2	reached: insert of NULL beside a value of another type a value of another type
 arithmetic	4	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
-arithmetic	12	4	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
-arithmetic	4	1	reached: insert that leaves out a column that takes NULL a value of another type
-arithmetic	48	16	reached: insert that leaves out a column that takes NULL ok
+arithmetic	9	3	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+arithmetic	5	1	reached: insert that leaves out a column that takes NULL a value of another type
+arithmetic	50	16	reached: insert that leaves out a column that takes NULL ok
 arithmetic	6	2	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
 arithmetic	4	1	reached: insert with RETURNING * UNIQUE constraint failed
-arithmetic	22	7	reached: insert with RETURNING * ok
-arithmetic	5	1	reached: insert with RETURNING of a name twice attempt to write a readonly database
+arithmetic	20	6	reached: insert with RETURNING * ok
+arithmetic	4	1	reached: insert with RETURNING of a name twice attempt to write a readonly database
 arithmetic	20	6	reached: insert with RETURNING of a name twice ok
+arithmetic	3	1	reached: insert with RETURNING through exec ok
 arithmetic	12	4	reached: insert with RETURNING through prepare, query ok
-arithmetic	17	5	reached: insert with RETURNING through query ok
-arithmetic	13	4	reached: insert with RETURNING through query row ok
-arithmetic	9	3	reached: insert with RETURNING through query, rows left open ok
+arithmetic	19	6	reached: insert with RETURNING through query ok
+arithmetic	11	3	reached: insert with RETURNING through query row ok
+arithmetic	7	2	reached: insert with RETURNING through query, rows left open ok
 arithmetic	7	2	reached: insert with a column without a value: NOT NULL constraint failed
-arithmetic	24	8	reached: insert with a list UNIQUE constraint failed
-arithmetic	30	10	reached: insert with a list attempt to write a readonly database
-arithmetic	126	42	reached: insert with a list ok
-arithmetic	11	3	reached: insert with a value of another type in another column: a value of another type
+arithmetic	28	9	reached: insert with a list UNIQUE constraint failed
+arithmetic	26	8	reached: insert with a list attempt to write a readonly database
+arithmetic	134	44	reached: insert with a list ok
+arithmetic	12	4	reached: insert with a value of another type in another column: a value of another type
 arithmetic	15	5	reached: insert with a value of another type in the key: a value of another type
-arithmetic	4	1	reached: insert with the wrong number of values:  values for 
-arithmetic	5	1	reached: insert with the wrong number of values: values were supplied
-arithmetic	13	4	reached: insert without a list UNIQUE constraint failed
-arithmetic	12	4	reached: insert without a list attempt to write a readonly database
-arithmetic	70	23	reached: insert without a list ok
-arithmetic	91	30	reached: literal blob
-arithmetic	19	6	reached: literal empty blob
-arithmetic	21	7	reached: literal empty text
-arithmetic	273	91	reached: literal integer
-arithmetic	61	20	reached: literal null
-arithmetic	64	21	reached: literal real
+arithmetic	5	1	reached: insert with the wrong number of values:  values for 
+arithmetic	3	1	reached: insert with the wrong number of values: values were supplied
+arithmetic	8	2	reached: insert without a list UNIQUE constraint failed
+arithmetic	10	3	reached: insert without a list attempt to write a readonly database
+arithmetic	74	24	reached: insert without a list ok
+arithmetic	89	29	reached: literal blob
+arithmetic	20	6	reached: literal empty blob
+arithmetic	19	6	reached: literal empty text
+arithmetic	269	89	reached: literal integer
+arithmetic	64	21	reached: literal null
+arithmetic	60	20	reached: literal real
 arithmetic	12	4	reached: literal real -0.0
-arithmetic	149	49	reached: literal text
-arithmetic	91	30	reached: select * of 3 columns ok
-arithmetic	8	2	reached: select * with NULL ok
-arithmetic	111	37	reached: select of names ok
-arithmetic	9	3	reached: select of names with NULL ok
-arithmetic	230	76	reached: table read back after an update or a delete
-arithmetic	24	8	reached: update WHERE that reads a get of one key ok, rows changed
-arithmetic	15	5	reached: update WHERE with a value of another type a value of another type
-arithmetic	12	4	reached: update with RETURNING * ok
-arithmetic	11	3	reached: update with RETURNING of a name twice ok
-arithmetic	8	2	reached: update with RETURNING that gives no row
+arithmetic	152	50	reached: literal text
+arithmetic	94	31	reached: select * of 3 columns ok
+arithmetic	6	2	reached: select * with NULL ok
+arithmetic	102	34	reached: select of names ok
+arithmetic	7	2	reached: select of names with NULL ok
+arithmetic	5	1	reached: select with a subquery through prepare, query ok
+arithmetic	8	2	reached: select with a subquery through query ok
+arithmetic	7	2	reached: select with a subquery: subquery of several rows
+arithmetic	9	3	reached: subquery compared by != on either side ok
+arithmetic	4	1	reached: subquery compared by < on either side ok
+arithmetic	5	1	reached: subquery compared by <= on either side ok
+arithmetic	37	12	reached: subquery compared by = on either side ok
+arithmetic	7	2	reached: subquery compared by = with its value on the left ok
+arithmetic	4	1	reached: subquery compared by > on either side ok
+arithmetic	6	2	reached: subquery compared by >= on either side ok
+arithmetic	13	4	reached: subquery of LIMIT 0
+arithmetic	7	2	reached: subquery of another table ok
+arithmetic	58	19	reached: subquery of the table of its statement ok
+arithmetic	26	8	reached: subquery that finds no row
+arithmetic	4	1	reached: subquery whose first row has NULL
+arithmetic	26	8	reached: subquery whose first row has a value
+arithmetic	219	73	reached: table read back after an update or a delete
+arithmetic	23	7	reached: update WHERE that reads a get of one key ok, rows changed
+arithmetic	8	2	reached: update WHERE with a value of another type a value of another type
+arithmetic	11	3	reached: update with RETURNING * ok
+arithmetic	12	4	reached: update with RETURNING of a name twice ok
+arithmetic	10	3	reached: update with RETURNING that gives no row
 arithmetic	3	1	reached: update with RETURNING through exec ok
-arithmetic	5	1	reached: update with RETURNING through prepare, query ok
-arithmetic	5	1	reached: update with RETURNING through query ok
-arithmetic	10	3	reached: update with RETURNING through query, rows left open ok
-arithmetic	16	5	reached: update with WHERE attempt to write a readonly database
+arithmetic	8	2	reached: update with RETURNING through prepare, query ok
+arithmetic	7	2	reached: update with RETURNING through query ok
+arithmetic	7	2	reached: update with RETURNING through query, rows left open ok
+arithmetic	21	7	reached: update with WHERE attempt to write a readonly database
 arithmetic	76	25	reached: update with WHERE ok, no row found
-arithmetic	30	10	reached: update with WHERE ok, rows changed
-arithmetic	34	11	reached: update without WHERE ok, no row found
-arithmetic	32	10	reached: update without WHERE ok, rows changed
-arithmetic	46	15	read-only transaction begin ok
-arithmetic	11	3	read-only transaction commit ok on a pinned connection
+arithmetic	31	10	reached: update with WHERE ok, rows changed
+arithmetic	3	1	reached: update with a subquery through exec attempt to write a readonly database
+arithmetic	10	3	reached: update with a subquery through exec ok
+arithmetic	7	2	reached: update with a subquery through prepare, exec several times ok
+arithmetic	7	2	reached: update with a subquery: subquery of several rows
+arithmetic	15	5	reached: update with a subquery: subquery that finds no row
+arithmetic	22	7	reached: update without WHERE ok, no row found
+arithmetic	26	8	reached: update without WHERE ok, rows changed
+arithmetic	3	1	reached: value on the left of != finds no row
+arithmetic	3	1	reached: value on the left of = a value of another type
+arithmetic	5	1	reached: value on the left of = finds no row
+arithmetic	3	1	reached: value on the left of = no such column
+arithmetic	9	3	reached: value on the left of = not supported
+arithmetic	3	1	reached: value on the left of > finds no row
+arithmetic	5	1	reached: value on the left of > not supported
+arithmetic	3	1	reached: value on the left of >= finds no row
+arithmetic	45	15	read-only transaction begin ok
+arithmetic	7	2	read-only transaction commit ok on a pinned connection
 arithmetic	18	6	read-only transaction commit ok through the pool
-arithmetic	9	3	read-only transaction rollback ok on a pinned connection
-arithmetic	8	2	read-only transaction rollback ok through the pool
-arithmetic	9	3	read-only transaction: call prepare outside, exec in the transaction
-arithmetic	8	2	read-only transaction: call prepare outside, query in the transaction
-arithmetic	7	2	read-only transaction: call prepare, exec several times with arguments
-arithmetic	17	5	read-only transaction: createtable already exists
+arithmetic	11	3	read-only transaction rollback ok on a pinned connection
+arithmetic	9	3	read-only transaction rollback ok through the pool
+arithmetic	13	4	read-only transaction: call prepare outside, exec in the transaction
+arithmetic	7	2	read-only transaction: call prepare outside, query in the transaction
+arithmetic	8	2	read-only transaction: call prepare, exec several times with arguments
+arithmetic	18	6	read-only transaction: createtable already exists
 arithmetic	4	1	read-only transaction: createtable attempt to write a readonly database
-arithmetic	14	4	read-only transaction: insert attempt to write a readonly database
-arithmetic	28	9	read-only transaction: insert with a parameter attempt to write a readonly database
-arithmetic	6	2	read-only transaction: rows left open
-arithmetic	6	2	read-only transaction: select ok with rows
-arithmetic	10	3	select no rows
-arithmetic	24	8	select no such table
-arithmetic	94	31	select ok
-arithmetic	27	9	select ok with rows
-arithmetic	95	31	write transaction begin ok
-arithmetic	8	2	write transaction commit ok after a create table
-arithmetic	8	2	write transaction commit ok after a drop table
-arithmetic	40	13	write transaction commit ok after a failed call
-arithmetic	16	5	write transaction commit ok after a statement with RETURNING
-arithmetic	22	7	write transaction commit ok after an insert
-arithmetic	33	11	write transaction commit ok on a pinned connection
-arithmetic	30	10	write transaction commit ok through the pool
-arithmetic	4	1	write transaction rollback ok after a create table
-arithmetic	20	6	write transaction rollback ok after a failed call
-arithmetic	11	3	write transaction rollback ok after a statement with RETURNING
-arithmetic	13	4	write transaction rollback ok after an insert
-arithmetic	15	5	write transaction rollback ok on a pinned connection
-arithmetic	17	5	write transaction rollback ok through the pool
-arithmetic	46	15	write transaction: call exec with arguments
-arithmetic	17	5	write transaction: call prepare outside, exec in the transaction with arguments
-arithmetic	7	2	write transaction: call prepare outside, query in the transaction with arguments
-arithmetic	15	5	write transaction: call prepare, exec several times with arguments
-arithmetic	24	8	write transaction: call prepare, exec with arguments
-arithmetic	9	3	write transaction: call prepare, query with arguments
+arithmetic	3	1	read-only transaction: droptable attempt to write a readonly database
+arithmetic	13	4	read-only transaction: insert attempt to write a readonly database
+arithmetic	6	2	read-only transaction: insert no such table
+arithmetic	23	7	read-only transaction: insert with a parameter attempt to write a readonly database
+arithmetic	4	1	read-only transaction: rows left open
+arithmetic	4	1	read-only transaction: select ok with rows
+arithmetic	11	3	select no rows
+arithmetic	19	6	select no such table
+arithmetic	88	29	select ok
+arithmetic	23	7	select ok with rows
+arithmetic	90	30	write transaction begin ok
+arithmetic	5	1	write transaction commit ok after a create table
+arithmetic	5	1	write transaction commit ok after a drop table
+arithmetic	41	13	write transaction commit ok after a failed call
+arithmetic	14	4	write transaction commit ok after a statement with RETURNING
+arithmetic	26	8	write transaction commit ok after an insert
+arithmetic	35	11	write transaction commit ok on a pinned connection
+arithmetic	28	9	write transaction commit ok through the pool
+arithmetic	3	1	write transaction rollback ok after a create table
+arithmetic	18	6	write transaction rollback ok after a failed call
+arithmetic	7	2	write transaction rollback ok after a statement with RETURNING
+arithmetic	11	3	write transaction rollback ok after an insert
+arithmetic	11	3	write transaction rollback ok on a pinned connection
+arithmetic	16	5	write transaction rollback ok through the pool
+arithmetic	52	17	write transaction: call exec with arguments
+arithmetic	14	4	write transaction: call prepare outside, exec in the transaction with arguments
+arithmetic	6	2	write transaction: call prepare outside, query in the transaction with arguments
+arithmetic	12	4	write transaction: call prepare, exec several times with arguments
+arithmetic	20	6	write transaction: call prepare, exec with arguments
+arithmetic	7	2	write transaction: call prepare, query with arguments
 arithmetic	12	4	write transaction: call query beside the transaction
-arithmetic	11	3	write transaction: call query row with arguments
-arithmetic	5	1	write transaction: call query with arguments
-arithmetic	99	33	write transaction: call query, rows left open
-arithmetic	24	8	write transaction: createtable already exists
-arithmetic	12	4	write transaction: createtable ok
-arithmetic	9	3	write transaction: droptable ok
-arithmetic	11	3	write transaction: insert UNIQUE constraint failed
-arithmetic	19	6	write transaction: insert no such table
-arithmetic	27	9	write transaction: insert ok
-arithmetic	3	1	write transaction: insert while rows are open
-arithmetic	37	12	write transaction: insert with a parameter ok
+arithmetic	9	3	write transaction: call query row with arguments
+arithmetic	10	3	write transaction: call query with arguments
+arithmetic	86	28	write transaction: call query, rows left open
+arithmetic	23	7	write transaction: createtable already exists
+arithmetic	8	2	write transaction: createtable ok
+arithmetic	5	1	write transaction: droptable ok
+arithmetic	14	4	write transaction: insert UNIQUE constraint failed
+arithmetic	9	3	write transaction: insert no such table
+arithmetic	24	8	write transaction: insert ok
+arithmetic	3	1	write transaction: insert with a parameter argument of a type not supported
+arithmetic	39	13	write transaction: insert with a parameter ok
 arithmetic	8	2	write transaction: rows left open
-arithmetic	17	5	write transaction: rows of RETURNING left open
-arithmetic	4	1	write transaction: select ok with rows after a write of the transaction
-arithmetic	4	1	write transaction: select while rows are open
+arithmetic	12	4	write transaction: rows of RETURNING left open
+arithmetic	3	1	write transaction: select ok with rows after a write of the transaction

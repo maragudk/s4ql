@@ -4877,7 +4877,10 @@ func TestGenerated(t *testing.T) {
 // several times, each reached three to five times. The profile of the subqueries runs 60 for goqite's
 // receive with its subquery, and for the statements with subqueries through a prepared statement run
 // several times. The profile of arithmetic runs 40 for its evaluation errors of each kind, in SET and
-// in WHERE, and for its refusals of types, each reached in a few sequences in ten.
+// in WHERE, and for its refusals of types, each reached in a few sequences in ten. The profile of the
+// values on the left runs 70 for a value on the left of != in a select that finds rows, which
+// [TestGenerated] requires once: since the fixes after the review of the workload of arithmetic of
+// 2026-11-25, mixed no longer reaches it.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:
@@ -4887,7 +4890,7 @@ func generatedOf(p *stmttest.Profile) uint64 {
 	case stmttest.Arguments:
 		return 40
 	case stmttest.ValueFirst:
-		return 35
+		return 70
 	case stmttest.Transactions:
 		return 33
 	case stmttest.Where:
