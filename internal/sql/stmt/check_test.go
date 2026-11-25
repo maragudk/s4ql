@@ -1599,6 +1599,10 @@ var checkCases = []checkCase{
 	{name: "a value on both sides after a condition", src: "select * from t where 5 < v and 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 36)"},
 	{name: "a value on both sides in an update", src: "update t set v = 1 where 2 = 2", err: "s4ql: not supported: value compared with a value (at offset 29)"},
 	{name: "a value on both sides in a delete", src: "delete from t where 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 24)"},
+	// A value on the right of a value is refused before what it holds is read.
+	{name: "a string after a sign on the right of a value", src: "select * from t where 1 = -'a'", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "a string after a sign on the right of an expression without a column", src: "select * from t where 1 + 1 = -'a'", err: "s4ql: not supported: value compared with a value (at offset 30)"},
+	{name: "a subquery that is not supported on the right of a value", src: "select * from t where 1 = (select v from t where 1 = 1)", err: "s4ql: not supported: value compared with a value (at offset 26)"},
 	// A column on both sides tests the left one, compared with the right one alone.
 	{name: "a column on both sides", src: "select * from t where a = b", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14),
 		Where: []stmt.Condition{cond(name("a", "a", 22), stmt.OpEqual, ex(ec("b", 26), 26, 27))}}},
