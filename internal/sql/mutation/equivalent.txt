@@ -1455,3 +1455,22 @@ internal/engine/operator.go build.change constant: -1 => -2
 	The mark of a value that copies no column is only tested for being negative.
 internal/engine/operator.go build.change condition: filtered => true #4
 	A change without a filter has no conditions, and build.types checks none, as it does for a query without a filter.
+
+# The planted bug noRowMatches of a condition that tests an expression, in build.compute: each variant
+# tests another column for NOT NULL, or leaves the condition without a column, which then fails with an
+# internal error; each is still a wrong answer for a subquery that finds no row, which the tests of the
+# planted bugs find.
+internal/engine/subquery.go build.compute condition: conditions[i].position < 0 => true
+	noRowMatches then tests the column at 0, the key, for NOT NULL in every condition that it changes, true of every row, another wrong answer, which its tests find.
+internal/engine/subquery.go build.compute condition: conditions[i].position < 0 => false
+	noRowMatches then leaves a tested expression without a column, so the statement fails with an internal error where SQLite gives rows, which its tests find by its other statements as before.
+internal/engine/subquery.go build.compute operator: conditions[i].position < 0 => conditions[i].position <= 0
+	A condition of the column at 0 is set to the column at 0, which it is.
+internal/engine/subquery.go build.compute operator: conditions[i].position < 0 => conditions[i].position >= 0
+	noRowMatches then tests the column at 0 for NOT NULL in a condition of a column, and leaves a tested expression without a column, other wrong answers, which its tests find.
+internal/engine/subquery.go build.compute constant: conditions[i].position < 0 => conditions[i].position < 1
+	A condition of the column at 0 is set to the column at 0, which it is.
+internal/engine/subquery.go build.compute remove statement: conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 0 =>
+	As for the condition false above: a tested expression is left without a column, and the internal error is another wrong answer that the tests of noRowMatches find.
+internal/engine/subquery.go build.compute constant: conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 0 => conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 1
+	noRowMatches then tests the column at 1 for NOT NULL in place of the key, true of the rows where it is not NULL, another wrong answer, which its tests find.

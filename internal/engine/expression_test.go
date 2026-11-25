@@ -1389,6 +1389,7 @@ func TestEngine_arithmetic(t *testing.T) {
 			{"select k from t where k * 1 = r * 1", "not supported: an expression of type real compared with an expression of type integer"},
 			{"select k from t where k = s", "not supported: the column t.s of type TEXT compared with the column t.k of type INT"},
 			{"select k from t where k + 0 = (select s from t)", "not supported: subquery 1, of the column t.s of type TEXT, compared with an expression of type integer"},
+			{"select k from t where k + ? = (select s from t)", "not supported: subquery 1, of the column t.s of type TEXT, compared with an expression of type null"},
 			{"update t set s = k + 1", "not supported: an expression of type integer for the column t.s of type TEXT"},
 			{"update t set a = r + 1", "not supported: an expression of type real for the column t.a of type INT"},
 			{"update t set a = s", "not supported: the column t.s of type TEXT for the column t.a of type INT"},
