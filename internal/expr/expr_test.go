@@ -2,6 +2,7 @@ package expr_test
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -14,9 +15,9 @@ import (
 )
 
 // row of the columns of [schema]: a, b, c, and d as given, s the text '4', and x the blob x'35',
-// which SQLite would read as the number 4 and 5.
+// which SQLite would read as the number 4 and 5, t the text 'Éa', and y the blob x'00FF'.
 func row(a, b, c, d *s4qlpb.Value) []*s4qlpb.Value {
-	return []*s4qlpb.Value{a, b, c, d, text("4"), blob([]byte("5"))}
+	return []*s4qlpb.Value{a, b, c, d, text("4"), blob([]byte("5")), text("Éa"), blob([]byte{0, 0xff})}
 }
 
 // zeros is a row of zeros.
@@ -152,13 +153,13 @@ func TestBound_Eval(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			e, full, err := parse(test.src)
 			is.NotError(t, err)
-			sqliteValue, err := o.value(full[e.Span.Start:e.Span.End], test.row, test.args)
+			sqliteValue, err := o.value(full[e.Span.Start:e.Span.End], test.row, test.args, maxLength)
 			is.NotError(t, err)
 			is.Equal(t, test.sqlite, sqliteValue, "SQLite's value")
 
 			x, err := expr.Check(e, resolve)
 			is.NotError(t, err)
-			b, err := x.Bind(test.args)
+			b, err := x.Bind(test.args, maxLength)
 			is.NotError(t, err)
 			v, err := b.Eval(test.row)
 			if test.err == nil {
@@ -176,6 +177,157 @@ func TestBound_Eval(t *testing.T) {
 	}
 }
 
+// textRow of the columns of [schema]: s, x, t, and y as given, and a, b, c, and d zero.
+func textRow(s, x, t, y *s4qlpb.Value) []*s4qlpb.Value {
+	return []*s4qlpb.Value{integer(0), integer(0), float(0), float(0), s, x, t, y}
+}
+
+// The facts of SQLite 3.54.1 for ||, lower, and hex that the evaluator rests on, measured through the
+// binding, and what s4ql gives for each, as for [TestBound_Eval]. With a limit, SQLite runs under
+// that length limit, and a case whose kind is [expr.ErrTooLong] is one where SQLite fails with
+// `string or blob too big`.
+func TestBound_Eval_text(t *testing.T) {
+	long := func(n int) *s4qlpb.Value { return text(strings.Repeat("Ab", n/2) + strings.Repeat("C", n%2)) }
+	ascii := make([]byte, 127)
+	for i := range ascii {
+		ascii[i] = byte(i + 1)
+	}
+	asciiLower := []byte(string(ascii))
+	for i, c := range asciiLower {
+		if 'A' <= c && c <= 'Z' {
+			asciiLower[i] = c + 32
+		}
+	}
+	high := make([]byte, 128)
+	for i := range high {
+		high[i] = byte(128 + i)
+	}
+	every := append(append([]byte{0}, ascii...), high...)
+	none := textRow(null(), null(), null(), null())
+	tests := []struct {
+		name   string
+		src    string
+		row    []*s4qlpb.Value
+		args   []*s4qlpb.Value
+		limit  int
+		sqlite expr.Value
+		// err is the kind of s4ql's error, at the text of at; SQLite fails then too, unless
+		// sqliteGives, where it gives sqlite.
+		err         error
+		at          string
+		sqliteGives bool
+	}{
+		{name: "should join two texts, the left first", src: "s || t", row: textRow(text("ab"), null(), text("Éa"), null()), sqlite: expr.TextValue("abÉa")},
+		{name: "should join a literal and a column", src: "'a' || s", row: textRow(text("b"), null(), null(), null()), sqlite: expr.TextValue("ab")},
+		{name: "should join two arguments", src: "? || ?", row: none, args: []*s4qlpb.Value{text("x"), text("y")}, sqlite: expr.TextValue("xy")},
+		{name: "should join a text and the empty text", src: "s || ''", row: textRow(text("x"), null(), null(), null()), sqlite: expr.TextValue("x")},
+		{name: "should join two empty texts to the empty text", src: "'' || ''", row: none, sqlite: expr.TextValue("")},
+		{name: "should join a quote", src: "s || ''''", row: textRow(text("a"), null(), null(), null()), sqlite: expr.TextValue("a'")},
+		{name: "should give NULL for a column on the left that is NULL", src: "s || 'a'", row: none, sqlite: expr.Value{}},
+		{name: "should give NULL for a column on the right that is NULL", src: "'a' || s", row: none, sqlite: expr.Value{}},
+		{name: "should give NULL for an argument that is NULL", src: "? || s", row: textRow(text("a"), null(), null(), null()), args: []*s4qlpb.Value{null()}, sqlite: expr.Value{}},
+		{name: "should give NULL for a concatenation of a NULL concatenation", src: "(s || 'a') || 'b'", row: none, sqlite: expr.Value{}},
+
+		{name: "should change the ASCII capital letters with lower", src: "lower(s)", row: textRow(text("ABC xyz @[`{ MZ"), null(), null(), null()), sqlite: expr.TextValue("abc xyz @[`{ mz")},
+		{name: "should leave letters that are not ASCII as they are", src: "lower(s)", row: textRow(text("ÀBCÉé"), null(), null(), null()), sqlite: expr.TextValue("ÀbcÉé")},
+		{name: "should leave the Kelvin sign and the dotted capital I, which Unicode makes k and i", src: "lower(s)", row: textRow(text("KİK"), null(), null(), null()), sqlite: expr.TextValue("Kİk")},
+		{name: "should change every ASCII byte as SQLite does", src: "lower(?)", row: none, args: []*s4qlpb.Value{text(string(ascii))}, sqlite: expr.TextValue(string(asciiLower))},
+		{name: "should leave every byte that is not ASCII, also in text that is not valid UTF-8", src: "lower(?)", row: none, args: []*s4qlpb.Value{text(string(high) + "A")}, sqlite: expr.TextValue(string(high) + "a")},
+		{name: "should give the empty text for lower of the empty text", src: "lower('')", row: none, sqlite: expr.TextValue("")},
+		{name: "should give NULL for lower of NULL", src: "lower(s)", row: none, sqlite: expr.Value{}},
+		{name: "should give NULL for lower of a NULL argument", src: "lower(?)", row: none, args: []*s4qlpb.Value{null()}, sqlite: expr.Value{}},
+
+		{name: "should give the UTF-8 of a text in upper-case digits", src: "hex(s)", row: textRow(text("é"), null(), null(), null()), sqlite: expr.TextValue("C3A9")},
+		{name: "should give the bytes of a blob in upper-case digits", src: "hex(x)", row: textRow(null(), blob([]byte{0, 1, 0xab, 0xff}), null(), null()), sqlite: expr.TextValue("0001ABFF")},
+		{name: "should give every byte of a blob argument", src: "hex(?)", row: none, args: []*s4qlpb.Value{blob(every)}, sqlite: expr.TextValue(fmt.Sprintf("%X", every))},
+		{name: "should give the bytes of a text that is not valid UTF-8 as they are", src: "hex(?)", row: none, args: []*s4qlpb.Value{text("\xff\xfe")}, sqlite: expr.TextValue("FFFE")},
+		{name: "should give the bytes of a blob literal", src: "hex(x'00aB')", row: none, sqlite: expr.TextValue("00AB")},
+		{name: "should give the empty text for the empty blob", src: "hex(x'')", row: none, sqlite: expr.TextValue("")},
+		{name: "should give the empty text for the empty text", src: "hex('')", row: none, sqlite: expr.TextValue("")},
+		{name: "should give the empty text for a TEXT column that is NULL, and not NULL", src: "hex(s)", row: none, sqlite: expr.TextValue("")},
+		{name: "should give the empty text for a BLOB column that is NULL", src: "hex(y)", row: none, sqlite: expr.TextValue("")},
+		{name: "should give the empty text for an argument that is NULL", src: "hex(?)", row: none, args: []*s4qlpb.Value{null()}, sqlite: expr.TextValue("")},
+		{name: "should give the empty text for hex of lower of NULL", src: "hex(lower(s || 'a'))", row: none, sqlite: expr.TextValue("")},
+		{name: "should give the digits of hex in lower case with lower", src: "'m_' || lower(hex(x))", row: textRow(null(), blob([]byte{0xab, 0xcd, 0x01, 0xef}), null(), null()), sqlite: expr.TextValue("m_abcd01ef")},
+
+		{name: "should join texts as long as the limit", src: "s || t", row: textRow(long(500), null(), long(500), null()), limit: 1000, sqlite: expr.TextValue(long(1000).GetText())},
+		{name: "should refuse to join texts longer than the limit, as SQLite does", src: "s || t", row: textRow(long(500), null(), long(501), null()), limit: 1000, err: expr.ErrTooLong, at: "s || t"},
+		{name: "should join a text as long as the limit and the empty text", src: "s || ''", row: textRow(long(1000), null(), null(), null()), limit: 1000, sqlite: expr.TextValue(long(1000).GetText())},
+		{name: "should give lower of a text one byte shorter than the limit", src: "lower(s)", row: textRow(long(999), null(), null(), null()), limit: 1000, sqlite: expr.TextValue(strings.ToLower(long(999).GetText()))},
+		{name: "should refuse lower of a text as long as the limit, for which SQLite allocates a byte more", src: "lower(s)", row: textRow(long(1000), null(), null(), null()), limit: 1000, err: expr.ErrTooLong, at: "lower(s)"},
+		{name: "should give hex of a text whose digits are one byte shorter than the limit", src: "hex(s)", row: textRow(long(499), null(), null(), null()), limit: 1000, sqlite: expr.TextValue(fmt.Sprintf("%X", long(499).GetText()))},
+		{name: "should refuse hex of a text whose digits are as long as the limit", src: "hex(s)", row: textRow(long(500), null(), null(), null()), limit: 1000, err: expr.ErrTooLong, at: "hex(s)"},
+		{name: "should give hex of a text whose digits are as long as an odd limit", src: "hex(s)", row: textRow(long(500), null(), null(), null()), limit: 1001, sqlite: expr.TextValue(fmt.Sprintf("%X", long(500).GetText()))},
+		{name: "should refuse hex of a blob whose digits are as long as the limit", src: "hex(x)", row: textRow(null(), blob(make([]byte, 500)), null(), null()), limit: 1000, err: expr.ErrTooLong, at: "hex(x)"},
+		{name: "should refuse lower of a concatenation as long as the limit", src: "lower(s || t)", row: textRow(long(500), null(), long(500), null()), limit: 1000, err: expr.ErrTooLong, at: "lower(s || t)"},
+		{name: "should refuse a text longer than the limit beside NULL, as SQLite does", src: "? || hex(s)", row: textRow(long(500), null(), null(), null()), args: []*s4qlpb.Value{null()}, limit: 1000,
+			err: expr.ErrTooLong, at: "hex(s)"},
+		{name: "should join bytes that are not valid UTF-8 as they are", src: "? || ?", row: none, args: []*s4qlpb.Value{text("\xffA"), text("\xc3")}, sqlite: expr.TextValue("\xffA\xc3")},
+		{name: "should take a limit below 30 as 30, as SQLite does", src: "s || t", row: textRow(long(15), null(), long(15), null()), limit: 10, sqlite: expr.TextValue(long(15).GetText() + long(15).GetText())},
+		{name: "should refuse a text longer than a limit below 30 taken as 30", src: "s || t", row: textRow(long(15), null(), long(16), null()), limit: 10, err: expr.ErrTooLong, at: "s || t"},
+		{name: "should refuse a text literal longer than the limit, also beside NULL, as SQLite does", src: "s || '" + strings.Repeat("a", 31) + "'", row: none, limit: 30,
+			err: expr.ErrTooLong, at: "'" + strings.Repeat("a", 31) + "'"},
+		{name: "should take a text literal as long as the limit", src: "s || '" + strings.Repeat("a", 30) + "'", row: none, limit: 30, sqlite: expr.Value{}},
+		{name: "should refuse a blob literal longer than the limit, which SQLite reads as NULL", src: "hex(x'" + strings.Repeat("00", 31) + "')", row: none, limit: 30,
+			err: expr.ErrTooLong, at: "x'" + strings.Repeat("00", 31) + "'", sqliteGives: true, sqlite: expr.TextValue("")},
+	}
+	o := newOracle(t)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			limit := test.limit
+			if limit == 0 {
+				limit = maxLength
+			}
+			e, full, err := parse(test.src)
+			is.NotError(t, err)
+			sqliteValue, err := o.value(full[e.Span.Start:e.Span.End], test.row, test.args, limit)
+			if test.err != nil && !test.sqliteGives {
+				is.Equal(t, errTooBig, err, "SQLite's error")
+			} else {
+				is.NotError(t, err)
+				is.Equal(t, test.sqlite, sqliteValue, "SQLite's value")
+			}
+
+			x, err := expr.Check(e, resolve)
+			is.NotError(t, err)
+			b, err := x.Bind(test.args, limit)
+			var v expr.Value
+			if err == nil {
+				v, err = b.Eval(test.row)
+			}
+			if test.err == nil {
+				is.NotError(t, err)
+				is.Equal(t, test.sqlite, v)
+				is.True(t, v.Null() || v.Type() == b.Type(), "the type of the bound expression")
+				return
+			}
+			var ee *expr.Error
+			is.True(t, errors.As(err, &ee), "an *expr.Error")
+			is.True(t, errors.Is(err, test.err), "the kind of the error")
+			is.True(t, errors.Is(err, expr.ErrEvaluation))
+			is.Equal(t, test.at, full[ee.Span.Start:ee.Span.End])
+			n, ok := nodeAt(e, ee.Span)
+			is.True(t, ok, "a node at the span")
+			is.Equal(t, n.Kind, ee.Op)
+			is.Equal(t, n.Function, ee.Function)
+			is.Equal(t, expr.Value{}, v)
+		})
+	}
+}
+
+// nodeAt the span in e: the node of e or of its operands with that span, and whether one has it.
+func nodeAt(e stmt.Expression, span stmt.Span) (stmt.Expression, bool) {
+	if e.Span == span {
+		return e, true
+	}
+	for _, o := range e.Operands {
+		if n, ok := nodeAt(o, span); ok {
+			return n, true
+		}
+	}
+	return stmt.Expression{}, false
+}
+
 // The facts of SQLite 3.54.1 for the refusals of text and blobs, which SQLite computes as numbers,
 // measured through the binding, and s4ql's refusal of each.
 func TestCheck(t *testing.T) {
@@ -184,8 +336,6 @@ func TestCheck(t *testing.T) {
 		src    string
 		args   []*s4qlpb.Value
 		sqlite expr.Value
-		// alone reports whether src is a column alone, whose value SQLite gives as it is.
-		alone bool
 		// what is refused, at the text of at; at check if atCheck, and when the arguments are bound
 		// otherwise.
 		what    string
@@ -196,7 +346,6 @@ func TestCheck(t *testing.T) {
 			what: "column of type TEXT in arithmetic", at: "s", atCheck: true},
 		{name: "should refuse a BLOB column, which SQLite reads as a number", src: "2 * x", sqlite: expr.IntegerValue(10),
 			what: "column of type BLOB in arithmetic", at: "x", atCheck: true},
-		{name: "should refuse a TEXT column alone, which is no arithmetic in SQLite", src: "s", alone: true, what: "column of type TEXT in arithmetic", at: "s", atCheck: true},
 		{name: "should refuse the first of two such columns", src: "a + x - s", sqlite: expr.IntegerValue(2),
 			what: "column of type BLOB in arithmetic", at: "x", atCheck: true},
 		{name: "should refuse a text argument, which SQLite reads as a number", src: "a + ?", args: []*s4qlpb.Value{text("2.5")}, sqlite: expr.RealValue(3.5),
@@ -205,6 +354,35 @@ func TestCheck(t *testing.T) {
 			what: "argument 2 in arithmetic, which is a blob", at: "?", atCheck: false},
 		{name: "should refuse a column before an argument", src: "? + s", args: []*s4qlpb.Value{text("1")}, sqlite: expr.IntegerValue(5),
 			what: "column of type TEXT in arithmetic", at: "s", atCheck: true},
+
+		{name: "should refuse an INT column in a concatenation, which SQLite writes as text", src: "a || 'x'", sqlite: expr.TextValue("1x"),
+			what: "column of type INT in a concatenation", at: "a", atCheck: true},
+		{name: "should refuse a BLOB column in a concatenation, which SQLite reads as text", src: "s || x", sqlite: expr.TextValue("45"),
+			what: "column of type BLOB in a concatenation", at: "x", atCheck: true},
+		{name: "should refuse a REAL column as the argument of lower, which SQLite writes as text", src: "lower(c)", sqlite: expr.TextValue("0.0"),
+			what: "column of type REAL in a call of lower", at: "c", atCheck: true},
+		{name: "should refuse a BLOB column as the argument of lower, which SQLite reads as text", src: "lower(x)", sqlite: expr.TextValue("5"),
+			what: "column of type BLOB in a call of lower", at: "x", atCheck: true},
+		{name: "should refuse an INTEGER column as the argument of hex, which SQLite writes as text first", src: "hex(b)", sqlite: expr.TextValue("30"),
+			what: "column of type INTEGER in a call of hex", at: "b", atCheck: true},
+		{name: "should refuse the first such column in the order of the text, inside a call", src: "hex(lower(s || a) || c)", sqlite: expr.TextValue("3431302E30"),
+			what: "column of type INT in a concatenation", at: "a", atCheck: true},
+		{name: "should refuse an integer argument in a concatenation", src: "? || s", args: []*s4qlpb.Value{integer(7)}, sqlite: expr.TextValue("74"),
+			what: "argument 1 in a concatenation, which is an integer", at: "?"},
+		{name: "should refuse a real argument in a concatenation", src: "s || ?", args: []*s4qlpb.Value{float(2.5)}, sqlite: expr.TextValue("42.5"),
+			what: "argument 1 in a concatenation, which is a real", at: "?"},
+		{name: "should refuse a blob argument in a concatenation", src: "s || ?", args: []*s4qlpb.Value{blob([]byte("ab"))}, sqlite: expr.TextValue("4ab"),
+			what: "argument 1 in a concatenation, which is a blob", at: "?"},
+		{name: "should refuse a blob argument of lower", src: "lower(?)", args: []*s4qlpb.Value{blob([]byte("AB"))}, sqlite: expr.TextValue("ab"),
+			what: "argument 1 in a call of lower, which is a blob", at: "?"},
+		{name: "should refuse an integer argument of lower", src: "lower(?)", args: []*s4qlpb.Value{integer(-3)}, sqlite: expr.TextValue("-3"),
+			what: "argument 1 in a call of lower, which is an integer", at: "?"},
+		{name: "should refuse a real argument of hex, which SQLite writes as text first", src: "hex(?)", args: []*s4qlpb.Value{float(1.5)}, sqlite: expr.TextValue("312E35"),
+			what: "argument 1 in a call of hex, which is a real", at: "?"},
+		{name: "should refuse an integer argument of hex", src: "hex(?)", args: []*s4qlpb.Value{integer(10)}, sqlite: expr.TextValue("3130"),
+			what: "argument 1 in a call of hex, which is an integer", at: "?"},
+		{name: "should refuse the second of two arguments, the first of which is taken", src: "? || lower(?)", args: []*s4qlpb.Value{text("a"), integer(1)}, sqlite: expr.TextValue("a1"),
+			what: "argument 2 in a call of lower, which is an integer", at: "?"},
 	}
 	o := newOracle(t)
 	r := row(integer(1), integer(0), float(0), float(0))
@@ -212,16 +390,14 @@ func TestCheck(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			e, full, err := parse(test.src)
 			is.NotError(t, err)
-			if !test.alone {
-				sqliteValue, err := o.value(full[e.Span.Start:e.Span.End], r, test.args)
-				is.NotError(t, err)
-				is.Equal(t, test.sqlite, sqliteValue, "SQLite's value")
-			}
+			sqliteValue, err := o.value(full[e.Span.Start:e.Span.End], r, test.args, maxLength)
+			is.NotError(t, err)
+			is.Equal(t, test.sqlite, sqliteValue, "SQLite's value")
 
 			x, err := expr.Check(e, resolve)
 			if !test.atCheck {
 				is.NotError(t, err)
-				_, err = x.Bind(test.args)
+				_, err = x.Bind(test.args, maxLength)
 			}
 			var ns *stmt.NotSupportedError
 			is.True(t, errors.As(err, &ns), "a *stmt.NotSupportedError")
@@ -235,23 +411,8 @@ func TestCheck(t *testing.T) {
 		})
 	}
 
-	t.Run("should refuse a concatenation and a call, which the evaluator does not compute yet, at the root, after the names", func(t *testing.T) {
-		for _, c := range []struct{ src, what, at string }{
-			{"s || 'a'", "concatenation", "s ||"},
-			{"'a' || hex(x)", "concatenation", "'a'"},
-			{"lower(s)", "call of lower", "lower"},
-			{"hex(lower(?) || s)", "call of hex", "hex"},
-		} {
-			e, full, err := parse(c.src)
-			is.NotError(t, err)
-			_, err = expr.Check(e, resolve)
-			var ns *stmt.NotSupportedError
-			is.True(t, errors.As(err, &ns), "a *stmt.NotSupportedError")
-			is.True(t, errors.Is(err, stmt.ErrNotSupported))
-			is.Equal(t, c.what, ns.What, c.src)
-			is.Equal(t, strings.Index(full, c.at), ns.Offset, c.src)
-		}
-		e, _, err := parse("lower(zz)")
+	t.Run("should give the error of resolve inside a call before a refusal of the type of another column", func(t *testing.T) {
+		e, _, err := parse("lower(a) || hex(zz)")
 		is.NotError(t, err)
 		_, err = expr.Check(e, resolve)
 		is.Error(t, errNoSuchColumn, err)
@@ -284,7 +445,7 @@ func TestCheck(t *testing.T) {
 		is.NotError(t, err)
 		x, err := expr.Check(e, resolve)
 		is.NotError(t, err)
-		b, err := x.Bind(nil)
+		b, err := x.Bind(nil, maxLength)
 		is.NotError(t, err)
 		v, err := b.Eval(row(integer(3), integer(0), float(0.5), float(0)))
 		is.NotError(t, err)
@@ -293,6 +454,7 @@ func TestCheck(t *testing.T) {
 
 	t.Run("should give an internal error that names the fault for a tree that the pass never gives", func(t *testing.T) {
 		column := stmt.Expression{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "a"}}
+		text := stmt.Expression{Kind: stmt.ExprValue, Value: stmt.Text("a")}
 		for _, c := range []struct {
 			e    stmt.Expression
 			want string
@@ -308,6 +470,16 @@ func TestCheck(t *testing.T) {
 			{stmt.Expression{Kind: stmt.ExprConcat, Operands: []stmt.Expression{column}}, "|| with 1 operands"},
 			{stmt.Expression{Kind: stmt.ExprCall, Operands: []stmt.Expression{column}}, "a call of function 0 with 1 operands"},
 			{stmt.Expression{Kind: stmt.ExprCall, Function: stmt.FuncLower}, "a call of function 1 with 0 operands"},
+			{stmt.Expression{Kind: stmt.ExprConcat, Operands: []stmt.Expression{{Kind: stmt.ExprAdd, Operands: []stmt.Expression{column, column}}, text}}, "+ in a concatenation"},
+			{stmt.Expression{Kind: stmt.ExprNegate, Operands: []stmt.Expression{{Kind: stmt.ExprConcat, Operands: []stmt.Expression{text, text}}}}, "|| in arithmetic"},
+			{stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{column, {Kind: stmt.ExprCall, Function: stmt.FuncHex, Operands: []stmt.Expression{text}}}}, "hex in arithmetic"},
+			{stmt.Expression{Kind: stmt.ExprCall, Function: stmt.FuncLower, Operands: []stmt.Expression{{Kind: stmt.ExprNegate, Operands: []stmt.Expression{column}}}}, "- in a call of lower"},
+			{stmt.Expression{Kind: stmt.ExprCall, Function: stmt.FuncLower, Operands: []stmt.Expression{{Kind: stmt.ExprValue, Value: stmt.Integer(1)}}}, "a literal of stmt.Integer in a call of lower"},
+			{stmt.Expression{Kind: stmt.ExprCall, Function: stmt.FuncLower, Operands: []stmt.Expression{{Kind: stmt.ExprValue, Value: stmt.Blob("a")}}}, "a literal of stmt.Blob in a call of lower"},
+			{stmt.Expression{Kind: stmt.ExprCall, Function: stmt.FuncHex, Operands: []stmt.Expression{{Kind: stmt.ExprValue, Value: stmt.Null{}}}}, "a literal of stmt.Null in a call of hex"},
+			{stmt.Expression{Kind: stmt.ExprCall, Function: stmt.FuncHex, Operands: []stmt.Expression{{Kind: stmt.ExprValue, Value: stmt.Real(1)}}}, "a literal of stmt.Real in a call of hex"},
+			{stmt.Expression{Kind: stmt.ExprConcat, Operands: []stmt.Expression{text, {Kind: stmt.ExprValue, Value: stmt.Blob("a")}}}, "a literal of stmt.Blob in a concatenation"},
+			{stmt.Expression{Kind: stmt.ExprValue, Value: stmt.Blob("a")}, "a literal of stmt.Blob in arithmetic"},
 		} {
 			_, err := expr.Check(c.e, resolve)
 			is.True(t, errors.Is(err, expr.ErrInternal), err)
@@ -347,6 +519,17 @@ func TestProgram_Type(t *testing.T) {
 		{name: "should give a real for a real literal", src: "1.0 * a", typ: expr.TypeReal, bound: expr.TypeReal},
 		{name: "should give the type of the operand for a negation", src: "-c", typ: expr.TypeReal, bound: expr.TypeReal},
 		{name: "should give the type of a column alone", src: "b", typ: expr.TypeInteger, bound: expr.TypeInteger},
+		{name: "should give text for a TEXT column alone", src: "s", typ: expr.TypeText, bound: expr.TypeText},
+		{name: "should give a blob for a BLOB column alone", src: "x", typ: expr.TypeBlob, bound: expr.TypeBlob},
+		{name: "should give text for a concatenation", src: "s || 'a'", typ: expr.TypeText, bound: expr.TypeText},
+		{name: "should give text for lower", src: "lower(s)", typ: expr.TypeText, bound: expr.TypeText},
+		{name: "should give text for hex of a blob", src: "hex(x)", typ: expr.TypeText, bound: expr.TypeText},
+		{name: "should give text for a concatenation with a text argument", src: "? || s", args: []*s4qlpb.Value{text("a")}, bound: expr.TypeText},
+		{name: "should give NULL for a concatenation with a NULL argument", src: "s || ?", args: []*s4qlpb.Value{null()}, bound: expr.TypeNull},
+		{name: "should give NULL for lower of a NULL argument", src: "lower(?)", args: []*s4qlpb.Value{null()}, bound: expr.TypeNull},
+		{name: "should give text for hex of a NULL argument, which is the empty text", src: "hex(?)", args: []*s4qlpb.Value{null()}, bound: expr.TypeText},
+		{name: "should give text for hex of a blob argument", src: "hex(?)", args: []*s4qlpb.Value{blob([]byte{1})}, bound: expr.TypeText},
+		{name: "should give text for hex of lower of a NULL argument", src: "hex(lower(? || s))", args: []*s4qlpb.Value{null()}, bound: expr.TypeText},
 		{name: "should give the type of an integer argument when it is bound", src: "a + ?", args: []*s4qlpb.Value{integer(1)}, bound: expr.TypeInteger},
 		{name: "should give the type of a real argument when it is bound", src: "a + ?", args: []*s4qlpb.Value{float(1)}, bound: expr.TypeReal},
 		{name: "should give NULL for a NULL argument", src: "a + -?", args: []*s4qlpb.Value{null()}, bound: expr.TypeNull},
@@ -362,7 +545,7 @@ func TestProgram_Type(t *testing.T) {
 			typ, ok := x.Type()
 			is.Equal(t, test.typ, typ)
 			is.Equal(t, test.typ != 0, ok)
-			b, err := x.Bind(test.args)
+			b, err := x.Bind(test.args, maxLength)
 			is.NotError(t, err)
 			is.Equal(t, test.bound, b.Type())
 		})
@@ -376,7 +559,7 @@ func TestProgram_Bind(t *testing.T) {
 		e.Operands[0].Parameter, e.Operands[1].Parameter = 3, 1
 		x, err := expr.Check(e, resolve)
 		is.NotError(t, err)
-		b, err := x.Bind([]*s4qlpb.Value{integer(10), text("2"), integer(100)})
+		b, err := x.Bind([]*s4qlpb.Value{integer(10), text("2"), integer(100)}, maxLength)
 		is.NotError(t, err)
 		v, err := b.Eval(nil)
 		is.NotError(t, err)
@@ -396,7 +579,7 @@ func TestProgram_Bind(t *testing.T) {
 			{[]*s4qlpb.Value{text("1"), blob([]byte("1"))}, "argument 1 in arithmetic, which is text"},
 			{[]*s4qlpb.Value{blob([]byte("1")), text("1")}, "argument 1 in arithmetic, which is a blob"},
 		} {
-			_, err := x.Bind(c.args)
+			_, err := x.Bind(c.args, maxLength)
 			var ns *stmt.NotSupportedError
 			is.True(t, errors.As(err, &ns), "a *stmt.NotSupportedError")
 			is.Equal(t, c.what, ns.What)
@@ -416,7 +599,7 @@ func TestProgram_Bind(t *testing.T) {
 			{nil, "parameter 1 of 0 arguments"},
 			{[]*s4qlpb.Value{{}}, "argument 1 of no kind"},
 		} {
-			_, err := x.Bind(c.args)
+			_, err := x.Bind(c.args, maxLength)
 			is.True(t, errors.Is(err, expr.ErrInternal), err)
 			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
 		}
@@ -435,7 +618,7 @@ func TestProgram_Bind(t *testing.T) {
 			{math.Inf(1), 0, "? * d"},
 			{math.Inf(-1), 1, "? * d"},
 		} {
-			b, err := x.Bind([]*s4qlpb.Value{float(c.arg)})
+			b, err := x.Bind([]*s4qlpb.Value{float(c.arg)}, maxLength)
 			is.NotError(t, err)
 			_, err = b.Eval(row(integer(0), integer(0), float(1), float(c.d)))
 			var ee *expr.Error
@@ -445,8 +628,20 @@ func TestProgram_Bind(t *testing.T) {
 		}
 	})
 
+	t.Run("should give an internal error for a length limit that is not positive", func(t *testing.T) {
+		e, _, err := parse("s || 'a'")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		for _, limit := range []int{0, -1} {
+			_, err := x.Bind(nil, limit)
+			is.True(t, errors.Is(err, expr.ErrInternal), err)
+			is.Equal(t, fmt.Sprint("s4ql: internal error: a length limit of ", limit), err.Error())
+		}
+	})
+
 	t.Run("should give an internal error for the zero Program", func(t *testing.T) {
-		_, err := (&expr.Program{}).Bind(nil)
+		_, err := (&expr.Program{}).Bind(nil, maxLength)
 		is.True(t, errors.Is(err, expr.ErrInternal), err)
 		is.Equal(t, "s4ql: internal error: a program that is not checked", err.Error())
 	})
@@ -457,7 +652,7 @@ func TestBound_Eval_faults(t *testing.T) {
 	is.NotError(t, err)
 	x, err := expr.Check(e, resolve)
 	is.NotError(t, err)
-	b, err := x.Bind(nil)
+	b, err := x.Bind(nil, maxLength)
 	is.NotError(t, err)
 
 	t.Run("should give an internal error that names the fault for a row without the column", func(t *testing.T) {
@@ -475,12 +670,37 @@ func TestBound_Eval_faults(t *testing.T) {
 		}{
 			{row(float(1), integer(0), float(1), float(0)), "a value of type real in a column of type integer"},
 			{row(integer(1), integer(0), integer(1), float(0)), "a value of type integer in a column of type real"},
-			{row(text("1"), integer(0), float(1), float(0)), "a value of kind text in arithmetic"},
-			{row(&s4qlpb.Value{}, integer(0), float(1), float(0)), "a value of kind not set in arithmetic"},
+			{row(text("1"), integer(0), float(1), float(0)), "a value of type text in a column of type integer"},
+			{row(&s4qlpb.Value{}, integer(0), float(1), float(0)), "a value of kind not set"},
 		} {
 			_, err := b.Eval(c.row)
 			is.True(t, errors.Is(err, expr.ErrInternal), err)
 			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
+		}
+	})
+
+	t.Run("should give an internal error that names the fault for a value of another type than its column of text or blob", func(t *testing.T) {
+		for _, c := range []struct {
+			src  string
+			row  []*s4qlpb.Value
+			want string
+		}{
+			{"s || 'a'", textRow(integer(1), null(), null(), null()), "a value of type integer in a column of type text"},
+			{"lower(t)", textRow(null(), null(), blob([]byte("a")), null()), "a value of type blob in a column of type text"},
+			{"hex(x)", textRow(null(), text("a"), null(), null()), "a value of type text in a column of type blob"},
+			{"hex(s)", textRow(&s4qlpb.Value{}, null(), null(), null()), "a value of kind not set"},
+			{"hex(s)", []*s4qlpb.Value{integer(0)}, "the column at 4 of a row of 1 values"},
+			{"y", textRow(null(), null(), null(), text("a")), "a value of type text in a column of type blob"},
+		} {
+			e, _, err := parse(c.src)
+			is.NotError(t, err)
+			x, err := expr.Check(e, resolve)
+			is.NotError(t, err)
+			b, err := x.Bind(nil, maxLength)
+			is.NotError(t, err)
+			_, err = b.Eval(c.row)
+			is.True(t, errors.Is(err, expr.ErrInternal), err)
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error(), c.src)
 		}
 	})
 
@@ -512,7 +732,7 @@ func TestBound_Eval_allocations(t *testing.T) {
 		is.NotError(t, err)
 		x, err := expr.Check(e, resolve)
 		is.NotError(t, err)
-		b, err := x.Bind([]*s4qlpb.Value{integer(4)})
+		b, err := x.Bind([]*s4qlpb.Value{integer(4)}, maxLength)
 		is.NotError(t, err)
 		r := row(integer(5), integer(3), float(1.5), float(-2))
 		var v expr.Value
@@ -531,6 +751,42 @@ func TestBound_Eval_allocations(t *testing.T) {
 		}
 	})
 
+	t.Run("should allocate once for each operation of text that makes new text, and not for one that gives an operand", func(t *testing.T) {
+		for _, c := range []struct {
+			src         string
+			row         []*s4qlpb.Value
+			args        []*s4qlpb.Value
+			allocations float64
+		}{
+			{"s || t", textRow(text("ab"), null(), text("c"), null()), nil, 1},
+			{"s || ''", textRow(text("ab"), null(), null(), null()), nil, 0},
+			{"? || s", textRow(text("ab"), null(), null(), null()), []*s4qlpb.Value{text("")}, 0},
+			{"s || t", textRow(null(), null(), text("c"), null()), nil, 0},
+			{"lower(s)", textRow(text("aBc"), null(), null(), null()), nil, 1},
+			{"lower(s)", textRow(text("abc é"), null(), null(), null()), nil, 0},
+			{"hex(x)", textRow(null(), blob([]byte{1, 2}), null(), null()), nil, 1},
+			{"hex(?)", textRow(null(), null(), null(), null()), []*s4qlpb.Value{text("é")}, 1},
+			{"hex(?)", textRow(null(), null(), null(), null()), []*s4qlpb.Value{null()}, 0},
+			{"hex(x'0102')", textRow(null(), null(), null(), null()), nil, 1},
+			{"'m_' || lower(hex(x))", textRow(null(), blob([]byte{1, 0x23}), null(), null()), nil, 2},
+			{"'m_' || lower(hex(x))", textRow(null(), blob([]byte{1, 0xab}), null(), null()), nil, 3},
+		} {
+			e, _, err := parse(c.src)
+			is.NotError(t, err)
+			x, err := expr.Check(e, resolve)
+			is.NotError(t, err)
+			b, err := x.Bind(c.args, maxLength)
+			is.NotError(t, err)
+			allocations := testing.AllocsPerRun(100, func() {
+				_, err = b.Eval(c.row)
+			})
+			is.NotError(t, err)
+			if !asanEnabled {
+				is.Equal(t, c.allocations, allocations, c.src)
+			}
+		}
+	})
+
 	t.Run("should allocate nothing to bind an expression without a parameter", func(t *testing.T) {
 		e, _, err := parse("(a + 3) / (b - 1) + -c * 2.5 - d / 7")
 		is.NotError(t, err)
@@ -538,7 +794,7 @@ func TestBound_Eval_allocations(t *testing.T) {
 		is.NotError(t, err)
 		var b expr.Bound
 		allocations := testing.AllocsPerRun(100, func() {
-			b, err = x.Bind(nil)
+			b, err = x.Bind(nil, maxLength)
 		})
 		is.NotError(t, err)
 		is.Equal(t, expr.TypeReal, b.Type())
@@ -557,7 +813,7 @@ func BenchmarkBound_Eval(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	bound, err := x.Bind([]*s4qlpb.Value{integer(4)})
+	bound, err := x.Bind([]*s4qlpb.Value{integer(4)}, maxLength)
 	if err != nil {
 		b.Fatal(err)
 	}

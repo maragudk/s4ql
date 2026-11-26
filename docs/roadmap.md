@@ -64,7 +64,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
   - Text and blobs never meet arithmetic. An integer against a real across a comparison or a `set` is refused.
   - A column may be compared with, or copied from, a column of the same type.
   - Checked with the evaluator against SQLite with generated expressions and a fuzz test, the engine's differential tests, and independent reviews. Its generated workload, simulation with planted bugs (seven), and driver test are built (2026-11-25); the statement pass and the evaluator are mutation-tested (2026-11-26: 645 and 649 mutants, none unexplained), and so is the engine (2026-11-26: 2,488 mutants, none unexplained).
-- The statement pass reads `||`, `lower`, and `hex` (2026-11-26). The evaluator, the engine, and the checks for them are still to come, so no statement with them runs yet. No other function. A `where` compares values and expressions; see [Reading](#reading).
+- The statement pass reads `||`, `lower`, and `hex` (2026-11-26). The evaluator computes them too (2026-11-26), compared with SQLite by generated expressions and a fuzz target. The engine and its checks are still to come, so no statement with them runs yet. No other function. A `where` compares values and expressions; see [Reading](#reading).
 
 **Decided,** with the details in [todo/expressions.md](todo/expressions.md):
 
