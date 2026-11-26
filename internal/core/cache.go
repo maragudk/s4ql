@@ -56,7 +56,8 @@ type conn struct {
 
 // openConn to the cache at path with open, [sqlite.OpenVFS] or [sqlite.OpenExistingVFS], through
 // the SQLite VFS of [Options.VFS], with the busy timeout of [Options.BusyTimeout], after which
-// SQLite reports a lock that it waited for as "busy", and the length limit of the options.
+// SQLite reports a lock that it waited for as "busy", the length limit of the options, and without
+// SQLite's automatic checkpoint.
 func openConn(open func(path, vfs string) (*sqlite.Conn, error), path string, options Options) (*conn, error) {
 	c, err := open(path, options.VFS)
 	if err != nil {
@@ -68,6 +69,12 @@ func openConn(open func(path, vfs string) (*sqlite.Conn, error), path string, op
 		return nil, err
 	}
 	if err := cn.exec(fmt.Sprint("pragma busy_timeout = ", options.BusyTimeout.Milliseconds())); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	// SQLite's automatic checkpoint drops its error, so the core runs every checkpoint itself:
+	// see [DB.checkpoint]. The setting is per connection, and is off on every one.
+	if err := cn.exec("pragma wal_autocheckpoint = 0"); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
@@ -109,9 +116,16 @@ func (c *conn) forget() {
 	clear(c.tables)
 }
 
-// close the connection.
-func (c *conn) close() error {
+// close the connection. With keepLog, the close runs no checkpoint and leaves the write-ahead log
+// as it is, also when it is the last connection to the cache: see [DB.keepLogLocked].
+func (c *conn) close(keepLog bool) error {
 	c.forget()
+	if keepLog {
+		// It fails only on a closed connection, which the close then leaves as it is.
+		if err := c.c.NoCheckpointOnClose(); err != nil {
+			return err
+		}
+	}
 	return c.c.Close()
 }
 
@@ -260,15 +274,17 @@ func (c *conn) readSchema(sql string, row func(s *sqlite.Stmt) error, args ...an
 // version with [ErrCacheVersion], and one that records another identity than the given one with
 // [ErrCacheDatabase].
 //
-// With synchronous = normal, SQLite syncs the write-ahead log only at a checkpoint. After a power
-// loss the cache can then lack its last commits, and is never corrupt
-// (https://sqlite.org/pragma.html#pragma_synchronous). A cache that is behind is what catching up
-// from the log is for, so the sync at every commit that synchronous = full adds buys nothing.
+// With synchronous = full (https://sqlite.org/pragma.html#pragma_synchronous), SQLite syncs the
+// write-ahead log at every commit, before the commit is in the index of the log, so a failed sync of
+// the log fails the commit that needed it. The file of the cache is synced only by a checkpoint that
+// copies the whole log, so a failed sync of the file fails no commit: it surfaces at the checkpoint
+// that [DB.checkpoint] runs after a later commit. Under synchronous = normal SQLite would sync the
+// log only at a checkpoint, and a commit whose frames never reached the disk would succeed.
 func (c *conn) setUp(syncOff bool, identity string) error {
 	if err := c.wal(); err != nil {
 		return err
 	}
-	synchronous := "pragma synchronous = normal"
+	synchronous := "pragma synchronous = full"
 	if syncOff {
 		synchronous = "pragma synchronous = off"
 	}
