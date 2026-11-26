@@ -1341,7 +1341,7 @@ stmt/recognize.go recognizer.unary remove statement: r.reject(unaryName(x.Op)) =
 stmt/stmt.go ExprValue constant: iota + 1 => iota + 2
 	The kinds are named, never counted: they need only differ from each other and from 0, which is no expression.
 
-# The evaluator of arithmetic, internal/expr.
+# The evaluator of expressions, internal/expr.
 
 internal/expr/expr.go TypeInteger constant: iota + 1 => iota + 2
 	The types are named, never counted: they need only differ from each other and from 0, which is no type.
@@ -1349,13 +1349,11 @@ internal/expr/expr.go Check condition: err != nil => false #3
 	typeOf fails only at a parameter, for an argument of the wrong kind or none, and Check calls it only for an expression without a parameter.
 internal/expr/expr.go Check remove statement: return nil, err => #3
 	As the mutant above: typeOf gives no error for an expression without a parameter.
-internal/expr/expr.go Program.add constant: return 0, internalError("a literal of %T in arithmetic", e.Value) => return 1, internalError("a literal of %T in arithmetic", e.Value)
+internal/expr/expr.go Program.add constant: return 0, internalError("a literal of %T %v", e.Value, p) => return 1, internalError("a literal of %T %v", e.Value, p)
 	An index beside an error: every caller of Program.add returns the error and reads no index.
 internal/expr/expr.go Program.add constant: return 0, internalError("a parameter numbered %v", e.Parameter) => return 1, internalError("a parameter numbered %v", e.Parameter)
 	An index beside an error: every caller of Program.add returns the error and reads no index.
 internal/expr/expr.go Program.add constant: 0 => 1
-	An index beside an error: every caller of Program.add returns the error and reads no index.
-internal/expr/expr.go Program.add constant: 0 => 1 #2
 	An index beside an error: every caller of Program.add returns the error and reads no index.
 internal/expr/expr.go Program.add constant: return 0, internalError("a column of type %v", c.Type) => return 1, internalError("a column of type %v", c.Type)
 	An index beside an error: every caller of Program.add returns the error and reads no index.
@@ -1373,14 +1371,14 @@ internal/expr/expr.go Program.typeOf constant: return 0, internalError("paramete
 	A type beside an error: Bind and Check return the error and read no type.
 internal/expr/expr.go Program.typeOf constant: 0 => 1
 	A type beside an error: Bind and Check return the error and read no type.
-internal/expr/expr.go Program.typeOf constant: 0 => 1 #2
-	A type beside an error: Bind and Check return the error and read no type.
 internal/expr/expr.go Program.typeOf constant: return 0, internalError("argument %v of no kind", n.index+1) => return 1, internalError("argument %v of no kind", n.index+1)
 	A type beside an error: Bind and Check return the error and read no type.
 internal/expr/expr.go Program.Bind element: args: args, =>
 	An expression without a parameter reads no argument, so its Bound needs none.
-internal/expr/expr.go evalNode condition: err != nil => false
+internal/expr/expr.go Bound.evalNode condition: err != nil => false #2
 	An error of evalNode comes with the zero Value, which is NULL, so the negation returns the error at the check of NULL anyway.
+internal/expr/expr.go Bound.evalNode condition: err != nil => false #3
+	An error of evalNode comes with the zero Value, which is NULL, so lower returns the error at the check of NULL anyway.
 internal/expr/expr.go integerArithmetic constant: return 0, ErrOverflow => return 1, ErrOverflow
 	A result beside the kind of an error: arithmetic returns the error and reads no result.
 internal/expr/expr.go integerArithmetic constant: return 0, ErrOverflow => return 1, ErrOverflow #2

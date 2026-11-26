@@ -28,8 +28,8 @@ import (
 
 // textRefusal of the statement s: for an insert with ON CONFLICT, the refusal of [upsertRefusal];
 // for a select, an update, or a delete with a concatenation or a call of a function in an expression,
-// which the evaluator does not compute yet, the "not supported" of the first such node in the order
-// of the text, the outer one of two at one offset, as `concatenation`, `call of lower`, or `call of
+// which the engine does not compute yet, the "not supported" of the first such node in the order of
+// the text, the outer one of two at one offset, as `concatenation`, `call of lower`, or `call of
 // hex`; and nil for any other statement. It comes after the checks of the text and of the
 // arguments, and before the database is read, so its answer does not depend on what the database
 // holds: SQLite looks the names inside a call up in an order of its own, which the engine does not
@@ -152,7 +152,9 @@ func bindArithmetic(t *s4qlpb.CreateTable, e stmt.Expression, args []*s4qlpb.Val
 	if err != nil {
 		return nil, fromExpr(err)
 	}
-	bound, err := program.Bind(args)
+	// The engine refuses text before it binds an expression, and arithmetic makes no text, which is
+	// all that the length limit bounds.
+	bound, err := program.Bind(args, math.MaxInt)
 	if err != nil {
 		return nil, fromExpr(err)
 	}

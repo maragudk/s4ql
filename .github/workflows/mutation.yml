@@ -1,0 +1,286 @@
+name: Mutation
+
+# A round of mutation testing, in shards that run at the same time: see
+# internal/sql/mutation/README.md. It starts by hand only, when a piece of work is complete, so that
+# its compute goes to finished code and not to a schedule. By default a round mutates every
+# declaration of the packages that the runner knows that changed since the last recorded round: the
+# commit in internal/sql/mutation/round.txt, which a builder writes when it has worked through a
+# round, or a later run whose whole round left no work, which records itself as the artifact
+# mutation-round. Its inputs can narrow it to a package, a file, or a seeded sample, or widen it to
+# everything. The job plan selects the mutants once,
+# and each shard runs its share of them, which the runner deals out by their keys, so that every
+# shard agrees on it without talking to the others. Each shard plans its packages on its own runner:
+# it builds the tests of the code as it is and times each stage, from which come the time limits of
+# its mutants. The job report merges the results and writes the report into the summary of the run.
+# When the round leaves work, an unexplained survivor, a stale entry of the list of equivalent
+# mutants, a mutant without a result, or a shard or a merge that failed, it opens an issue with the
+# label mutation, or updates the one that is open: until a builder records a round, every run counts
+# from the same commit and reports the same survivors again, with what changed since. A run for
+# which no declaration changed runs no shard and opens nothing. The summary says what the round cost:
+# its runner-minutes, the setup of its shards, the mutants per runner-minute, and the survivors.
+#
+# Nothing else waits on this workflow, and no other workflow or branch protection needs it.
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "round mutates the declarations that changed since the last recorded round; a commit, those that changed since it; all, every declaration."
+        default: round
+      pkgs:
+        description: "The packages to mutate, separated by commas, such as internal/engine or ., or all for every package that the runner knows."
+        default: all
+      run:
+        description: "A regular expression: only the mutants whose key or file:line matches it, such as ^internal/engine/several\\.go for a file. Empty selects all."
+        default: ""
+      sample:
+        description: "Run only this fraction of the mutants, such as 0.2, drawn by the seed: a first pass that shows whether the code has survivors at all. A sample completes no round."
+        default: "1"
+      seed:
+        description: "The seed of the draw of the sample."
+        default: "1"
+      shards:
+        description: "The most shards, up to 256. A selection gets one shard for each 150 mutants, up to this; each shard repeats the setup and the planning."
+        default: "6"
+      issue:
+        description: "Open or update the issue of mutation testing when the run leaves work."
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# The inputs reach the shell through the environment only. The account's plan, GitHub Team, runs at
+# most 60 jobs at once across the organization, and CI of one pull request runs up to 29 and the
+# nightly 15, so the default of at most 6 shards leaves room for both.
+env:
+  SINCE: ${{ inputs.since }}
+  PKGS: ${{ inputs.pkgs }}
+  RUN: ${{ inputs.run }}
+  SAMPLE: ${{ inputs.sample }}
+  SEED: ${{ inputs.seed }}
+  MOST_SHARDS: ${{ inputs.shards }}
+
+jobs:
+  # Selects the mutants and decides the shards. The whole history is fetched, for the diff since the
+  # last round and to check that a recorded round is on the way to this commit.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      base: ${{ steps.select.outputs.base }}
+      mutants: ${{ steps.select.outputs.mutants }}
+      shards: ${{ steps.select.outputs.shards }}
+      matrix: ${{ steps.select.outputs.matrix }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: ./.github/actions/go
+        with:
+          cache: mutation-plan
+
+      # The base of round is the commit of round.txt, or the newest commit of a run on main whose
+      # round left no work, if it comes after that commit and before this one.
+      - name: Select the mutants
+        id: select
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$MOST_SHARDS" in
+          '' | *[!0-9]*) echo "the input shards is not a number from 1 to 256: $MOST_SHARDS" >&2; exit 1 ;;
+          esac
+          if [ "$MOST_SHARDS" -lt 1 ] || [ "$MOST_SHARDS" -gt 256 ]; then
+            echo "the input shards is not a number from 1 to 256: $MOST_SHARDS" >&2
+            exit 1
+          fi
+          case "$SINCE" in
+          all) base= ;;
+          round)
+            base=$(sed -e '/^#/d' -e '/^[[:space:]]*$/d' internal/sql/mutation/round.txt | head -n 1)
+            base=$(git rev-parse --verify "$base^{commit}")
+            for c in $(gh api "repos/$GH_REPO/actions/artifacts?name=mutation-round&per_page=50" \
+              --jq '.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "main") | .workflow_run.head_sha'); do
+              if git merge-base --is-ancestor "$base" "$c" 2>/dev/null && git merge-base --is-ancestor "$c" HEAD; then
+                base=$c
+                break
+              fi
+            done
+            ;;
+          *) base=$(git rev-parse --verify "$SINCE^{commit}") ;;
+          esac
+          go run ./internal/sql/mutation -list -pkgs "$PKGS" -run "$RUN" -since "$base" -sample "$SAMPLE" -seed "$SEED" >"$RUNNER_TEMP/mutants"
+          mutants=$(wc -l <"$RUNNER_TEMP/mutants" | tr -d ' ')
+          shards=$(( (mutants + 149) / 150 ))
+          if [ "$shards" -gt "$MOST_SHARDS" ]; then
+            shards=$MOST_SHARDS
+          fi
+          if [ "$shards" -lt 1 ]; then
+            shards=1
+          fi
+          {
+            echo "base=$base"
+            echo "mutants=$mutants"
+            echo "shards=$shards"
+            echo "matrix=[$(seq -s , 1 "$shards")]"
+          } | tee -a "$GITHUB_OUTPUT"
+          cut -f 1 "$RUNNER_TEMP/mutants" | cut -d : -f 1 | sort | uniq -c
+
+  # Runs the share of one shard, with three mutants at once on the four cores and 16 GB of a runner,
+  # and a limit of 3 GiB on the memory of each test binary, so that three at their limit and the
+  # builds beside them fit; the planning fails if a stage needs more on the code as it is. It uploads
+  # its results, also those of a shard that failed or ran out of time, whose other mutants then have
+  # no result. The run's own limit comes before the job's, so that the upload still runs. The cache
+  # is that of CI's job sql, which builds the same packages without the race detector, so SQLite is
+  # not compiled again; the builds of the mutants are never saved.
+  shard:
+    needs: plan
+    if: ${{ needs.plan.outputs.mutants != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: ./.github/actions/go
+        with:
+          cache: sql
+
+      - name: Run the mutants of the shard
+        timeout-minutes: 300
+        env:
+          BASE: ${{ needs.plan.outputs.base }}
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: go run ./internal/sql/mutation -out "$RUNNER_TEMP/mutation" -pkgs "$PKGS" -run "$RUN" -since "$BASE" -sample "$SAMPLE" -seed "$SEED" -shard "$SHARD" -j 3 -memory 3221225472
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/mutation/fingerprint
+            ${{ runner.temp }}/mutation/results.jsonl
+            ${{ runner.temp }}/mutation/report.txt
+            ${{ runner.temp }}/mutation/timing
+          if-no-files-found: warn
+          retention-days: 30
+
+  # Merges the results of the shards, writes the report into the summary of the run, and on main
+  # opens or updates the issue of the round, as the nightly does for its failures, or records the
+  # round when it left no work. A run that is cancelled reports nothing; a shard that runs out of
+  # time fails, or ends as cancelled, and is reported.
+  report:
+    needs: [plan, shard]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: ./.github/actions/go
+        with:
+          cache: mutation-plan
+
+      - uses: actions/download-artifact@v8
+        if: ${{ needs.plan.outputs.mutants != '0' }}
+        with:
+          pattern: mutation-shard-*
+          path: shards
+
+      - name: Merge the results of the shards
+        id: merge
+        if: ${{ needs.plan.outputs.mutants != '0' }}
+        env:
+          BASE: ${{ needs.plan.outputs.base }}
+        run: go run ./internal/sql/mutation -out merged -merge 'shards/*' -pkgs "$PKGS" -run "$RUN" -since "$BASE" -sample "$SAMPLE" -seed "$SEED"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.merge.outcome != 'skipped' }}
+        with:
+          name: mutation-report
+          path: merged/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Write the report of the round
+        id: report
+        if: ${{ !cancelled() }}
+        env:
+          SHA: ${{ github.sha }}
+          BASE: ${{ needs.plan.outputs.base }}
+          MUTANTS: ${{ needs.plan.outputs.mutants }}
+          SHARDS: ${{ needs.plan.outputs.shards }}
+          SHARD_RESULT: ${{ needs.shard.result }}
+          MERGE_OUTCOME: ${{ steps.merge.outcome }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          sh .github/scripts/mutation-report.sh "$RUNNER_TEMP/report.md" >>"$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/report.md" >>"$GITHUB_STEP_SUMMARY"
+          mkdir -p "$RUNNER_TEMP/round"
+          echo "$SHA" >"$RUNNER_TEMP/round/round"
+
+      # A round of the default selection on main that left no work is complete: the commit of this
+      # run is then the last recorded round, which the job plan of the next round finds.
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() && steps.report.outputs.complete == 'true' && github.ref == 'refs/heads/main' }}
+        with:
+          name: mutation-round
+          path: ${{ runner.temp }}/round/round
+          retention-days: 90
+
+      # An issue's body holds at most 65,536 characters, so a longer report is left in the summary of
+      # the run and in the artifact mutation-report. The body of the one open issue is the report of
+      # the latest run, and a comment marks each run.
+      - name: Open or update the issue of mutation testing
+        if: ${{ !cancelled() && steps.report.outputs.issue == 'true' && github.ref == 'refs/heads/main' && inputs.issue }}
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          BASE: ${{ needs.plan.outputs.base }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$RUNNER_TEMP/report.md"
+          if [ "$(wc -c <"$body")" -gt 60000 ]; then
+            body="$RUNNER_TEMP/short.md"
+            echo "The report of the mutation round is too long for an issue. It is in the summary of $RUN_URL, and in its artifact mutation-report." >"$body"
+          fi
+          title="Mutation testing since ${BASE:-the start} leaves work"
+          if [ -n "$BASE" ]; then
+            title="Mutation testing since $(echo "$BASE" | cut -c 1-8) leaves work"
+          fi
+          gh label create mutation --color 5319E7 --description "A round of mutation testing left work" || true
+          existing="$(gh issue list --label mutation --state open --limit 1 --json number --jq '.[].number')"
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body-file "$body"
+            gh issue comment "$existing" --body "The round of $RUN_URL replaced the report above."
+          else
+            gh issue create --title "$title" --label mutation --body-file "$body"
+          fi

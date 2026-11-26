@@ -128,6 +128,18 @@ type result struct {
 	// the compiler.
 	Detail  string `json:",omitempty"`
 	Seconds float64
+	// Build is the seconds spent building the test binaries of the stages that ran, or that failed to
+	// build.
+	Build float64 `json:",omitempty"`
+	// Stages that ran, in order, with the seconds of each.
+	Stages []stageSeconds `json:",omitempty"`
+}
+
+// stageSeconds of one stage of a mutant.
+type stageSeconds struct {
+	Layer   string
+	Pkg     string
+	Seconds float64
 }
 
 const (
@@ -381,6 +393,7 @@ func (r *runner) runIn(ctx context.Context, m mutant, dir string) result {
 	if err := os.WriteFile(overlay, data, 0o644); err != nil {
 		return result{Status: statusError, Detail: err.Error()}
 	}
+	var cost result
 	built := map[string]string{}
 	defer func() {
 		for _, bin := range built {
@@ -391,17 +404,25 @@ func (r *runner) runIn(ctx context.Context, m mutant, dir string) result {
 		bin, ok := built[s.pkg]
 		if !ok {
 			bin = filepath.Join(dir, binName(s.pkg))
-			if msg, err := r.build(ctx, s.pkg, overlay, bin); err != nil {
-				return result{Status: statusUncompiled, Detail: firstLines(msg, 3)}
+			start := time.Now()
+			msg, err := r.build(ctx, s.pkg, overlay, bin)
+			cost.Build += time.Since(start).Seconds()
+			if err != nil {
+				return result{Status: statusUncompiled, Detail: firstLines(msg, 3), Build: cost.Build, Stages: cost.Stages}
 			}
 			built[s.pkg] = bin
 		}
-		if res := r.runStage(ctx, bin, s, s.timeout); res.Status != statusSurvived {
+		start := time.Now()
+		res := r.runStage(ctx, bin, s, s.timeout)
+		cost.Stages = append(cost.Stages, stageSeconds{Layer: s.layer, Pkg: s.pkg, Seconds: time.Since(start).Seconds()})
+		if res.Status != statusSurvived {
+			res.Build, res.Stages = cost.Build, cost.Stages
 			return res
 		}
 	}
-	return result{Status: statusSurvived}
+	return result{Status: statusSurvived, Build: cost.Build, Stages: cost.Stages}
 }
+
 
 var (
 	failLine  = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
@@ -530,6 +551,12 @@ func readResults(path string) (map[string]result, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseResults(path, data)
+}
+
+// parseResults of the file of results at path, whose content is data.
+func parseResults(path string, data []byte) (map[string]result, error) {
+	results := map[string]result{}
 	for line := range strings.Lines(string(data)) {
 		var res result
 		if err := json.Unmarshal([]byte(line), &res); err != nil {
