@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -252,6 +253,14 @@ func TestDB_checkpoint(t *testing.T) {
 		is.NotError(t, tx.Upsert(t.Context(), "t1", row(3, 3)))
 		full := make(chan error, 1)
 		go func() { full <- other.Exec("pragma wal_checkpoint(full)") }()
+		ended := sync.OnceValue(func() error { return <-full })
+		defer func() {
+			// After a failure, the write transaction and the read end here, so that the full
+			// checkpoint ends before its connection closes.
+			_ = tx.Rollback(t.Context())
+			_ = reader.Exec("rollback")
+			_ = ended()
+		}()
 		for sleeps, _ := vfs.Slept(); sleeps == 0; sleeps, _ = vfs.Slept() {
 			time.Sleep(time.Millisecond)
 		}
@@ -268,7 +277,7 @@ func TestDB_checkpoint(t *testing.T) {
 		// Once the read has ended, the full checkpoint copies the whole log, and the next commit's
 		// checkpoint runs.
 		is.NotError(t, reader.Exec("commit"))
-		is.NotError(t, <-full)
+		is.NotError(t, ended())
 		transact(t, d, upsert("t1", 4, 4))
 		checkpoints = rec.named(core.EventCheckpoint)
 		is.Equal(t, "checkpointed", checkpoints[len(checkpoints)-1][core.AttrOutcome])
