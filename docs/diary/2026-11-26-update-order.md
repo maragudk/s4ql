@@ -99,3 +99,62 @@ At the nightly's sizes after the last change: `go test -count=1 -p 3 -run '^Test
 ### Future work
 
 A generator of its own that reaches "update whose first row to fail is another in SQLite's order than in the order of the key", then the kind made required; see `/docs/todo/update-order.md`.
+
+## Step 3: pay for SQLite's order only when a row fails
+
+**Author:** builder (update-order-2)
+
+### Prompt Context
+
+**Verbatim prompt:** "Your task: a bounded round of changes after an independent review of the branch `update-order`. [...] 1. **Pay for the order only when a row fails.** [...] Change the design: an update changes its rows in the order of the key, as on `main`. Only when a row fails (an error of SET, of a check such as NOT NULL or the length limit, or of WHERE) does the engine find out which error SQLite would give: take the statement back to its savepoint, as a failing statement is taken back anyway, and replay it in SQLite's order [...] If the replay, against expectation, meets no failing row, that is a fault of the engine: fail loudly, do not return success. [...] 2. **A wrong order among equal index values goes unnoticed.** [...] 3. **The excuse can be widened without a test noticing.** [...]" (abridged; the brief is the lead's)
+**Interpretation:** keep step 2's rules, but follow them only in a second run that starts from the statement's savepoint after a failed first run in key order; pin the tie of `ib (b)` and the third error of the pair's excuse.
+**Inferred intent:** SQLite's error without making every update by an index slower, and a replay that cannot change what a caller sees.
+
+### What I did
+
+- Merged `origin/main` first (clean, no conflicts).
+- `/internal/engine/operator.go`: the interface `replayer` (`mayReplay`, `replays`, `replay`), and on `update`: `run` in the order of the key where SQLite's order is an index's, `replay` in `u.changes`, the shared body `runIn`, and `failsRow` (an error of the WHERE as `ofRow` says, a constraint, or `string or blob too big`).
+- `/internal/engine/engine.go`: `runSink` (roll back to the savepoint, open it again, replay, leave the replay's reads out of `report.before`, internal error for a replay without an error, success for the planted bug `evalStops`) and `runSavepointed` for a statement of its own, which takes a savepoint only for an update that may replay and releases it after the run. `/internal/engine/tx.go`: `writeIn` calls `runSink`.
+- Tests: in `TestEngine_updateOrder` the tie of `ib (b)`, the roll back before the replay, a first run that fails on a long record and one with an evaluation error of SET, and an update of its own and in a transaction that goes on; `TestRunSink` with fakes over `memTx`; a third error in `TestPair_updateOrder`.
+- Planted and taken back, never committed: ties by the key in reverse in `build.changeOrder` (only the new tie case fails); no roll back before the replay (only the new roll-back case fails); `replays` always false (seven cases of `TestEngine_updateOrder` fail); the excuse `rowFailure(byEngine)` (fails `TestPair_updateOrder` with "the engine's error is of a row, but of no first row"); `failsRow` without `CodeTooBig`, and without `ofRow` (each fails its new case); the replay's reads counted (fails the transaction case).
+- `/internal/sql/mutation/equivalent.txt`: the mutants of `update.run` renamed to `update.runIn`, the one of `errStopped` back to `update.run`, and one for `runSink`.
+- Measured with `/Volumes/990/s4ql/update-order-2/zz_bench_test.go` (not committed) against `main` at 34c3043a and step 2 at 56c1ae76; the numbers are in `/docs/todo/update-order.md`.
+
+### Why
+
+Which rows fail does not depend on the order where SQLite's order is that of an index: that update sets no column of the key or of the index, has no subquery and no RETURNING, and s4ql has no unique index, check, or trigger, so a row fails by its own values alone. So a run in the order of the key that succeeds is SQLite's answer, and only a failure needs SQLite's order.
+
+### What worked
+
+Planting each fault before trusting a new test: every new case fails for exactly its fault. The CPU time of the process, in interleaved rounds less the setup, gave usable numbers where the clock varied by 30% to 55%.
+
+### What didn't work
+
+- The first benchmark run measured nothing for the new tree: I moved `/internal/engine/zz_bench_test.go` out of the worktree while `bench.sh` was building, and `new.test -test.list Bench` listed nothing. The trees are now each an archive in `/Volumes/990/s4ql/update-order-2/`.
+- `git checkout internal/engine/operator.go` to take back a planted fault was refused by the classifier, rightly: it would have thrown away the uncommitted change. Plants are now made and taken back with Edit.
+- Several compound shell commands were refused as "too complex to verify that it stays inside the worktree" (a `git archive -o` into the scratch directory, a `perl` script fed from a heredoc next to `cp`); single commands and the Edit tool worked.
+- `make test` failed once in `/internal/sql/mutation`: `no such mutant: internal/engine/operator.go update.run condition: err != nil => false #3`, from the split of `update.run`; after the review's change, `no such mutant: internal/engine/operator.go update.runIn swap arguments: errors.Is(err, errStopped) => errors.Is(errStopped, err)`. Both renamed.
+
+### What I learned
+
+The clock is no measure on this machine while other agents run mutation rounds (load 16 to 28). Allocations per operation are deterministic but miss the cost of step 2, which lies in SQLite (the numbering into a second table) and not in Go. A subquery in SET is refused today, so `b.subs != nil` in `build.changeOrder` means a subquery in WHERE in every statement that runs.
+
+### What was tricky
+
+A statement of its own has no savepoint, and a commit refuses one that is open, so `runSavepointed` must release it after every run, also a failed one, before the planted bug `commitFailed` commits. In a transaction the savepoint must be open again after the replay, for the roll back of the failed statement. The planted bug `evalStops` turned a replay into an internal error, which both reviewers found and which `TestSimulation_plantedBugs` would have reported as "finds the bug by another violation".
+
+### What warrants review
+
+`runSink` and `runSavepointed` in `/internal/engine/engine.go`, and the argument in the comment of `update.replay` that a replay cannot succeed. `failsRow`: an error that it leaves out is given in the order of the key; one that it takes in wrongly is replayed, which could turn a storage error into an internal error if the replay then succeeded.
+
+### Self-review
+
+`make test` and `make lint` passed; the new tests passed with `-count=50` and with `-race -count=3`. The code-review skill's two reviewers found no case where the replay gives a wrong error, keeps state, or succeeds outside a planted bug. Both found the `evalStops` internal error (fixed). Also fixed: no test of `failsRow`'s too-big and evaluation branches (two cases added), no test of the failures of the savepoint, its release, and the roll back (`TestRunSink`), a transaction test whose runs changed no row before failing (now they change two, and the transaction goes on), a dead guard on `r.reader`, two checks of the same invariant, the claim that a failed replay always counts 0 changes (an evaluation error leaves the count, as for any statement), and stale comments and README lines (`update.run`, the `changes` field, "only a transaction that spans statements calls savepoint"). Left: the fake `replaying` is in `engine_internal_test.go` with its sentinel `errReplayed`; no cancel test of an update by an index (reviewer B cancelled one at each of 400 calls in a scratch copy and found every outcome right).
+
+### The long runs
+
+At the nightly's sizes after the last change of code (0919f73c), run at once on a machine under a load of about 25: `go test -count=1 -p 3 -run '^TestDifferential$' -timeout 40m ./internal/engine/ -sequences 400` passed in 1,105 s, `S4QL_ENGINE_SIM_SEEDS=100 go test -count=1 -run '^TestSimulation$' ./internal/engine/` passed in 466 s, and `go test ./drivercheck/` from `/internal/sqlite/crosscheck` passed in 61 s. None found anything. No planted bugs at 1,000 seeds and no mutation round, as the brief said; the change of `evalStops` is checked by `TestRunSink` only.
+
+### Future work
+
+The generator that reaches the kind, as in step 2. Whether the rules of an update's access follow SQLite's costs stays the lead's question.
