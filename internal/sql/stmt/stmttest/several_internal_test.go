@@ -27,6 +27,11 @@ func TestSequence_several(t *testing.T) {
 				if c.Query {
 					reached["query"]++
 				}
+				for _, form := range []string{"create trigger", `"c;`, "'k;", "/* a; b */", "/* ; */", "-- a;", "-- ;"} {
+					if strings.Contains(c.Src, form) {
+						reached[form]++
+					}
+				}
 				if !c.Each {
 					reached["a text that is no statement of the sequence"]++
 				}
@@ -75,7 +80,8 @@ func TestSequence_several(t *testing.T) {
 			"space after a statement that SQLite reads as part of a token", "space at the end of the text that SQLite reads as part of a token",
 			"CreateTable", "Insert", "Select", "Update", "Delete", "CreateIndex", "DropIndex", "DropTable", "last statement with RETURNING",
 			"a statement that Split refuses", "fewer arguments than parameters", "more arguments than parameters", "as many arguments as parameters",
-			"an empty statement or a comment at the end", "a statement twice"} {
+			"an empty statement or a comment at the end", "a statement twice",
+			"create trigger", `"c;`, "'k;", "/* a; b */", "/* ; */", "-- a;", "-- ;"} {
 			is.True(t, reached[what] >= 3, fmt.Sprint(what, ": ", reached[what]))
 		}
 	})

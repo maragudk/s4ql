@@ -4030,6 +4030,17 @@ func TestDifferential(t *testing.T) {
 		if total["excused: "+excusedLong] == 0 {
 			t.Errorf("no literal is longer than the length limit")
 		}
+		// Kinds that the mixed profile reaches twice, below the three times that a row of the file
+		// needs, since it writes texts of several statements in place of some statements, which the
+		// run must reach once at least.
+		for _, kind := range []string{
+			"reached: arithmetic with a column in WHERE of a delete, no such column",
+			"reached: arithmetic without a column in WHERE of a delete, wrong number of arguments",
+		} {
+			if total[kind] == 0 {
+				t.Errorf("no profile reaches %q", kind)
+			}
+		}
 	case full && n > flagDefault("sequences"):
 		// More sequences of each profile, those of the full run among them.
 		checkReached(t, doc, names, runs, true)

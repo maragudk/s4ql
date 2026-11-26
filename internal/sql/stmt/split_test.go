@@ -112,10 +112,12 @@ func TestSplit(t *testing.T) {
 		for src, want := range map[string]string{
 			"drop table t;\u00a0":               "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 13)",
 			"drop table t; drop table u \u00a0": "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 27)",
-			"drop table t; /* c */\u00a0":       "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 21)",
-			"drop table t; select 'abc  ":       "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 25)",
-			"drop table t; /* ":                 "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 16)",
-			"drop table t; drop table \"u \n":   "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 27)",
+			// The first of two.
+			"drop table t; drop table u \u00a0 \u00a0": "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 27)",
+			"drop table t; /* c */\u00a0":              "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 21)",
+			"drop table t; select 'abc  ":              "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 25)",
+			"drop table t; /* ":                        "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 16)",
+			"drop table t; drop table \"u \n":          "s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 27)",
 		} {
 			parts, err := stmt.Split(src)
 			is.Equal(t, 0, len(parts), src)

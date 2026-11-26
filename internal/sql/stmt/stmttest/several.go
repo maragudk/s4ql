@@ -10,16 +10,16 @@ import (
 
 // severalLeads stand before the first statement of a text of several statements: spaces, comments,
 // and empty statements, which SQLite and mattn skip.
-var severalLeads = []string{" ", "\n", "-- c\n", "/* c */ ", ";", " ; ", ";\n-- c\n"}
+var severalLeads = []string{" ", "\n", "-- c\n", "/* c */ ", ";", " ; ", ";\n-- c\n", "/* a; b */ ", "-- a;\n"}
 
 // severalSeparators stand between two statements of a text of several statements: a semicolon, with
 // spaces, comments, and empty statements around it.
-var severalSeparators = []string{";", "; ", ";\n", " ;\t", ";\r\n", "; -- c\n", ";/* c */", "/* c */;\n", ";;", "; ;\n", ";\n-- c\n;\n", "\n;"}
+var severalSeparators = []string{";", "; ", ";\n", " ;\t", ";\r\n", "; -- c\n", ";/* c */", "/* c */;\n", ";;", "; ;\n", ";\n-- c\n;\n", "\n;", "; /* a; b */ ", ";\n-- ;\n"}
 
 // severalEnds stand after the last statement of a text of several statements: a semicolon, with
 // spaces after it, which mattn trims, an empty statement or a comment after it, for which mattn's
 // result is 0 rows affected, and a comment without a semicolon, which belongs to the statement.
-var severalEnds = []string{";", "; ", ";\n", ";;", "; ;", "; -- c", "; /* c */", ";\n-- c\n", " -- c", " /* c */"}
+var severalEnds = []string{";", "; ", ";\n", ";;", "; ;", "; -- c", "; /* c */", ";\n-- c\n", " -- c", " /* c */", "; /* ; */", " -- a; b"}
 
 // severalTrimmed are spaces that Go's strings.TrimSpace removes, which mattn trims from the tail of
 // a text after each statement, and that SQLite reads as part of a token: characters of a name from
@@ -31,15 +31,33 @@ var severalTrimmed = []string{" ", "\v", " ", "\u0085", "　", " ", " "}
 // string without its closing quote, whose spaces the trim takes from SQLite's message.
 var severalTrimmedEnds = []string{"; /* ", "; select 'abc  ", ";\n/*\t"}
 
+// severalTrigger is a CREATE TRIGGER of a number and a table, whose body holds two statements, each
+// with its semicolon, which SQLite reads as one statement that ends after END, and s4ql refuses.
+const severalTrigger = "create trigger if not exists tr%v after insert on %v begin select 1; select 2; end"
+
+// severalChain is a create table, an insert into the table, and an update of the row, which depend
+// on each other, of one of two tables and one of three keys at random from r: the name of the table
+// in double quotes and the key in a string, each holding a semicolon. A second chain of the same
+// table and key fails on the key at its insert.
+func severalChain(r Rand) []string {
+	table, key := fmt.Sprintf(`"c;%v"`, r.IntN(2)), fmt.Sprintf("'k;%v'", r.IntN(3))
+	return []string{
+		"create table if not exists " + table + " (k text primary key, v int) strict, without rowid",
+		"insert into " + table + " (k, v) values (" + key + ", 1)",
+		"update " + table + " set v = 2 where k = " + key,
+	}
+}
+
 // several is a call of a text of several statements, two to five, as glue's migrations and goqite's
 // schema run through Exec, with the arguments of their parameters in order. Each statement is one
 // that the sequence writes, as [Sequence.statement] writes it, with the number of a statement of the
 // sequence of its own, so that each draws as a statement alone does, and the last one, one time in
 // three, with RETURNING if it is an insert, an update, or a delete; or, one time in twelve after
 // the first, an earlier statement of the text again, such as an insert that then fails on its key;
-// or, as a fault one time in 24 each, a text of [Others] or of [ArithmeticRefused], which SQLite does
-// not prepare, s4ql does not support, or that fails, also first, and which may hold a second
-// statement, or a string without its end that holds the rest of the text. Before the first
+// or, one time in 24, the statements of [severalChain], as many as the text has room for; or, as a
+// fault one time in 24 each, a text of [Others] or of [ArithmeticRefused], which SQLite does not
+// prepare, s4ql does not support, or that fails, also first, and which may hold a second statement,
+// or a string without its end that holds the rest of the text, or a [severalTrigger]. Before the first
 // statement, one time in four, and between two, stand spaces, comments, and empty statements, of
 // [severalLeads] and [severalSeparators], and after the last one of [severalEnds], or nothing. As
 // faults: the arguments lack the last one, one time in 16, or have one more, one time in 16; and
@@ -47,6 +65,17 @@ var severalTrimmedEnds = []string{"; /* ", "; select 'abc  ", ";\n/*\t"}
 // text, or the text ends in one of [severalTrimmedEnds], which s4ql refuses. One call in eight is a
 // query, which s4ql refuses for its second statement, as it refuses a prepared statement of the text.
 func (q *Sequence) several() Call {
+	if p := q.profile; p.on(areaArithmetic) && (p.Limit > 0 || p.Subquery > 0) {
+		// A select with LIMIT and without ORDER BY, or with a subquery, whose arithmetic fails on a row
+		// fails or gives rows by the rows that s4ql's scans meet first, in the directions that s4ql
+		// draws from its host. In a text of several statements, that decides whether the statements
+		// after it run, and with them the state and the counts of the rest of the sequence. So the
+		// statements of such a text have no LIMIT and no subquery where they may have arithmetic.
+		steady := *p
+		steady.Limit, steady.Subquery, steady.SubqueryLimit = 0, 0, 0
+		q.profile = &steady
+		defer func() { q.profile = p }()
+	}
 	r := q.rSeveral
 	n := 2 + r.IntN(4)
 	var b strings.Builder
@@ -56,6 +85,8 @@ func (q *Sequence) several() Call {
 	// texts and args of the statements that the text holds, for one that runs again.
 	var texts []string
 	var args [][]any
+	// chain holds the statements of [severalChain] that the text has yet to write.
+	var chain []string
 	each := true
 	trimmed, trimmedAt := q.fault(r, areaSeveral, 12), -1
 	if trimmed {
@@ -76,6 +107,8 @@ func (q *Sequence) several() Call {
 		var text string
 		var a []any
 		switch d := r.IntN(12); {
+		case len(chain) > 0:
+			text, chain = chain[0], chain[1:]
 		case d == 0 && j > 0:
 			i := r.IntN(len(texts))
 			text, a = texts[i], args[i]
@@ -85,6 +118,12 @@ func (q *Sequence) several() Call {
 		case d == 2 && q.profile.on(areaArithmetic) && q.fault(r, areaSeveral, 2):
 			form := ArithmeticRefused[r.IntN(len(ArithmeticRefused))]
 			text = fmt.Sprintf(form, q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))])
+			each = false
+		case d == 3 && r.IntN(2) == 0:
+			chain = severalChain(r)
+			text, chain = chain[0], chain[1:]
+		case d == 3 && q.fault(r, areaSeveral, 2):
+			text = fmt.Sprintf(severalTrigger, r.IntN(3), q.tables[r.IntN(len(q.tables))])
 			each = false
 		default:
 			// One last statement in three that can have RETURNING has it.
