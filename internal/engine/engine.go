@@ -572,11 +572,13 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	// The transaction ends with its commit, whatever the commit gives.
 	ended = true
-	if t := textOf(ctx); e.bugs.commitLater && t != nil && t.follows {
-		// The planted bug: the commit when the next statement starts.
-		t.later = func(ctx context.Context) { _ = tx.commit(ctx) }
-		r.rows = n
-		return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
+	if e.bugs.commitLater {
+		if t := textOf(ctx); t != nil && t.follows {
+			// The planted bug: the commit when the next statement starts.
+			t.later = func(ctx context.Context) { _ = tx.commit(ctx) }
+			r.rows = n
+			return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
+		}
 	}
 	if err := commitError(tx.commit(ctx)); err != nil {
 		if e.bugs.rowsOfFailed && returns && returnsOf(s) != nil {

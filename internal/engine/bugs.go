@@ -237,6 +237,9 @@ func (t *textRun) commit(ctx context.Context) {
 // planted bug annotateText the whole text, and with argsFromStart the arguments of the text from the
 // first on, as many as args.
 func (b bugs) annotation(ctx context.Context, sql string, args []*s4qlpb.Value) (string, []*s4qlpb.Value) {
+	if !b.annotateText && !b.argsFromStart {
+		return sql, args
+	}
 	t := textOf(ctx)
 	if t == nil {
 		return sql, args
@@ -251,15 +254,14 @@ func (b bugs) annotation(ctx context.Context, sql string, args []*s4qlpb.Value) 
 }
 
 // commitFailed commits the write transaction tx of a statement of a text of several that failed while
-// it ran, with its annotation of the text sql and the arguments args, and reports whether it did: the
-// planted bug commitFailed.
+// it ran, with its annotation of the text sql and the arguments args, and reports whether it ended the
+// transaction so: the planted bug commitFailed. A transaction whose annotation fails is left to be
+// rolled back.
 func (c *Conn) commitFailed(ctx context.Context, tx writeTx, sql string, args []*s4qlpb.Value) bool {
-	if !c.e.bugs.commitFailed || textOf(ctx) == nil {
+	if !c.e.bugs.commitFailed || textOf(ctx) == nil || tx.annotate(ctx, sql, args) != nil {
 		return false
 	}
-	if tx.annotate(ctx, sql, args) == nil {
-		_ = tx.commit(ctx)
-	}
+	_ = tx.commit(ctx)
 	return true
 }
 

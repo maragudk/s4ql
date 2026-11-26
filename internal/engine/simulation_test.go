@@ -567,9 +567,12 @@ func (r *run) open(ctx context.Context, n *node) error {
 			r.mu.Unlock()
 		}
 		if text, ok := ctx.Value(severalKey{}).(*severalText); ok {
-			// The event of the statement takes them: see [run.logged].
+			// They are of the statement after those whose events are logged, which runs now, also if its
+			// instance crashes before its event.
 			r.mu.Lock()
-			text.subqueries = slices.Clone(vs)
+			if k := len(text.events); k < len(text.attempts) {
+				text.attempts[k].subqueries = slices.Clone(vs)
+			}
 			r.mu.Unlock()
 		}
 		return vs
@@ -700,9 +703,6 @@ type severalText struct {
 	// number of the first of them whose outcome was not ok, or -1.
 	events   []severalEvent
 	failedAt int
-	// subqueries are the values that the engine computed last for the subqueries of the statement
-	// that runs, which its event takes.
-	subqueries []*s4qlpb.Value
 	// returned is set when the call returned, with err.
 	returned bool
 	err      error
@@ -734,8 +734,12 @@ func (r *run) several(ctx context.Context, n *node, c *engine.Conn, gen int, cal
 	parts := sqliteParts(call.Src)
 	want, why := refusedBefore(call.Src, len(call.Args), parts)
 	text := &severalText{n: n, tx: tx, refused: why != "", want: want, failedAt: -1}
-	r.mu.Lock()
 	src := call.Src
+	if !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
+		// The generator writes no such text.
+		r.violate(ctx, "the oracle has no rule of the text %q, which is not valid UTF-8 or holds NUL", src)
+	}
+	r.mu.Lock()
 	if text.refused || !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
 		// The text writes nothing, so it needs no ID.
 		text.refused = true
@@ -795,7 +799,8 @@ func (r *run) several(ctx context.Context, n *node, c *engine.Conn, gen int, cal
 }
 
 // logged the event ev of a statement of the text, which the engine logged in its call of ExecAll,
-// and record what it says in the attempt in its place, as [run.several] says. The caller holds r.mu.
+// and record what it says in the attempt in its place, as [run.several] says; the values of its
+// subqueries are there already, from the observer of [run.open]. The caller holds r.mu.
 func (r *run) logged(text *severalText, ev severalEvent, position, access, index string, nothing bool) {
 	text.events = append(text.events, ev)
 	k := len(text.events) - 1
@@ -804,7 +809,6 @@ func (r *run) logged(text *severalText, ev severalEvent, position, access, index
 	}
 	a := text.attempts[k]
 	a.position, a.access, a.index, a.nothing = position, access, index, nothing
-	a.subqueries, text.subqueries = text.subqueries, nil
 	a.stop = r.tick()
 	if text.failedAt >= 0 || ev.outcome != "ok" {
 		if text.failedAt < 0 {
