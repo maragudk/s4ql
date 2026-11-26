@@ -4568,6 +4568,7 @@ func TestPair_updateOrder(t *testing.T) {
 	}{
 		{name: "should compare and count an update by an index whose first row to fail is another than in the order of the key", src: "update t set x = nx, y = ny where a > 0", reached: true},
 		{name: "should excuse an update without WHERE that SQLite reads by an index and the engine by the key, as each row alone gives it", src: "update t set x = nx, y = ny", reached: true, excused: true},
+		{name: "should find the table in SQLite's plan as the statement spells it", src: "update T set x = nx, y = ny", reached: true, excused: true},
 		{name: "should neither count nor excuse an update in the order of the key in both", src: "update t set x = nx, y = ny where k > 0"},
 		{name: "should neither count nor excuse an update that sets the key, which both change in the order of the key", src: "update t set k = k, x = nx, y = ny where a > 0"},
 	}
