@@ -211,8 +211,11 @@ func TestBound_Eval_text(t *testing.T) {
 		args   []*s4qlpb.Value
 		limit  int
 		sqlite expr.Value
-		err    error
-		at     string
+		// err is the kind of s4ql's error, at the text of at; SQLite fails then too, unless
+		// sqliteGives, where it gives sqlite.
+		err         error
+		at          string
+		sqliteGives bool
 	}{
 		{name: "should join two texts, the left first", src: "s || t", row: textRow(text("ab"), null(), text("Éa"), null()), sqlite: expr.TextValue("abÉa")},
 		{name: "should join a literal and a column", src: "'a' || s", row: textRow(text("b"), null(), null(), null()), sqlite: expr.TextValue("ab")},
@@ -259,6 +262,14 @@ func TestBound_Eval_text(t *testing.T) {
 		{name: "should refuse lower of a concatenation as long as the limit", src: "lower(s || t)", row: textRow(long(500), null(), long(500), null()), limit: 1000, err: expr.ErrTooLong, at: "lower(s || t)"},
 		{name: "should refuse a text longer than the limit beside NULL, as SQLite does", src: "? || hex(s)", row: textRow(long(500), null(), null(), null()), args: []*s4qlpb.Value{null()}, limit: 1000,
 			err: expr.ErrTooLong, at: "hex(s)"},
+		{name: "should join bytes that are not valid UTF-8 as they are", src: "? || ?", row: none, args: []*s4qlpb.Value{text("\xffA"), text("\xc3")}, sqlite: expr.TextValue("\xffA\xc3")},
+		{name: "should take a limit below 30 as 30, as SQLite does", src: "s || t", row: textRow(long(15), null(), long(15), null()), limit: 10, sqlite: expr.TextValue(long(15).GetText() + long(15).GetText())},
+		{name: "should refuse a text longer than a limit below 30 taken as 30", src: "s || t", row: textRow(long(15), null(), long(16), null()), limit: 10, err: expr.ErrTooLong, at: "s || t"},
+		{name: "should refuse a text literal longer than the limit, also beside NULL, as SQLite does", src: "s || '" + strings.Repeat("a", 31) + "'", row: none, limit: 30,
+			err: expr.ErrTooLong, at: "'" + strings.Repeat("a", 31) + "'"},
+		{name: "should take a text literal as long as the limit", src: "s || '" + strings.Repeat("a", 30) + "'", row: none, limit: 30, sqlite: expr.Value{}},
+		{name: "should refuse a blob literal longer than the limit, which SQLite reads as NULL", src: "hex(x'" + strings.Repeat("00", 31) + "')", row: none, limit: 30,
+			err: expr.ErrTooLong, at: "x'" + strings.Repeat("00", 31) + "'", sqliteGives: true, sqlite: expr.TextValue("")},
 	}
 	o := newOracle(t)
 	for _, test := range tests {
@@ -270,7 +281,7 @@ func TestBound_Eval_text(t *testing.T) {
 			e, full, err := parse(test.src)
 			is.NotError(t, err)
 			sqliteValue, err := o.value(full[e.Span.Start:e.Span.End], test.row, test.args, limit)
-			if test.err != nil {
+			if test.err != nil && !test.sqliteGives {
 				is.Equal(t, errTooBig, err, "SQLite's error")
 			} else {
 				is.NotError(t, err)
@@ -280,8 +291,10 @@ func TestBound_Eval_text(t *testing.T) {
 			x, err := expr.Check(e, resolve)
 			is.NotError(t, err)
 			b, err := x.Bind(test.args, limit)
-			is.NotError(t, err)
-			v, err := b.Eval(test.row)
+			var v expr.Value
+			if err == nil {
+				v, err = b.Eval(test.row)
+			}
 			if test.err == nil {
 				is.NotError(t, err)
 				is.Equal(t, test.sqlite, v)
@@ -293,9 +306,26 @@ func TestBound_Eval_text(t *testing.T) {
 			is.True(t, errors.Is(err, test.err), "the kind of the error")
 			is.True(t, errors.Is(err, expr.ErrEvaluation))
 			is.Equal(t, test.at, full[ee.Span.Start:ee.Span.End])
+			n, ok := nodeAt(e, ee.Span)
+			is.True(t, ok, "a node at the span")
+			is.Equal(t, n.Kind, ee.Op)
+			is.Equal(t, n.Function, ee.Function)
 			is.Equal(t, expr.Value{}, v)
 		})
 	}
+}
+
+// nodeAt the span in e: the node of e or of its operands with that span, and whether one has it.
+func nodeAt(e stmt.Expression, span stmt.Span) (stmt.Expression, bool) {
+	if e.Span == span {
+		return e, true
+	}
+	for _, o := range e.Operands {
+		if n, ok := nodeAt(o, span); ok {
+			return n, true
+		}
+	}
+	return stmt.Expression{}, false
 }
 
 // The facts of SQLite 3.54.1 for the refusals of text and blobs, which SQLite computes as numbers,

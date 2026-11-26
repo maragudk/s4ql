@@ -512,6 +512,10 @@ func (g *generator) textCase() exprCase {
 	}
 	if g.limit > 0 && !root.leaf() && !g.deep && g.r.IntN(4) > 0 {
 		g.edgeOfLimit(root)
+		if g.r.IntN(4) == 0 {
+			// NULL beside an operation at the edge of the limit, whose error comes all the same.
+			root = &gnode{kind: stmt.ExprConcat, operands: []*gnode{{value: null()}, root}}
+		}
 	}
 	g.fillText(root, 0, 0)
 	if g.r.IntN(25) == 0 {
@@ -526,11 +530,6 @@ func (g *generator) textCase() exprCase {
 		g.column(root.value)
 	} else {
 		g.writeText(root, false, false, false)
-	}
-	if g.limit > 0 {
-		// SQLite refuses a statement longer than the limit, and the oracle's is longer than the
-		// expression by the columns of the row.
-		g.limit = max(g.limit, g.b.Len()+200)
 	}
 	return g.done()
 }
@@ -620,8 +619,11 @@ func (g *generator) lengthOf(n *gnode, length int) {
 	length = max(0, length)
 	switch {
 	case n.leaf():
-		// No value is longer than the limit, which SQLite refuses when it binds it.
-		n.value = integer(int64(min(length, g.limit)))
+		if g.r.IntN(30) == 0 {
+			// A literal longer than the limit, as [generator.textLeaf] writes it.
+			length = g.limit + 1 + g.r.IntN(2)
+		}
+		n.value = integer(int64(length))
 	case n.kind == stmt.ExprConcat:
 		left := g.r.IntN(length + 1)
 		g.lengthOf(n.operands[0], left)
@@ -645,6 +647,9 @@ func (g *generator) fillText(n *gnode, parent stmt.ExpressionKind, f stmt.Functi
 		return
 	}
 	length := g.shortLength()
+	if n.value.HasNull() {
+		return
+	}
 	if n.value != nil {
 		length = int(n.value.GetInteger())
 	} else if !g.deep && g.r.IntN(10) == 0 {
@@ -690,14 +695,13 @@ func (g *generator) shortLength() int {
 	return 1 + g.r.IntN(12)
 }
 
-// pieces of text, of which [generator.textOf] makes one: ASCII letters, the bytes next to them,
-// which lower must not change, a quote, which a literal doubles, and letters that are not ASCII,
-// which SQLite's lower leaves as they are, also where Unicode has a lower case of its own, as for
-// the Kelvin sign and the dotted capital I. The first ten are one byte long.
-var pieces = []string{"A", "M", "Z", "a", "z", "@", "[", "`", "{", "'", "À", "É", "é", "ß", "Ω", "İ", "K", "€", "😀"}
-
-// textOf the length at random, of valid UTF-8 without the character NUL.
+// textOf the length at random, of valid UTF-8 without the character NUL, of pieces: ASCII letters,
+// the bytes next to them, which lower must not change, a quote, which a literal doubles, and
+// letters that are not ASCII, which SQLite's lower leaves as they are, also where Unicode has a
+// lower case of its own, as for the Kelvin sign and the dotted capital I. The first ten pieces are
+// one byte long.
 func (g *generator) textOf(length int) string {
+	pieces := []string{"A", "M", "Z", "a", "z", "@", "[", "`", "{", "'", "À", "É", "é", "ß", "Ω", "İ", "\u212a", "€", "😀"}
 	var b strings.Builder
 	for b.Len() < length {
 		p := pieces[g.r.IntN(len(pieces))]
@@ -753,9 +757,15 @@ func (g *generator) writeText(n *gnode, inConcat, right, inHex bool) {
 
 // textLeaf of the value v, in the argument of hex if inHex: a literal two times in five, a column
 // two times in five, and a parameter otherwise, as v allows. A literal is a text, or a blob in the
-// argument of hex, of at most 40 bytes, and never a number or NULL, which the pass refuses.
+// argument of hex, and never a number or NULL, which the pass refuses; it is at most 40 bytes long,
+// or with a limit one time in eight as long as the limit allows. A value longer than the limit is
+// always a literal, since SQLite refuses to bind it.
 func (g *generator) textLeaf(v *s4qlpb.Value, inHex bool) {
-	literal := v.HasText() && len(v.GetText()) <= 40 || inHex && v.HasBlob() && len(v.GetBlob()) <= 40
+	length := len(v.GetText()) + len(v.GetBlob())
+	literal := (v.HasText() || inHex && v.HasBlob()) && (length <= 40 || g.limit > 0 && g.r.IntN(8) == 0)
+	if g.limit > 0 && length > g.limit {
+		literal = true
+	}
 	g.nullIn = nullInText
 	if inHex {
 		g.nullIn = nullInTextOrBlob
@@ -764,11 +774,11 @@ func (g *generator) textLeaf(v *s4qlpb.Value, inHex bool) {
 		g.nullIn = nullInNumber
 	}()
 	switch n := g.r.IntN(5); {
-	case n < 2 && literal && v.HasText():
+	case literal && (n < 2 || g.limit > 0 && length > g.limit) && v.HasText():
 		g.b.WriteString("'" + strings.ReplaceAll(v.GetText(), "'", "''") + "'")
-	case n < 2 && literal:
+	case literal && (n < 2 || g.limit > 0 && length > g.limit):
 		format := []string{"x'%x'", "X'%X'"}[g.r.IntN(2)]
-		g.b.WriteString(fmt.Sprintf(format, v.GetBlob()))
+		fmt.Fprintf(&g.b, format, v.GetBlob())
 	case n < 4 && g.column(v):
 	default:
 		g.b.WriteString("?")

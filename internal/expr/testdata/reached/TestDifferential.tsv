@@ -3,835 +3,842 @@
 # required of it, a third, or = for a count that is pinned exactly, and the kind. The kinds are
 # those of testdata/reached/TestDifferential.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
 # Do not edit a number by hand.
-seed 1	148	49	* with null
-seed 1	149	49	+ with null
-seed 1	302	100	- of integer
-seed 1	66	22	- of integer: integer overflow
-seed 1	83	27	- of null
-seed 1	395	131	- of real
-seed 1	187	62	- of real zero
-seed 1	139	46	- with null
-seed 1	129	43	/ with null
-seed 1	420	140	a fused multiply and add would differ
-seed 1	60	20	an error on the right of null
-seed 1	6	2	case: blob
-seed 1	77	25	case: column alone
-seed 1	19	6	case: deeper than 900
-seed 1	141	47	case: division by zero
-seed 1	278	92	case: integer
-seed 1	416	138	case: integer overflow
-seed 1	356	118	case: null
-seed 1	829	276	case: real
-seed 1	41	13	case: real -0.0
-seed 1	215	71	case: real 0.0
-seed 1	190	63	case: real result that is not finite
-seed 1	3	1	case: refused, argument in a call of hex, which is a real
-seed 1	14	4	case: refused, argument in arithmetic, which is a blob
-seed 1	11	3	case: refused, argument in arithmetic, which is text
-seed 1	6	2	case: refused, column of type BLOB in a call of lower
-seed 1	6	2	case: refused, column of type BLOB in a concatenation
-seed 1	28	9	case: refused, column of type BLOB in arithmetic
-seed 1	4	1	case: refused, column of type INT in a call of lower
-seed 1	5	1	case: refused, column of type INT in a concatenation
-seed 1	3	1	case: refused, column of type INTEGER in a concatenation
+seed 1	157	52	* with null
+seed 1	143	47	+ with null
+seed 1	284	94	- of integer
+seed 1	77	25	- of integer: integer overflow
+seed 1	80	26	- of null
+seed 1	412	137	- of real
+seed 1	177	59	- of real zero
+seed 1	131	43	- with null
+seed 1	115	38	/ with null
+seed 1	409	136	a fused multiply and add would differ
+seed 1	57	19	an error on the right of null
+seed 1	14	4	case: blob
+seed 1	96	32	case: column alone
+seed 1	16	5	case: deeper than 900
+seed 1	136	45	case: division by zero
+seed 1	291	97	case: integer
+seed 1	425	141	case: integer overflow
+seed 1	8	2	case: literal longer than the limit, text true
+seed 1	373	124	case: null
+seed 1	811	270	case: real
+seed 1	37	12	case: real -0.0
+seed 1	219	73	case: real 0.0
+seed 1	192	64	case: real result that is not finite
+seed 1	3	1	case: refused, argument in a concatenation, which is a blob
+seed 1	10	3	case: refused, argument in arithmetic, which is a blob
+seed 1	10	3	case: refused, argument in arithmetic, which is text
+seed 1	4	1	case: refused, column of type BLOB in a call of lower
+seed 1	9	3	case: refused, column of type BLOB in a concatenation
+seed 1	38	12	case: refused, column of type BLOB in arithmetic
+seed 1	4	1	case: refused, column of type INT in a concatenation
+seed 1	3	1	case: refused, column of type INTEGER in a call of hex
 seed 1	4	1	case: refused, column of type REAL in a call of hex
-seed 1	3	1	case: refused, column of type REAL in a call of lower
-seed 1	7	2	case: refused, column of type REAL in a concatenation
-seed 1	42	14	case: refused, column of type TEXT in arithmetic
-seed 1	896	298	case: text
-seed 1	84	28	case: text longer than the length limit
-seed 1	722	240	hex of a blob
-seed 1	155	51	hex of a blob that is empty
-seed 1	74	24	hex of null
-seed 1	1897	632	hex of text
-seed 1	322	107	hex of text that is empty
-seed 1	19	6	hex: at the limit
-seed 1	34	11	hex: text longer than the length limit
-seed 1	410	136	integer * integer
-seed 1	3	1	integer * integer: exactly the largest integer
-seed 1	21	7	integer * integer: exactly the smallest integer
-seed 1	238	79	integer * integer: integer overflow
-seed 1	200	66	integer * real
-seed 1	6	2	integer * real: real result that is not finite
-seed 1	4	1	integer * real: subnormal, not zero
-seed 1	203	67	integer + integer
-seed 1	20	6	integer + integer: exactly the largest integer
-seed 1	11	3	integer + integer: exactly the smallest integer
-seed 1	46	15	integer + integer: integer overflow
-seed 1	205	68	integer + real
-seed 1	173	57	integer - integer
-seed 1	14	4	integer - integer: exactly the largest integer
-seed 1	10	3	integer - integer: exactly the smallest integer
-seed 1	50	16	integer - integer: integer overflow
-seed 1	200	66	integer - real
-seed 1	172	57	integer / integer
-seed 1	45	15	integer / integer: division by zero
-seed 1	15	5	integer / integer: exactly the smallest integer
-seed 1	16	5	integer / integer: integer overflow
-seed 1	110	36	integer / real
+seed 1	3	1	case: refused, column of type REAL in a concatenation
+seed 1	40	13	case: refused, column of type TEXT in arithmetic
+seed 1	871	290	case: text
+seed 1	78	26	case: text or blob longer than the length limit
+seed 1	560	186	hex of a blob
+seed 1	116	38	hex of a blob that is empty
+seed 1	83	27	hex of null
+seed 1	1656	552	hex of text
+seed 1	297	99	hex of text that is empty
+seed 1	12	4	hex: at the limit
+seed 1	26	8	hex: text longer than the length limit
+seed 1	355	118	integer * integer
+seed 1	6	2	integer * integer: exactly the largest integer
+seed 1	20	6	integer * integer: exactly the smallest integer
+seed 1	241	80	integer * integer: integer overflow
+seed 1	190	63	integer * real
+seed 1	13	4	integer * real: real result that is not finite
+seed 1	3	1	integer * real: subnormal, not zero
+seed 1	189	63	integer + integer
+seed 1	18	6	integer + integer: exactly the largest integer
+seed 1	6	2	integer + integer: exactly the smallest integer
+seed 1	33	11	integer + integer: integer overflow
+seed 1	203	67	integer + real
+seed 1	186	62	integer - integer
+seed 1	11	3	integer - integer: exactly the largest integer
+seed 1	14	4	integer - integer: exactly the smallest integer
+seed 1	53	17	integer - integer: integer overflow
+seed 1	191	63	integer - real
+seed 1	159	53	integer / integer
+seed 1	41	13	integer / integer: division by zero
+seed 1	12	4	integer / integer: exactly the smallest integer
+seed 1	21	7	integer / integer: integer overflow
+seed 1	101	33	integer / real
 seed 1	24	8	integer / real: division by zero
-seed 1	10	3	integer / real: real result that is not finite
-seed 1	761	253	integer converted to real inexactly
-seed 1	755	251	integer converted to real on the left
-seed 1	784	261	integer converted to real on the right
-seed 1	1603	534	lower of a letter that is not ASCII and has a lower case in Unicode
-seed 1	75	25	lower of null
-seed 1	914	304	lower of text, ASCII false, changed false
-seed 1	1145	381	lower of text, ASCII false, changed true
-seed 1	1278	426	lower of text, ASCII true, changed false
-seed 1	314	104	lower of text, ASCII true, changed true
-seed 1	36	12	lower: at the limit
-seed 1	20	6	lower: text longer than the length limit
-seed 1	237	79	real * integer
-seed 1	12	4	real * integer: real result that is not finite
-seed 1	4	1	real * integer: subnormal, not zero
-seed 1	705	235	real * real
-seed 1	95	31	real * real: real result that is not finite
-seed 1	24	8	real * real: subnormal, not zero
-seed 1	209	69	real + integer
-seed 1	516	172	real + real
-seed 1	24	8	real + real: real result that is not finite
-seed 1	7	2	real + real: subnormal, not zero
-seed 1	194	64	real - integer
-seed 1	492	164	real - real
-seed 1	28	9	real - real: real result that is not finite
+seed 1	11	3	integer / real: real result that is not finite
+seed 1	728	242	integer converted to real inexactly
+seed 1	733	244	integer converted to real on the left
+seed 1	713	237	integer converted to real on the right
+seed 1	1390	463	lower of a letter that is not ASCII and has a lower case in Unicode
+seed 1	79	26	lower of null
+seed 1	879	293	lower of text, ASCII false, changed false
+seed 1	1013	337	lower of text, ASCII false, changed true
+seed 1	1769	589	lower of text, ASCII true, changed false
+seed 1	245	81	lower of text, ASCII true, changed true
+seed 1	28	9	lower: at the limit
+seed 1	17	5	lower: text longer than the length limit
+seed 1	205	68	real * integer
+seed 1	7	2	real * integer: real result that is not finite
+seed 1	5	1	real * integer: subnormal, not zero
+seed 1	688	229	real * real
+seed 1	87	29	real * real: real result that is not finite
+seed 1	37	12	real * real: subnormal, not zero
+seed 1	199	66	real + integer
+seed 1	512	170	real + real
+seed 1	29	9	real + real: real result that is not finite
+seed 1	5	1	real + real: subnormal, not zero
+seed 1	168	56	real - integer
+seed 1	480	160	real - real
+seed 1	29	9	real - real: real result that is not finite
 seed 1	3	1	real - real: subnormal, not zero
-seed 1	119	39	real / integer
-seed 1	13	4	real / integer: division by zero
-seed 1	190	63	real / real
-seed 1	59	19	real / real: division by zero
-seed 1	15	5	real / real: real result that is not finite
-seed 1	4	1	real / real: subnormal, not zero
-seed 1	22	7	the smallest integer / a negative integer other than -1
-seed 1	25	8	|| of two empty texts
-seed 1	18623	6207	|| of two texts
-seed 1	3796	1265	|| with an empty text
-seed 1	347	115	|| with null
-seed 1	28	9	||: at the limit
-seed 1	30	10	||: text longer than the length limit
-seed 2	153	51	* with null
-seed 2	163	54	+ with null
-seed 2	321	107	- of integer
-seed 2	61	20	- of integer: integer overflow
-seed 2	88	29	- of null
-seed 2	396	132	- of real
-seed 2	171	57	- of real zero
-seed 2	147	49	- with null
-seed 2	123	41	/ with null
-seed 2	379	126	a fused multiply and add would differ
-seed 2	61	20	an error on the right of null
-seed 2	10	3	case: blob
-seed 2	82	27	case: column alone
-seed 2	28	9	case: deeper than 900
-seed 2	114	38	case: division by zero
-seed 2	269	89	case: integer
-seed 2	429	143	case: integer overflow
-seed 2	361	120	case: null
-seed 2	822	274	case: real
-seed 2	33	11	case: real -0.0
-seed 2	189	63	case: real 0.0
-seed 2	189	63	case: real result that is not finite
-seed 2	4	1	case: refused, argument in a concatenation, which is a real
-seed 2	6	2	case: refused, argument in arithmetic, which is a blob
-seed 2	10	3	case: refused, argument in arithmetic, which is text
-seed 2	9	3	case: refused, column of type BLOB in a concatenation
-seed 2	31	10	case: refused, column of type BLOB in arithmetic
-seed 2	3	1	case: refused, column of type INT in a concatenation
-seed 2	4	1	case: refused, column of type REAL in a call of hex
-seed 2	5	1	case: refused, column of type REAL in a call of lower
-seed 2	8	2	case: refused, column of type REAL in a concatenation
-seed 2	42	14	case: refused, column of type TEXT in arithmetic
-seed 2	958	319	case: text
-seed 2	88	29	case: text longer than the length limit
-seed 2	1034	344	hex of a blob
-seed 2	199	66	hex of a blob that is empty
-seed 2	96	32	hex of null
-seed 2	2161	720	hex of text
-seed 2	450	150	hex of text that is empty
-seed 2	19	6	hex: at the limit
-seed 2	26	8	hex: text longer than the length limit
-seed 2	373	124	integer * integer
-seed 2	7	2	integer * integer: exactly the largest integer
-seed 2	14	4	integer * integer: exactly the smallest integer
-seed 2	244	81	integer * integer: integer overflow
-seed 2	225	75	integer * real
+seed 1	124	41	real / integer
+seed 1	10	3	real / integer: division by zero
+seed 1	162	54	real / real
+seed 1	61	20	real / real: division by zero
+seed 1	16	5	real / real: real result that is not finite
+seed 1	7	2	real / real: subnormal, not zero
+seed 1	29	9	the smallest integer / a negative integer other than -1
+seed 1	24	8	|| of two empty texts
+seed 1	18654	6218	|| of two texts
+seed 1	3733	1244	|| with an empty text
+seed 1	357	119	|| with null
+seed 1	13	4	||: an error on the right of null
+seed 1	29	9	||: at the limit
+seed 1	35	11	||: text longer than the length limit
+seed 2	163	54	* with null
+seed 2	151	50	+ with null
+seed 2	278	92	- of integer
+seed 2	64	21	- of integer: integer overflow
+seed 2	75	25	- of null
+seed 2	360	120	- of real
+seed 2	152	50	- of real zero
+seed 2	135	45	- with null
+seed 2	108	36	/ with null
+seed 2	374	124	a fused multiply and add would differ
+seed 2	53	17	an error on the right of null
+seed 2	4	1	case: blob
+seed 2	81	27	case: column alone
+seed 2	20	6	case: deeper than 900
+seed 2	131	43	case: division by zero
+seed 2	278	92	case: integer
+seed 2	421	140	case: integer overflow
+seed 2	19	6	case: literal longer than the limit, text true
+seed 2	403	134	case: null
+seed 2	859	286	case: real
+seed 2	29	9	case: real -0.0
+seed 2	201	67	case: real 0.0
+seed 2	177	59	case: real result that is not finite
+seed 2	3	1	case: refused, argument in a concatenation, which is an integer
+seed 2	9	3	case: refused, argument in arithmetic, which is a blob
+seed 2	7	2	case: refused, argument in arithmetic, which is text
+seed 2	3	1	case: refused, column of type BLOB in a call of lower
+seed 2	8	2	case: refused, column of type BLOB in a concatenation
+seed 2	34	11	case: refused, column of type BLOB in arithmetic
+seed 2	4	1	case: refused, column of type INT in a concatenation
+seed 2	3	1	case: refused, column of type INTEGER in a call of hex
+seed 2	3	1	case: refused, column of type REAL in a call of hex
+seed 2	4	1	case: refused, column of type REAL in a call of lower
+seed 2	6	2	case: refused, column of type REAL in a concatenation
+seed 2	27	9	case: refused, column of type TEXT in arithmetic
+seed 2	872	290	case: text
+seed 2	86	28	case: text or blob longer than the length limit
+seed 2	864	288	hex of a blob
+seed 2	167	55	hex of a blob that is empty
+seed 2	66	22	hex of null
+seed 2	2012	670	hex of text
+seed 2	353	117	hex of text that is empty
+seed 2	18	6	hex: at the limit
+seed 2	20	6	hex: text longer than the length limit
+seed 2	395	131	integer * integer
+seed 2	8	2	integer * integer: exactly the largest integer
+seed 2	17	5	integer * integer: exactly the smallest integer
+seed 2	232	77	integer * integer: integer overflow
+seed 2	218	72	integer * real
 seed 2	12	4	integer * real: real result that is not finite
-seed 2	6	2	integer * real: subnormal, not zero
-seed 2	173	57	integer + integer
-seed 2	14	4	integer + integer: exactly the largest integer
-seed 2	13	4	integer + integer: exactly the smallest integer
-seed 2	58	19	integer + integer: integer overflow
-seed 2	203	67	integer + real
-seed 2	203	67	integer - integer
-seed 2	11	3	integer - integer: exactly the largest integer
-seed 2	9	3	integer - integer: exactly the smallest integer
-seed 2	52	17	integer - integer: integer overflow
-seed 2	209	69	integer - real
-seed 2	165	55	integer / integer
-seed 2	24	8	integer / integer: division by zero
-seed 2	18	6	integer / integer: exactly the smallest integer
-seed 2	14	4	integer / integer: integer overflow
-seed 2	120	40	integer / real
-seed 2	21	7	integer / real: division by zero
-seed 2	7	2	integer / real: real result that is not finite
-seed 2	741	247	integer converted to real inexactly
-seed 2	797	265	integer converted to real on the left
-seed 2	770	256	integer converted to real on the right
-seed 2	2122	707	lower of a letter that is not ASCII and has a lower case in Unicode
-seed 2	82	27	lower of null
-seed 2	1212	404	lower of text, ASCII false, changed false
-seed 2	1535	511	lower of text, ASCII false, changed true
-seed 2	2808	936	lower of text, ASCII true, changed false
-seed 2	415	138	lower of text, ASCII true, changed true
-seed 2	36	12	lower: at the limit
-seed 2	26	8	lower: text longer than the length limit
-seed 2	212	70	real * integer
-seed 2	11	3	real * integer: real result that is not finite
+seed 2	180	60	integer + integer
+seed 2	13	4	integer + integer: exactly the largest integer
+seed 2	7	2	integer + integer: exactly the smallest integer
+seed 2	49	16	integer + integer: integer overflow
+seed 2	202	67	integer + real
+seed 2	180	60	integer - integer
+seed 2	12	4	integer - integer: exactly the largest integer
+seed 2	11	3	integer - integer: exactly the smallest integer
+seed 2	51	17	integer - integer: integer overflow
+seed 2	210	70	integer - real
+seed 2	142	47	integer / integer
+seed 2	44	14	integer / integer: division by zero
+seed 2	20	6	integer / integer: exactly the smallest integer
+seed 2	25	8	integer / integer: integer overflow
+seed 2	119	39	integer / real
+seed 2	24	8	integer / real: division by zero
+seed 2	8	2	integer / real: real result that is not finite
+seed 2	778	259	integer converted to real inexactly
+seed 2	793	264	integer converted to real on the left
+seed 2	775	258	integer converted to real on the right
+seed 2	1795	598	lower of a letter that is not ASCII and has a lower case in Unicode
+seed 2	78	26	lower of null
+seed 2	1049	349	lower of text, ASCII false, changed false
+seed 2	1311	437	lower of text, ASCII false, changed true
+seed 2	1887	629	lower of text, ASCII true, changed false
+seed 2	383	127	lower of text, ASCII true, changed true
+seed 2	21	7	lower: at the limit
+seed 2	21	7	lower: text longer than the length limit
+seed 2	210	70	real * integer
+seed 2	14	4	real * integer: real result that is not finite
 seed 2	4	1	real * integer: subnormal, not zero
-seed 2	661	220	real * real
-seed 2	90	30	real * real: real result that is not finite
-seed 2	37	12	real * real: subnormal, not zero
-seed 2	204	68	real + integer
-seed 2	493	164	real + real
+seed 2	677	225	real * real
+seed 2	69	23	real * real: real result that is not finite
+seed 2	47	15	real * real: subnormal, not zero
+seed 2	215	71	real + integer
+seed 2	454	151	real + real
 seed 2	27	9	real + real: real result that is not finite
-seed 2	215	71	real - integer
-seed 2	478	159	real - real
-seed 2	25	8	real - real: real result that is not finite
-seed 2	3	1	real - real: subnormal, not zero
-seed 2	115	38	real / integer
-seed 2	13	4	real / integer: division by zero
-seed 2	164	54	real / real
-seed 2	56	18	real / real: division by zero
-seed 2	17	5	real / real: real result that is not finite
-seed 2	7	2	real / real: subnormal, not zero
-seed 2	16	5	the smallest integer / a negative integer other than -1
-seed 2	38	12	|| of two empty texts
-seed 2	30845	10281	|| of two texts
-seed 2	6269	2089	|| with an empty text
-seed 2	322	107	|| with null
-seed 2	46	15	||: at the limit
-seed 2	36	12	||: text longer than the length limit
-seed 3	151	50	* with null
-seed 3	141	47	+ with null
-seed 3	289	96	- of integer
-seed 3	67	22	- of integer: integer overflow
-seed 3	85	28	- of null
-seed 3	365	121	- of real
-seed 3	189	63	- of real zero
-seed 3	155	51	- with null
-seed 3	136	45	/ with null
-seed 3	380	126	a fused multiply and add would differ
+seed 2	4	1	real + real: subnormal, not zero
+seed 2	194	64	real - integer
+seed 2	476	158	real - real
+seed 2	26	8	real - real: real result that is not finite
+seed 2	4	1	real - real: subnormal, not zero
+seed 2	125	41	real / integer
+seed 2	17	5	real / integer: division by zero
+seed 2	166	55	real / real
+seed 2	46	15	real / real: division by zero
+seed 2	21	7	real / real: real result that is not finite
+seed 2	6	2	real / real: subnormal, not zero
+seed 2	18	6	the smallest integer / a negative integer other than -1
+seed 2	28	9	|| of two empty texts
+seed 2	23504	7834	|| of two texts
+seed 2	4803	1601	|| with an empty text
+seed 2	361	120	|| with null
+seed 2	17	5	||: an error on the right of null
+seed 2	39	13	||: at the limit
+seed 2	45	15	||: text longer than the length limit
+seed 3	129	43	* with null
+seed 3	121	40	+ with null
+seed 3	288	96	- of integer
+seed 3	61	20	- of integer: integer overflow
+seed 3	76	25	- of null
+seed 3	366	122	- of real
+seed 3	180	60	- of real zero
+seed 3	111	37	- with null
+seed 3	97	32	/ with null
+seed 3	387	129	a fused multiply and add would differ
 seed 3	47	15	an error on the right of null
-seed 3	17	5	case: blob
-seed 3	97	32	case: column alone
-seed 3	19	6	case: deeper than 900
-seed 3	135	45	case: division by zero
-seed 3	285	95	case: integer
-seed 3	398	132	case: integer overflow
-seed 3	347	115	case: null
-seed 3	818	272	case: real
-seed 3	24	8	case: real -0.0
-seed 3	213	71	case: real 0.0
-seed 3	193	64	case: real result that is not finite
-seed 3	3	1	case: refused, argument in a call of hex, which is a real
-seed 3	3	1	case: refused, argument in a concatenation, which is a blob
+seed 3	15	5	case: blob
+seed 3	94	31	case: column alone
+seed 3	16	5	case: deeper than 900
+seed 3	150	50	case: division by zero
+seed 3	275	91	case: integer
+seed 3	428	142	case: integer overflow
+seed 3	14	4	case: literal longer than the limit, text true
+seed 3	348	116	case: null
+seed 3	811	270	case: real
+seed 3	34	11	case: real -0.0
+seed 3	220	73	case: real 0.0
+seed 3	178	59	case: real result that is not finite
+seed 3	4	1	case: refused, argument in a concatenation, which is a real
 seed 3	11	3	case: refused, argument in arithmetic, which is a blob
-seed 3	16	5	case: refused, argument in arithmetic, which is text
-seed 3	6	2	case: refused, column of type BLOB in a concatenation
-seed 3	40	13	case: refused, column of type BLOB in arithmetic
-seed 3	4	1	case: refused, column of type REAL in a call of hex
-seed 3	6	2	case: refused, column of type REAL in a call of lower
-seed 3	4	1	case: refused, column of type REAL in a concatenation
-seed 3	32	10	case: refused, column of type TEXT in arithmetic
-seed 3	937	312	case: text
-seed 3	97	32	case: text longer than the length limit
-seed 3	626	208	hex of a blob
-seed 3	88	29	hex of a blob that is empty
+seed 3	9	3	case: refused, argument in arithmetic, which is text
+seed 3	5	1	case: refused, column of type BLOB in a concatenation
+seed 3	34	11	case: refused, column of type BLOB in arithmetic
+seed 3	5	1	case: refused, column of type INT in a call of hex
+seed 3	3	1	case: refused, column of type INTEGER in a concatenation
+seed 3	5	1	case: refused, column of type REAL in a call of hex
+seed 3	3	1	case: refused, column of type REAL in a call of lower
+seed 3	5	1	case: refused, column of type REAL in a concatenation
+seed 3	38	12	case: refused, column of type TEXT in arithmetic
+seed 3	925	308	case: text
+seed 3	68	22	case: text or blob longer than the length limit
+seed 3	691	230	hex of a blob
+seed 3	103	34	hex of a blob that is empty
 seed 3	94	31	hex of null
-seed 3	1636	545	hex of text
-seed 3	315	105	hex of text that is empty
-seed 3	13	4	hex: at the limit
-seed 3	37	12	hex: text longer than the length limit
-seed 3	396	132	integer * integer
-seed 3	10	3	integer * integer: exactly the largest integer
-seed 3	19	6	integer * integer: exactly the smallest integer
-seed 3	207	69	integer * integer: integer overflow
-seed 3	199	66	integer * real
-seed 3	5	1	integer * real: real result that is not finite
-seed 3	200	66	integer + integer
-seed 3	23	7	integer + integer: exactly the largest integer
-seed 3	13	4	integer + integer: exactly the smallest integer
-seed 3	53	17	integer + integer: integer overflow
-seed 3	187	62	integer + real
-seed 3	215	71	integer - integer
-seed 3	21	7	integer - integer: exactly the largest integer
-seed 3	16	5	integer - integer: exactly the smallest integer
-seed 3	47	15	integer - integer: integer overflow
-seed 3	205	68	integer - real
-seed 3	153	51	integer / integer
-seed 3	47	15	integer / integer: division by zero
-seed 3	7	2	integer / integer: exactly the smallest integer
+seed 3	1766	588	hex of text
+seed 3	357	119	hex of text that is empty
+seed 3	12	4	hex: at the limit
+seed 3	22	7	hex: text longer than the length limit
+seed 3	399	133	integer * integer
+seed 3	4	1	integer * integer: exactly the largest integer
+seed 3	14	4	integer * integer: exactly the smallest integer
+seed 3	230	76	integer * integer: integer overflow
+seed 3	205	68	integer * real
+seed 3	7	2	integer * real: real result that is not finite
+seed 3	5	1	integer * real: subnormal, not zero
+seed 3	176	58	integer + integer
+seed 3	16	5	integer + integer: exactly the largest integer
+seed 3	11	3	integer + integer: exactly the smallest integer
+seed 3	48	16	integer + integer: integer overflow
+seed 3	185	61	integer + real
+seed 3	209	69	integer - integer
+seed 3	13	4	integer - integer: exactly the largest integer
+seed 3	12	4	integer - integer: exactly the smallest integer
+seed 3	65	21	integer - integer: integer overflow
+seed 3	199	66	integer - real
+seed 3	155	51	integer / integer
+seed 3	61	20	integer / integer: division by zero
+seed 3	11	3	integer / integer: exactly the smallest integer
 seed 3	24	8	integer / integer: integer overflow
-seed 3	103	34	integer / real
+seed 3	105	35	integer / real
 seed 3	20	6	integer / real: division by zero
-seed 3	6	2	integer / real: real result that is not finite
-seed 3	720	240	integer converted to real inexactly
-seed 3	725	241	integer converted to real on the left
-seed 3	745	248	integer converted to real on the right
-seed 3	1547	515	lower of a letter that is not ASCII and has a lower case in Unicode
-seed 3	73	24	lower of null
-seed 3	1084	361	lower of text, ASCII false, changed false
-seed 3	947	315	lower of text, ASCII false, changed true
-seed 3	2440	813	lower of text, ASCII true, changed false
-seed 3	315	105	lower of text, ASCII true, changed true
-seed 3	26	8	lower: at the limit
-seed 3	23	7	lower: text longer than the length limit
-seed 3	191	63	real * integer
-seed 3	16	5	real * integer: real result that is not finite
-seed 3	634	211	real * real
-seed 3	102	34	real * real: real result that is not finite
-seed 3	37	12	real * real: subnormal, not zero
-seed 3	191	63	real + integer
-seed 3	455	151	real + real
-seed 3	22	7	real + real: real result that is not finite
-seed 3	3	1	real + real: subnormal, not zero
-seed 3	208	69	real - integer
-seed 3	462	154	real - real
-seed 3	24	8	real - real: real result that is not finite
-seed 3	4	1	real - real: subnormal, not zero
-seed 3	121	40	real / integer
-seed 3	18	6	real / integer: division by zero
-seed 3	171	57	real / real
-seed 3	50	16	real / real: division by zero
-seed 3	18	6	real / real: real result that is not finite
-seed 3	6	2	real / real: subnormal, not zero
-seed 3	22	7	the smallest integer / a negative integer other than -1
-seed 3	19	6	|| of two empty texts
-seed 3	23386	7795	|| of two texts
-seed 3	4577	1525	|| with an empty text
-seed 3	271	90	|| with null
-seed 3	33	11	||: at the limit
-seed 3	37	12	||: text longer than the length limit
-seed 4	167	55	* with null
-seed 4	158	52	+ with null
-seed 4	297	99	- of integer
-seed 4	58	19	- of integer: integer overflow
-seed 4	75	25	- of null
-seed 4	375	125	- of real
-seed 4	171	57	- of real zero
-seed 4	144	48	- with null
-seed 4	134	44	/ with null
-seed 4	401	133	a fused multiply and add would differ
-seed 4	64	21	an error on the right of null
-seed 4	14	4	case: blob
-seed 4	84	28	case: column alone
-seed 4	21	7	case: deeper than 900
-seed 4	146	48	case: division by zero
-seed 4	279	93	case: integer
-seed 4	397	132	case: integer overflow
-seed 4	348	116	case: null
-seed 4	826	275	case: real
-seed 4	31	10	case: real -0.0
-seed 4	183	61	case: real 0.0
-seed 4	188	62	case: real result that is not finite
-seed 4	4	1	case: refused, argument in a concatenation, which is an integer
-seed 4	10	3	case: refused, argument in arithmetic, which is a blob
-seed 4	3	1	case: refused, argument in arithmetic, which is text
-seed 4	5	1	case: refused, column of type BLOB in a concatenation
-seed 4	28	9	case: refused, column of type BLOB in arithmetic
-seed 4	3	1	case: refused, column of type INT in a call of hex
-seed 4	4	1	case: refused, column of type INT in a call of lower
-seed 4	4	1	case: refused, column of type INT in a concatenation
-seed 4	3	1	case: refused, column of type INTEGER in a call of lower
-seed 4	3	1	case: refused, column of type INTEGER in a concatenation
-seed 4	5	1	case: refused, column of type REAL in a call of hex
-seed 4	5	1	case: refused, column of type REAL in a call of lower
-seed 4	8	2	case: refused, column of type REAL in a concatenation
-seed 4	26	8	case: refused, column of type TEXT in arithmetic
-seed 4	972	324	case: text
-seed 4	93	31	case: text longer than the length limit
-seed 4	786	262	hex of a blob
-seed 4	145	48	hex of a blob that is empty
-seed 4	71	23	hex of null
-seed 4	1816	605	hex of text
-seed 4	311	103	hex of text that is empty
-seed 4	14	4	hex: at the limit
-seed 4	24	8	hex: text longer than the length limit
-seed 4	389	129	integer * integer
-seed 4	6	2	integer * integer: exactly the largest integer
-seed 4	14	4	integer * integer: exactly the smallest integer
-seed 4	210	70	integer * integer: integer overflow
-seed 4	216	72	integer * real
-seed 4	11	3	integer * real: real result that is not finite
-seed 4	3	1	integer * real: subnormal, not zero
-seed 4	205	68	integer + integer
-seed 4	24	8	integer + integer: exactly the largest integer
-seed 4	15	5	integer + integer: exactly the smallest integer
-seed 4	54	18	integer + integer: integer overflow
-seed 4	190	63	integer + real
-seed 4	189	63	integer - integer
-seed 4	14	4	integer - integer: exactly the largest integer
-seed 4	12	4	integer - integer: exactly the smallest integer
-seed 4	51	17	integer - integer: integer overflow
-seed 4	188	62	integer - real
-seed 4	164	54	integer / integer
-seed 4	41	13	integer / integer: division by zero
-seed 4	20	6	integer / integer: exactly the smallest integer
-seed 4	24	8	integer / integer: integer overflow
-seed 4	100	33	integer / real
-seed 4	25	8	integer / real: division by zero
-seed 4	11	3	integer / real: real result that is not finite
-seed 4	771	257	integer converted to real inexactly
-seed 4	741	247	integer converted to real on the left
-seed 4	792	264	integer converted to real on the right
-seed 4	1571	523	lower of a letter that is not ASCII and has a lower case in Unicode
-seed 4	75	25	lower of null
-seed 4	901	300	lower of text, ASCII false, changed false
-seed 4	1119	373	lower of text, ASCII false, changed true
-seed 4	2020	673	lower of text, ASCII true, changed false
-seed 4	325	108	lower of text, ASCII true, changed true
-seed 4	35	11	lower: at the limit
-seed 4	22	7	lower: text longer than the length limit
-seed 4	218	72	real * integer
-seed 4	18	6	real * integer: real result that is not finite
+seed 3	9	3	integer / real: real result that is not finite
+seed 3	694	231	integer converted to real inexactly
+seed 3	730	243	integer converted to real on the left
+seed 3	735	245	integer converted to real on the right
+seed 3	1525	508	lower of a letter that is not ASCII and has a lower case in Unicode
+seed 3	70	23	lower of null
+seed 3	926	308	lower of text, ASCII false, changed false
+seed 3	1029	343	lower of text, ASCII false, changed true
+seed 3	1895	631	lower of text, ASCII true, changed false
+seed 3	320	106	lower of text, ASCII true, changed true
+seed 3	33	11	lower: at the limit
+seed 3	19	6	lower: text longer than the length limit
+seed 3	172	57	real * integer
+seed 3	15	5	real * integer: real result that is not finite
+seed 3	6	2	real * integer: subnormal, not zero
+seed 3	679	226	real * real
+seed 3	85	28	real * real: real result that is not finite
+seed 3	30	10	real * real: subnormal, not zero
+seed 3	189	63	real + integer
+seed 3	460	153	real + real
+seed 3	21	7	real + real: real result that is not finite
+seed 3	195	65	real - integer
+seed 3	452	150	real - real
+seed 3	18	6	real - real: real result that is not finite
+seed 3	8	2	real - real: subnormal, not zero
+seed 3	148	49	real / integer
+seed 3	16	5	real / integer: division by zero
+seed 3	161	53	real / real
+seed 3	53	17	real / real: division by zero
+seed 3	23	7	real / real: real result that is not finite
+seed 3	10	3	real / real: subnormal, not zero
+seed 3	14	4	the smallest integer / a negative integer other than -1
+seed 3	28	9	|| of two empty texts
+seed 3	18145	6048	|| of two texts
+seed 3	3726	1242	|| with an empty text
+seed 3	287	95	|| with null
+seed 3	19	6	||: an error on the right of null
+seed 3	28	9	||: at the limit
+seed 3	27	9	||: text longer than the length limit
+seed 4	140	46	* with null
+seed 4	145	48	+ with null
+seed 4	311	103	- of integer
+seed 4	63	21	- of integer: integer overflow
+seed 4	83	27	- of null
+seed 4	357	119	- of real
+seed 4	140	46	- of real zero
+seed 4	140	46	- with null
+seed 4	122	40	/ with null
+seed 4	385	128	a fused multiply and add would differ
+seed 4	68	22	an error on the right of null
+seed 4	12	4	case: blob
+seed 4	99	33	case: column alone
+seed 4	16	5	case: deeper than 900
+seed 4	151	50	case: division by zero
+seed 4	283	94	case: integer
+seed 4	440	146	case: integer overflow
+seed 4	10	3	case: literal longer than the limit, text true
+seed 4	391	130	case: null
+seed 4	830	276	case: real
+seed 4	23	7	case: real -0.0
+seed 4	179	59	case: real 0.0
+seed 4	184	61	case: real result that is not finite
+seed 4	9	3	case: refused, argument in arithmetic, which is a blob
+seed 4	12	4	case: refused, argument in arithmetic, which is text
+seed 4	8	2	case: refused, column of type BLOB in a concatenation
+seed 4	29	9	case: refused, column of type BLOB in arithmetic
+seed 4	3	1	case: refused, column of type INT in a call of lower
+seed 4	6	2	case: refused, column of type REAL in a call of hex
+seed 4	3	1	case: refused, column of type REAL in a call of lower
+seed 4	6	2	case: refused, column of type REAL in a concatenation
+seed 4	37	12	case: refused, column of type TEXT in arithmetic
+seed 4	890	296	case: text
+seed 4	82	27	case: text or blob longer than the length limit
+seed 4	603	201	hex of a blob
+seed 4	114	38	hex of a blob that is empty
+seed 4	83	27	hex of null
+seed 4	1537	512	hex of text
+seed 4	260	86	hex of text that is empty
+seed 4	13	4	hex: at the limit
+seed 4	25	8	hex: text longer than the length limit
+seed 4	394	131	integer * integer
+seed 4	7	2	integer * integer: exactly the largest integer
+seed 4	15	5	integer * integer: exactly the smallest integer
+seed 4	246	82	integer * integer: integer overflow
+seed 4	202	67	integer * real
+seed 4	8	2	integer * real: real result that is not finite
+seed 4	4	1	integer * real: subnormal, not zero
+seed 4	203	67	integer + integer
+seed 4	15	5	integer + integer: exactly the largest integer
+seed 4	14	4	integer + integer: exactly the smallest integer
+seed 4	51	17	integer + integer: integer overflow
+seed 4	206	68	integer + real
+seed 4	174	58	integer - integer
+seed 4	15	5	integer - integer: exactly the largest integer
+seed 4	9	3	integer - integer: exactly the smallest integer
+seed 4	60	20	integer - integer: integer overflow
+seed 4	200	66	integer - real
+seed 4	165	55	integer / integer
+seed 4	48	16	integer / integer: division by zero
+seed 4	23	7	integer / integer: exactly the smallest integer
+seed 4	20	6	integer / integer: integer overflow
+seed 4	97	32	integer / real
+seed 4	29	9	integer / real: division by zero
+seed 4	12	4	integer / real: real result that is not finite
+seed 4	767	255	integer converted to real inexactly
+seed 4	754	251	integer converted to real on the left
+seed 4	778	259	integer converted to real on the right
+seed 4	1388	462	lower of a letter that is not ASCII and has a lower case in Unicode
+seed 4	83	27	lower of null
+seed 4	813	271	lower of text, ASCII false, changed false
+seed 4	977	325	lower of text, ASCII false, changed true
+seed 4	2225	741	lower of text, ASCII true, changed false
+seed 4	287	95	lower of text, ASCII true, changed true
+seed 4	31	10	lower: at the limit
+seed 4	14	4	lower: text longer than the length limit
+seed 4	214	71	real * integer
+seed 4	11	3	real * integer: real result that is not finite
 seed 4	5	1	real * integer: subnormal, not zero
-seed 4	662	220	real * real
-seed 4	82	27	real * real: real result that is not finite
-seed 4	37	12	real * real: subnormal, not zero
-seed 4	203	67	real + integer
-seed 4	491	163	real + real
-seed 4	25	8	real + real: real result that is not finite
-seed 4	4	1	real + real: subnormal, not zero
-seed 4	219	73	real - integer
-seed 4	475	158	real - real
-seed 4	25	8	real - real: real result that is not finite
-seed 4	5	1	real - real: subnormal, not zero
-seed 4	122	40	real / integer
-seed 4	12	4	real / integer: division by zero
-seed 4	168	56	real / real
-seed 4	68	22	real / real: division by zero
-seed 4	16	5	real / real: real result that is not finite
+seed 4	656	218	real * real
+seed 4	97	32	real * real: real result that is not finite
+seed 4	30	10	real * real: subnormal, not zero
+seed 4	216	72	real + integer
+seed 4	473	157	real + real
+seed 4	21	7	real + real: real result that is not finite
+seed 4	5	1	real + real: subnormal, not zero
+seed 4	185	61	real - integer
+seed 4	488	162	real - real
+seed 4	17	5	real - real: real result that is not finite
+seed 4	3	1	real - real: subnormal, not zero
+seed 4	138	46	real / integer
+seed 4	14	4	real / integer: division by zero
+seed 4	156	52	real / real
+seed 4	60	20	real / real: division by zero
+seed 4	18	6	real / real: real result that is not finite
 seed 4	7	2	real / real: subnormal, not zero
-seed 4	25	8	the smallest integer / a negative integer other than -1
-seed 4	35	11	|| of two empty texts
-seed 4	21782	7260	|| of two texts
-seed 4	4469	1489	|| with an empty text
-seed 4	234	78	|| with null
-seed 4	35	11	||: at the limit
-seed 4	47	15	||: text longer than the length limit
-seed 5	154	51	* with null
-seed 5	173	57	+ with null
-seed 5	304	101	- of integer
-seed 5	52	17	- of integer: integer overflow
-seed 5	81	27	- of null
-seed 5	367	122	- of real
-seed 5	149	49	- of real zero
-seed 5	146	48	- with null
-seed 5	99	33	/ with null
-seed 5	387	129	a fused multiply and add would differ
-seed 5	59	19	an error on the right of null
-seed 5	10	3	case: blob
+seed 4	26	8	the smallest integer / a negative integer other than -1
+seed 4	28	9	|| of two empty texts
+seed 4	19449	6483	|| of two texts
+seed 4	4063	1354	|| with an empty text
+seed 4	314	104	|| with null
+seed 4	19	6	||: an error on the right of null
+seed 4	29	9	||: at the limit
+seed 4	43	14	||: text longer than the length limit
+seed 5	166	55	* with null
+seed 5	162	54	+ with null
+seed 5	289	96	- of integer
+seed 5	59	19	- of integer: integer overflow
+seed 5	76	25	- of null
+seed 5	344	114	- of real
+seed 5	155	51	- of real zero
+seed 5	150	50	- with null
+seed 5	113	37	/ with null
+seed 5	405	135	a fused multiply and add would differ
+seed 5	64	21	an error on the right of null
+seed 5	8	2	case: blob
 seed 5	76	25	case: column alone
-seed 5	18	6	case: deeper than 900
-seed 5	143	47	case: division by zero
-seed 5	272	90	case: integer
-seed 5	412	137	case: integer overflow
-seed 5	355	118	case: null
-seed 5	801	267	case: real
-seed 5	34	11	case: real -0.0
+seed 5	14	4	case: deeper than 900
+seed 5	124	41	case: division by zero
+seed 5	283	94	case: integer
+seed 5	411	137	case: integer overflow
+seed 5	19	6	case: literal longer than the limit, text true
+seed 5	388	129	case: null
+seed 5	831	277	case: real
+seed 5	35	11	case: real -0.0
 seed 5	195	65	case: real 0.0
-seed 5	200	66	case: real result that is not finite
-seed 5	3	1	case: refused, argument in a call of hex, which is a real
-seed 5	3	1	case: refused, argument in a call of hex, which is an integer
-seed 5	3	1	case: refused, argument in a concatenation, which is a real
-seed 5	3	1	case: refused, argument in a concatenation, which is an integer
-seed 5	10	3	case: refused, argument in arithmetic, which is a blob
+seed 5	192	64	case: real result that is not finite
+seed 5	3	1	case: refused, argument in a concatenation, which is a blob
+seed 5	12	4	case: refused, argument in arithmetic, which is a blob
 seed 5	7	2	case: refused, argument in arithmetic, which is text
-seed 5	4	1	case: refused, column of type BLOB in a call of lower
-seed 5	11	3	case: refused, column of type BLOB in a concatenation
-seed 5	46	15	case: refused, column of type BLOB in arithmetic
+seed 5	3	1	case: refused, column of type BLOB in a call of lower
+seed 5	8	2	case: refused, column of type BLOB in a concatenation
+seed 5	40	13	case: refused, column of type BLOB in arithmetic
+seed 5	3	1	case: refused, column of type INT in a concatenation
 seed 5	4	1	case: refused, column of type INTEGER in a call of hex
-seed 5	5	1	case: refused, column of type INTEGER in a concatenation
-seed 5	5	1	case: refused, column of type REAL in a call of hex
-seed 5	7	2	case: refused, column of type REAL in a concatenation
-seed 5	41	13	case: refused, column of type TEXT in arithmetic
-seed 5	928	309	case: text
-seed 5	83	27	case: text longer than the length limit
-seed 5	648	216	hex of a blob
-seed 5	100	33	hex of a blob that is empty
-seed 5	72	24	hex of null
-seed 5	1708	569	hex of text
-seed 5	292	97	hex of text that is empty
-seed 5	27	9	hex: at the limit
-seed 5	29	9	hex: text longer than the length limit
-seed 5	397	132	integer * integer
-seed 5	8	2	integer * integer: exactly the largest integer
-seed 5	15	5	integer * integer: exactly the smallest integer
-seed 5	232	77	integer * integer: integer overflow
-seed 5	202	67	integer * real
-seed 5	16	5	integer * real: real result that is not finite
-seed 5	3	1	integer * real: subnormal, not zero
-seed 5	201	67	integer + integer
-seed 5	15	5	integer + integer: exactly the largest integer
-seed 5	12	4	integer + integer: exactly the smallest integer
-seed 5	49	16	integer + integer: integer overflow
-seed 5	219	73	integer + real
-seed 5	182	60	integer - integer
-seed 5	13	4	integer - integer: exactly the largest integer
-seed 5	11	3	integer - integer: exactly the smallest integer
-seed 5	57	19	integer - integer: integer overflow
-seed 5	201	67	integer - real
-seed 5	146	48	integer / integer
-seed 5	51	17	integer / integer: division by zero
+seed 5	4	1	case: refused, column of type REAL in a call of hex
+seed 5	3	1	case: refused, column of type REAL in a call of lower
+seed 5	4	1	case: refused, column of type REAL in a concatenation
+seed 5	55	18	case: refused, column of type TEXT in arithmetic
+seed 5	868	289	case: text
+seed 5	85	28	case: text or blob longer than the length limit
+seed 5	576	192	hex of a blob
+seed 5	104	34	hex of a blob that is empty
+seed 5	76	25	hex of null
+seed 5	1610	536	hex of text
+seed 5	275	91	hex of text that is empty
+seed 5	17	5	hex: at the limit
+seed 5	31	10	hex: text longer than the length limit
+seed 5	415	138	integer * integer
+seed 5	10	3	integer * integer: exactly the smallest integer
+seed 5	211	70	integer * integer: integer overflow
+seed 5	219	73	integer * real
+seed 5	15	5	integer * real: real result that is not finite
+seed 5	6	2	integer * real: subnormal, not zero
+seed 5	192	64	integer + integer
+seed 5	16	5	integer + integer: exactly the largest integer
+seed 5	20	6	integer + integer: exactly the smallest integer
+seed 5	52	17	integer + integer: integer overflow
+seed 5	221	73	integer + real
+seed 5	221	73	integer - integer
+seed 5	18	6	integer - integer: exactly the largest integer
+seed 5	16	5	integer - integer: exactly the smallest integer
+seed 5	68	22	integer - integer: integer overflow
+seed 5	218	72	integer - real
+seed 5	143	47	integer / integer
+seed 5	39	13	integer / integer: division by zero
 seed 5	15	5	integer / integer: exactly the smallest integer
-seed 5	22	7	integer / integer: integer overflow
-seed 5	98	32	integer / real
-seed 5	29	9	integer / real: division by zero
-seed 5	8	2	integer / real: real result that is not finite
-seed 5	741	247	integer converted to real inexactly
-seed 5	773	257	integer converted to real on the left
-seed 5	770	256	integer converted to real on the right
-seed 5	1592	530	lower of a letter that is not ASCII and has a lower case in Unicode
-seed 5	96	32	lower of null
-seed 5	930	310	lower of text, ASCII false, changed false
-seed 5	1063	354	lower of text, ASCII false, changed true
-seed 5	2466	822	lower of text, ASCII true, changed false
-seed 5	306	102	lower of text, ASCII true, changed true
-seed 5	43	14	lower: at the limit
-seed 5	20	6	lower: text longer than the length limit
-seed 5	193	64	real * integer
-seed 5	12	4	real * integer: real result that is not finite
-seed 5	656	218	real * real
-seed 5	90	30	real * real: real result that is not finite
-seed 5	35	11	real * real: subnormal, not zero
-seed 5	207	69	real + integer
-seed 5	486	162	real + real
-seed 5	22	7	real + real: real result that is not finite
-seed 5	5	1	real + real: subnormal, not zero
-seed 5	210	70	real - integer
-seed 5	461	153	real - real
-seed 5	21	7	real - real: real result that is not finite
-seed 5	6	2	real - real: subnormal, not zero
-seed 5	137	45	real / integer
-seed 5	11	3	real / integer: division by zero
-seed 5	173	57	real / real
-seed 5	52	17	real / real: division by zero
-seed 5	31	10	real / real: real result that is not finite
-seed 5	13	4	real / real: subnormal, not zero
-seed 5	24	8	the smallest integer / a negative integer other than -1
-seed 5	22	7	|| of two empty texts
-seed 5	22084	7361	|| of two texts
-seed 5	4441	1480	|| with an empty text
-seed 5	289	96	|| with null
-seed 5	36	12	||: at the limit
-seed 5	34	11	||: text longer than the length limit
-seed 6	153	51	* with null
-seed 6	142	47	+ with null
-seed 6	255	85	- of integer
-seed 6	76	25	- of integer: integer overflow
-seed 6	64	21	- of null
-seed 6	341	113	- of real
-seed 6	150	50	- of real zero
-seed 6	134	44	- with null
-seed 6	126	42	/ with null
-seed 6	387	129	a fused multiply and add would differ
-seed 6	64	21	an error on the right of null
+seed 5	21	7	integer / integer: integer overflow
+seed 5	109	36	integer / real
+seed 5	23	7	integer / real: division by zero
+seed 5	7	2	integer / real: real result that is not finite
+seed 5	815	271	integer converted to real inexactly
+seed 5	812	270	integer converted to real on the left
+seed 5	771	257	integer converted to real on the right
+seed 5	1545	515	lower of a letter that is not ASCII and has a lower case in Unicode
+seed 5	67	22	lower of null
+seed 5	917	305	lower of text, ASCII false, changed false
+seed 5	1023	341	lower of text, ASCII false, changed true
+seed 5	2027	675	lower of text, ASCII true, changed false
+seed 5	293	97	lower of text, ASCII true, changed true
+seed 5	51	17	lower: at the limit
+seed 5	14	4	lower: text longer than the length limit
+seed 5	202	67	real * integer
+seed 5	13	4	real * integer: real result that is not finite
+seed 5	4	1	real * integer: subnormal, not zero
+seed 5	665	221	real * real
+seed 5	82	27	real * real: real result that is not finite
+seed 5	24	8	real * real: subnormal, not zero
+seed 5	203	67	real + integer
+seed 5	508	169	real + real
+seed 5	23	7	real + real: real result that is not finite
+seed 5	7	2	real + real: subnormal, not zero
+seed 5	216	72	real - integer
+seed 5	452	150	real - real
+seed 5	22	7	real - real: real result that is not finite
+seed 5	5	1	real - real: subnormal, not zero
+seed 5	128	42	real / integer
+seed 5	9	3	real / integer: division by zero
+seed 5	178	59	real / real
+seed 5	53	17	real / real: division by zero
+seed 5	30	10	real / real: real result that is not finite
+seed 5	10	3	real / real: subnormal, not zero
+seed 5	18	6	the smallest integer / a negative integer other than -1
+seed 5	35	11	|| of two empty texts
+seed 5	18486	6162	|| of two texts
+seed 5	3817	1272	|| with an empty text
+seed 5	372	124	|| with null
+seed 5	24	8	||: an error on the right of null
+seed 5	33	11	||: at the limit
+seed 5	40	13	||: text longer than the length limit
+seed 6	183	61	* with null
+seed 6	160	53	+ with null
+seed 6	297	99	- of integer
+seed 6	74	24	- of integer: integer overflow
+seed 6	67	22	- of null
+seed 6	410	136	- of real
+seed 6	134	44	- of real zero
+seed 6	131	43	- with null
+seed 6	132	44	/ with null
+seed 6	384	128	a fused multiply and add would differ
+seed 6	53	17	an error on the right of null
 seed 6	15	5	case: blob
-seed 6	99	33	case: column alone
-seed 6	20	6	case: deeper than 900
-seed 6	135	45	case: division by zero
-seed 6	265	88	case: integer
+seed 6	112	37	case: column alone
+seed 6	12	4	case: deeper than 900
+seed 6	120	40	case: division by zero
+seed 6	293	97	case: integer
 seed 6	424	141	case: integer overflow
-seed 6	355	118	case: null
-seed 6	816	272	case: real
-seed 6	32	10	case: real -0.0
-seed 6	218	72	case: real 0.0
-seed 6	175	58	case: real result that is not finite
-seed 6	14	4	case: refused, argument in arithmetic, which is a blob
-seed 6	10	3	case: refused, argument in arithmetic, which is text
-seed 6	5	1	case: refused, column of type BLOB in a call of lower
-seed 6	4	1	case: refused, column of type BLOB in a concatenation
-seed 6	40	13	case: refused, column of type BLOB in arithmetic
-seed 6	6	2	case: refused, column of type INT in a concatenation
-seed 6	5	1	case: refused, column of type INTEGER in a concatenation
-seed 6	9	3	case: refused, column of type REAL in a call of hex
-seed 6	4	1	case: refused, column of type REAL in a call of lower
-seed 6	8	2	case: refused, column of type REAL in a concatenation
-seed 6	41	13	case: refused, column of type TEXT in arithmetic
-seed 6	915	305	case: text
-seed 6	91	30	case: text longer than the length limit
-seed 6	622	207	hex of a blob
-seed 6	110	36	hex of a blob that is empty
-seed 6	94	31	hex of null
-seed 6	1728	576	hex of text
-seed 6	267	89	hex of text that is empty
-seed 6	22	7	hex: at the limit
-seed 6	26	8	hex: text longer than the length limit
-seed 6	421	140	integer * integer
-seed 6	6	2	integer * integer: exactly the largest integer
-seed 6	15	5	integer * integer: exactly the smallest integer
-seed 6	220	73	integer * integer: integer overflow
-seed 6	190	63	integer * real
-seed 6	11	3	integer * real: real result that is not finite
-seed 6	4	1	integer * real: subnormal, not zero
-seed 6	174	58	integer + integer
-seed 6	13	4	integer + integer: exactly the largest integer
-seed 6	13	4	integer + integer: exactly the smallest integer
-seed 6	51	17	integer + integer: integer overflow
-seed 6	191	63	integer + real
-seed 6	184	61	integer - integer
-seed 6	12	4	integer - integer: exactly the largest integer
-seed 6	14	4	integer - integer: exactly the smallest integer
-seed 6	60	20	integer - integer: integer overflow
-seed 6	226	75	integer - real
-seed 6	155	51	integer / integer
-seed 6	47	15	integer / integer: division by zero
-seed 6	26	8	integer / integer: exactly the smallest integer
+seed 6	20	6	case: literal longer than the limit, text true
+seed 6	402	134	case: null
+seed 6	851	283	case: real
+seed 6	25	8	case: real -0.0
+seed 6	195	65	case: real 0.0
+seed 6	192	64	case: real result that is not finite
+seed 6	3	1	case: refused, argument in a concatenation, which is an integer
+seed 6	12	4	case: refused, argument in arithmetic, which is a blob
+seed 6	5	1	case: refused, argument in arithmetic, which is text
+seed 6	3	1	case: refused, column of type BLOB in a call of lower
+seed 6	36	12	case: refused, column of type BLOB in arithmetic
+seed 6	3	1	case: refused, column of type INT in a call of lower
+seed 6	3	1	case: refused, column of type INT in a concatenation
+seed 6	3	1	case: refused, column of type INTEGER in a concatenation
+seed 6	5	1	case: refused, column of type REAL in a call of lower
+seed 6	6	2	case: refused, column of type REAL in a concatenation
+seed 6	42	14	case: refused, column of type TEXT in arithmetic
+seed 6	833	277	case: text
+seed 6	98	32	case: text or blob longer than the length limit
+seed 6	562	187	hex of a blob
+seed 6	85	28	hex of a blob that is empty
+seed 6	91	30	hex of null
+seed 6	1445	481	hex of text
+seed 6	240	80	hex of text that is empty
+seed 6	17	5	hex: at the limit
+seed 6	28	9	hex: text longer than the length limit
+seed 6	433	144	integer * integer
+seed 6	5	1	integer * integer: exactly the largest integer
+seed 6	18	6	integer * integer: exactly the smallest integer
+seed 6	237	79	integer * integer: integer overflow
+seed 6	201	67	integer * real
+seed 6	9	3	integer * real: real result that is not finite
+seed 6	172	57	integer + integer
+seed 6	11	3	integer + integer: exactly the largest integer
+seed 6	15	5	integer + integer: exactly the smallest integer
+seed 6	42	14	integer + integer: integer overflow
+seed 6	209	69	integer + real
+seed 6	190	63	integer - integer
+seed 6	15	5	integer - integer: exactly the largest integer
+seed 6	10	3	integer - integer: exactly the smallest integer
+seed 6	54	18	integer - integer: integer overflow
+seed 6	204	68	integer - real
+seed 6	166	55	integer / integer
+seed 6	35	11	integer / integer: division by zero
+seed 6	15	5	integer / integer: exactly the smallest integer
 seed 6	17	5	integer / integer: integer overflow
-seed 6	92	30	integer / real
-seed 6	20	6	integer / real: division by zero
-seed 6	5	1	integer / real: real result that is not finite
-seed 6	715	238	integer converted to real inexactly
-seed 6	735	245	integer converted to real on the left
-seed 6	709	236	integer converted to real on the right
-seed 6	1656	552	lower of a letter that is not ASCII and has a lower case in Unicode
-seed 6	84	28	lower of null
-seed 6	1238	412	lower of text, ASCII false, changed false
-seed 6	1007	335	lower of text, ASCII false, changed true
-seed 6	2462	820	lower of text, ASCII true, changed false
-seed 6	307	102	lower of text, ASCII true, changed true
-seed 6	24	8	lower: at the limit
-seed 6	21	7	lower: text longer than the length limit
-seed 6	175	58	real * integer
-seed 6	12	4	real * integer: real result that is not finite
-seed 6	701	233	real * real
-seed 6	91	30	real * real: real result that is not finite
-seed 6	41	13	real * real: subnormal, not zero
-seed 6	201	67	real + integer
-seed 6	492	164	real + real
-seed 6	22	7	real + real: real result that is not finite
+seed 6	100	33	integer / real
+seed 6	23	7	integer / real: division by zero
+seed 6	7	2	integer / real: real result that is not finite
+seed 6	782	260	integer converted to real inexactly
+seed 6	753	251	integer converted to real on the left
+seed 6	806	268	integer converted to real on the right
+seed 6	1415	471	lower of a letter that is not ASCII and has a lower case in Unicode
+seed 6	94	31	lower of null
+seed 6	966	322	lower of text, ASCII false, changed false
+seed 6	846	282	lower of text, ASCII false, changed true
+seed 6	2177	725	lower of text, ASCII true, changed false
+seed 6	272	90	lower of text, ASCII true, changed true
+seed 6	22	7	lower: at the limit
+seed 6	23	7	lower: text longer than the length limit
+seed 6	199	66	real * integer
+seed 6	16	5	real * integer: real result that is not finite
+seed 6	664	221	real * real
+seed 6	95	31	real * real: real result that is not finite
+seed 6	34	11	real * real: subnormal, not zero
+seed 6	259	86	real + integer
+seed 6	464	154	real + real
+seed 6	26	8	real + real: real result that is not finite
 seed 6	5	1	real + real: subnormal, not zero
-seed 6	194	64	real - integer
-seed 6	473	157	real - real
-seed 6	17	5	real - real: real result that is not finite
-seed 6	119	39	real / integer
-seed 6	8	2	real / integer: division by zero
-seed 6	156	52	real / real
-seed 6	60	20	real / real: division by zero
+seed 6	196	65	real - integer
+seed 6	484	161	real - real
+seed 6	22	7	real - real: real result that is not finite
+seed 6	3	1	real - real: subnormal, not zero
+seed 6	132	44	real / integer
+seed 6	4	1	real / integer: division by zero
+seed 6	201	67	real / real
+seed 6	58	19	real / real: division by zero
 seed 6	17	5	real / real: real result that is not finite
-seed 6	5	1	real / real: subnormal, not zero
+seed 6	8	2	real / real: subnormal, not zero
 seed 6	26	8	the smallest integer / a negative integer other than -1
-seed 6	18	6	|| of two empty texts
-seed 6	23853	7951	|| of two texts
-seed 6	4782	1594	|| with an empty text
-seed 6	340	113	|| with null
-seed 6	38	12	||: at the limit
-seed 6	44	14	||: text longer than the length limit
-seed 7	142	47	* with null
-seed 7	162	54	+ with null
-seed 7	291	97	- of integer
-seed 7	75	25	- of integer: integer overflow
-seed 7	67	22	- of null
-seed 7	381	127	- of real
-seed 7	158	52	- of real zero
-seed 7	125	41	- with null
-seed 7	107	35	/ with null
-seed 7	353	117	a fused multiply and add would differ
-seed 7	76	25	an error on the right of null
-seed 7	10	3	case: blob
-seed 7	89	29	case: column alone
-seed 7	20	6	case: deeper than 900
-seed 7	109	36	case: division by zero
-seed 7	280	93	case: integer
-seed 7	455	151	case: integer overflow
-seed 7	338	112	case: null
-seed 7	834	278	case: real
-seed 7	26	8	case: real -0.0
-seed 7	192	64	case: real 0.0
-seed 7	189	63	case: real result that is not finite
-seed 7	4	1	case: refused, argument in a concatenation, which is a blob
-seed 7	3	1	case: refused, argument in a concatenation, which is a real
-seed 7	11	3	case: refused, argument in arithmetic, which is a blob
-seed 7	8	2	case: refused, argument in arithmetic, which is text
-seed 7	3	1	case: refused, column of type BLOB in a concatenation
-seed 7	25	8	case: refused, column of type BLOB in arithmetic
-seed 7	4	1	case: refused, column of type INT in a call of hex
-seed 7	3	1	case: refused, column of type INT in a concatenation
-seed 7	4	1	case: refused, column of type INTEGER in a concatenation
+seed 6	29	9	|| of two empty texts
+seed 6	19692	6564	|| of two texts
+seed 6	3977	1325	|| with an empty text
+seed 6	358	119	|| with null
+seed 6	25	8	||: an error on the right of null
+seed 6	41	13	||: at the limit
+seed 6	47	15	||: text longer than the length limit
+seed 7	139	46	* with null
+seed 7	138	46	+ with null
+seed 7	258	86	- of integer
+seed 7	68	22	- of integer: integer overflow
+seed 7	68	22	- of null
+seed 7	341	113	- of real
+seed 7	165	55	- of real zero
+seed 7	109	36	- with null
+seed 7	108	36	/ with null
+seed 7	365	121	a fused multiply and add would differ
+seed 7	54	18	an error on the right of null
+seed 7	7	2	case: blob
+seed 7	97	32	case: column alone
+seed 7	25	8	case: deeper than 900
+seed 7	120	40	case: division by zero
+seed 7	287	95	case: integer
+seed 7	420	140	case: integer overflow
+seed 7	16	5	case: literal longer than the limit, text true
+seed 7	350	116	case: null
+seed 7	809	269	case: real
+seed 7	31	10	case: real -0.0
+seed 7	201	67	case: real 0.0
+seed 7	184	61	case: real result that is not finite
+seed 7	6	2	case: refused, argument in a concatenation, which is a blob
+seed 7	8	2	case: refused, argument in arithmetic, which is a blob
+seed 7	4	1	case: refused, argument in arithmetic, which is text
+seed 7	4	1	case: refused, column of type BLOB in a call of lower
+seed 7	7	2	case: refused, column of type BLOB in a concatenation
+seed 7	50	16	case: refused, column of type BLOB in arithmetic
+seed 7	3	1	case: refused, column of type INTEGER in a concatenation
+seed 7	3	1	case: refused, column of type REAL in a call of hex
 seed 7	3	1	case: refused, column of type REAL in a call of lower
-seed 7	9	3	case: refused, column of type REAL in a concatenation
-seed 7	50	16	case: refused, column of type TEXT in arithmetic
-seed 7	932	310	case: text
-seed 7	97	32	case: text longer than the length limit
-seed 7	697	232	hex of a blob
-seed 7	126	42	hex of a blob that is empty
+seed 7	5	1	case: refused, column of type REAL in a concatenation
+seed 7	45	15	case: refused, column of type TEXT in arithmetic
+seed 7	921	307	case: text
+seed 7	104	34	case: text or blob longer than the length limit
+seed 7	971	323	hex of a blob
+seed 7	185	61	hex of a blob that is empty
 seed 7	68	22	hex of null
-seed 7	1666	555	hex of text
-seed 7	292	97	hex of text that is empty
-seed 7	13	4	hex: at the limit
-seed 7	24	8	hex: text longer than the length limit
-seed 7	437	145	integer * integer
-seed 7	14	4	integer * integer: exactly the largest integer
-seed 7	15	5	integer * integer: exactly the smallest integer
-seed 7	238	79	integer * integer: integer overflow
-seed 7	181	60	integer * real
-seed 7	19	6	integer * real: real result that is not finite
-seed 7	4	1	integer * real: subnormal, not zero
-seed 7	192	64	integer + integer
-seed 7	13	4	integer + integer: exactly the largest integer
-seed 7	10	3	integer + integer: exactly the smallest integer
-seed 7	59	19	integer + integer: integer overflow
-seed 7	212	70	integer + real
-seed 7	178	59	integer - integer
-seed 7	14	4	integer - integer: exactly the largest integer
-seed 7	11	3	integer - integer: exactly the smallest integer
-seed 7	66	22	integer - integer: integer overflow
-seed 7	207	69	integer - real
-seed 7	151	50	integer / integer
-seed 7	41	13	integer / integer: division by zero
-seed 7	32	10	integer / integer: exactly the smallest integer
-seed 7	17	5	integer / integer: integer overflow
-seed 7	103	34	integer / real
-seed 7	22	7	integer / real: division by zero
-seed 7	8	2	integer / real: real result that is not finite
-seed 7	758	252	integer converted to real inexactly
-seed 7	752	250	integer converted to real on the left
-seed 7	819	273	integer converted to real on the right
-seed 7	1586	528	lower of a letter that is not ASCII and has a lower case in Unicode
-seed 7	85	28	lower of null
-seed 7	953	317	lower of text, ASCII false, changed false
-seed 7	1093	364	lower of text, ASCII false, changed true
-seed 7	2022	674	lower of text, ASCII true, changed false
-seed 7	296	98	lower of text, ASCII true, changed true
-seed 7	34	11	lower: at the limit
-seed 7	26	8	lower: text longer than the length limit
-seed 7	208	69	real * integer
-seed 7	11	3	real * integer: real result that is not finite
-seed 7	646	215	real * real
-seed 7	80	26	real * real: real result that is not finite
-seed 7	42	14	real * real: subnormal, not zero
-seed 7	234	78	real + integer
-seed 7	453	151	real + real
-seed 7	26	8	real + real: real result that is not finite
-seed 7	207	69	real - integer
-seed 7	500	166	real - real
-seed 7	19	6	real - real: real result that is not finite
-seed 7	5	1	real - real: subnormal, not zero
-seed 7	148	49	real / integer
-seed 7	11	3	real / integer: division by zero
-seed 7	170	56	real / real
-seed 7	35	11	real / real: division by zero
-seed 7	26	8	real / real: real result that is not finite
-seed 7	6	2	real / real: subnormal, not zero
-seed 7	18	6	the smallest integer / a negative integer other than -1
-seed 7	30	10	|| of two empty texts
-seed 7	21453	7151	|| of two texts
-seed 7	4318	1439	|| with an empty text
-seed 7	303	101	|| with null
-seed 7	41	13	||: at the limit
-seed 7	47	15	||: text longer than the length limit
-seed 8	147	49	* with null
-seed 8	123	41	+ with null
-seed 8	308	102	- of integer
-seed 8	71	23	- of integer: integer overflow
-seed 8	72	24	- of null
-seed 8	378	126	- of real
-seed 8	167	55	- of real zero
-seed 8	149	49	- with null
-seed 8	125	41	/ with null
-seed 8	379	126	a fused multiply and add would differ
-seed 8	64	21	an error on the right of null
-seed 8	10	3	case: blob
-seed 8	91	30	case: column alone
-seed 8	28	9	case: deeper than 900
-seed 8	149	49	case: division by zero
-seed 8	284	94	case: integer
-seed 8	426	142	case: integer overflow
-seed 8	332	110	case: null
-seed 8	801	267	case: real
-seed 8	38	12	case: real -0.0
-seed 8	196	65	case: real 0.0
-seed 8	187	62	case: real result that is not finite
-seed 8	3	1	case: refused, argument in a concatenation, which is a blob
-seed 8	9	3	case: refused, argument in arithmetic, which is a blob
-seed 8	9	3	case: refused, argument in arithmetic, which is text
-seed 8	3	1	case: refused, column of type BLOB in a call of lower
-seed 8	3	1	case: refused, column of type BLOB in a concatenation
-seed 8	31	10	case: refused, column of type BLOB in arithmetic
+seed 7	2307	769	hex of text
+seed 7	442	147	hex of text that is empty
+seed 7	11	3	hex: at the limit
+seed 7	20	6	hex: text longer than the length limit
+seed 7	384	128	integer * integer
+seed 7	6	2	integer * integer: exactly the largest integer
+seed 7	21	7	integer * integer: exactly the smallest integer
+seed 7	209	69	integer * integer: integer overflow
+seed 7	198	66	integer * real
+seed 7	15	5	integer * real: real result that is not finite
+seed 7	182	60	integer + integer
+seed 7	17	5	integer + integer: exactly the largest integer
+seed 7	9	3	integer + integer: exactly the smallest integer
+seed 7	56	18	integer + integer: integer overflow
+seed 7	196	65	integer + real
+seed 7	196	65	integer - integer
+seed 7	19	6	integer - integer: exactly the largest integer
+seed 7	8	2	integer - integer: exactly the smallest integer
+seed 7	71	23	integer - integer: integer overflow
+seed 7	184	61	integer - real
+seed 7	165	55	integer / integer
+seed 7	42	14	integer / integer: division by zero
+seed 7	20	6	integer / integer: exactly the smallest integer
+seed 7	16	5	integer / integer: integer overflow
+seed 7	90	30	integer / real
+seed 7	20	6	integer / real: division by zero
+seed 7	10	3	integer / real: real result that is not finite
+seed 7	746	248	integer converted to real inexactly
+seed 7	713	237	integer converted to real on the left
+seed 7	762	254	integer converted to real on the right
+seed 7	2260	753	lower of a letter that is not ASCII and has a lower case in Unicode
+seed 7	81	27	lower of null
+seed 7	1406	468	lower of text, ASCII false, changed false
+seed 7	1513	504	lower of text, ASCII false, changed true
+seed 7	1981	660	lower of text, ASCII true, changed false
+seed 7	409	136	lower of text, ASCII true, changed true
+seed 7	32	10	lower: at the limit
+seed 7	29	9	lower: text longer than the length limit
+seed 7	210	70	real * integer
+seed 7	15	5	real * integer: real result that is not finite
+seed 7	3	1	real * integer: subnormal, not zero
+seed 7	639	213	real * real
+seed 7	77	25	real * real: real result that is not finite
+seed 7	30	10	real * real: subnormal, not zero
+seed 7	170	56	real + integer
+seed 7	466	155	real + real
+seed 7	22	7	real + real: real result that is not finite
+seed 7	225	75	real - integer
+seed 7	507	169	real - real
+seed 7	24	8	real - real: real result that is not finite
+seed 7	10	3	real - real: subnormal, not zero
+seed 7	129	43	real / integer
+seed 7	13	4	real / integer: division by zero
+seed 7	168	56	real / real
+seed 7	45	15	real / real: division by zero
+seed 7	21	7	real / real: real result that is not finite
+seed 7	8	2	real / real: subnormal, not zero
+seed 7	20	6	the smallest integer / a negative integer other than -1
+seed 7	32	10	|| of two empty texts
+seed 7	26936	8978	|| of two texts
+seed 7	5572	1857	|| with an empty text
+seed 7	311	103	|| with null
+seed 7	22	7	||: an error on the right of null
+seed 7	55	18	||: at the limit
+seed 7	55	18	||: text longer than the length limit
+seed 8	143	47	* with null
+seed 8	158	52	+ with null
+seed 8	292	97	- of integer
+seed 8	65	21	- of integer: integer overflow
+seed 8	86	28	- of null
+seed 8	368	122	- of real
+seed 8	146	48	- of real zero
+seed 8	191	63	- with null
+seed 8	116	38	/ with null
+seed 8	384	128	a fused multiply and add would differ
+seed 8	74	24	an error on the right of null
+seed 8	12	4	case: blob
+seed 8	95	31	case: column alone
+seed 8	19	6	case: deeper than 900
+seed 8	127	42	case: division by zero
+seed 8	283	94	case: integer
+seed 8	460	153	case: integer overflow
+seed 8	21	7	case: literal longer than the limit, text true
+seed 8	394	131	case: null
+seed 8	817	272	case: real
+seed 8	26	8	case: real -0.0
+seed 8	204	68	case: real 0.0
+seed 8	183	61	case: real result that is not finite
+seed 8	5	1	case: refused, argument in arithmetic, which is a blob
+seed 8	11	3	case: refused, argument in arithmetic, which is text
+seed 8	4	1	case: refused, column of type BLOB in a call of lower
+seed 8	9	3	case: refused, column of type BLOB in a concatenation
+seed 8	36	12	case: refused, column of type BLOB in arithmetic
+seed 8	3	1	case: refused, column of type INT in a call of hex
 seed 8	4	1	case: refused, column of type INT in a call of lower
-seed 8	9	3	case: refused, column of type INT in a concatenation
-seed 8	4	1	case: refused, column of type INTEGER in a call of hex
+seed 8	4	1	case: refused, column of type INT in a concatenation
 seed 8	4	1	case: refused, column of type INTEGER in a concatenation
-seed 8	4	1	case: refused, column of type REAL in a call of hex
-seed 8	5	1	case: refused, column of type REAL in a call of lower
-seed 8	33	11	case: refused, column of type TEXT in arithmetic
-seed 8	949	316	case: text
-seed 8	97	32	case: text longer than the length limit
-seed 8	984	328	hex of a blob
-seed 8	181	60	hex of a blob that is empty
-seed 8	93	31	hex of null
-seed 8	2336	778	hex of text
-seed 8	444	148	hex of text that is empty
-seed 8	11	3	hex: at the limit
-seed 8	25	8	hex: text longer than the length limit
-seed 8	396	132	integer * integer
-seed 8	5	1	integer * integer: exactly the largest integer
-seed 8	9	3	integer * integer: exactly the smallest integer
-seed 8	238	79	integer * integer: integer overflow
-seed 8	239	79	integer * real
+seed 8	3	1	case: refused, column of type REAL in a call of lower
+seed 8	7	2	case: refused, column of type REAL in a concatenation
+seed 8	27	9	case: refused, column of type TEXT in arithmetic
+seed 8	856	285	case: text
+seed 8	82	27	case: text or blob longer than the length limit
+seed 8	840	280	hex of a blob
+seed 8	148	49	hex of a blob that is empty
+seed 8	87	29	hex of null
+seed 8	1946	648	hex of text
+seed 8	326	108	hex of text that is empty
+seed 8	8	2	hex: at the limit
+seed 8	26	8	hex: text longer than the length limit
+seed 8	398	132	integer * integer
+seed 8	8	2	integer * integer: exactly the largest integer
+seed 8	15	5	integer * integer: exactly the smallest integer
+seed 8	255	85	integer * integer: integer overflow
+seed 8	217	72	integer * real
 seed 8	11	3	integer * real: real result that is not finite
-seed 8	172	57	integer + integer
-seed 8	16	5	integer + integer: exactly the largest integer
+seed 8	5	1	integer * real: subnormal, not zero
+seed 8	191	63	integer + integer
+seed 8	13	4	integer + integer: exactly the largest integer
 seed 8	8	2	integer + integer: exactly the smallest integer
-seed 8	48	16	integer + integer: integer overflow
-seed 8	206	68	integer + real
-seed 8	183	61	integer - integer
-seed 8	20	6	integer - integer: exactly the largest integer
-seed 8	10	3	integer - integer: exactly the smallest integer
-seed 8	59	19	integer - integer: integer overflow
-seed 8	208	69	integer - real
-seed 8	159	53	integer / integer
-seed 8	46	15	integer / integer: division by zero
-seed 8	18	6	integer / integer: exactly the smallest integer
-seed 8	10	3	integer / integer: integer overflow
-seed 8	109	36	integer / real
-seed 8	28	9	integer / real: division by zero
-seed 8	6	2	integer / real: real result that is not finite
-seed 8	745	248	integer converted to real inexactly
-seed 8	807	269	integer converted to real on the left
-seed 8	732	244	integer converted to real on the right
-seed 8	2081	693	lower of a letter that is not ASCII and has a lower case in Unicode
-seed 8	70	23	lower of null
-seed 8	1256	418	lower of text, ASCII false, changed false
-seed 8	1398	466	lower of text, ASCII false, changed true
-seed 8	2858	952	lower of text, ASCII true, changed false
-seed 8	405	135	lower of text, ASCII true, changed true
-seed 8	29	9	lower: at the limit
-seed 8	26	8	lower: text longer than the length limit
-seed 8	203	67	real * integer
+seed 8	63	21	integer + integer: integer overflow
+seed 8	209	69	integer + real
+seed 8	182	60	integer - integer
+seed 8	14	4	integer - integer: exactly the largest integer
+seed 8	7	2	integer - integer: exactly the smallest integer
+seed 8	68	22	integer - integer: integer overflow
+seed 8	183	61	integer - real
+seed 8	171	57	integer / integer
+seed 8	44	14	integer / integer: division by zero
+seed 8	15	5	integer / integer: exactly the smallest integer
+seed 8	9	3	integer / integer: integer overflow
+seed 8	97	32	integer / real
+seed 8	19	6	integer / real: division by zero
+seed 8	14	4	integer / real: real result that is not finite
+seed 8	743	247	integer converted to real inexactly
+seed 8	750	250	integer converted to real on the left
+seed 8	759	253	integer converted to real on the right
+seed 8	1740	580	lower of a letter that is not ASCII and has a lower case in Unicode
+seed 8	78	26	lower of null
+seed 8	1046	348	lower of text, ASCII false, changed false
+seed 8	1189	396	lower of text, ASCII false, changed true
+seed 8	2230	743	lower of text, ASCII true, changed false
+seed 8	336	112	lower of text, ASCII true, changed true
+seed 8	25	8	lower: at the limit
+seed 8	28	9	lower: text longer than the length limit
+seed 8	209	69	real * integer
 seed 8	14	4	real * integer: real result that is not finite
-seed 8	3	1	real * integer: subnormal, not zero
-seed 8	660	220	real * real
-seed 8	91	30	real * real: real result that is not finite
-seed 8	26	8	real * real: subnormal, not zero
-seed 8	176	58	real + integer
-seed 8	472	157	real + real
-seed 8	21	7	real + real: real result that is not finite
-seed 8	3	1	real + real: subnormal, not zero
+seed 8	665	221	real * real
+seed 8	87	29	real * real: real result that is not finite
+seed 8	36	12	real * real: subnormal, not zero
+seed 8	192	64	real + integer
+seed 8	488	162	real + real
+seed 8	18	6	real + real: real result that is not finite
 seed 8	198	66	real - integer
-seed 8	459	153	real - real
+seed 8	442	147	real - real
 seed 8	22	7	real - real: real result that is not finite
-seed 8	3	1	real - real: subnormal, not zero
-seed 8	127	42	real / integer
-seed 8	14	4	real / integer: division by zero
-seed 8	141	47	real / real
-seed 8	61	20	real / real: division by zero
-seed 8	22	7	real / real: real result that is not finite
-seed 8	5	1	real / real: subnormal, not zero
-seed 8	8	2	the smallest integer / a negative integer other than -1
-seed 8	31	10	|| of two empty texts
-seed 8	29569	9856	|| of two texts
-seed 8	6110	2036	|| with an empty text
-seed 8	310	103	|| with null
-seed 8	33	11	||: at the limit
-seed 8	46	15	||: text longer than the length limit
+seed 8	136	45	real / integer
+seed 8	10	3	real / integer: division by zero
+seed 8	194	64	real / real
+seed 8	54	18	real / real: division by zero
+seed 8	17	5	real / real: real result that is not finite
+seed 8	8	2	real / real: subnormal, not zero
+seed 8	19	6	the smallest integer / a negative integer other than -1
+seed 8	32	10	|| of two empty texts
+seed 8	22890	7630	|| of two texts
+seed 8	4655	1551	|| with an empty text
+seed 8	366	122	|| with null
+seed 8	25	8	||: an error on the right of null
+seed 8	32	10	||: at the limit
+seed 8	28	9	||: text longer than the length limit

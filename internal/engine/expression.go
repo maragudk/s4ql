@@ -27,7 +27,7 @@ import (
 //     each row that the statement reads or changes, and never serves the access.
 
 // textRefusal of the statement s: for a select, an update, or a delete with a concatenation or a
-// call of a function in an expression, which the evaluator does not compute yet, the "not supported"
+// call of a function in an expression, which the engine does not compute yet, the "not supported"
 // of the first such node in the order of the text, the outer one of two at one offset, as
 // `concatenation`, `call of lower`, or `call of hex`; and nil for any other statement. It comes after
 // the checks of the text and of the arguments, and before the database is read, so its answer does

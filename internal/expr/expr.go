@@ -118,7 +118,8 @@ func (p place) takes(t Type) bool {
 	return t == TypeInteger || t == TypeReal
 }
 
-// placeOf the operands of a node of the kind k and the function f.
+// placeOf the operands of a node of the kind k and the function f, which [Program.add] has checked
+// to be lower or hex for a call.
 func placeOf(k stmt.ExpressionKind, f stmt.Function) place {
 	switch {
 	case k == stmt.ExprConcat:
@@ -262,7 +263,7 @@ func (x *Program) add(e stmt.Expression, p place, columns map[string]Column) (in
 	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprConcat:
 		operands = 2
 	case stmt.ExprCall:
-		if len(e.Operands) != 1 || e.Function.String() == "" {
+		if len(e.Operands) != 1 || e.Function != stmt.FuncLower && e.Function != stmt.FuncHex {
 			return 0, internalError("a call of function %v with %v operands", int(e.Function), len(e.Operands))
 		}
 		n.function = e.Function
@@ -296,11 +297,14 @@ func (x *Program) add(e stmt.Expression, p place, columns map[string]Column) (in
 	return int32(len(x.nodes) - 1), nil
 }
 
-// nodeName of an operator of the kind k, or of a call of the function f, in a message: "+", "||",
-// or "lower".
+// nodeName of an operator of the kind k, or of a call of the function f, or of a literal, in a
+// message: "+", "||", "lower", or "a literal".
 func nodeName(k stmt.ExpressionKind, f stmt.Function) string {
-	if k == stmt.ExprCall {
+	switch k {
+	case stmt.ExprCall:
 		return f.String()
+	case stmt.ExprValue:
+		return "a literal"
 	}
 	return k.String()
 }
@@ -395,31 +399,41 @@ type Bound struct {
 }
 
 // Bind the arguments args of the statement to x, by the numbers of its parameters, which count from
-// 1, with the length limit of the database, the largest text in bytes that SQLite makes, which must
-// be positive: the [Bound], or the [stmt.NotSupportedError] for the first parameter of x, in the
-// order of the text, whose argument is of a type that its place does not take: "argument 2 in
+// 1, with the length limit, the largest text or blob in bytes that SQLite makes, which must be
+// positive, and which Bind takes as SQLite does: a limit below 30 as 30, and one above 1,000,000,000
+// as 1,000,000,000. It gives the [Bound], or the [stmt.NotSupportedError] for the first parameter of
+// x, in the order of the text, whose argument is of a type that its place does not take: "argument 2 in
 // arithmetic, which is text" or "argument 2 in arithmetic, which is a blob" for an operand of
 // arithmetic; "argument 2 in a concatenation, which is an integer", "..., which is a real", or "...,
 // which is a blob" for an operand of ||, and the same "in a call of lower" for the argument of lower;
 // and "argument 2 in a call of hex, which is an integer" or "..., which is a real" for the argument
-// of hex. Bound holds args, which must not change while it is used. The arguments are not checked
-// otherwise: a real that is not finite, which s4ql refuses as an argument before, gives what the
-// arithmetic gives, an error that the result is not finite or a value, and a text or a blob longer
-// than the limit, which SQLite refuses when it binds it, gives the error of the first operation that
-// makes a text longer than the limit, or NULL. An expression without a parameter takes any args, also
-// nil, and allocates nothing.
+// of hex. Then it gives an [*Error] of the kind [ErrTooLong] for the first literal, in the order of
+// the text, that is a text or a blob longer than the limit: SQLite fails for such a text with
+// `string or blob too big`, where it computes the literal, and reads such a blob as NULL. Bound holds
+// args, which must not change while it is used. The arguments are not checked otherwise: a real that
+// is not finite gives what the arithmetic gives, an error that the result is not finite or a value,
+// and a text or a blob longer than the limit, which SQLite refuses when it binds it, gives the error
+// of the first operation that makes a text longer than the limit, or NULL. An expression without a
+// parameter takes any args, also nil, and allocates nothing.
 func (x *Program) Bind(args []*s4qlpb.Value, limit int) (Bound, error) {
 	switch {
 	case len(x.nodes) == 0:
 		return Bound{}, internalError("a program that is not checked")
 	case limit < 1:
 		return Bound{}, internalError("a length limit of %v", limit)
-	case x.typ != 0:
-		return Bound{x: x, args: args, typ: x.typ, limit: limit}, nil
 	}
-	typ, err := x.typeOf(args)
-	if err != nil {
-		return Bound{}, err
+	limit = min(max(limit, 30), 1_000_000_000)
+	typ := x.typ
+	if typ == 0 {
+		var err error
+		if typ, err = x.typeOf(args); err != nil {
+			return Bound{}, err
+		}
+	}
+	for i := range x.nodes {
+		if n := &x.nodes[i]; n.kind == stmt.ExprValue && len(n.value.text) > limit {
+			return Bound{}, &Error{Kind: ErrTooLong, Op: n.kind, Span: n.span}
+		}
 	}
 	return Bound{x: x, args: args, typ: typ, limit: limit}, nil
 }
@@ -448,11 +462,12 @@ func (b Bound) Type() Type {
 // as long as the limit, since SQLite allocates one byte more than the result.
 //
 // Arithmetic allocates nothing but an error, and so does a text operation whose result is one of its
-// operands: a concatenation with the empty text, lower of a text without an upper-case ASCII letter,
-// and hex of the empty text, a blob, or NULL. Any other text operation allocates its result once.
-// The text of a value is not copied from the row, the arguments, or a literal, so a value may share
-// its bytes with them; Go's strings never change, so the caller may keep a value after the row
-// changes, and a [Value.Proto] of it.
+// operands or empty: a concatenation with the empty text, lower of a text without an upper-case
+// ASCII letter, and hex of the empty text, the empty blob, or NULL. Any other text operation
+// allocates its result once. The text of a value is not copied from the row, the arguments, or a
+// literal, so a value may share its bytes with them; Go's strings never change, so the caller may
+// keep a value after the row changes, and a [Value.Proto] of it. A column of type BLOB alone is the
+// one value whose bytes Eval copies.
 func (b Bound) Eval(row []*s4qlpb.Value) (Value, error) {
 	if b.x == nil {
 		return Value{}, internalError("an expression that is not bound")
@@ -482,8 +497,12 @@ func (b Bound) evalNode(i int32, row []*s4qlpb.Value) (Value, error) {
 		}
 		return arithmetic(stmt.ExprSubtract, integerValue(0), v, n)
 	case stmt.ExprCall:
-		if n.function == stmt.FuncHex {
+		switch n.function {
+		case stmt.FuncHex:
 			return b.hex(n, row)
+		case stmt.FuncLower:
+		default:
+			return Value{}, internalError("a call of function %v", int(n.function))
 		}
 		v, err := b.evalNode(n.left, row)
 		if err != nil || v.kind == kindNull {

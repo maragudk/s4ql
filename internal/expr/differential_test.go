@@ -40,8 +40,7 @@ var schema = []struct {
 	{"s", s4qlpb.Type_TYPE_TEXT}, {"x", s4qlpb.Type_TYPE_BLOB}, {"t", s4qlpb.Type_TYPE_TEXT}, {"y", s4qlpb.Type_TYPE_BLOB},
 }
 
-// maxLength is SQLite's default length limit, which the engine's databases have unless they are
-// given a lower one.
+// maxLength is SQLite's default length limit, and its largest.
 const maxLength = 1_000_000_000
 
 // prefix of the statement that holds an expression of the tests, as the value of its assignment.
@@ -194,10 +193,9 @@ func (o *oracle) value(src string, row, args []*s4qlpb.Value, limit int) (expr.V
 	for i, c := range schema {
 		names[i], params[i] = c.name, fmt.Sprint("?", i+1)
 	}
-	q := fmt.Sprintf("with v(%v) as (select %v) select %v from v", strings.Join(names, ", "), strings.Join(params, ", "), src)
-	if len(q) > limit {
-		return expr.Value{}, fmt.Errorf("%q is longer than the limit %v, which SQLite refuses", q, limit)
-	}
+	// The result column has a name, since SQLite fails with `string or blob too big` for a column
+	// whose name, the text of its expression, is longer than the limit.
+	q := fmt.Sprintf("with v(%v) as (select %v) select %v as r from v", strings.Join(names, ", "), strings.Join(params, ", "), src)
 	if err := o.conn.SetLengthLimit(limit); err != nil {
 		return expr.Value{}, err
 	}
@@ -517,7 +515,7 @@ func (r *reference) text(e stmt.Expression) (expr.Value, *refError) {
 	rv, err := r.value(e.Operands[1])
 	if err != nil {
 		if l.Null() {
-			r.tally("an error on the right of null")
+			r.tally("||: an error on the right of null")
 		}
 		return expr.Value{}, err
 	}
@@ -649,10 +647,10 @@ func refusalOf(e stmt.Expression, c exprCase) (*stmt.NotSupportedError, bool) {
 			}
 		}
 		place = "in arithmetic"
-		switch {
-		case e.Kind == stmt.ExprConcat:
+		switch e.Kind {
+		case stmt.ExprConcat:
 			place = "in a concatenation"
-		case e.Kind == stmt.ExprCall:
+		case stmt.ExprCall:
 			place = "in a call of " + e.Function.String()
 		}
 		for _, o := range e.Operands {
@@ -709,7 +707,7 @@ func (k *checker) check(c exprCase) string {
 	}
 	for _, v := range slices.Concat(c.row, c.args) {
 		if len(v.GetText()) > limit || len(v.GetBlob()) > limit {
-			// SQLite refuses to bind it, and so does the engine.
+			// SQLite refuses to bind it.
 			k.tally["not a case: a value longer than the limit"]++
 			return ""
 		}
@@ -734,6 +732,20 @@ func (k *checker) check(c exprCase) string {
 			return fmt.Sprintf("%v: the binding gives %v, and not %v", c, err, refusal)
 		}
 		k.tally["case: refused, argument "+refusal.What[strings.Index(refusal.What, " in ")+1:]]++
+		return ""
+	}
+	if long := longLiteral(e, limit); long != nil {
+		// SQLite fails for a text literal longer than the limit, and reads a blob literal as NULL.
+		var ee *expr.Error
+		if !errors.As(err, &ee) || ee.Kind != expr.ErrTooLong || ee.Op != stmt.ExprValue || ee.Span != long.Span {
+			return fmt.Sprintf("%v: the binding gives %v, and not %v at the literal at %v", c, err, expr.ErrTooLong, long.Span.Start)
+		}
+		quirk, err := k.o.value(full[long.Span.Start:long.Span.End], nil, nil, limit)
+		_, isText := long.Value.(stmt.Text)
+		if isText && err != errTooBig || !isText && (err != nil || !quirk.Null()) {
+			return fmt.Sprintf("%v: SQLite gives %v and %v for the literal at %v", c, short(quirk.String()), err, long.Span.Start)
+		}
+		k.tally[fmt.Sprintf("case: literal longer than the limit, text %v", isText)]++
 		return ""
 	}
 	if err != nil {
@@ -813,6 +825,27 @@ func (k *checker) check(c exprCase) string {
 	return ""
 }
 
+// longLiteral of e: the first literal in the order of the text that is a text or a blob longer than
+// limit, or nil.
+func longLiteral(e stmt.Expression, limit int) *stmt.Expression {
+	switch v := e.Value.(type) {
+	case stmt.Text:
+		if len(v) > limit {
+			return &e
+		}
+	case stmt.Blob:
+		if len(v) > limit {
+			return &e
+		}
+	}
+	for _, o := range e.Operands {
+		if l := longLiteral(o, limit); l != nil {
+			return l
+		}
+	}
+	return nil
+}
+
 // depth of e, as the pass counts it: 1 for a leaf, and one more than its deepest operand for an
 // operator or a call.
 func depth(e stmt.Expression) int {
@@ -881,10 +914,10 @@ func TestDifferential(t *testing.T) {
 
 // FuzzExpr checks the evaluator against SQLite and [reference], as [TestDifferential] does, for the
 // text of an expression, the values of the columns of the row and the arguments, which [decode]
-// reads, and the length limit, which is 0 for [maxLength], and otherwise from 1,000 to 4,000 bytes,
-// or more, so that SQLite takes the text of its statement. A text that is not an expression over
-// [schema] alone is no case, and neither is a value longer than the limit. The seeds are cases of
-// [generator].
+// reads, and the length limit, which is 0 for [maxLength], and otherwise from 30, SQLite's least,
+// to 4,000 bytes. A text that is not an expression over [schema] alone is no case, and neither is a
+// value longer than the limit, nor a text with more than eight calls of hex. The seeds are cases of
+// [generator], but its deep trees, and the inputs in testdata/fuzz/FuzzExpr.
 func FuzzExpr(f *testing.F) {
 	g := newGenerator(1)
 	for range 300 {
@@ -895,7 +928,7 @@ func FuzzExpr(f *testing.F) {
 		}
 		limit := uint16(0)
 		if c.limit > 0 {
-			limit = uint16(1 + (c.limit-1000)%3001)
+			limit = uint16(1 + c.limit - 30)
 		}
 		f.Add(c.src, encode(c.row), encode(c.args), limit)
 	}
@@ -917,7 +950,12 @@ func FuzzExpr(f *testing.F) {
 			}
 		}
 		if limit > 0 {
-			c.limit = max(1000+(int(limit)-1)%3001, len(src)+200)
+			c.limit = 30 + (int(limit)-1)%3971
+		}
+		if strings.Count(strings.ToLower(src), "hex") > 8 {
+			// hex doubles the length of its argument, so that nine of them make gigabytes of a
+			// short text under the default limit, three times over.
+			return
 		}
 		k := &checker{o: newOracle(t), tally: map[string]int{}}
 		if failure := k.check(c); failure != "" {
