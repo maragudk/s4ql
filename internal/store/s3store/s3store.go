@@ -16,7 +16,9 @@
 // what happened: a success, or one of the errors of [store.Store]. Any other answer, or none, fails
 // the call with an error that wraps the [context.Canceled] or [context.DeadlineExceeded] of the
 // context, since the end of the context may be what broke the answer. So does a read of the content
-// that fails after the end of the context.
+// that fails after the end of the context. As [store.Store] requires, such an error wraps nothing
+// else, and its text does not hold the text of the cause of the end, with which the read of an
+// answer that the end broke off fails.
 //
 // A write with a checksum is checked by the store: the request is signed with the checksum as the
 // SHA-256 of its payload, which the store compares with the bytes it receives before it stores
@@ -396,15 +398,26 @@ func (c *Client) put(ctx context.Context, op, key string, from store.Version, co
 	return version, nil
 }
 
-// ended is err, the failure of a call with the context ctx, and if ctx has ended, also the error of
-// its end, which err may not wrap: net/http takes an answer that comes in as the context ends, and
-// the end may be what made the answer one that the client cannot use, so the call is reported as one
-// whose context ended, and not as one that the store failed alone.
+// ended is err, the failure of a call with the context ctx, and if ctx has ended, an error with the
+// text of err that wraps the error of the end, ctx.Err, and nothing else: net/http takes an answer
+// that comes in as the context ends, and the end may be what made the answer one that the client
+// cannot use, so the call is reported as one whose context ended, and not as one that the store
+// failed alone. And the read of an answer that the end broke off fails with the cause of the end,
+// which can be any error, such as one that wraps an error of [store.Store] that means "not
+// applied", so err is not wrapped, and the text of that cause in it is replaced.
 func ended(ctx context.Context, err error) error {
-	if done := ctx.Err(); done != nil && !errors.Is(err, done) {
-		return fmt.Errorf("%w, after the context ended: %w", err, done)
+	done := ctx.Err()
+	if done == nil {
+		return err
 	}
-	return err
+	text := err.Error()
+	if cause := context.Cause(ctx); cause != done && cause.Error() != "" && errors.Is(err, cause) {
+		text = strings.ReplaceAll(text, cause.Error(), "the end of the context")
+	}
+	if !errors.Is(err, done) {
+		text += ", after the context ended: " + done.Error()
+	}
+	return textOf{text: text, err: done}
 }
 
 // unknown is the error of a write whose outcome is unknown because of err. It has the text of err,
@@ -545,8 +558,16 @@ func (r *request) trace(o *s3.Options) {
 	})
 }
 
-// failed records what the error of the SDK says about the answer.
+// failed records what the error of the SDK says about the answer. An error that wraps the cause of
+// the end of the context, when that cause is another error than the end's, says nothing about it:
+// the end broke the answer, and the cause, which can be any error, can hold a status or a code of
+// its own.
 func (r *request) failed(err error) {
+	if done := r.ctx.Err(); done != nil {
+		if cause := context.Cause(r.ctx); cause != done && errors.Is(err, cause) {
+			return
+		}
+	}
 	var re *awshttp.ResponseError
 	if errors.As(err, &re) {
 		r.status = re.HTTPStatusCode()
