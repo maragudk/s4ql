@@ -1,6 +1,7 @@
 package expr_test
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 	"math/rand/v2"
@@ -11,21 +12,42 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
 
-// generator of cases at random: trees of +, -, *, /, and negations, of varying depth and shape,
+// generator of cases at random. Two cases in three are trees of arithmetic, +, -, *, /, and
+// negations, of varying depth and shape,
 // whose leaves are literals, columns, and parameters with integers, reals, and NULL that weigh the
 // edges, and often with values that are related so that an operation reaches its edge: a sum, a
 // difference, a product, or a quotient just inside the integers of 64 bits and just outside, a
 // divisor that is zero or an operation that gives zero under a division, reals whose operation is
 // infinite or underflows, a product whose sum or difference is zero or next to it where a fused
 // instruction would give another result, and integers above 2^53 with reals. One case in 25 has a
-// text or a blob as an operand, from a column or an argument, and one in 40 is a column alone.
+// text or a blob as an operand, from a column or an argument, and one in 40 is a column alone. The
+// third case is a tree of text, as [generator.textCase] says.
 type generator struct {
 	r *rand.Rand
 	b strings.Builder
 	// row of the case, with nil for a column that no leaf has taken yet.
 	row  []*s4qlpb.Value
 	args []*s4qlpb.Value
+	// limit of the case, or 0 for [maxLength].
+	limit int
+	// deep reports whether the case is a tree of [generator.deepTree], which has no parentheses that it
+	// does not need, since its own come near the limit of the pass.
+	deep bool
+	// nullIn is the place of the leaf that the generator writes, which decides the columns that may
+	// hold NULL for it.
+	nullIn nullIn
 }
+
+// nullIn is the place of a leaf, for NULL: in arithmetic, where a column of a number holds it, in
+// text, where a column of text does, or as the argument of hex or a column alone, where a column of
+// text or of a blob does.
+type nullIn uint8
+
+const (
+	nullInNumber nullIn = iota
+	nullInText
+	nullInTextOrBlob
+)
 
 // newGenerator of the seed.
 func newGenerator(seed uint64) *generator {
@@ -36,6 +58,7 @@ func newGenerator(seed uint64) *generator {
 // column, or a parameter, is chosen when it is written, after its value.
 type gnode struct {
 	kind     stmt.ExpressionKind
+	function stmt.Function
 	operands []*gnode
 	value    *s4qlpb.Value
 }
@@ -55,6 +78,10 @@ func (g *generator) next() exprCase {
 	g.b.Reset()
 	g.row = make([]*s4qlpb.Value, len(schema))
 	g.args = nil
+	g.limit, g.nullIn, g.deep = 0, nullInNumber, false
+	if g.r.IntN(3) == 0 {
+		return g.textCase()
+	}
 	var root *gnode
 	switch depth := 1 + g.r.IntN(5); {
 	case g.r.IntN(40) == 0:
@@ -74,12 +101,17 @@ func (g *generator) next() exprCase {
 	} else {
 		g.write(root, 0, false)
 	}
+	return g.done()
+}
+
+// done is the case that the generator wrote, with a value for each column that no leaf took.
+func (g *generator) done() exprCase {
 	for i, v := range g.row {
 		if v == nil {
 			g.row[i] = g.columnValue(i)
 		}
 	}
-	return exprCase{src: g.b.String(), row: g.row, args: g.args}
+	return exprCase{src: g.b.String(), row: g.row, args: g.args, limit: g.limit}
 }
 
 // shape of a node of at most depth levels of operators: a leaf three times in ten, and otherwise an
@@ -320,15 +352,15 @@ func (g *generator) real() float64 {
 }
 
 // columnValue at random for the column at the position i of [schema], which no leaf took: NULL one
-// time in eight, or a value of its type.
+// time in eight, or a short value of its type.
 func (g *generator) columnValue(i int) *s4qlpb.Value {
 	switch {
-	case schema[i].typ == s4qlpb.Type_TYPE_TEXT:
-		return text("4")
-	case schema[i].typ == s4qlpb.Type_TYPE_BLOB:
-		return blob([]byte("5"))
 	case g.r.IntN(8) == 0:
 		return null()
+	case schema[i].typ == s4qlpb.Type_TYPE_TEXT:
+		return text(g.textOf(g.shortLength()))
+	case schema[i].typ == s4qlpb.Type_TYPE_BLOB:
+		return blob(g.blobOf(g.shortLength()))
 	case schema[i].typ == s4qlpb.Type_TYPE_REAL:
 		return float(g.real())
 	}
@@ -417,24 +449,24 @@ func (g *generator) literal(v *s4qlpb.Value) {
 	g.b.WriteString(text)
 }
 
-// column of v: the name of a column of [schema] of its type, or any of a number for NULL, that is
-// free or has v, which it takes, in lower case, upper case, or double quotes; and whether it wrote
-// one.
+// column of v: the name of a column of [schema] of its type, or for NULL any of the types that
+// [generator.nullIn] names, that is free or has v, which it takes, in lower case, upper case, or
+// double quotes; and whether it wrote one.
 func (g *generator) column(v *s4qlpb.Value) bool {
 	var candidates []int
 	for i, c := range schema {
 		var fits bool
 		switch c.typ {
 		case s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INTEGER:
-			fits = v.HasInteger() || v.HasNull()
+			fits = v.HasInteger() || v.HasNull() && g.nullIn == nullInNumber
 		case s4qlpb.Type_TYPE_REAL:
-			fits = v.HasReal() || v.HasNull()
+			fits = v.HasReal() || v.HasNull() && g.nullIn == nullInNumber
 		case s4qlpb.Type_TYPE_TEXT:
-			fits = v.HasText()
+			fits = v.HasText() || v.HasNull() && g.nullIn != nullInNumber
 		case s4qlpb.Type_TYPE_BLOB:
-			fits = v.HasBlob()
+			fits = v.HasBlob() || v.HasNull() && g.nullIn == nullInTextOrBlob
 		}
-		if fits && (g.row[i] == nil || v.HasText() || v.HasBlob() || valueOf(g.row[i]) == valueOf(v)) {
+		if fits && (g.row[i] == nil || valueOf(g.row[i]) == valueOf(v)) {
 			candidates = append(candidates, i)
 		}
 	}
@@ -454,4 +486,292 @@ func (g *generator) column(v *s4qlpb.Value) bool {
 	}
 	g.b.WriteString(name)
 	return true
+}
+
+// textCase of the generator: a tree of ||, lower, and hex of 1 to 5 levels, whose leaves are
+// literals, columns, and parameters of text, of blobs as the argument of hex, and NULL from a
+// column or a parameter one leaf in ten, with text that is empty, ASCII of every kind, and not
+// ASCII. One case in four has a length limit from 1,000 to 4,000 bytes, or as long as SQLite needs
+// for the text of its statement; three times in four but in a deep tree, its values have lengths
+// that put an operation on either side of the limit. One case in 30 is a deep tree, a chain of || as
+// deep as the pass takes or calls nested in 100 parentheses, without NULL, which would make every
+// operation above it NULL; and one in 40 is a column alone. One case in 25 has a number, or a blob
+// where text is due, from a column or an argument.
+func (g *generator) textCase() exprCase {
+	if g.r.IntN(4) == 0 {
+		g.limit = 1000 + g.r.IntN(3001)
+	}
+	var root *gnode
+	switch {
+	case g.r.IntN(40) == 0:
+		root = &gnode{}
+	case g.r.IntN(30) == 0:
+		root, g.deep = g.deepTree(), true
+	default:
+		root = g.textOperator(1 + g.r.IntN(5))
+	}
+	if g.limit > 0 && !root.leaf() && !g.deep && g.r.IntN(4) > 0 {
+		g.edgeOfLimit(root)
+	}
+	g.fillText(root, 0, 0)
+	if g.r.IntN(25) == 0 {
+		g.plantNumber(root)
+	}
+	if root.leaf() {
+		g.nullIn = nullInTextOrBlob
+		if root.value.HasInteger() || root.value.HasReal() {
+			g.nullIn = nullInNumber
+		}
+		// Every column is free, so one takes the value.
+		g.column(root.value)
+	} else {
+		g.writeText(root, false, false, false)
+	}
+	if g.limit > 0 {
+		// SQLite refuses a statement longer than the limit, and the oracle's is longer than the
+		// expression by the columns of the row.
+		g.limit = max(g.limit, g.b.Len()+200)
+	}
+	return g.done()
+}
+
+// textOperator of at most depth levels: a concatenation one time in two, and a call of lower or of
+// hex otherwise.
+func (g *generator) textOperator(depth int) *gnode {
+	shape := func() *gnode {
+		if depth == 1 || g.r.IntN(10) < 3 {
+			return &gnode{}
+		}
+		return g.textOperator(depth - 1)
+	}
+	switch g.r.IntN(4) {
+	case 0, 1:
+		return &gnode{kind: stmt.ExprConcat, operands: []*gnode{shape(), shape()}}
+	case 2:
+		return &gnode{kind: stmt.ExprCall, function: stmt.FuncLower, operands: []*gnode{shape()}}
+	}
+	return &gnode{kind: stmt.ExprCall, function: stmt.FuncHex, operands: []*gnode{shape()}}
+}
+
+// deepTree: one time in two a chain of || to the left of 900 to 997 operators, whose operands are
+// leaves or calls of a leaf, which is as deep as the pass takes; and otherwise calls nested 90 to
+// 100 deep, of which at most three are of hex, under a chain of || of up to 889 operators.
+func (g *generator) deepTree() *gnode {
+	call := func(o *gnode, f stmt.Function) *gnode {
+		return &gnode{kind: stmt.ExprCall, function: f, operands: []*gnode{o}}
+	}
+	if g.r.IntN(2) == 0 {
+		n := &gnode{}
+		hexes := 0
+		for range 90 + g.r.IntN(11) {
+			f := stmt.FuncLower
+			if hexes < 3 && g.r.IntN(20) == 0 {
+				f = stmt.FuncHex
+				hexes++
+			}
+			n = call(n, f)
+		}
+		for range g.r.IntN(890) {
+			n = &gnode{kind: stmt.ExprConcat, operands: []*gnode{n, {}}}
+		}
+		return n
+	}
+	operand := func() *gnode {
+		if g.r.IntN(4) == 0 {
+			return call(&gnode{}, []stmt.Function{stmt.FuncLower, stmt.FuncHex}[g.r.IntN(2)])
+		}
+		return &gnode{}
+	}
+	n := operand()
+	for range 900 + g.r.IntN(98) {
+		n = &gnode{kind: stmt.ExprConcat, operands: []*gnode{n, operand()}}
+	}
+	return n
+}
+
+// edgeOfLimit of the tree under n, which has a length limit: lengths of the leaves under an
+// operation, two times in three the root, such that it makes a text at the limit or next to it. A
+// concatenation is one byte below the limit, at it, or one above it; lower takes a text one byte
+// below the limit, of which SQLite makes one, or one at it, of which SQLite makes none; and hex takes
+// the longest text that SQLite makes one from, or one byte more.
+func (g *generator) edgeOfLimit(n *gnode) {
+	for g.r.IntN(3) == 0 {
+		o := n.operands[g.r.IntN(len(n.operands))]
+		if o.leaf() {
+			break
+		}
+		n = o
+	}
+	l := g.limit
+	switch {
+	case n.kind == stmt.ExprConcat:
+		g.lengthOf(n, l-1+g.r.IntN(3))
+	case n.function == stmt.FuncLower:
+		g.lengthOf(n.operands[0], l-1+g.r.IntN(2))
+	default:
+		g.lengthOf(n.operands[0], (l-1)/2+g.r.IntN(2))
+	}
+}
+
+// lengthOf the text of n, which its leaves are given as integers, which [generator.fillText] reads,
+// as near as the tree allows: a concatenation splits it between its operands at random, lower passes
+// it to its argument, and hex passes half of it, rounded down, to its argument.
+func (g *generator) lengthOf(n *gnode, length int) {
+	length = max(0, length)
+	switch {
+	case n.leaf():
+		// No value is longer than the limit, which SQLite refuses when it binds it.
+		n.value = integer(int64(min(length, g.limit)))
+	case n.kind == stmt.ExprConcat:
+		left := g.r.IntN(length + 1)
+		g.lengthOf(n.operands[0], left)
+		g.lengthOf(n.operands[1], length-left)
+	case n.function == stmt.FuncLower:
+		g.lengthOf(n.operands[0], length)
+	default:
+		g.lengthOf(n.operands[0], length/2)
+	}
+}
+
+// fillText gives each leaf under n, the operand of an operator of the kind parent and the function
+// f, a value: a text, or as the argument of hex or a column alone a blob one time in three, of the
+// length that [generator.lengthOf] gave it, or of a short one; or NULL one time in ten where no
+// length was given, but in a deep tree.
+func (g *generator) fillText(n *gnode, parent stmt.ExpressionKind, f stmt.Function) {
+	if !n.leaf() {
+		for _, o := range n.operands {
+			g.fillText(o, n.kind, n.function)
+		}
+		return
+	}
+	length := g.shortLength()
+	if n.value != nil {
+		length = int(n.value.GetInteger())
+	} else if !g.deep && g.r.IntN(10) == 0 {
+		n.value = null()
+		return
+	}
+	if (f == stmt.FuncHex || parent == 0) && g.r.IntN(3) == 0 {
+		n.value = blob(g.blobOf(length))
+		return
+	}
+	n.value = text(g.textOf(length))
+}
+
+// plantNumber in a leaf under n at random: an integer or a real, or a blob where text is due.
+func (g *generator) plantNumber(n *gnode) {
+	type leaf struct {
+		n     *gnode
+		inHex bool
+	}
+	var leaves []leaf
+	var walk func(n *gnode, inHex bool)
+	walk = func(n *gnode, inHex bool) {
+		if n.leaf() {
+			leaves = append(leaves, leaf{n, inHex})
+		}
+		for _, o := range n.operands {
+			walk(o, n.function == stmt.FuncHex)
+		}
+	}
+	walk(n, false)
+	l := leaves[g.r.IntN(len(leaves))]
+	l.n.value = g.number()
+	if !l.inHex && g.r.IntN(3) == 0 {
+		l.n.value = blob(g.blobOf(g.shortLength()))
+	}
+}
+
+// shortLength of a text or a blob at random: 0 one time in six, and otherwise from 1 to 12.
+func (g *generator) shortLength() int {
+	if g.r.IntN(6) == 0 {
+		return 0
+	}
+	return 1 + g.r.IntN(12)
+}
+
+// pieces of text, of which [generator.textOf] makes one: ASCII letters, the bytes next to them,
+// which lower must not change, a quote, which a literal doubles, and letters that are not ASCII,
+// which SQLite's lower leaves as they are, also where Unicode has a lower case of its own, as for
+// the Kelvin sign and the dotted capital I. The first ten are one byte long.
+var pieces = []string{"A", "M", "Z", "a", "z", "@", "[", "`", "{", "'", "À", "É", "é", "ß", "Ω", "İ", "K", "€", "😀"}
+
+// textOf the length at random, of valid UTF-8 without the character NUL.
+func (g *generator) textOf(length int) string {
+	var b strings.Builder
+	for b.Len() < length {
+		p := pieces[g.r.IntN(len(pieces))]
+		if b.Len()+len(p) > length {
+			p = pieces[g.r.IntN(10)]
+		}
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
+// blobOf the length at random, of bytes of every value, of the ASCII capital letters often.
+func (g *generator) blobOf(length int) []byte {
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = byte(g.r.IntN(256))
+		if g.r.IntN(3) == 0 {
+			b[i] = byte('A' + g.r.IntN(26))
+		}
+	}
+	return b
+}
+
+// writeText of n, a tree of text, an operand of || if inConcat, the right one if right, and in the
+// argument of hex if inHex, with parentheses where SQLite needs them, around a concatenation on the
+// right of ||, and one time in five around one on the left but in a deep tree; the pass takes no
+// others.
+func (g *generator) writeText(n *gnode, inConcat, right, inHex bool) {
+	switch {
+	case n.leaf():
+		g.textLeaf(n.value, inHex)
+	case n.kind == stmt.ExprCall:
+		name := n.function.String()
+		if g.r.IntN(2) == 0 {
+			name = strings.ToUpper(name)
+		}
+		g.b.WriteString(name + "(")
+		g.writeText(n.operands[0], false, false, n.function == stmt.FuncHex)
+		g.b.WriteString(")")
+	default:
+		paren := inConcat && (right || !g.deep && g.r.IntN(5) == 0)
+		if paren {
+			g.b.WriteString("(")
+		}
+		g.writeText(n.operands[0], true, false, false)
+		g.b.WriteString(" || ")
+		g.writeText(n.operands[1], true, true, false)
+		if paren {
+			g.b.WriteString(")")
+		}
+	}
+}
+
+// textLeaf of the value v, in the argument of hex if inHex: a literal two times in five, a column
+// two times in five, and a parameter otherwise, as v allows. A literal is a text, or a blob in the
+// argument of hex, of at most 40 bytes, and never a number or NULL, which the pass refuses.
+func (g *generator) textLeaf(v *s4qlpb.Value, inHex bool) {
+	literal := v.HasText() && len(v.GetText()) <= 40 || inHex && v.HasBlob() && len(v.GetBlob()) <= 40
+	g.nullIn = nullInText
+	if inHex {
+		g.nullIn = nullInTextOrBlob
+	}
+	defer func() {
+		g.nullIn = nullInNumber
+	}()
+	switch n := g.r.IntN(5); {
+	case n < 2 && literal && v.HasText():
+		g.b.WriteString("'" + strings.ReplaceAll(v.GetText(), "'", "''") + "'")
+	case n < 2 && literal:
+		format := []string{"x'%x'", "X'%X'"}[g.r.IntN(2)]
+		g.b.WriteString(fmt.Sprintf(format, v.GetBlob()))
+	case n < 4 && g.column(v):
+	default:
+		g.b.WriteString("?")
+		g.args = append(g.args, v)
+	}
 }

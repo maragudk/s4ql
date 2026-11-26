@@ -14,9 +14,9 @@ import (
 )
 
 // row of the columns of [schema]: a, b, c, and d as given, s the text '4', and x the blob x'35',
-// which SQLite would read as the number 4 and 5.
+// which SQLite would read as the number 4 and 5, t the text 'Éa', and y the blob x'00FF'.
 func row(a, b, c, d *s4qlpb.Value) []*s4qlpb.Value {
-	return []*s4qlpb.Value{a, b, c, d, text("4"), blob([]byte("5"))}
+	return []*s4qlpb.Value{a, b, c, d, text("4"), blob([]byte("5")), text("Éa"), blob([]byte{0, 0xff})}
 }
 
 // zeros is a row of zeros.
@@ -215,7 +215,7 @@ func TestCheck(t *testing.T) {
 			what: "column of type BLOB in a call of lower", at: "x", atCheck: true},
 		{name: "should refuse an INTEGER column as the argument of hex, which SQLite writes as text first", src: "hex(b)", sqlite: expr.TextValue("30"),
 			what: "column of type INTEGER in a call of hex", at: "b", atCheck: true},
-		{name: "should refuse the first such column in the order of the text, inside a call", src: "hex(lower(s || a) || c)", sqlite: expr.TextValue("34312E30"),
+		{name: "should refuse the first such column in the order of the text, inside a call", src: "hex(lower(s || a) || c)", sqlite: expr.TextValue("3431302E30"),
 			what: "column of type INT in a concatenation", at: "a", atCheck: true},
 		{name: "should refuse an integer argument in a concatenation", src: "? || s", args: []*s4qlpb.Value{integer(7)}, sqlite: expr.TextValue("74"),
 			what: "argument 1 in a concatenation, which is an integer", at: "?"},

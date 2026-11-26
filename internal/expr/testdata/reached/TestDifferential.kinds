@@ -1,90 +1,143 @@
 # What the seeds of TestDifferential of the evaluator must reach: see stmttest.Reached.
 # A line is the least number of the total of a kind over all seeds, a tab, and the kind.
 # The numbers are written by hand, and a recount does not change them. They start from a third of
-# the totals on 2026-11-25. A total below its number fails the test, and so does a kind that no
-# seed reaches three times.
+# the totals on 2026-11-26, when the cases of text came, and the cases of each seed went from 2,500
+# to 3,600. A total below its number fails the test, and so does a kind that no seed reaches three
+# times.
 #
 # A kind "x op y" is an operator whose operands were of the types x and y, with what it gave after
 # the colon if it failed; "op with null" one with a NULL operand; "- of ..." a negation; "case: ..."
-# the outcome of a whole case. A sum or a difference of an integer and a real cannot be infinite,
-# nor a real divided by an integer, so those kinds are not here.
+# the outcome of a whole case, and "case: refused, ..." its refusal, without the number of an
+# argument. A sum or a difference of an integer and a real cannot be infinite, nor a real divided by
+# an integer, so those kinds are not here.
 #
-# The edges at the end: "x op y: exactly the largest integer" or "... smallest integer" is an
+# The edges of arithmetic: "x op y: exactly the largest integer" or "... smallest integer" is an
 # integer result that is that bound; "x op y: subnormal, not zero" a real result below the
 # smallest normal real that is not zero; "the smallest integer / a negative integer other than -1"
 # a quotient of the smallest integer that fits; and "an error on the right of null" an operator
 # whose left operand is NULL and whose right one fails, where SQLite gives NULL. A quotient that is
 # exactly the largest integer and a real divided by an integer that is subnormal are too rare in
-# the seeds to require. They start from a third of the totals on 2026-11-25, after the review.
-822	- of integer
-174	- of integer: integer overflow
-218	- of null
-1020	- of real
-465	- of real zero
-408	- with null
-430	* with null
-342	/ with null
-396	+ with null
-1059	a fused multiply and add would differ
-161	case: column alone
-390	case: division by zero
-758	case: integer
-1177	case: integer overflow
-617	case: null
-2316	case: real
-83	case: real -0.0
-530	case: real 0.0
-525	case: real result that is not finite
-26	case: refused, argument that is a blob
-25	case: refused, argument that is text
-111	case: refused, column of type BLOB
-103	case: refused, column of type TEXT
-510	integer - integer
-152	integer - integer: integer overflow
-567	integer - real
-1089	integer * integer
-631	integer * integer: integer overflow
-565	integer * real
-31	integer * real: real result that is not finite
-381	integer / integer
-146	integer / integer: division by zero
-71	integer / integer: integer overflow
-267	integer / real
-68	integer / real: division by zero
-27	integer / real: real result that is not finite
-540	integer + integer
-148	integer + integer: integer overflow
-559	integer + real
-2103	integer converted to real inexactly
-2086	integer converted to real on the left
-2167	integer converted to real on the right
-615	real - integer
-1371	real - real
-60	real - real: real result that is not finite
-561	real * integer
-32	real * integer: real result that is not finite
-1849	real * real
-251	real * real: real result that is not finite
-362	real / integer
-33	real / integer: division by zero
-500	real / real
-142	real / real: division by zero
-56	real / real: real result that is not finite
-562	real + integer
-1328	real + real
-66	real + real: real result that is not finite
-156	an error on the right of null
-59	the smallest integer / a negative integer other than -1
-16	integer * integer: exactly the largest integer
-47	integer * integer: exactly the smallest integer
-42	integer + integer: exactly the largest integer
-28	integer + integer: exactly the smallest integer
-32	integer - integer: exactly the largest integer
-27	integer - integer: exactly the smallest integer
+# the seeds to require.
+#
+# The kinds of text: "|| ..." a concatenation of two texts, of which one or both are empty, or with
+# NULL; "lower of text, ASCII x, changed y" a call of lower whose text has only ASCII or not, and
+# that changes a letter or not, and "lower of a letter that is not ASCII and has a lower case in
+# Unicode" one that SQLite leaves as it is; "hex of ..." a call of hex of what it names. "f: at the
+# limit" is an operation whose allocation in SQLite is exactly the limit, which SQLite makes, and
+# "f: text longer than the length limit" one whose allocation is longer, which SQLite refuses with
+# `string or blob too big`. "case: deeper than 900" is a case of text whose tree is deeper than 900
+# levels. A refusal of an argument of lower, other than for a column, is too rare in the seeds to
+# require.
+405	* with null
+403	+ with null
+789	- of integer
+175	- of integer: integer overflow
+205	- of null
+999	- of real
+447	- of real zero
+379	- with null
+326	/ with null
+1028	a fused multiply and add would differ
+165	an error on the right of null
+30	case: blob
+231	case: column alone
+57	case: deeper than 900
+357	case: division by zero
+737	case: integer
+1119	case: integer overflow
+930	case: null
+2182	case: real
+86	case: real -0.0
+533	case: real 0.0
+503	case: real result that is not finite
+5	case: refused, argument in a call of hex, which is a real
+3	case: refused, argument in a call of hex, which is an integer
+5	case: refused, argument in a concatenation, which is a blob
+6	case: refused, argument in a concatenation, which is a real
+4	case: refused, argument in a concatenation, which is an integer
+28	case: refused, argument in arithmetic, which is a blob
+24	case: refused, argument in arithmetic, which is text
+7	case: refused, column of type BLOB in a call of lower
+15	case: refused, column of type BLOB in a concatenation
+89	case: refused, column of type BLOB in arithmetic
+5	case: refused, column of type INT in a call of hex
+5	case: refused, column of type INT in a call of lower
+11	case: refused, column of type INT in a concatenation
+5	case: refused, column of type INTEGER in a call of hex
+3	case: refused, column of type INTEGER in a call of lower
+9	case: refused, column of type INTEGER in a concatenation
+12	case: refused, column of type REAL in a call of hex
+11	case: refused, column of type REAL in a call of lower
+17	case: refused, column of type REAL in a concatenation
+102	case: refused, column of type TEXT in arithmetic
+2495	case: text
+243	case: text longer than the length limit
+2039	hex of a blob
+368	hex of a blob that is empty
+220	hex of null
+4982	hex of text
+897	hex of text that is empty
+46	hex: at the limit
+75	hex: text longer than the length limit
+1073	integer * integer
+19	integer * integer: exactly the largest integer
+40	integer * integer: exactly the smallest integer
+609	integer * integer: integer overflow
+550	integer * real
+30	integer * real: real result that is not finite
+9	integer * real: subnormal, not zero
+506	integer + integer
+46	integer + integer: exactly the largest integer
+31	integer + integer: exactly the smallest integer
+139	integer + integer: integer overflow
+537	integer + real
+502	integer - integer
+39	integer - integer: exactly the largest integer
+31	integer - integer: exactly the smallest integer
+147	integer - integer: integer overflow
+548	integer - real
+421	integer / integer
+114	integer / integer: division by zero
 50	integer / integer: exactly the smallest integer
-96	real * real: subnormal, not zero
-19	real / real: subnormal, not zero
+48	integer / integer: integer overflow
+278	integer / real
+63	integer / real: division by zero
+20	integer / real: real result that is not finite
+1984	integer converted to real inexactly
+2028	integer converted to real on the left
+2040	integer converted to real on the right
+4586	lower of a letter that is not ASCII and has a lower case in Unicode
+213	lower of null
+2829	lower of text, ASCII false, changed false
+3102	lower of text, ASCII false, changed true
+6118	lower of text, ASCII true, changed false
+894	lower of text, ASCII true, changed true
+87	lower: at the limit
+61	lower: text longer than the length limit
+545	real * integer
+35	real * integer: real result that is not finite
+6	real * integer: subnormal, not zero
+1775	real * real
+240	real * real: real result that is not finite
+93	real * real: subnormal, not zero
+541	real + integer
+1286	real + real
+63	real + real: real result that is not finite
 10	real + real: subnormal, not zero
-15	real - real: subnormal, not zero
-10	real * integer: subnormal, not zero
-10	integer * real: subnormal, not zero
+548	real - integer
+1266	real - real
+60	real - real: real result that is not finite
+10	real - real: subnormal, not zero
+336	real / integer
+33	real / integer: division by zero
+444	real / real
+147	real / real: division by zero
+54	real / real: real result that is not finite
+17	real / real: subnormal, not zero
+53	the smallest integer / a negative integer other than -1
+72	|| of two empty texts
+63865	|| of two texts
+12920	|| with an empty text
+805	|| with null
+96	||: at the limit
+107	||: text longer than the length limit
