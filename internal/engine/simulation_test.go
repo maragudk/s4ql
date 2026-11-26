@@ -26,6 +26,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/core/coretest"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/format"
@@ -511,12 +512,14 @@ func (r *run) open(ctx context.Context, n *node) error {
 	other := n.gen%2 == 1
 	generation := n.gen
 	n.mu.Unlock()
-	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", core.Options{
+	// A crash copies the files of the cache as the operating system holds them, and no sync fails,
+	// so syncs of the cache would check nothing.
+	d, err := core.Open(ctx, n.inst, n.client, n.path, "db", coretest.SyncOff(core.Options{
 		BusyTimeout:   time.Minute,
 		ObjectTimeout: 10 * time.Second,
 		Lease:         n.lease,
 		Logger:        slog.New(coreHandler{r: r, key: key}),
-	})
+	}))
 	if err != nil {
 		return err
 	}

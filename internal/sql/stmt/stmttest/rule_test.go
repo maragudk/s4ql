@@ -258,6 +258,9 @@ func TestHasExpression(t *testing.T) {
 		"update t set k = a":                                          true,
 		"update t set a = 'x' where k - 1 = 0":                        true,
 		"delete from t where k / 2 = 1":                               true,
+		"select * from t where lower(a) = 'x'":                        true,
+		"update t set a = 'x' || a":                                   true,
+		"delete from t where hex(?) = a":                              true,
 		"select * from t where k = 1 and a is null":                   false,
 		"select * from t where k = (select k from t where a = 'x')":   false,
 		"update t set a = 'x' where k = ?":                            false,
@@ -284,6 +287,16 @@ func TestHasExpression(t *testing.T) {
 			stmttest.WhereRule("t", columns, sel.Where, []any{int64(1)}[:sel.Parameters()])
 		})
 	}
+}
+
+func TestExpressionText(t *testing.T) {
+	t.Run("should write every operator in parentheses and every call with its argument, with a ? for each literal and parameter", func(t *testing.T) {
+		s, err := stmt.Check("update t set a = 'm_' || lower(hex(?)) || (a || 'x')")
+		is.NotError(t, err)
+		text, args := stmttest.ExpressionText(s.(*stmt.Update).Set[0].Value.Expression, []any{"y"})
+		is.Equal(t, `((? || lower(hex(?))) || ("a" || ?))`, text)
+		is.Equal(t, fmt.Sprint([]any{"m_", "y", "x"}), fmt.Sprint(args))
+	})
 }
 
 func TestUpdateRule(t *testing.T) {

@@ -98,14 +98,56 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 	return ""
 }
 
+// MissingName of the expression e of a table of the columns, as a walk of its own, such as the value
+// of an assignment of SET: the name that SQLite's `no such column` names, and true, or false if the
+// table has every column of e. SQLite walks it as [MissingColumn] walks a side of a comparison, and a
+// missing column inside a call that no later one replaces ends the walk at its end.
+func MissingName(columns []TableColumn, e stmt.Expression) (stmt.Name, bool) {
+	var missing *stmt.Name
+	if name, stop := walkNames(columns, e, &missing); stop {
+		return name, true
+	}
+	if missing != nil {
+		return *missing, true
+	}
+	return stmt.Name{}, false
+}
+
+// walkNames of the expression e of a table of the columns, with the column *missing that the walk
+// goes on with, or nil: the name that ends the walk, and true, or false where it goes on, perhaps
+// with *missing set by a call.
+func walkNames(columns []TableColumn, e stmt.Expression, missing **stmt.Name) (stmt.Name, bool) {
+	switch {
+	case e.Kind == stmt.ExprColumn:
+		return e.Column, ColumnOf(columns, e.Column) < 0
+	case e.Kind == stmt.ExprCall:
+		if name, stop := walkNames(columns, e.Operands[0], missing); stop {
+			*missing = &name
+		}
+		return stmt.Name{}, false
+	case *missing != nil:
+		return **missing, true
+	}
+	for _, o := range e.Operands {
+		if name, stop := walkNames(columns, o, missing); stop {
+			return name, true
+		}
+	}
+	return stmt.Name{}, false
+}
+
 // MissingColumn of the select s of the table of the columns, in the order of the table: the name
 // that SQLite's `no such column` names, and true, or false if the table has every column that s
 // names. SQLite looks the select list up first, in its order, and then the conditions, in the order
 // of the text: the first comparison of a column that the table does not have gives the error. A test
 // for NULL of such a column does not stop SQLite, which goes on with the error of that column: a
-// later such test replaces it, and the next comparison ends the walk with it. A comparison with
-// arithmetic or a column alone looks its names up in the order of the text. Then come the columns
-// of the ORDER BY, of slice 13, in their order.
+// later such test replaces it, and the next comparison ends the walk with it. A comparison with an
+// expression or a column alone looks its names up in the order of the text, as SQLite walks the tree
+// of each side, whose every node it reaches before the nodes under it: a missing column inside the
+// argument of a call does not stop the walk either, as for a test for NULL, and a later missing
+// column replaces it, but any node other than a column or a call ends the walk with it, and a
+// literal, a parameter, or a subquery after it too. Then come the columns of the ORDER BY, of slice
+// 13, in their order.
 func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 	for _, name := range s.Columns {
 		if ColumnOf(columns, name) < 0 {
@@ -113,19 +155,36 @@ func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 		}
 	}
 	var missing *stmt.Name
+	walk := func(e stmt.Expression) (stmt.Name, bool) { return walkNames(columns, e, &missing) }
 	for i, c := range s.Where {
-		names := conditionNames(c)
-		slices.SortStableFunc(names, func(a, b stmt.Name) int { return a.Offset - b.Offset })
-		at := slices.IndexFunc(names, func(n stmt.Name) bool { return ColumnOf(columns, n) < 0 })
-		switch {
-		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
 			if ColumnOf(columns, c.Column) < 0 {
 				missing = &s.Where[i].Column
 			}
-		case missing != nil:
+			continue
+		}
+		if missing != nil {
 			return *missing, true
-		case at >= 0:
-			return names[at], true
+		}
+		tested := c.Expression
+		if !tested.Present() {
+			tested = stmt.Expression{Kind: stmt.ExprColumn, Column: c.Column}
+		}
+		sides := []stmt.Expression{tested, c.Value.Expression}
+		if c.ValueFirst {
+			sides[0], sides[1] = sides[1], sides[0]
+		}
+		for _, e := range sides {
+			if !e.Present() {
+				if missing != nil {
+					// A literal, a parameter, or a subquery.
+					return *missing, true
+				}
+				continue
+			}
+			if name, stop := walk(e); stop {
+				return name, true
+			}
 		}
 	}
 	if missing != nil {
@@ -322,12 +381,15 @@ func TermText(t stmt.Term, subs []stmt.Select, args []any) (string, []any) {
 	return "?", []any{BoundValue(t, args)}
 }
 
-// ExpressionText of the arithmetic expression e with the arguments args of the statement that holds
-// it: every column in double quotes, a ? for every literal and parameter, a negation as -( ), and
-// every binary operator in parentheses, so that SQLite reads the tree of e, and the arguments of its
-// ?, each literal as SQLite binds it, in the order of the text.
+// ExpressionText of the expression e with the arguments args of the statement that holds it: every
+// column in double quotes, a ? for every literal and parameter, a negation as -( ), a call with its
+// argument, and every binary operator in parentheses, so that SQLite reads the tree of e, and the
+// arguments of its ?, each literal as SQLite binds it, in the order of the text.
 func ExpressionText(e stmt.Expression, args []any) (string, []any) {
 	switch e.Kind {
+	case stmt.ExprCall:
+		text, bound := ExpressionText(e.Operands[0], args)
+		return e.Function.String() + "(" + text + ")", bound
 	case stmt.ExprValue:
 		return "?", []any{BoundValue(stmt.Term{Value: e.Value}, args)}
 	case stmt.ExprParameter:

@@ -11,12 +11,13 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// The rules of the arithmetic of the piece of work arithmetic, for a statement that [HasExpression]
-// reports, as s4ql's documents give them: the refusals of its types, which come in an order that is
-// the engine's own, so that a rule gives each refusal that may come, and the justification of an
-// evaluation error by SQLite's own result of the operator that failed. They are independent of the
-// engine and of the evaluator: they read the typed form of the statement, the types of the columns,
-// and the arguments, and leave what SQLite computes to a query that the caller runs.
+// The rules of the expressions of the pieces of work arithmetic and text functions, for a statement
+// that [HasExpression] reports, as s4ql's documents give them: the refusals of its types, which come
+// in an order that is the engine's own, so that a rule gives each refusal that may come, and the
+// justification of an evaluation error by SQLite's own result of the operator that failed. They are
+// independent of the engine and of the evaluator: they read the typed form of the statement, the
+// types of the columns, and the arguments, and leave what SQLite computes to a query that the caller
+// runs.
 
 // ColumnClass of a column of the declared type typ, by the rule of exact types: "integer" for INT and
 // INTEGER, and "real", "text", or "blob" for the others.
@@ -78,15 +79,15 @@ func plainName(t stmt.Term, args []any) string {
 	return fmt.Sprintf("argument %v, which is %v,", t.Parameter, kind)
 }
 
-// ArithmeticRefusals of the select, the update, or the delete s with arithmetic, of the table of the
-// name, as the table stores it, and of the columns, in the order of the table, which SQLite prepares,
-// with the arguments args as SQLite binds them, one for each parameter: every "not supported" that
-// s4ql's rules give for it, whatever their order, which is the engine's own. They are the refusals of
-// the values of its conditions and of those of its subqueries that are of another class than what
-// they are compared with, by the rule of exact types, of an operand of arithmetic that is a column of
-// type TEXT or BLOB or an argument that is text or a blob, which s4ql refuses as it binds the
-// expression, so that a condition or an assignment with such an operand has no refusal of the class
-// of its expression, of a correlated subquery, as
+// ArithmeticRefusals of the select, the update, or the delete s with an expression, of the table of
+// the name, as the table stores it, and of the columns, in the order of the table, which SQLite
+// prepares, with the arguments args as SQLite binds them, one for each parameter: every "not
+// supported" that s4ql's rules give for it, whatever their order, which is the engine's own. They are
+// the refusals of the values of its conditions and of those of its subqueries that are of another
+// class than what they are compared with, by the rule of exact types, of an operand of an expression
+// that is a column or an argument of a type that its place does not take, which s4ql refuses as it
+// binds the expression, as [expressionClass] gives them, so that a condition or an assignment with
+// such an operand has no refusal of the class of its expression, of a correlated subquery, as
 // [CorrelatedRefusal] gives it, of an argument of a LIMIT, of the select or of a subquery, that is no
 // integer from 0, as [LimitRefusal] gives it, and, but in a read-only transaction, which refuses the
 // write first, of the values of SET of another class than their columns. columnsOf gives the name
@@ -197,9 +198,9 @@ func whereRefusals(name string, columns []TableColumn, where []stmt.Condition, s
 			continue
 		}
 		var tested, testedName string
-		// operands is false where an operand of the arithmetic of the condition is refused, before its
-		// class is compared.
-		operands := true
+		// operands is false where an operand of an expression of the condition is refused, before its
+		// class is compared. arithmetic is true where a side is arithmetic, which meets numbers only.
+		operands, arithmetic := true, isArithmetic(c.Expression)
 		if c.Expression.Present() {
 			var refused []string
 			tested, refused = expressionClass(c.Expression, columns, args)
@@ -226,6 +227,7 @@ func whereRefusals(name string, columns []TableColumn, where []stmt.Condition, s
 			value, refused = expressionClass(v.Expression, columns, args)
 			refusals, operands = append(refusals, refused...), operands && len(refused) == 0
 			valueName = "an expression of type " + value
+			arithmetic = arithmetic || isArithmetic(v.Expression)
 		case v.Subquery > 0:
 			q := subs[v.Subquery-1]
 			inner, innerColumns := columnsOf(q.Table.Value)
@@ -240,7 +242,6 @@ func whereRefusals(name string, columns []TableColumn, where []stmt.Condition, s
 		default:
 			value, valueName = ArgumentClass(BoundValue(v, args)), plainName(v, args)
 		}
-		arithmetic := c.Expression.Present() || c.Value.Expression.Present()
 		if !operands {
 			continue
 		}
@@ -281,19 +282,35 @@ func setRefusals(name string, columns []TableColumn, set []stmt.Assignment, args
 		default:
 			value, valueName = ArgumentClass(BoundValue(v, args)), plainName(v, args)
 		}
-		if !meets(value, ColumnClass(columns[position].Type)) || a.Value.Expression.Present() && !numeric(ColumnClass(columns[position].Type)) {
+		if !meets(value, ColumnClass(columns[position].Type)) || isArithmetic(a.Value.Expression) && !numeric(ColumnClass(columns[position].Type)) {
 			refusals = append(refusals, fmt.Sprintf("s4ql: not supported: %v for %v", valueName, into))
 		}
 	}
 	return refusals
 }
 
-// expressionClass of the arithmetic expression e over the columns, with the arguments args: the
-// class of its values, "integer", "real", or "null" where an argument that is NULL makes every value
-// NULL, as the documents of the evaluator type it, and the refusals of its operands: each column of
-// type TEXT or BLOB, and each argument that is text or a blob, at its offset. Where there are
-// refusals, the expression has no class, and the class is "".
+// isArithmetic reports whether e is an arithmetic expression: neither the zero Expression, nor a
+// column alone, nor text, a concatenation or a call at its root.
+func isArithmetic(e stmt.Expression) bool {
+	return e.Present() && e.Kind != stmt.ExprColumn && e.Kind != stmt.ExprConcat && e.Kind != stmt.ExprCall
+}
+
+// expressionClass of the expression e over the columns, with the arguments args: the class of its
+// values, and the refusals of its operands, each at its offset. Arithmetic is "integer", "real", or
+// "null" where an argument that is NULL makes every value NULL, as the documents of the evaluator
+// type it, and refuses each column of type TEXT or BLOB and each argument that is text or a blob.
+// Text, a concatenation or a call at its root, is "text", also where an argument is NULL, since it
+// never meets a number; a concatenation and lower refuse a column of another type than TEXT and an
+// argument that is a number or a blob, and hex refuses a column of type INT, INTEGER, or REAL and an
+// argument that is a number. Where there are refusals, the expression has no class, and the class is
+// "".
 func expressionClass(e stmt.Expression, columns []TableColumn, args []any) (string, []string) {
+	if e.Kind == stmt.ExprConcat || e.Kind == stmt.ExprCall {
+		if refusals := textRefusals(e, "", columns, args); len(refusals) > 0 {
+			return "", refusals
+		}
+		return "text", nil
+	}
 	switch e.Kind {
 	case stmt.ExprValue:
 		return ArgumentClass(BoundValue(stmt.Term{Value: e.Value}, args)), nil
@@ -327,6 +344,33 @@ func expressionClass(e stmt.Expression, columns []TableColumn, args []any) (stri
 	return "integer", append(refusals, more...)
 }
 
+// textRefusals of the expression e of text, whose place is place: "" for the root, or that of an
+// operand of a concatenation or of the argument of a call, as the messages name it, "in a
+// concatenation", "in a call of lower", or "in a call of hex". They are the refusals of each column and
+// each argument of a type that its place does not take, in the order of the text.
+func textRefusals(e stmt.Expression, place string, columns []TableColumn, args []any) []string {
+	hex := place == "in a call of hex"
+	switch e.Kind {
+	case stmt.ExprConcat:
+		return append(textRefusals(e.Operands[0], "in a concatenation", columns, args), textRefusals(e.Operands[1], "in a concatenation", columns, args)...)
+	case stmt.ExprCall:
+		return textRefusals(e.Operands[0], "in a call of "+e.Function.String(), columns, args)
+	case stmt.ExprColumn:
+		typ := columns[ColumnOf(columns, e.Column)].Type
+		if c := ColumnClass(typ); c == "text" || hex && c == "blob" {
+			return nil
+		}
+		return []string{fmt.Sprintf("s4ql: not supported: column of type %v %v (at offset %v)", typ, place, e.Span.Start)}
+	case stmt.ExprParameter:
+		which := map[string]string{"integer": "an integer", "real": "a real", "blob": "a blob"}[ArgumentClass(args[e.Parameter-1])]
+		if which == "" || hex && which == "a blob" {
+			return nil
+		}
+		return []string{fmt.Sprintf("s4ql: not supported: argument %v %v, which is %v (at offset %v)", e.Parameter, place, which, e.Span.Start)}
+	}
+	return nil
+}
+
 // conditionNames of the condition c: the column that it tests, or the columns of the expression that
 // it tests, and the columns of its value, in the order of the text.
 func conditionNames(c stmt.Condition) []stmt.Name {
@@ -351,10 +395,13 @@ func expressionNames(e stmt.Expression) []stmt.Name {
 }
 
 // ArithmeticRefusal reports whether message is of a kind of refusal that [ArithmeticRefusals] may
-// give: of an operand of arithmetic, of a class, of a correlated subquery, or of an argument of LIMIT.
+// give: of an operand of an expression, of a class, of a correlated subquery, or of an argument of
+// LIMIT.
 func ArithmeticRefusal(message string) bool {
 	for _, part := range []string{" in arithmetic (at offset ", " in arithmetic, which is ", " compared with an expression of type ", "s4ql: not supported: an expression of type ",
-		" compared with the column ", " for the column ", "s4ql: not supported: correlated subquery (at offset ", ", for LIMIT, which takes an integer from 0"} {
+		" compared with the column ", " for the column ", "s4ql: not supported: correlated subquery (at offset ", ", for LIMIT, which takes an integer from 0",
+		" in a concatenation (at offset ", " in a concatenation, which is ", " in a call of lower (at offset ", " in a call of lower, which is ",
+		" in a call of hex (at offset ", " in a call of hex, which is "} {
 		if strings.Contains(message, part) {
 			return true
 		}
@@ -401,8 +448,8 @@ func ArithmeticSites(s stmt.Statement) []ArithmeticSite {
 	return sites
 }
 
-// Operators of the expression e: its nodes that compute, the negations and the binary operators, from
-// the root, in the order of a walk that visits a node before its operands.
+// Operators of the expression e: its nodes that compute, the negations, the binary operators, and the
+// calls, from the root, in the order of a walk that visits a node before its operands.
 func Operators(e stmt.Expression) []stmt.Expression {
 	var ops []stmt.Expression
 	if len(e.Operands) > 0 {
@@ -422,8 +469,12 @@ var EvaluationKinds = []error{expr.ErrOverflow, expr.ErrDivisionByZero, expr.Err
 // operands, is the quirk that s4ql refuses with the error: a real from two integers for an overflow,
 // NULL from two operands that are not NULL for a division by zero, and an infinity for a real result
 // that is not finite; and the arguments of its parameters. SQLite's negation has no quirk but the
-// overflow.
+// overflow, and a concatenation and a call have none: their one error, of a text longer than the
+// length limit, is SQLite's own.
 func Quirk(n stmt.Expression, kind error, args []any) (string, []any) {
+	if n.Kind == stmt.ExprConcat || n.Kind == stmt.ExprCall {
+		return "0", nil
+	}
 	left, leftArgs := ExpressionText(n.Operands[0], args)
 	if n.Kind == stmt.ExprNegate {
 		if kind != expr.ErrOverflow {

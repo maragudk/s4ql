@@ -12,8 +12,8 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
-// allowed node types and fields of slices 1, 2, 5, 7, 8, 9, 10, 11, 13, 14, and 15, and of
-// arithmetic, as the README defines them: a type by its name, and a field by the name of its type and
+// allowed node types and fields of slices 1, 2, 5, 7, 8, 9, 10, 11, 13, 14, and 15, of arithmetic,
+// of text in expressions, and of upserts, as the README defines them: a type by its name, and a field by the name of its type and
 // its path, as "CreateTable.Name.Name". A field is present when its token is, when its node is not
 // nil, or when its list is not empty.
 var allowed = map[string]bool{
@@ -74,6 +74,13 @@ var allowed = map[string]bool{
 	"Subquery": true, "Subquery.LParen": true, "Subquery.Select": true, "Subquery.RParen": true,
 
 	"Paren": true, "Paren.LParen": true, "Paren.X": true, "Paren.RParen": true,
+
+	"FuncCall": true, "FuncCall.Name": true, "FuncCall.LParen": true, "FuncCall.Args": true, "FuncCall.RParen": true,
+
+	"Insert.Upserts": true, "Upsert": true, "Upsert.On": true, "Upsert.Conflict": true, "Upsert.LParen": true,
+	"Upsert.Target": true, "Upsert.TargetCommas": true, "Upsert.RParen": true, "Upsert.Do": true, "Upsert.Nothing": true,
+	"Upsert.Update": true, "Upsert.Set": true, "Upsert.Assignments": true, "Upsert.Commas": true, "Upsert.Where": true,
+	"ColumnRef.Table": true, "ColumnRef.Dot2": true,
 }
 
 // features of the tree from n that are present: the name of the type of every node, and every field
@@ -151,7 +158,7 @@ var allowListExtra = []string{
 }
 
 // TestAllowList checks that a supported statement uses only the node types and fields of slices 1 to
-// 15 and of arithmetic, on many statements, and that every node type of package ast and every field
+// 15, of arithmetic, of text in expressions, and of upserts, on many statements, and that every node type of package ast and every field
 // of the node types of slice 1 occurs in some statement of the test, so that the check covers each of
 // them.
 func TestAllowList(t *testing.T) {
@@ -191,7 +198,7 @@ func TestAllowList(t *testing.T) {
 		if s, err := stmt.Check(sql); err == nil && s != nil {
 			for k := range f {
 				if !allowed[k] {
-					t.Errorf("%q is supported, and has %v, which slices 1 to 15 and arithmetic do not have", sql, k)
+					t.Errorf("%q is supported, and has %v, which slices 1 to 15, arithmetic, text, and upserts do not have", sql, k)
 				}
 			}
 			maps.Copy(seenSupported, f)

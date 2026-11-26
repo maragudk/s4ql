@@ -47,6 +47,10 @@ type recognizer struct {
 	inner ast.Token
 	// parentheses of an expression that the recognizer reads, which are open at the next token.
 	parentheses int
+	// doUpdate reports whether the recognizer reads the DO UPDATE of an ON CONFLICT clause, where a
+	// subquery is not supported, and excluded whether excluded.c names a column of the row that the
+	// insert proposes there, which it does unless the table of the insert is named excluded.
+	doUpdate, excluded bool
 }
 
 // stop is the panic with which the recognizer unwinds when the statement is not supported.
@@ -352,7 +356,7 @@ func isWord(t ast.Token, w string) bool {
 }
 
 // insert: INSERT INTO table, an optional list of columns, VALUES with one row of values, where each
-// value is a literal or a parameter, and an optional RETURNING.
+// value is a literal or a parameter, an optional ON CONFLICT, and an optional RETURNING.
 func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.accept(c)
 	if r.isNext(c.Insert) && c.Insert.Kind == token.Replace {
@@ -403,8 +407,130 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 		s.Values = append(s.Values, r.term(e))
 	}
 	r.take(row.RParen)
+	if c.Upserts != nil {
+		s.Conflict = r.conflict(s.Table, c.Upserts)
+	}
 	s.Returning = r.returning(c.Returning)
 	return s
+}
+
+// conflict: the ON CONFLICT clauses us of an insert into table, of which one is supported: ON
+// CONFLICT, its target, a list of one or more columns in parentheses, and DO NOTHING, or DO UPDATE
+// SET and one or more assignments, as of an update, with an optional WHERE, as of an update without
+// subqueries. In DO UPDATE, excluded.c names the column c of the row that the insert proposes.
+func (r *recognizer) conflict(table Name, us []*ast.Upsert) Conflict {
+	u := us[0]
+	r.accept(u)
+	start := r.take(u.On).Offset
+	r.take(u.Conflict)
+	if !u.LParen.Present() {
+		// SQLite takes a clause without a target for every constraint of uniqueness of the table, and
+		// only as the last clause. A target names the columns that the engine can check.
+		r.reject("ON CONFLICT without a target")
+	}
+	r.take(u.LParen)
+	c := Conflict{}
+	seen := map[string]bool{}
+	for i, o := range u.Target {
+		if i > 0 {
+			r.take(u.TargetCommas[i-1])
+		}
+		n := r.targetColumn(o, seen)
+		seen[n.Fold()] = true
+		c.Target = append(c.Target, n)
+	}
+	r.take(u.RParen)
+	if u.TargetWhere != nil && r.isNext(u.TargetWhere.Where) {
+		// SQLite matches the target to a partial index of the WHERE, or to an index that is not
+		// partial, such as the primary key.
+		r.reject("WHERE of a conflict target")
+	}
+	r.take(u.Do)
+	if u.Nothing.Present() {
+		r.take(u.Nothing)
+		c.Action = DoNothing
+	} else {
+		r.take(u.Update)
+		r.take(u.Set)
+		c.Action = DoUpdate
+		// SQLite reads excluded.c as the column c of the table when the table is named excluded.
+		r.doUpdate, r.excluded = true, table.Fold() != "excluded"
+		c.Set = r.assignments(u.Assignments, u.Commas, seen)
+		if u.Where != nil {
+			c.Where, _ = r.where(u.Where)
+		}
+		r.doUpdate, r.excluded = false, false
+	}
+	c.Span = Span{Start: start, End: r.tokens[r.next-1].End()}
+	if len(us) > 1 && r.isNext(us[1].On) {
+		// SQLite takes the first clause whose target the row of the insert meets.
+		r.reject("second ON CONFLICT clause")
+	}
+	return c
+}
+
+// targetColumn o of the target of an ON CONFLICT clause, after the columns of seen, by their folds:
+// the bare name of a column, or one in double quotes, that seen does not have, without ASC or DESC.
+// SQLite matches the target to the columns of an index, and so does not match an expression, a
+// literal, or a column with another collation than the index's; parentheses around a name and ASC or
+// DESC after it change nothing, and the pass supports neither.
+func (r *recognizer) targetColumn(o *ast.OrderingTerm, seen map[string]bool) Name {
+	r.accept(o)
+	switch x := o.X.(type) {
+	case *ast.ColumnRef:
+		switch {
+		case x.Table.Present():
+			r.reject("column with the name of a table")
+		case isTrueOrFalse(x):
+			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+			r.reject("TRUE or FALSE")
+		case r.isNext(x.Column) && quotingName(x.Column) == "" && seen[asciiLower(dequote(x.Column))]:
+			// SQLite matches no index of the column twice.
+			r.reject("column named twice")
+		}
+		r.accept(x)
+	case *ast.Collate:
+		r.reject("COLLATE")
+	case *ast.Paren:
+		r.reject("parentheses")
+	default:
+		r.reject("conflict target other than a column")
+	}
+	n := r.name(o.X.(*ast.ColumnRef).Column)
+	if r.isNext(o.Order) {
+		r.reject("ASC or DESC")
+	}
+	return n
+}
+
+// isExcluded reports whether x is excluded.c in the DO UPDATE of an ON CONFLICT clause, where it
+// names the column c of the row that the insert proposes: a column with the name excluded before it,
+// in any case of its letters, bare or in double quotes, single quotes, brackets, or backticks, as
+// SQLite reads it, and without a schema. A name in quotes that the pass does not support is refused
+// when it is read, by its quotes.
+func (r *recognizer) isExcluded(x ast.Expr) bool {
+	ref, ok := x.(*ast.ColumnRef)
+	if !ok || !r.excluded || !ref.Table.Present() || ref.Schema.Present() {
+		return false
+	}
+	v := ref.Table.Text
+	switch v[0] {
+	case '[', '`', '\'':
+		v = v[1 : len(v)-1]
+	case '"':
+		v = dequote(ref.Table)
+	}
+	return asciiLower(v) == "excluded"
+}
+
+// excludedColumn x, which [recognizer.isExcluded] reports is excluded.c, 2 deep as SQLite counts it:
+// the dot is an operator over the two names.
+func (r *recognizer) excludedColumn(x ast.Expr) (Expression, int) {
+	ref := x.(*ast.ColumnRef)
+	r.accept(ref)
+	table := r.name(ref.Table)
+	r.take(ref.Dot2)
+	return Expression{Kind: ExprExcluded, Table: table, Column: r.name(ref.Column), Span: spanOf(x)}, 2
 }
 
 // returning: an optional RETURNING and its columns, the last clause of an insert, an update, or a
@@ -412,7 +538,7 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 // commas, which may name a column more than once. SQLite takes any result column there, also an
 // expression, an alias, and a column with the name of its table; the pass supports what it supports
 // in a select list. A clause that the parser read before a token that the recognizer has not taken,
-// such as the ON of an upsert, stops at that token.
+// such as the FROM of an update, stops at that token.
 func (r *recognizer) returning(ret *ast.Returning) Returning {
 	if ret == nil {
 		return Returning{}
@@ -826,7 +952,7 @@ func (r *recognizer) where(w *ast.Where) ([]Condition, int) {
 }
 
 // update: UPDATE table SET and one or more assignments, separated by commas, each a column = a value,
-// where the value is a literal, a parameter, or an arithmetic expression, an optional WHERE, and an
+// where the value is a literal, a parameter, or an expression, an optional WHERE, and an
 // optional RETURNING.
 func (r *recognizer) update(c *ast.Update) *Update {
 	r.accept(c)
@@ -834,13 +960,29 @@ func (r *recognizer) update(c *ast.Update) *Update {
 	r.accept(c.Table)
 	s := &Update{Table: r.tableName(c.Table.Name)}
 	r.take(c.Set)
+	s.Set = r.assignments(c.Assignments, c.Commas, nil)
+	if c.Where != nil {
+		s.Where, s.Subqueries = r.statementWhere(c.Where)
+	}
+	s.Returning = r.returning(c.Returning)
+	return s
+}
+
+// assignments as of the SET of an update, or of the DO UPDATE of an ON CONFLICT clause with the
+// columns of its target, separated by commas: one or more, each a column = a value, where the value
+// is a literal, a parameter, or an expression, and no column is assigned twice or is one of target,
+// by their folds. An update has at most [maxColumns], and DO UPDATE has no limit.
+func (r *recognizer) assignments(as []*ast.Assignment, commas []ast.Token, target map[string]bool) []Assignment {
+	var set []Assignment
 	seen := map[string]bool{}
-	for i, a := range c.Assignments {
+	for i, a := range as {
 		if i > 0 {
-			r.take(c.Commas[i-1])
+			r.take(commas[i-1])
 		}
-		if i == maxColumns && r.at() == a.Bounds().Start {
-			// SQLite gives `too many columns in set list` while it parses, whatever the database holds.
+		if i == maxColumns && !r.doUpdate && r.at() == a.Bounds().Start {
+			// SQLite gives `too many columns in set list` for an update while it parses, whatever the
+			// database holds. It does not count those of DO UPDATE, whose columns, more than a table
+			// has, it looks for once it has found the table.
 			r.reject("SET beyond SQLite's limit")
 		}
 		r.accept(a)
@@ -848,20 +990,22 @@ func (r *recognizer) update(c *ast.Update) *Update {
 			// The assignment is to a list of columns in parentheses.
 			r.unexpected()
 		}
-		if r.isNext(a.Column) && quotingName(a.Column) == "" && seen[asciiLower(dequote(a.Column))] {
-			// SQLite gives the column the value of its last assignment, and leaves the others unused.
-			r.reject("column named twice")
+		if r.isNext(a.Column) && quotingName(a.Column) == "" {
+			switch f := asciiLower(dequote(a.Column)); {
+			case seen[f]:
+				// SQLite gives the column the value of its last assignment, and leaves the others unused.
+				r.reject("column named twice")
+			case target[f]:
+				// SQLite changes the key of the row, which can then meet the key of another row.
+				r.reject("assignment to a column of the conflict target")
+			}
 		}
 		n := r.name(a.Column)
 		seen[n.Fold()] = true
 		r.take(a.Eq)
-		s.Set = append(s.Set, Assignment{Column: n, Value: r.setValue(a.X)})
+		set = append(set, Assignment{Column: n, Value: r.setValue(a.X)})
 	}
-	if c.Where != nil {
-		s.Where, s.Subqueries = r.statementWhere(c.Where)
-	}
-	s.Returning = r.returning(c.Returning)
-	return s
+	return set
 }
 
 // delete: DELETE FROM table, an optional WHERE, and an optional RETURNING.
@@ -944,7 +1088,7 @@ var comparisons = map[token.Kind]Operator{
 
 // condition e of a WHERE clause: two operands compared with one of the operators of [comparisons],
 // or a column IS NULL or IS NOT NULL. It gives the condition and its height as SQLite counts it. An
-// operand is a column, a literal, a parameter, a scalar subquery, or an arithmetic expression, as
+// operand is a column, a literal, a parameter, a scalar subquery, or an expression, as
 // [recognizer.operand] reads it, and one of the two has a column.
 //
 // The condition tests the operand with a column, compared with the other, as [Condition] says: a
@@ -958,8 +1102,7 @@ var comparisons = map[token.Kind]Operator{
 func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	switch e := e.(type) {
 	case *ast.Is:
-		// The column and NULL are 1 deep, and IS one deeper.
-		return r.isCondition(e), 2
+		return r.isCondition(e)
 	case *ast.Unary:
 		if e.Op.Kind == token.Not {
 			r.reject("NOT operator")
@@ -1031,14 +1174,23 @@ func (c comparand) hasColumn() bool {
 
 // operand e of a comparison: the bare name of a column, as [recognizer.conditionColumn] reads it, 1
 // deep; a scalar subquery, as [recognizer.subquery] reads it, with its height; a literal or a
-// parameter, as [recognizer.term] reads it, 1 deep, or 2 with a sign; or an arithmetic expression,
+// parameter, as [recognizer.term] reads it, 1 deep, or 2 with a sign; or an expression,
 // as [recognizer.expression] reads it. A subquery after a - is not supported, at the subquery; one
-// after a + is `+ sign`, as for a parameter.
+// after a + is `+ sign`, as for a parameter. In DO UPDATE, excluded.c is an expression, 2 deep, and
+// a subquery is not supported.
 func (r *recognizer) operand(e ast.Expr) comparand {
 	switch x := e.(type) {
 	case *ast.ColumnRef:
+		if r.isExcluded(x) {
+			ex, height := r.excludedColumn(x)
+			return comparand{term: Term{Expression: ex, Span: spanOf(e)}, height: height}
+		}
 		return comparand{column: true, name: r.conditionColumn(x, ""), height: 1}
 	case *ast.Subquery:
+		if r.doUpdate {
+			// SQLite takes a subquery there, which can name the columns of both rows.
+			r.reject("subquery")
+		}
 		t, height := r.subquery(x)
 		return comparand{term: t, height: height}
 	case *ast.Unary:
@@ -1055,7 +1207,7 @@ func (r *recognizer) operand(e ast.Expr) comparand {
 		}
 		return comparand{term: r.term(e), height: height}
 	}
-	x, height := r.expression(e, "WHERE deeper than SQLite's limit")
+	x, height := r.expression(e, "WHERE deeper than SQLite's limit", anywhere)
 	return comparand{term: Term{Expression: x, Span: spanOf(e)}, height: height}
 }
 
@@ -1065,22 +1217,22 @@ func spanOf(e ast.Expr) Span {
 	return Span{Start: b.Start, End: b.End}
 }
 
-// setValue e of an assignment: a plain value, as [recognizer.term] reads it, or an arithmetic
-// expression, as [recognizer.expression] reads it, which may be a column alone. SQLite checks the
-// depth of each value of SET on its own.
+// setValue e of an assignment: a plain value, as [recognizer.term] reads it, or an expression, as
+// [recognizer.expression] reads it, which may be a column alone. SQLite checks the depth of each
+// value of SET on its own.
 func (r *recognizer) setValue(e ast.Expr) Term {
 	if plainValue(e) {
 		return r.term(e)
 	}
-	x, _ := r.expression(e, "expression deeper than SQLite's limit")
+	x, _ := r.expression(e, "expression deeper than SQLite's limit", anywhere)
 	return Term{Expression: x, Span: spanOf(e)}
 }
 
 // plainValue reports whether e is read as a plain value, a literal or a parameter, by
 // [recognizer.term], or refused by it with the names that it gives: a literal, a ?, or a unary
-// operator other than a - before a parameter, a name, or parentheses, each of which is an
-// arithmetic expression. A binary operator is never the operand of a -, which binds more tightly
-// than every binary operator.
+// operator other than a - before a parameter, a name, parentheses, or a call, each of which is an
+// expression. A binary operator is never the operand of a -, which binds more tightly than every
+// binary operator.
 func plainValue(e ast.Expr) bool {
 	switch e := e.(type) {
 	case *ast.Literal, *ast.Variable:
@@ -1090,7 +1242,7 @@ func plainValue(e ast.Expr) bool {
 			return true
 		}
 		switch e.X.(type) {
-		case *ast.Variable, *ast.ColumnRef, *ast.Paren:
+		case *ast.Variable, *ast.ColumnRef, *ast.Paren, *ast.FuncCall:
 			return false
 		}
 		return true
@@ -1098,11 +1250,13 @@ func plainValue(e ast.Expr) bool {
 	return false
 }
 
-// maxParentheses that an expression may have open at once. SQLite has no such limit, but its parser
-// holds each open parenthesis, and each operator that waits for its right operand, on a stack of
-// 2,499 entries, and gives `Recursion limit` beyond it: `(1 + (1 + ...))` parses to 830 levels. With
-// at most 100 parentheses, no second sign, and two levels of binary operators, an expression holds
-// far fewer entries than that, so the pass never supports a text that SQLite's parser refuses.
+// maxParentheses that an expression may have open at once, those of a call included. SQLite has no
+// such limit, but its parser holds each open parenthesis, and each operator that waits for its right
+// operand, on a stack of 2,499 entries, and gives `Recursion limit` beyond it: `(1 + (1 + ...))`
+// parses to 830 levels. A call holds its name and its parenthesis there, and one entry more. With at
+// most 100 parentheses, no second sign, and two levels of binary operators of arithmetic, or one of
+// ||, which never meet, an expression holds far fewer entries than that, so the pass never supports a
+// text that SQLite's parser refuses.
 const maxParentheses = 100
 
 // arithmetic operators, by the kind of their token.
@@ -1110,27 +1264,73 @@ var arithmetic = map[token.Kind]ExpressionKind{
 	token.Plus: ExprAdd, token.Minus: ExprSubtract, token.Star: ExprMultiply, token.Slash: ExprDivide,
 }
 
-// expression e of arithmetic, which starts at the next token, and its height as SQLite counts it: a
-// literal, a parameter, and a column are 1 deep, a literal after a - 2 deep, and an operator one
-// deeper than its deeper operand. Parentheses add nothing. An operator deeper than [maxDepth] is not
-// supported, as deep: at the operator for its left operand, and at the token after its operand for
-// another. The caller reads a plain value itself, so a literal here is the operand of an operator.
-func (r *recognizer) expression(e ast.Expr, deep string) (Expression, int) {
+// place of an expression: what holds it, which decides the operands that it refuses for what the
+// text shows of their type. Arithmetic takes numbers, and || and the functions take text, as the
+// rule "SQLite's answer or an error" has it: SQLite reads text as a number in arithmetic and writes
+// a number or a blob as text for ||, lower, and hex, which s4ql does not copy. What the text cannot
+// show, the type of a column or of an argument, is not decided here.
+type place int
+
+const (
+	// anywhere is the whole value of an assignment or a side of a comparison, which takes every
+	// expression.
+	anywhere place = iota
+	// inArithmetic is an operand of +, -, *, /, or a negation, which takes no text.
+	inArithmetic
+	// inConcat is an operand of ||, which takes no number, blob, or NULL.
+	inConcat
+	// inLower is the argument of lower, which takes no number, blob, or NULL.
+	inLower
+	// inHex is the argument of hex, which takes no number or NULL.
+	inHex
+)
+
+// refusal of a literal, an operator of arithmetic, or a negation, by what the text shows of its type,
+// what, as an operand at the place p: "number", "NULL", or "blob". It gives the name of the refusal,
+// or "" where p takes it.
+func (p place) refusal(what string) string {
+	switch {
+	case p == inConcat:
+		return what + " in a concatenation"
+	case p == inHex && what == "blob":
+		return ""
+	case p == inLower, p == inHex:
+		return what + " as an argument"
+	}
+	return ""
+}
+
+// expression e, which starts at the next token, at the place p, and its height as SQLite counts it:
+// a literal, a parameter, and a column are 1 deep, a literal after a - 2 deep, and an operator or a
+// call one deeper than its deeper operand. Parentheses add nothing. An operator or a call deeper than
+// [maxDepth] is not supported, as deep: at the operator for its left operand, and at the token after
+// its operand, or after the call, for another. A plain value is read by [recognizer.term], so a
+// literal here is the operand of an operator or the argument of a call.
+func (r *recognizer) expression(e ast.Expr, deep string, p place) (Expression, int) {
 	switch x := e.(type) {
 	case *ast.Paren:
-		return r.parenthesized(x, deep)
+		return r.parenthesized(x, deep, p)
 	case *ast.Binary:
 		kind := arithmetic[x.Op.Kind]
-		if kind == 0 {
+		operands := inArithmetic
+		switch {
+		case kind != 0 && p.refusal("number") != "":
+			r.reject(p.refusal("number"))
+		case x.Op.Kind == token.Concat && p == inArithmetic:
+			// SQLite reads the text that || gives as a number.
+			r.reject("text in arithmetic")
+		case x.Op.Kind == token.Concat:
+			kind, operands = ExprConcat, inConcat
+		case kind == 0:
 			r.unexpected()
 		}
 		r.accept(x)
-		left, hl := r.expression(x.X, deep)
+		left, hl := r.expression(x.X, deep, operands)
 		if hl+1 > maxDepth {
 			r.reject(deep)
 		}
 		r.take(x.Op)
-		right, hr := r.expression(x.Y, deep)
+		right, hr := r.expression(x.Y, deep, operands)
 		if hr+1 > maxDepth {
 			r.reject(deep)
 		}
@@ -1140,9 +1340,13 @@ func (r *recognizer) expression(e ast.Expr, deep string) (Expression, int) {
 		}
 		return Expression{Kind: kind, Operands: []Expression{left, right}, Span: spanOf(e)}, max(hl, hr) + 1
 	case *ast.Unary:
-		return r.unary(x, deep)
+		return r.unary(x, deep, p)
+	case *ast.FuncCall:
+		return r.call(x, deep, p)
 	case *ast.ColumnRef:
 		switch {
+		case r.isExcluded(x):
+			return r.excludedColumn(x)
 		case x.Table.Present():
 			r.reject("column with the name of a table")
 		case isTrueOrFalse(x):
@@ -1155,15 +1359,7 @@ func (r *recognizer) expression(e ast.Expr, deep string) (Expression, int) {
 		n, span := r.parameter(x)
 		return Expression{Kind: ExprParameter, Parameter: n, Span: span}, 1
 	case *ast.Literal:
-		// SQLite gives NULL for arithmetic with NULL, and reads a string or a blob as a number.
-		switch x.Value.Kind {
-		case token.String:
-			r.reject("string in arithmetic")
-		case token.Blob:
-			r.reject("blob in arithmetic")
-		case token.Null:
-			r.reject("NULL in arithmetic")
-		}
+		r.operandLiteral(x, p)
 		v, span := r.value(x, false, r.at())
 		return Expression{Kind: ExprValue, Value: v, Span: span}, 1
 	}
@@ -1171,13 +1367,52 @@ func (r *recognizer) expression(e ast.Expr, deep string) (Expression, int) {
 	return Expression{}, 0
 }
 
-// unary operator u of an expression: a - before a number, which is a literal as [recognizer.literal]
-// reads it, 2 deep, or a - before a parameter, a column, or parentheses, which is [ExprNegate], one
-// deeper than its operand. A + and every other unary operator are not supported, by the names that a
-// value has for them, and so is a second sign and a - before a string, a blob, or NULL.
-func (r *recognizer) unary(u *ast.Unary, deep string) (Expression, int) {
+// operandLiteral l at the place p: not supported if p does not take it, by what the text shows of its
+// type. In arithmetic, SQLite reads a string or a blob as a number and gives NULL for NULL; for ||
+// and for the functions, it writes a number or a blob as text, and gives NULL for NULL, or the empty
+// text for hex. A form of a literal that no place takes, such as CURRENT_DATE, is for
+// [recognizer.value].
+func (r *recognizer) operandLiteral(l *ast.Literal, p place) {
+	if p == inArithmetic {
+		switch l.Value.Kind {
+		case token.String:
+			r.reject("string in arithmetic")
+		case token.Blob:
+			r.reject("blob in arithmetic")
+		case token.Null:
+			r.reject("NULL in arithmetic")
+		}
+		return
+	}
+	what := ""
+	switch l.Value.Kind {
+	case token.Integer, token.Float, token.QNumber:
+		what = "number"
+	case token.Blob:
+		what = "blob"
+	case token.Null:
+		what = "NULL"
+	}
+	if what != "" && p.refusal(what) != "" {
+		r.reject(p.refusal(what))
+	}
+}
+
+// unary operator u of an expression at the place p: a - before a number, which is a literal as
+// [recognizer.literal] reads it, 2 deep, or a - before a parameter, a column, parentheses, or a
+// call, which is [ExprNegate], one deeper than its operand. A + and every other unary operator are
+// not supported, by the names that a value has for them, and so is a second sign and a - before a
+// string, a blob, or NULL. A negation and a negative number are numbers, which || and the functions
+// do not take.
+func (r *recognizer) unary(u *ast.Unary, deep string, p place) (Expression, int) {
 	if u.Op.Kind == token.Minus {
-		if _, ok := u.X.(*ast.Literal); ok {
+		if l, ok := u.X.(*ast.Literal); ok {
+			switch l.Value.Kind {
+			case token.Integer, token.Float, token.QNumber:
+				if what := p.refusal("number"); what != "" {
+					r.reject(what)
+				}
+			}
 			v, span := r.literal(u)
 			return Expression{Kind: ExprValue, Value: v, Span: span}, 2
 		}
@@ -1187,6 +1422,8 @@ func (r *recognizer) unary(u *ast.Unary, deep string) (Expression, int) {
 		r.reject("NULL after a sign")
 	case u.Op.Kind != token.Minus:
 		r.reject(unaryName(u.Op))
+	case p.refusal("number") != "":
+		r.reject(p.refusal("number"))
 	}
 	r.accept(u)
 	r.take(u.Op)
@@ -1196,23 +1433,80 @@ func (r *recognizer) unary(u *ast.Unary, deep string) (Expression, int) {
 		}
 		r.reject(unaryName(x.Op))
 	}
-	x, height := r.expression(u.X, deep)
+	x, height := r.expression(u.X, deep, inArithmetic)
 	if height+1 > maxDepth {
 		r.reject(deep)
 	}
 	return Expression{Kind: ExprNegate, Operands: []Expression{x}, Span: spanOf(u)}, height + 1
 }
 
-// parenthesized expression p: parentheses around an operator, at most [maxParentheses] of them open
-// at once. Parentheses around a single literal, parameter, column, or subquery, or around
-// parentheses, are not supported: SQLite reads them as what they hold, so they hold nothing of their
-// own.
-func (r *recognizer) parenthesized(p *ast.Paren, deep string) (Expression, int) {
+// call c of a function at the place p: lower or hex, by a bare name or one in double quotes in any
+// case of its ASCII letters, as SQLite finds a function, with one argument, an expression at the
+// place of the argument of that function, in parentheses that count to [maxParentheses]. It is one
+// deeper than its argument. Every other function is not supported, at its name, and so is a call in
+// arithmetic, since it gives text; another number of arguments, at the token after the opening
+// parenthesis where no argument is, or at the comma after the first; DISTINCT, ALL, and * in the parentheses, and ORDER BY, FILTER, and OVER, by
+// the names of their fields and nodes; and parentheses around the argument, which hold nothing of
+// their own. SQLite gives `wrong number of arguments to function lower()` for another number or for
+// *, `ORDER BY may not be used with non-aggregate lower()`, `FILTER may not be used with
+// non-aggregate lower()`, and `lower() may not be used as a window function` once it has found the
+// tables, and takes DISTINCT and ALL.
+func (r *recognizer) call(c *ast.FuncCall, deep string, p place) (Expression, int) {
+	if what := quotingName(c.Name); what != "" {
+		r.reject(what)
+	}
+	var f Function
+	var argument place
+	switch asciiLower(dequote(c.Name)) {
+	case "lower":
+		f, argument = FuncLower, inLower
+	case "hex":
+		f, argument = FuncHex, inHex
+	default:
+		r.reject("function other than lower or hex")
+	}
+	if p == inArithmetic {
+		// SQLite reads the text that the function gives as a number.
+		r.reject("text in arithmetic")
+	}
+	r.accept(c)
+	r.take(c.Name)
+	if r.parentheses == maxParentheses {
+		r.reject("parentheses deeper than 100")
+	}
+	r.take(c.LParen)
+	r.parentheses++
+	if c.Distinct.Present() || c.Star.Present() {
+		r.unexpected()
+	}
+	if len(c.Args) == 0 {
+		r.reject("wrong number of arguments")
+	}
+	if _, ok := c.Args[0].(*ast.Paren); ok {
+		r.reject("parentheses")
+	}
+	x, height := r.expression(c.Args[0], deep, argument)
+	if len(c.Args) > 1 {
+		r.reject("wrong number of arguments")
+	}
+	r.parentheses--
+	r.take(c.RParen)
+	if height+1 > maxDepth {
+		r.reject(deep)
+	}
+	return Expression{Kind: ExprCall, Function: f, Operands: []Expression{x}, Span: Span{Start: c.Name.Offset, End: c.RParen.End()}}, height + 1
+}
+
+// parenthesized expression p at the place at: parentheses around an operator, at most
+// [maxParentheses] of them open at once. Parentheses around a single literal, parameter, column,
+// subquery, or call, or around parentheses, are not supported: SQLite reads them as what they hold,
+// so they hold nothing of their own.
+func (r *recognizer) parenthesized(p *ast.Paren, deep string, at place) (Expression, int) {
 	if r.parentheses == maxParentheses {
 		r.reject("parentheses deeper than 100")
 	}
 	switch x := p.X.(type) {
-	case *ast.Literal, *ast.Variable, *ast.ColumnRef, *ast.Subquery, *ast.Paren:
+	case *ast.Literal, *ast.Variable, *ast.ColumnRef, *ast.Subquery, *ast.Paren, *ast.FuncCall:
 		r.reject("parentheses")
 	case *ast.Unary:
 		if _, ok := x.X.(*ast.Literal); ok && x.Op.Kind == token.Minus {
@@ -1222,7 +1516,7 @@ func (r *recognizer) parenthesized(p *ast.Paren, deep string) (Expression, int) 
 	r.accept(p)
 	r.take(p.LParen)
 	r.parentheses++
-	x, height := r.expression(p.X, deep)
+	x, height := r.expression(p.X, deep, at)
 	r.parentheses--
 	r.take(p.RParen)
 	return x, height
@@ -1240,10 +1534,20 @@ func isZero(e Expression) bool {
 	return false
 }
 
-// isCondition: a column IS NULL or IS NOT NULL.
-func (r *recognizer) isCondition(e *ast.Is) Condition {
+// isCondition: a column IS NULL or IS NOT NULL, and its height as SQLite counts it: the column and
+// NULL are 1 deep, excluded.c 2, and IS one deeper. In DO UPDATE, the column can be excluded.c, which
+// is then the Expression of the condition.
+func (r *recognizer) isCondition(e *ast.Is) (Condition, int) {
 	r.accept(e)
-	c := Condition{Column: r.conditionColumn(e.X, "value before IS"), Operator: OpIsNull}
+	var c Condition
+	height := 2
+	if r.isExcluded(e.X) {
+		c.Expression, height = r.excludedColumn(e.X)
+		height++
+	} else {
+		c.Column = r.conditionColumn(e.X, "value before IS")
+	}
+	c.Operator = OpIsNull
 	r.take(e.Is)
 	if e.Not.Present() {
 		r.take(e.Not)
@@ -1260,7 +1564,7 @@ func (r *recognizer) isCondition(e *ast.Is) Condition {
 		r.unexpected()
 	}
 	r.take(e.Y.(*ast.Literal).Value)
-	return c
+	return c, height
 }
 
 // conditionColumn of a condition, the expression x on either side of its operator, which starts at the next

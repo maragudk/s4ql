@@ -282,9 +282,70 @@ type Insert struct {
 	// Values of the row, in the order of the text. Their number may differ from that of the columns,
 	// which SQLite refuses once it has found the table.
 	Values []Term
+	// Conflict of the ON CONFLICT clause, after the values, which says what the statement does in
+	// place of the insert when the row has the key of a row of the table, or the zero Conflict if the
+	// statement has none; see [Conflict.Present].
+	Conflict Conflict
 	// Returning of the RETURNING clause, which gives the row that the statement inserts, with its
-	// values as the table stores them, or the zero Returning if the statement has none.
+	// values as the table stores them, or the row that its DO UPDATE changes, with the values after
+	// the change, or the zero Returning if the statement has none.
 	Returning Returning
+}
+
+// Conflict clause of an [Insert], an upsert: ON CONFLICT, the columns of its target in parentheses,
+// and DO NOTHING or DO UPDATE SET with assignments and an optional WHERE. When the row of the insert
+// has the values of the target of a row that the table holds, the statement does not insert it: with
+// DO NOTHING it changes nothing, and with DO UPDATE it changes the row that the table holds, if the
+// conditions of the WHERE hold for it.
+type Conflict struct {
+	// Span of the clause in the text, from the keyword ON to the end of its last token, or the zero
+	// Span if the statement has no ON CONFLICT.
+	Span Span
+	// Target holds the columns of the conflict target, in the order of the text, one or more, each
+	// with its offset. No two of them have one name, as [Name.Fold] compares names. Whether they are
+	// the primary key of the table, which is the one constraint of uniqueness that a table of s4ql
+	// has, is not decided here.
+	Target []Name
+	// Action is [DoNothing] or [DoUpdate].
+	Action ConflictAction
+	// Set holds the assignments of DO UPDATE, as [Update.Set] holds those of an update, or nil for DO
+	// NOTHING. A value names a column of the row that the table holds as a column, [ExprColumn], and
+	// one of the row that the insert proposes as excluded.c, [ExprExcluded]. No assignment is to a
+	// column of Target.
+	Set []Assignment
+	// Where holds the conditions of the WHERE of DO UPDATE, in the order of the text, as for an
+	// [Update], or nil if the clause has none. They test the columns of both rows, and no condition
+	// has a subquery. A test for NULL tests a column of the row of the table, or one of the row of
+	// the insert, whose [Condition.Expression] is then of the kind [ExprExcluded].
+	Where []Condition
+}
+
+// Present reports whether the statement has an ON CONFLICT clause.
+func (c Conflict) Present() bool {
+	return c.Span != Span{}
+}
+
+// ConflictAction of a [Conflict]. The zero value is no action.
+type ConflictAction int
+
+// The actions of a [Conflict].
+const (
+	// DoNothing is DO NOTHING: the statement changes nothing.
+	DoNothing ConflictAction = iota + 1
+	// DoUpdate is DO UPDATE: the statement changes the row of the table that has the values of the
+	// target, with the assignments of [Conflict.Set], if the conditions of [Conflict.Where] hold.
+	DoUpdate
+)
+
+// String of the action as SQL writes it, DO NOTHING or DO UPDATE, or "" for no action.
+func (a ConflictAction) String() string {
+	switch a {
+	case DoNothing:
+		return "DO NOTHING"
+	case DoUpdate:
+		return "DO UPDATE"
+	}
+	return ""
 }
 
 // Returning clause of an [Insert], an [Update], or a [Delete]: the statement gives a row for each row
@@ -308,7 +369,7 @@ func (r Returning) Present() bool {
 
 // Term of a row, of an [Assignment], or of a [Condition]: the literal Value, the argument of a
 // parameter if Parameter is not 0, the value of a scalar subquery if Subquery is not 0, or the value
-// of an arithmetic expression if Expression is present.
+// of an expression if Expression is present.
 //
 // A Term without an Expression is a plain value, as it was before expressions: a literal, with at
 // most one - before a number, a plain ?, or a subquery. Only the value of an [Assignment] and the
@@ -327,8 +388,8 @@ type Term struct {
 	// of a subquery itself.
 	Subquery int
 	// Expression that gives the value, or the zero Expression for a plain value; see
-	// [Expression.Present]. With one, Value is nil, Parameter 0, and Subquery 0. It is an operator,
-	// or, as the value of an [Assignment] or of a [Condition] that tests a column alone, a column
+	// [Expression.Present]. With one, Value is nil, Parameter 0, and Subquery 0. It is an operator or
+	// a call, or, as the value of an [Assignment] or of a [Condition] that tests a column alone, a column
 	// alone, as in `set a = b` and `where a = b`.
 	Expression Expression
 	// Span of the value in the text, its sign included, or of the parameter, or of the subquery from
@@ -349,13 +410,17 @@ func parametersOf(t Term, subqueries []Select) int {
 	return t.Expression.parameters()
 }
 
-// Expression of arithmetic: a literal, a parameter, a column, or an operator with its operands, each
-// an Expression. It holds its operands by value, in a slice, so that a statement holds no pointer and
-// is compared and printed by value.
+// Expression of arithmetic or of text: a literal, a parameter, a column, or an operator or a call of
+// a function with its operands, each an Expression. It holds its operands by value, in a slice, so
+// that a statement holds no pointer and is compared and printed by value.
 //
-// The tree has SQLite's precedence and associativity: * and / bind more tightly than + and -, each
-// groups to the left, and the - of a negation binds most tightly. Parentheses are not nodes: they
-// group, and the Span of the parent holds them.
+// The tree has SQLite's precedence and associativity: || binds more tightly than * and /, and those
+// more tightly than + and -, each groups to the left, and the - of a negation binds most tightly.
+// Parentheses are not nodes: they group, and the Span of the parent holds them.
+//
+// Arithmetic and text do not meet where the text alone shows it: an operand of +, -, *, /, or a
+// negation is never an [ExprConcat] or an [ExprCall], which give text, and an operand of || or the
+// argument of a function is never a number, an operator of arithmetic, or a negation.
 //
 // A - directly before a number is part of the literal, as SQLite codes it, so `-5` is the value -5
 // and never the negation of 5, and `-9223372036854775808` is the smallest integer of 64 bits. Every
@@ -363,18 +428,24 @@ func parametersOf(t Term, subqueries []Select) int {
 type Expression struct {
 	// Kind of the node, or 0 for no expression.
 	Kind ExpressionKind
-	// Value of the literal of [ExprValue]: an [Integer] or a [Real], with its sign. Never a [Text],
-	// a [Blob], or [Null], which arithmetic does not take. Nil for every other kind.
+	// Value of the literal of [ExprValue]: an [Integer] or a [Real], with its sign, as an operand of
+	// arithmetic; a [Text] as an operand of || or the argument of a function; or a [Blob] as the
+	// argument of [FuncHex]. Never [Null]. Nil for every other kind.
 	Value Value
 	// Parameter of [ExprParameter]: its number, from 1, numbered with every other parameter of the
 	// statement in the order of the text. 0 for every other kind.
 	Parameter int
-	// Column of [ExprColumn]: its name, bare or in double quotes. Whether the table has it is not
-	// decided here. The zero Name for every other kind.
+	// Column of [ExprColumn] and of [ExprExcluded]: its name, bare or in double quotes. Whether the
+	// table has it is not decided here. The zero Name for every other kind.
 	Column Name
-	// Operands of an operator, in the order of the text: one for [ExprNegate], and two, the left and
-	// the right, for [ExprAdd], [ExprSubtract], [ExprMultiply], and [ExprDivide]. Nil for a literal, a
-	// parameter, and a column.
+	// Table of [ExprExcluded]: the name excluded before the dot, as the text writes it, bare or in
+	// double quotes and in any case of its letters. The zero Name for every other kind.
+	Table Name
+	// Function of [ExprCall], and 0 for every other kind.
+	Function Function
+	// Operands of an operator or a call, in the order of the text: one for [ExprNegate], two, the left
+	// and the right, for [ExprAdd], [ExprSubtract], [ExprMultiply], [ExprDivide], and [ExprConcat], and
+	// the one argument for [ExprCall]. Nil for a literal, a parameter, a column, and excluded.c.
 	Operands []Expression
 	// Span of the node in the text, from its first token to the end of its last, without parentheses
 	// around the node itself and with those around its operands. That of a literal holds its sign.
@@ -386,7 +457,7 @@ type ExpressionKind int
 
 // The kinds of a node of an [Expression].
 const (
-	// ExprValue is a literal: an integer or a real.
+	// ExprValue is a literal: an integer or a real, or a string or a blob in text.
 	ExprValue ExpressionKind = iota + 1
 	// ExprParameter is a plain ?.
 	ExprParameter
@@ -402,12 +473,25 @@ const (
 	ExprMultiply
 	// ExprDivide is /. Its right operand is never the literal 0 or 0.0, with or without a sign.
 	ExprDivide
+	// ExprConcat is ||, the concatenation of text.
+	ExprConcat
+	// ExprCall is a call of its Function with its one argument.
+	ExprCall
+	// ExprExcluded is excluded.c, the value of the column c of the row that an insert proposes, in
+	// the DO UPDATE of its [Conflict].
+	ExprExcluded
 )
 
 // String of the kind: the operator as SQL writes it, such as + or - for both a negation and a
-// subtraction, or "value", "parameter", or "column", or "" for no kind.
+// subtraction, or "value", "parameter", "column", "call", or "excluded", or "" for no kind.
 func (k ExpressionKind) String() string {
 	switch k {
+	case ExprExcluded:
+		return "excluded"
+	case ExprConcat:
+		return "||"
+	case ExprCall:
+		return "call"
 	case ExprValue:
 		return "value"
 	case ExprParameter:
@@ -426,15 +510,40 @@ func (k ExpressionKind) String() string {
 	return ""
 }
 
+// Function of an [ExprCall]. The zero value is no function.
+type Function int
+
+// The functions of an [ExprCall].
+const (
+	// FuncLower is lower(x), x with the ASCII letters in lower case. Its argument is never a number,
+	// a blob, or NULL where the text shows its type, as for a literal.
+	FuncLower Function = iota + 1
+	// FuncHex is hex(x), the bytes of x in upper-case hexadecimal digits. Its argument is never a
+	// number or NULL where the text shows its type, as for a literal.
+	FuncHex
+)
+
+// String of the function: its name as SQL writes it, such as lower, or "" for no function.
+func (f Function) String() string {
+	switch f {
+	case FuncLower:
+		return "lower"
+	case FuncHex:
+		return "hex"
+	}
+	return ""
+}
+
 // Present reports whether e is an expression, and not the zero Expression.
 func (e Expression) Present() bool {
 	return e.Kind != 0
 }
 
-// HasColumn reports whether a node of e is a column. An expression without a column has one value
-// for each run of its statement, which its literals and its arguments decide, whatever the row.
+// HasColumn reports whether a node of e is a column, of the row of the table or, as excluded.c, of
+// the row that an insert proposes. An expression without a column has one value for each run of its
+// statement, which its literals and its arguments decide, whatever the row.
 func (e Expression) HasColumn() bool {
-	if e.Kind == ExprColumn {
+	if e.Kind == ExprColumn || e.Kind == ExprExcluded {
 		return true
 	}
 	for _, o := range e.Operands {
@@ -518,9 +627,10 @@ type OrderColumn struct {
 	Descending bool
 }
 
-// Condition of a WHERE clause of a select, an update, or a delete: a column, or an arithmetic
-// expression with a column, compared with a value, which may be a scalar subquery or an arithmetic
-// expression, or a column tested for NULL.
+// Condition of a WHERE clause of a select, an update, a delete, or the DO UPDATE of a [Conflict]: a
+// column, or an expression with a column, compared with a value, which may be a scalar subquery or
+// an expression, or a column tested for NULL. In DO UPDATE, a column of the row that the insert
+// proposes, [ExprExcluded], is a column too, which the condition tests as an Expression.
 //
 // A condition always reads as Column, Operator, Value, whichever side of the operator the text
 // writes the column on: `5 < a` is the condition `a > 5`, with ValueFirst set. SQLite gives the two
@@ -537,14 +647,16 @@ type Condition struct {
 	// Column that the condition tests, or the zero Name if Expression is present. Whether the table
 	// has it is not decided here.
 	Column Name
-	// Expression that the condition tests in place of Column: an operator with a column, as in `a + 1
-	// = 5`, or the zero Expression if the condition tests Column; see [Expression.Present].
+	// Expression that the condition tests in place of Column: an operator or a call with a column, as
+	// in `a + 1 = 5` and `lower(a) = 'x'`, or in DO UPDATE excluded.c alone, as in `excluded.a = 5`
+	// and `excluded.a is null`, the one test for NULL with an Expression; or the zero Expression if
+	// the condition tests Column; see [Expression.Present].
 	Expression Expression
 	// Operator of the condition, as it compares Column with Value. When ValueFirst is set, the text
 	// writes [Operator.Swapped] of it.
 	Operator Operator
 	// Value that the column is compared with, a literal or a parameter, as a value of an insert is,
-	// or a scalar subquery, or an arithmetic expression, with a column or without one, on either side
+	// or a scalar subquery, or an expression, with a column or without one, on either side
 	// of the column. For [OpIsNull] and [OpIsNotNull] it is the zero Term, which is none of them.
 	Value Term
 	// ValueFirst reports whether the text writes the value on the left of the operator and the column
@@ -635,7 +747,7 @@ type Update struct {
 type Assignment struct {
 	// Column that gets the value.
 	Column Name
-	// Value of the column, a literal or a parameter, as a value of an insert is, or an arithmetic
+	// Value of the column, a literal or a parameter, as a value of an insert is, or an
 	// expression, which may be a column alone and may name the columns of the row before the update.
 	Value Term
 }
@@ -732,7 +844,8 @@ func (s *DropIndex) Bounds() Span { return s.Span }
 // Parameters of the statement, which has none.
 func (s *CreateTable) Parameters() int { return 0 }
 
-// Parameters of the statement: the number of its values that are a parameter.
+// Parameters of the statement: the number of its values that are a parameter, and of the parameters
+// of the assignments and the conditions of its ON CONFLICT, which come after them in the text.
 func (s *Insert) Parameters() int {
 	n := 0
 	for _, v := range s.Values {
@@ -740,7 +853,10 @@ func (s *Insert) Parameters() int {
 			n++
 		}
 	}
-	return n
+	for _, a := range s.Conflict.Set {
+		n += parametersOf(a.Value, nil)
+	}
+	return n + conditionParameters(s.Conflict.Where, nil)
 }
 
 // Parameters of the statement: the number of the values of its conditions that are a parameter, with

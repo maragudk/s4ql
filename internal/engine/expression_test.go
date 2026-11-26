@@ -1609,3 +1609,392 @@ func TestEngine_arithmetic(t *testing.T) {
 		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
 	})
 }
+
+func TestEngine_text(t *testing.T) {
+	// The table of the tests of text: a key, three TEXT columns, a BLOB, an INT, and a REAL, with an
+	// index on s, and rows with text that is not ASCII, empty, and NULL.
+	textTable := []string{
+		"create table t (k int primary key, s text, u text, v text, b blob, n int, r real) strict, without rowid",
+		"create index t_s on t (s)",
+		"insert into t values (1, 'AbC', 'abc', 'x', x'00ff', 1, 1.5)",
+		"insert into t values (2, 'ÀBCé', 'Àbcé', '', x'', 2, 2.5)",
+		"insert into t values (3, null, 'z', null, null, null, null)",
+		"insert into t values (4, 'm_', 'm_00ff', 'Z', x'0aBc', 4, 4.5)",
+	}
+
+	t.Run("should compute ||, lower, and hex in SET and on either side of a comparison, also in a subquery, as SQLite does", func(t *testing.T) {
+		d := newDuo(t, 0, textTable...)
+		for _, c := range []struct {
+			src  string
+			args []any
+		}{
+			{"select k from t where lower(s) = 'abc'", nil},
+			{"select k from t where lower(s) = u", nil},
+			{"select k from t where u = lower(s)", nil},
+			{"select k from t where 'abc' = lower(s)", nil},
+			{"select k from t where lower(s) = lower(u)", nil},
+			{"select k from t where lower(s) <> u", nil},
+			{"select k from t where lower(s) < 'b'", nil},
+			{"select k from t where lower(s) >= u", nil},
+			{"select k from t where s || u = 'AbCabc'", nil},
+			{"select k from t where s || v = s", nil},
+			{"select k from t where 'm_' || lower(hex(b)) = u", nil},
+			{"select k from t where hex(b) = '00FF'", nil},
+			{"select k from t where hex(s) > '41'", nil},
+			{"select k from t where hex(s) = 'C380424385'", nil},
+			{"select k from t where hex(b) = ''", nil},
+			{"select k from t where hex(v) = ''", nil},
+			{"select k from t where s = lower(?)", []any{"ABC"}},
+			{"select k from t where lower(s) = ?", []any{"àbcé"}},
+			{"select k from t where lower(s) = ?", []any{nil}},
+			{"select k from t where lower(s) = lower(?)", []any{nil}},
+			{"select k from t where hex(?) = hex(b)", []any{nil}},
+			{"select k from t where hex(?) = hex(b)", []any{[]byte{0, 255}}},
+			{"select k from t where u = ? || ?", []any{"a", "bc"}},
+			{"select k from t where u = ? || ?", []any{"a", nil}},
+			{"select k from t where u > s || ''", nil},
+			{"select k from t where s is null and u = 'z' || ''", nil},
+			{"select k from t where u = (select u from t where lower(s) = 'abc')", nil},
+			{"select k from t where k = (select k from t where s || u = 'm_m_00ff')", nil},
+			{"select k from t where lower(s) = (select u from t where k = 1)", nil},
+			{"select k from t where n + 1 = 2 and lower(s) = u", nil},
+			{"select * from t where k > 1 and lower(s) = lower(u) order by k desc limit 1", nil},
+		} {
+			d.run(c.src, c.args...).ok()
+		}
+		for _, c := range []struct {
+			src  string
+			args []any
+		}{
+			{"update t set v = s || '!' where k = 1 returning *", nil},
+			{"update t set v = lower(hex(b)) returning *", nil},
+			{"update t set v = hex(?) returning v", []any{nil}},
+			{"update t set v = ? || s returning v", []any{nil}},
+			{"update t set v = lower(s), s = u, u = v returning *", nil},
+			{"update t set v = 'm_' || lower(hex(?)) where lower(u) = ? returning k, v", []any{[]byte("0123456789abcdef"), "abc"}},
+			{"update t set v = 'x' where hex(b) = ? returning k", []any{"0ABC"}},
+			{"delete from t where lower(s) || u = 'àbcéàbcé' returning k", nil},
+			{"delete from t where s = lower(?) returning k", []any{"M_"}},
+		} {
+			d.run(c.src, c.args...).ok()
+			d.same()
+		}
+		_, err := d.i.c.ExecAll(t.Context(), "update t set u = lower(u); update t set v = u || v where k = 4")
+		is.NotError(t, err)
+		for _, src := range []string{"update t set u = lower(u)", "update t set v = u || v where k = 4"} {
+			is.Equal(t, "", d.o.run(t, src).err, src)
+		}
+		d.same()
+		is.NotError(t, engine.Check("update t set s = 'm_' || lower(hex(?)) where lower(s) = ?", 2))
+	})
+
+	t.Run("should refuse text against a number or a blob, and a number or a blob inside text, from the types, whatever the rows", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		for _, src := range textTable {
+			is.Equal(t, "", i.exec(src).err, src)
+		}
+		before := i.state()
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{"select k from t where lower(s) = 1", nil, "an integer literal compared with an expression of type text"},
+			{"select k from t where lower(s) > 1.5", nil, "a real literal compared with an expression of type text"},
+			{"select k from t where lower(s) = x'00'", nil, "a blob literal compared with an expression of type text"},
+			{"select k from t where lower(s) = ?", []any{int64(1)}, "argument 1, which is an integer, compared with an expression of type text"},
+			{"select k from t where n = lower(s)", nil, "an expression of type text compared with the column t.n of type INT"},
+			{"select k from t where b = hex(s)", nil, "an expression of type text compared with the column t.b of type BLOB"},
+			{"select k from t where n = lower(?)", []any{nil}, "an expression of type text compared with the column t.n of type INT"},
+			{"select k from t where k = 'm_' || ?", []any{nil}, "an expression of type text compared with the column t.k of type INT"},
+			{"select k from t where lower(s) = n + 1", nil, "an expression of type integer compared with an expression of type text"},
+			{"select k from t where n + 1 = lower(s)", nil, "an expression of type text compared with an expression of type integer"},
+			{"select k from t where lower(s) = ? + 1", []any{nil}, "an expression of type null compared with an expression of type text"},
+			{"select k from t where lower(s) = (select n from t)", nil, "subquery 1, of the column t.n of type INT, compared with an expression of type text"},
+			{"select k from t where k = (select k from t where hex(b) = 1)", nil, "an integer literal compared with an expression of type text"},
+			{"update t set n = lower(s)", nil, "an expression of type text for the column t.n of type INT"},
+			{"update t set b = hex(b)", nil, "an expression of type text for the column t.b of type BLOB"},
+			{"update t set n = lower(?)", []any{nil}, "an expression of type text for the column t.n of type INT"},
+			{"update t set s = n || 'a'", nil, "column of type INT in a concatenation (at offset 17)"},
+			{"update t set s = 'a' || r", nil, "column of type REAL in a concatenation (at offset 24)"},
+			{"update t set s = b || 'a'", nil, "column of type BLOB in a concatenation (at offset 17)"},
+			{"select k from t where lower(b) = 'a'", nil, "column of type BLOB in a call of lower (at offset 28)"},
+			{"select k from t where hex(n) = '31'", nil, "column of type INT in a call of hex (at offset 26)"},
+			{"select k from t where s || ? = 'a'", []any{int64(1)}, "argument 1 in a concatenation, which is an integer (at offset 27)"},
+			{"select k from t where lower(?) = s", []any{[]byte("a")}, "argument 1 in a call of lower, which is a blob (at offset 28)"},
+			{"select k from t where hex(?) = s", []any{1.5}, "argument 1 in a call of hex, which is a real (at offset 26)"},
+			// Columns before arguments, each in the order of the text.
+			{"select k from t where s || ? || n = 'a'", []any{int64(1)}, "column of type INT in a concatenation (at offset 32)"},
+			{"select k from t where s || ? = n || 'a'", []any{int64(1)}, "argument 1 in a concatenation, which is an integer (at offset 27)"},
+		} {
+			got := i.queryValues(c.src, values(c.args))
+			if !strings.HasPrefix(c.src, "select") {
+				got = i.execValues(c.src, values(c.args))
+			}
+			is.Equal(t, "not supported", got.err, c.src)
+			is.Equal(t, "s4ql: not supported: "+c.want, got.message, c.src)
+		}
+		is.Equal(t, before, i.state())
+		// SQLite takes these, and gives true for lower(s) > 1 on every row whose s is not NULL.
+		o := newOracle(t)
+		for _, src := range textTable {
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		is.Equal(t, `columns "k INT", rows ["1" "2" "4"]`, o.run(t, "select k from t where lower(s) > 1").String())
+	})
+
+	t.Run("should give SQLite's errors of the names inside calls and concatenations in SQLite's order", func(t *testing.T) {
+		d := newDuo(t, 0, append(slices.Clone(textTable), "create table w (a int primary key, x text) strict, without rowid")...)
+		for _, src := range []string{
+			"delete from t where hex(nosuch) = nosuch2",
+			"delete from t where hex(nosuch) = s",
+			"update t set s = lower(nosuch1) || nosuch2",
+			"update t set s = lower(nosuch1) || s",
+			"update t set s = lower(nosuch1), nosuch2 = 1",
+			"update t set s = lower(s || nosuch1) || lower(nosuch2)",
+			"update t set s = lower(hex(nosuch1) || nosuch2) || 'a'",
+			"update t set s = lower(nosuch1) || 'a' || nosuch2",
+			"select * from t where hex(nosuch) || s || x = 'a'",
+			"select * from t where hex(nosuch) || 'a' || x = 'a'",
+			"select * from t where lower(nosuch) = s and nosuch2 = 1",
+			"select * from t where lower(nosuch) = s and nosuch2 is null",
+			"select * from t where lower(nosuch) = s and k is null",
+			"select * from t where lower(nosuch) = s and nosuch2 is null and nosuch3 = 1",
+			"select * from t where lower(nosuch) = 'a' and nosuch2 is null",
+			"select * from t where 'a' = lower(nosuch) and nosuch2 is null",
+			"select * from t where nosuch is null and lower(nosuch2) = s",
+			"select * from t where s = lower(nosuch) and nosuch2 is null",
+			"select * from t where nosuch2 = lower(nosuch)",
+			"select * from t where lower(nosuch) = nosuch2",
+			"select * from t where lower(nosuch) = lower(nosuch2)",
+			"select * from t where lower(nosuch) = n + nosuch2",
+			"delete from t where lower(nosuch1) <> (select a from nosuch2)",
+			"delete from t where lower(nosuch1) <> (select nosuch3 from w)",
+			"delete from t where lower(nosuch1) <> (select x from w where nosuch3 = 1)",
+			"delete from t where lower(nosuch1) <> (select x from w where lower(nosuch3) = x)",
+			"select * from t where lower(nosuch1) <> (select a from nosuch2)",
+			"select * from t where lower(nosuch1) <> (select nosuch3 from w)",
+			"select * from t where lower(nosuch1) <> (select x from w)",
+			"select * from t where u = (select x from w where lower(nosuch) = x) and nosuch2 is null",
+			"select * from t where lower(nosuch1) = (select nosuch3 from w limit 1)",
+			"select * from t where lower(nosuch1) = (select nosuch3 from w)",
+			"select * from t where s || lower(nosuch) = u and nosuch2 is null",
+			"select * from t where u = (select x from w where lower(nosuch) = x and nosuch2 is null)",
+			"select * from t where lower(s) = (select * from w)",
+			"update t set s = 'a' where lower(s) = (select * from w)",
+			"update t set s = 'a' where (select * from w) = lower(s)",
+		} {
+			got := d.run(src)
+			is.True(t, got.got.err != "" && got.got.err != "not supported", src)
+		}
+		d.same()
+	})
+
+	t.Run("should serve the key and the bounds of an index with text without a column, as with an argument, and read by neither with text with a column", func(t *testing.T) {
+		h := &events{}
+		i := newInstance(t, engine.Options{Logger: slog.New(h)})
+		for _, src := range []string{
+			"create table q (id text primary key, v text, w text) strict, without rowid",
+			"create index q_v on q (v)",
+			"insert into q values ('m_00', 'a', 'A')",
+			"insert into q values ('m_0a', 'b', 'B')",
+			"insert into q values ('m_ff', 'c', 'C')",
+			"insert into q values ('n_00', 'd', 'D')",
+		} {
+			is.Equal(t, "", i.exec(src).err, src)
+		}
+		o := newOracle(t)
+		for _, src := range []string{"create table q (id text primary key, v text, w text) strict, without rowid", "create index q_v on q (v)",
+			"insert into q values ('m_00', 'a', 'A')", "insert into q values ('m_0a', 'b', 'B')", "insert into q values ('m_ff', 'c', 'C')", "insert into q values ('n_00', 'd', 'D')"} {
+			is.Equal(t, "", o.run(t, src).err, src)
+		}
+		for _, c := range []struct {
+			src  string
+			args []any
+			want string
+		}{
+			{"select id from q where id = 'm_' || ?", []any{"0a"}, "primary_key reads 1"},
+			{"select id from q where id = 'm_' || lower(hex(?))", []any{[]byte{0x0a}}, "primary_key reads 1"},
+			{"select id from q where id = lower(?)", []any{"M_FF"}, "primary_key reads 1"},
+			{"select id from q where id > 'm_' || ? and id < 'n'", []any{"0"}, "primary_key reads 3"},
+			{"select id from q where v = lower(?)", []any{"B"}, "index q_v reads 1"},
+			{"select id from q where v >= lower(?) || ''", []any{"C"}, "index q_v reads 2"},
+			{"select id from q where id = ? || ?", []any{"m_", nil}, "none reads 0"},
+			{"select id from q where lower(id) = ?", []any{"m_0a"}, "full_scan reads 4"},
+			{"select id from q where id = 'm_' || v", nil, "full_scan reads 4"},
+			{"select id from q where v = lower(w)", nil, "full_scan reads 4"},
+			{"select id from q where lower(w) = v and id = 'm_' || ?", []any{"ff"}, "primary_key reads 1"},
+		} {
+			got := i.queryValues(c.src, values(c.args))
+			is.Equal(t, "", got.err, c.src)
+			is.Equal(t, o.run(t, c.src, oracleArgs(c.args)...).String(), got.String(), c.src)
+			e, _ := h.last(t)
+			access := e[engine.AttrAccess]
+			if e[engine.AttrIndex] != "" {
+				access += " " + e[engine.AttrIndex]
+			}
+			is.Equal(t, c.want, fmt.Sprint(access, " reads ", e[engine.AttrRowsRead]), c.src)
+		}
+	})
+
+	t.Run("should give SQLite's string or blob too big for text longer than the limit, where SQLite gives it: before any row for a constant without a call, and on the first row that reaches one with a call that serves no access", func(t *testing.T) {
+		const limit = 1000
+		a60, b60 := strings.Repeat("a", 600), strings.Repeat("b", 600)
+		long := []any{a60, b60, a60}
+		const tooBig = "18/18: string or blob too big"
+		// On an empty table, a table with a row, and a table whose rows no condition reaches.
+		for _, rows := range [][]string{nil, {"insert into t values (1, 'a', 'b', 'c')"}, {"insert into t values (1, 'a', 'b', 'c')", "insert into t values (2, 'x', 'y', 'z')"}} {
+			setUp := append([]string{"create table t (k int primary key, s text, u text, v text) strict, without rowid", "create index t_s on t (s)",
+				"create table e (s text primary key) strict, without rowid"}, rows...)
+			d := newDuo(t, limit, setUp...)
+			for _, src := range []string{
+				// SET computes its value for each row, and before any row the concatenations without a
+				// column and without a call that it holds.
+				"update t set u = ? || ?",
+				"update t set u = lower(? || ?)",
+				"update t set u = ? || ? || s",
+				"update t set u = s || ? || ?",
+				"update t set u = s || (? || ?)",
+				"update t set u = (? || ?) || 'x'",
+				"update t set u = lower(? || ?) || s",
+				"update t set u = lower(? || ? || s)",
+				"update t set u = hex(?) || (? || ?)",
+				"update t set u = (? || ?) || lower(?)",
+				"update t set u = lower(?) || (? || ?) where k = 99",
+				"update t set u = 'x' where k = 2 and v = ? || ?",
+				"update t set u = ? || ? where k = 99",
+				"update t set u = ? || ? || s where k = 99",
+				// WHERE computes a side without a column before any row, but one with a call only where it
+				// may serve the access, and the concatenations without a column and a call of a side with
+				// a column.
+				"select k from t where u = ? || ?",
+				"select k from t where k = 2 and u = ? || ?",
+				"select k from t where u = ? || ? limit 0",
+				"select k from t where s = ? || ?",
+				"select k from t where u = lower(? || ?)",
+				"select k from t where k = 2 and u = lower(? || ?)",
+				"select k from t where u = 'zz' and v = lower(? || ?)",
+				"select k from t where v = lower(? || ?) and u = 'zz'",
+				"select k from t where lower(u) = lower(? || ?)",
+				"select k from t where u <> lower(? || ?)",
+				"select k from t where hex(?) || u = 'x'",
+				"select k from t where u || hex(?) = 'x'",
+				"select k from t where ? || ? || u = 'x'",
+				"select s from e where s = lower(? || ?)",
+				"select s from e where s > lower(? || ?)",
+				"select s from e where lower(s) = lower(? || ?)",
+				"select s from e where s <> lower(? || ?)",
+				"delete from t where ? || ? || s = 'x'",
+				"delete from t where lower(? || ?) = u",
+				"delete from t where lower(u) = ? || ?",
+				"delete from e where s = hex(?)",
+				"delete from e where hex(?) = s",
+				// A subquery's concatenations without a column and without a call come before any row too,
+				// also where the subquery is not computed; one with a call when the subquery reaches it.
+				"select k from t where k is null and u = (select s from t where s = ? || ?)",
+				"select k from t where u = (select s from t where s = ? || ? limit 0)",
+				"select k from t where k = 99 and u = (select s from t where v = ? || ?)",
+				"select k from t where u = (select s from t where s = ? || ?) limit 0",
+				"select k from t where k = 1 and u = (select s from t where v = lower(? || ?))",
+				"select k from t where k is null and u = (select s from e where s = ? || ?)",
+				"select k from t where k is null and u = (select s from e where s = ? || ? || ?)",
+				"select k from t where k is null and u = (select s from e where s = hex(?) || (? || ?))",
+				"select k from t where u = (select s from e where s = ? || (? || ?)) limit 0",
+				"select k from t where k = 99 and u = (select s from t where v = ? || ? || s)",
+			} {
+				if len(rows) > 0 {
+					// A count of changes that is not 0, which SQLite sets to 0 for a write that fails when
+					// it steps it, also before any row.
+					d.run("update t set v = v where k = 1").ok()
+				}
+				got := d.run(src, long[:strings.Count(src, "?")]...)
+				is.True(t, got.got.err != "not supported", src)
+			}
+			// Stricter than SQLite: a constant that may serve the access is computed before any row,
+			// where SQLite computes it only when it uses it for the access, and a subquery is computed
+			// where the statement may give a row, where SQLite computes it only when a row reaches it.
+			for _, src := range []string{
+				"select k from t where k = 99 and s = lower(? || ?)",
+				"select k from t where k = 99 and u = (select s from t where s = ? || ?)",
+			} {
+				is.Equal(t, tooBig, d.i.queryValues(src, values(long[:2])).err, src)
+				is.Equal(t, "", d.o.run(t, src, oracleArgs(long[:2])...).err, src)
+			}
+			// Text with a column that is too long on a row fails on that row.
+			for _, c := range []struct {
+				src  string
+				args []any
+			}{
+				{"update t set u = s || ?", []any{strings.Repeat("c", 1000)}},
+				{"update t set v = ? where k = 1", []any{strings.Repeat("c", 600)}},
+				{"select k from t where lower(v || v) = 'a'", nil},
+				{"select k from t where hex(v) = 'a'", nil},
+				{"select k from t where v || v = 'a'", nil},
+				{"update t set u = v || v", nil},
+				{"update t set v = ? where k = 1", []any{strings.Repeat("c", 500)}},
+				{"select k from t where hex(v) = 'a'", nil},
+				{"select k from t where k = 99 and hex(v) = 'a'", nil},
+				{"update t set u = 'x' where hex(v) = 'a'", nil},
+				{"update t set u = 'x' where s = 'x' and hex(v) = 'a'", nil},
+			} {
+				got := d.run(c.src, c.args...)
+				is.True(t, got.got.err != "not supported", c.src)
+			}
+			d.same()
+		}
+	})
+
+	t.Run("should take back a statement that fails with string or blob too big in a transaction, where SQLite keeps the rows that it changed before, and go on", func(t *testing.T) {
+		d := newDuo(t, 1000, "create table t (k int primary key, s text) strict, without rowid", "insert into t values (1, 'a')", "insert into t values (2, 'b')")
+		d.run("update t set s = ? where k = 2", strings.Repeat("b", 600)).ok()
+		is.NotError(t, d.i.c.Begin(t.Context()))
+		is.Equal(t, "", d.o.run(t, "begin").err)
+		d.run("update t set s = s || 'x'").ok()
+		// Before any row, the count of changes goes to 0 as SQLite sets it.
+		d.run("delete from t where s = ? || ?", strings.Repeat("a", 600), strings.Repeat("b", 600)).is("18/18: string or blob too big")
+		d.run("update t set s = s || 'x'").ok()
+		const lengths = "select k, length(s) as n from t"
+		is.Equal(t, `columns "k INT, n ", rows ["1,3" "2,602"]`, d.o.run(t, lengths).String())
+		before := d.i.queryValues("select k, s from t", nil).String()
+		d.run("update t set s = s || s").is("18/18: string or blob too big")
+		is.Equal(t, before, d.i.queryValues("select k, s from t", nil).String())
+		// SQLite changed the row of k = 1 before the row of k = 2 failed, and holds no statement journal
+		// for an update that sets no column that does not take NULL, so the change stays.
+		is.Equal(t, `columns "k INT, n ", rows ["1,6" "2,602"]`, d.o.run(t, lengths).String())
+		d.run("update t set s = lower(s) || 'Y' where k = 2").ok()
+		is.NotError(t, d.i.c.Rollback(t.Context()))
+		is.Equal(t, "", d.o.run(t, "rollback").err)
+		d.same()
+	})
+
+	t.Run("should give SQLite's attempt to write a readonly database for an update or a delete with text in a read-only transaction, and compute nothing there", func(t *testing.T) {
+		d := newDuo(t, 1000, "create table t (k int primary key, s text, n int) strict, without rowid", "insert into t values (1, 'a', 1)")
+		is.NotError(t, d.i.c.BeginReadOnly(t.Context()))
+		for _, src := range oracleBegin(true) {
+			is.Equal(t, "", d.o.run(t, src).err, src)
+		}
+		a60, b60 := strings.Repeat("a", 600), strings.Repeat("b", 600)
+		const readOnly = "8/8: attempt to write a readonly database"
+		d.run("update t set s = lower(s)").is(readOnly)
+		d.run("update t set s = ? || ? || s", a60, b60).is(readOnly)
+		d.run("update t set s = ? || ?", a60, b60).is(readOnly)
+		d.run("delete from t where s = ? || ?", a60, b60).is(readOnly)
+		d.run("delete from t where ? || ? || s = 'x'", a60, b60).is(readOnly)
+		d.run("update t set n = lower(s)").is(readOnly)
+		d.run("update t set s = lower(x)").is("1/1: no such column: x")
+		got := d.run("delete from t where n = lower(s)")
+		got.is("not supported")
+		d.run("select k from t where s = ? || ?", a60, b60).is("18/18: string or blob too big")
+		is.NotError(t, d.i.c.Rollback(t.Context()))
+		for _, src := range oracleEnd(true, false) {
+			is.Equal(t, "", d.o.run(t, src).err, src)
+		}
+		d.same()
+	})
+
+	t.Run("should plan a concatenation and a call as an Arithmetic, and format them", func(t *testing.T) {
+		s, err := stmt.Check("update t set s = 'm_' || lower(hex(b)) where lower(s) = ?")
+		is.NotError(t, err)
+		is.Equal(t, "update t set s = ('m_' || lower(hex(b)))\n  filter lower(s) = ?1\n    scan t\n", engine.Format(engine.NewPlan(s)))
+	})
+}

@@ -29,6 +29,8 @@ import (
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -132,6 +134,17 @@ type workload struct {
 	// the end of the workload: see [run.idler].
 	idlers int
 	idle   time.Duration
+	// syncs opens the cache of each node through a VFS of its own, of faultvfs, with syncs on, as an
+	// instance has them by default, and checkpoints after a few pages of the write-ahead log, so that
+	// a run has many checkpoints. With synchronous = full, SQLite syncs the write-ahead log at every
+	// commit and at a checkpoint that copies frames, and the file of the cache only at a checkpoint
+	// that copies the whole log.
+	syncs bool
+	// syncFaults is the number of times, with syncs, that a task of each node makes the next sync of
+	// its cache fail, each at a random time while its callers run: half of the time of the file of
+	// the cache, which only a checkpoint syncs, and else of the write-ahead log, which mostly a commit
+	// syncs.
+	syncFaults int
 }
 
 // liveness is how long after the end of the workload some instance must serve. The store is calm
@@ -217,6 +230,8 @@ type outcome struct {
 	events map[string]int
 	// crashed databases, whose files are closed after the run.
 	crashed []*core.DB
+	// vfses of the nodes, which are closed after the run, once every file is closed.
+	vfses []*faultvfs.VFS
 	// landings of the writes that the store held back, counted by what they were and what happened
 	// between their send and their landing: see [run.verifyLandings].
 	landings map[string]int
@@ -245,6 +260,18 @@ func (o *outcome) checkClosed(t *testing.T, dir string) {
 	for _, name := range open {
 		o.violations = append(o.violations, fmt.Sprint("a connection to the cache ", name, " is still open after the run"))
 	}
+}
+
+// closeVFSes of the nodes, after the run, and record a violation for each that a file still uses.
+func (o *outcome) closeVFSes() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, vfs := range o.vfses {
+		if err := vfs.Close(); err != nil {
+			o.violations = append(o.violations, fmt.Sprint("close the VFS after the run: ", err))
+		}
+	}
+	o.vfses = nil
 }
 
 // expected reports whether err from a call of a caller is one that the faults and the design
@@ -364,6 +391,10 @@ type node struct {
 	// reopening is set while a task closes the node's database and opens it again, so that one
 	// task does it at a time, and no database is opened that nothing closes.
 	reopening atomic.Bool
+	// vfs that the node opens its cache through, with the workload's syncs, or nil. failuresAtOpen
+	// is the number of failures that it had made when the database that is current was opened.
+	vfs            *faultvfs.VFS
+	failuresAtOpen int
 
 	mu sync.Mutex
 	db *core.DB
@@ -1027,6 +1058,9 @@ func (r *run) open(ctx context.Context, n *node) (*core.DB, error) {
 	if _, ok := r.c.world.(*sim.Scheduler); ok {
 		options.Logger = slog.New(traceHandler{h: r.c.world, o: r.o})
 	}
+	if n.vfs != nil {
+		n.failuresAtOpen = n.vfs.Failures()
+	}
 	d, err := core.Open(ctx, n.host, n.client, n.path, prefix, options)
 	if err != nil {
 		return nil, err
@@ -1046,6 +1080,14 @@ func (r *run) open(ctx context.Context, n *node) (*core.DB, error) {
 func (r *run) close(ctx context.Context, n *node, d *core.DB) {
 	ctx, cancel := n.host.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	// A sync of the cache that failed while the database was open is a local I/O failure, which
+	// stops the instance at once, so one open fails one sync at the most, and the stop is for it. The
+	// close itself may fail a sync too, which is not counted.
+	if n.vfs != nil {
+		if failed := n.vfs.Failures() - n.failuresAtOpen; failed > 1 || (failed == 1 && !failedSync(d.Err())) {
+			r.o.violate(ctx, r.c.world, "the cache of %v failed %v syncs, and the instance did not stop for it: %v", n.name, failed, d.Err())
+		}
+	}
 	err := d.Close(ctx)
 	r.mu.Lock()
 	r.closedAt[d.ID()] = r.c.world.Monotonic()
@@ -1069,8 +1111,10 @@ func (r *run) stopped(ctx context.Context, n *node, d *core.DB) {
 	r.c.world.Trace(ctx, "%v: %v", n.name, cause)
 	// Under buggify, the cache fails to commit after a manifest swap, and says that it was made to.
 	// It stops for bytes that do not match their name only after a second download.
+	// A sync of the cache fails only where the workload makes it fail.
 	explained := (errors.Is(cause, core.ErrLocal) && r.w.buggify && strings.Contains(cause.Error(), "injected")) ||
-		(errors.Is(cause, format.ErrNameMismatch) && n.damagedTwice.Load())
+		(errors.Is(cause, format.ErrNameMismatch) && n.damagedTwice.Load()) ||
+		(failedSync(cause) && n.vfs != nil && n.vfs.Failures() > n.failuresAtOpen)
 	if !explained {
 		r.o.violate(ctx, r.c.world, "the instance stopped: %v", cause)
 	}
@@ -1078,6 +1122,13 @@ func (r *run) stopped(ctx context.Context, n *node, d *core.DB) {
 	if _, err := r.open(ctx, n); err != nil {
 		r.o.violate(ctx, r.c.world, "open again: %v", err)
 	}
+}
+
+// failedSync reports whether err is a local I/O failure for a sync of the cache that failed:
+// SQLITE_IOERR_FSYNC.
+func failedSync(err error) bool {
+	se, ok := errors.AsType[*sqlite.Error](err)
+	return errors.Is(err, core.ErrLocal) && ok && se.Code == 1034
 }
 
 // isStopped reports whether d has stopped, by its channel.
@@ -1106,6 +1157,20 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 		n.client = damagingStore{Store: n.client, h: c.world, share: w.damaged, damaged: map[string]int{}, twice: &n.damagedTwice}
 	}
 	n.options.Lease = w.durations[intn(c.world, len(w.durations))]
+	if w.syncs {
+		vfs, err := faultvfs.New()
+		if err != nil {
+			r.o.violate(ctx, c.world, "the VFS of %v: %v", name, err)
+			return n, nil
+		}
+		r.o.mu.Lock()
+		r.o.vfses = append(r.o.vfses, vfs)
+		r.o.mu.Unlock()
+		n.vfs = vfs
+		n.options.VFS = vfs.Name()
+		n.options.SyncOn()
+		n.options.CheckpointAfter(4)
+	}
 	if _, err := r.open(ctx, n); err != nil {
 		r.o.violate(ctx, c.world, "open: %v", err)
 		return n, nil
@@ -1144,6 +1209,21 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 		tasks = append(tasks, n.host.Go(ctx, fmt.Sprint("idler-", i), func(ctx context.Context) {
 			defer n.callers.Add(-1)
 			r.idler(ctx, n)
+		}))
+	}
+	if n.vfs != nil && w.syncFaults > 0 {
+		tasks = append(tasks, n.host.Go(ctx, "disk", func(ctx context.Context) {
+			for range w.syncFaults {
+				if n.host.Sleep(ctx, time.Duration(intn(n.host, 60_000))*time.Millisecond) != nil || n.callers.Load() == 0 {
+					return
+				}
+				files, file := faultvfs.MainDB, "file"
+				if intn(n.host, 2) == 0 {
+					files, file = faultvfs.WAL, "write-ahead log"
+				}
+				c.world.Trace(ctx, "the next sync of the %v of the cache of %v fails", file, n.name)
+				n.vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: files, Times: 1})
+			}
 		}))
 	}
 	tasks = append(tasks, n.host.Go(ctx, "supervisor", func(ctx context.Context) {
@@ -2029,6 +2109,7 @@ func simulate(t *testing.T, seed uint64, w workload) simulation {
 			d.CloseCache()
 		}
 		s.outcome.checkClosed(t, c.dir)
+		s.outcome.closeVFSes()
 	})
 	return s
 }
@@ -2049,6 +2130,7 @@ func free(t *testing.T, w workload) *outcome {
 			w.run(ctx, c, o)
 		}))
 		o.checkClosed(t, c.dir)
+		o.closeVFSes()
 	})
 	return o
 }

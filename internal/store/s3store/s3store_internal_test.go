@@ -3,14 +3,25 @@ package s3store
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -25,6 +36,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/store"
+	"maragu.dev/s4ql/internal/store/s3test"
 )
 
 func discard() *slog.Logger {
@@ -33,18 +45,187 @@ func discard() *slog.Logger {
 
 func TestNew(t *testing.T) {
 	t.Run("should make a transport that goes through no proxy, also one that the environment names", func(t *testing.T) {
+		isolate(t)
 		t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
-		t.Setenv("AWS_ACCESS_KEY_ID", "test")
-		t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 		c, err := New(t.Context(), Options{Bucket: "b", Region: "r"})
 		is.NotError(t, err)
-		hc, ok := c.s3.Options().HTTPClient.(*http.Client)
-		is.True(t, ok)
-		transport, ok := hc.Transport.(*http.Transport)
-		is.True(t, ok)
-		is.True(t, transport.Proxy == nil)
-		is.True(t, transport == c.transport)
+		checkTransport(t, c)
 	})
+
+	t.Run("should trust a store whose certificate chains to a CA of AWS_CA_BUNDLE, and only the bundle's CAs without RootCAs, in its own transport", func(t *testing.T) {
+		isolate(t)
+		t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+		ca := newAuthority(t)
+		t.Setenv("AWS_CA_BUNDLE", ca.file(t))
+
+		c := newOn(t, ca.server(t), nil)
+		is.NotError(t, create(t, c))
+		checkTransport(t, c)
+		// The bundle replaces the system's roots, as it does in the SDK's own HTTP client.
+		is.True(t, c.transport.TLSClientConfig.RootCAs.Equal(ca.pool()))
+
+		err := create(t, newOn(t, newAuthority(t).server(t), nil))
+		is.True(t, err != nil && strings.Contains(err.Error(), "certificate signed by unknown authority"), fmt.Sprint(err))
+	})
+
+	t.Run("should trust both RootCAs and the CAs of AWS_CA_BUNDLE, and leave RootCAs as it was", func(t *testing.T) {
+		isolate(t)
+		ours, bundled := newAuthority(t), newAuthority(t)
+		t.Setenv("AWS_CA_BUNDLE", bundled.file(t))
+		roots := ours.pool()
+
+		for _, srv := range []*httptest.Server{ours.server(t), bundled.server(t)} {
+			c := newOn(t, srv, roots)
+			is.NotError(t, create(t, c))
+			checkTransport(t, c)
+		}
+		is.True(t, roots.Equal(ours.pool()), "RootCAs is changed")
+	})
+
+	t.Run("should trust a store whose certificate chains to a CA of ca_bundle in the shared configuration", func(t *testing.T) {
+		isolate(t)
+		ca := newAuthority(t)
+		err := os.WriteFile(os.Getenv("AWS_CONFIG_FILE"), []byte("[default]\nca_bundle = "+ca.file(t)+"\n"), 0o600)
+		is.NotError(t, err)
+
+		c := newOn(t, ca.server(t), nil)
+		is.NotError(t, create(t, c))
+		checkTransport(t, c)
+	})
+
+	t.Run("should fail with a CA bundle that is missing or holds no certificate", func(t *testing.T) {
+		isolate(t)
+		dir := t.TempDir()
+		t.Setenv("AWS_CA_BUNDLE", filepath.Join(dir, "missing.pem"))
+		_, err := New(t.Context(), Options{Bucket: "b", Region: "r"})
+		is.True(t, errors.Is(err, fs.ErrNotExist), fmt.Sprint(err))
+		is.True(t, strings.HasPrefix(err.Error(), "s3store: configuration: "), err.Error())
+
+		for _, content := range []string{"", "no certificate\n"} {
+			path := filepath.Join(dir, "empty.pem")
+			is.NotError(t, os.WriteFile(path, []byte(content), 0o600))
+			t.Setenv("AWS_CA_BUNDLE", path)
+			_, err := New(t.Context(), Options{Bucket: "b", Region: "r"})
+			is.True(t, err != nil && strings.HasPrefix(err.Error(), "s3store: configuration: "), content, fmt.Sprint(err))
+		}
+	})
+}
+
+// isolate the test from the AWS configuration of the machine that runs it, with [s3test.Isolate],
+// and give it static credentials.
+func isolate(t *testing.T) {
+	t.Helper()
+	s3test.Isolate(t)
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+}
+
+// checkTransport of c: the client of its requests to the store is on the transport that c owns,
+// follows no redirect, and has no timeout, and the transport speaks HTTP/1.1 only, goes through no
+// proxy, and takes TLS 1.2 and later.
+func checkTransport(t *testing.T, c *Client) {
+	t.Helper()
+	hc, ok := c.s3.Options().HTTPClient.(*http.Client)
+	is.True(t, ok)
+	transport, ok := hc.Transport.(*http.Transport)
+	is.True(t, ok)
+	is.True(t, transport == c.transport, "not the transport of the client")
+	is.True(t, transport.Proxy == nil, "a proxy")
+	is.True(t, transport.Protocols != nil && transport.Protocols.HTTP1() && !transport.Protocols.HTTP2() &&
+		!transport.Protocols.UnencryptedHTTP2(), "not HTTP/1.1 only")
+	is.Equal(t, uint16(tls.VersionTLS12), transport.TLSClientConfig.MinVersion)
+	is.Equal(t, time.Duration(0), hc.Timeout)
+	is.True(t, hc.CheckRedirect != nil && errors.Is(hc.CheckRedirect(nil, nil), http.ErrUseLastResponse), "follows redirects")
+}
+
+// newOn is a client of [New] of the store srv, with the roots.
+func newOn(t *testing.T, srv *httptest.Server, roots *x509.CertPool) *Client {
+	t.Helper()
+	c, err := New(t.Context(), Options{
+		Bucket: "bucket", Endpoint: srv.URL, Region: "us-east-1", PathStyle: true,
+		AccessKeyID: "test", SecretAccessKey: "test", RootCAs: roots,
+	})
+	is.NotError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// create an object with c, which a store of [authority.server] takes.
+func create(t *testing.T, c *Client) error {
+	t.Helper()
+	_, err := c.Create(t.Context(), "k", strings.NewReader("data"), nil)
+	return err
+}
+
+// authority that issues certificates in a test.
+type authority struct {
+	cert *x509.Certificate
+	der  []byte
+	key  *ecdsa.PrivateKey
+}
+
+func newAuthority(t *testing.T) *authority {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	is.NotError(t, err)
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "s4ql test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	is.NotError(t, err)
+	cert, err := x509.ParseCertificate(der)
+	is.NotError(t, err)
+	return &authority{cert: cert, der: der, key: key}
+}
+
+// file that holds the certificate of a in PEM, in a directory of the test.
+func (a *authority) file(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	is.NotError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: a.der}), 0o600))
+	return path
+}
+
+// pool that holds the certificate of a alone.
+func (a *authority) pool() *x509.CertPool {
+	p := x509.NewCertPool()
+	p.AddCert(a.cert)
+	return p
+}
+
+// server of TLS with a certificate that a issued, which takes every request with 200 and an ETag,
+// and is closed when the test ends.
+func (a *authority) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	is.NotError(t, err)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "store"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		DNSNames:     []string{"localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, &key.PublicKey, a.key)
+	is.NotError(t, err)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v"`)
+	}))
+	// A client that does not trust a refuses the handshake, which the server would log.
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 func TestRequest_refusal(t *testing.T) {
@@ -75,12 +256,7 @@ func serverClient(t *testing.T, h http.HandlerFunc) (*Client, *dialer) {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	dir := t.TempDir()
-	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
-	for _, name := range []string{"AWS_PROFILE", "AWS_CA_BUNDLE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_DEFAULTS_MODE"} {
-		t.Setenv(name, "")
-	}
+	isolate(t)
 	c, err := New(t.Context(), Options{
 		Bucket: "bucket", Endpoint: srv.URL, Region: "us-east-1", PathStyle: true,
 		AccessKeyID: "test", SecretAccessKey: "test",

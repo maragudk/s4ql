@@ -33,6 +33,10 @@ type mutant struct {
 	// survives edits elsewhere in the file.
 	Key string
 
+	// declFrom and declTo are the first and the last line of the declaration of Func: of the
+	// function, or of the spec of a package-level declaration.
+	declFrom, declTo int
+
 	edits []edit
 	// sum of the file's text that the edits are for.
 	sum [sha256.Size]byte
@@ -172,8 +176,9 @@ type generator struct {
 	sum  [sha256.Size]byte
 	fset *token.FileSet
 	file *ast.File
-	// fn is the name of the declaration being walked.
+	// fn is the name of the declaration being walked, and fnLines its first and last line.
 	fn      string
+	fnLines [2]int
 	mutants []mutant
 	// seen keys and sums of texts, so that two operators that give the same text give one mutant.
 	seen map[string]bool
@@ -212,7 +217,7 @@ func (g *generator) add(op string, n ast.Node, edits ...edit) {
 // addSpan adds a mutant with the operator op, which changes the bytes [start, end) by the edits.
 // From and To show those bytes before and after.
 func (g *generator) addSpan(op string, start, end int, edits ...edit) {
-	m := mutant{Pkg: g.pkg, File: g.path, Func: g.fn, Op: op, edits: edits, sum: g.sum}
+	m := mutant{Pkg: g.pkg, File: g.path, Func: g.fn, Op: op, declFrom: g.fnLines[0], declTo: g.fnLines[1], edits: edits, sum: g.sum}
 	for _, e := range edits {
 		start, end = min(start, e.start), max(end, e.end)
 	}
@@ -249,6 +254,7 @@ func (g *generator) decl(d ast.Decl) {
 	switch d := d.(type) {
 	case *ast.FuncDecl:
 		g.fn = d.Name.Name
+		g.fnLines = [2]int{g.fset.Position(d.Pos()).Line, g.fset.Position(d.End()).Line}
 		if d.Recv != nil && len(d.Recv.List) == 1 {
 			t := d.Recv.List[0].Type
 			if s, ok := t.(*ast.StarExpr); ok {
@@ -271,6 +277,7 @@ func (g *generator) decl(d ast.Decl) {
 		for _, s := range d.Specs {
 			vs := s.(*ast.ValueSpec)
 			g.fn = vs.Names[0].Name
+			g.fnLines = [2]int{g.fset.Position(vs.Pos()).Line, g.fset.Position(vs.End()).Line}
 			for _, v := range vs.Values {
 				g.walk(v)
 			}

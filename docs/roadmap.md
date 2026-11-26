@@ -64,7 +64,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
   - Text and blobs never meet arithmetic. An integer against a real across a comparison or a `set` is refused.
   - A column may be compared with, or copied from, a column of the same type.
   - Checked with the evaluator against SQLite with generated expressions and a fuzz test, the engine's differential tests, and independent reviews. Its generated workload, simulation with planted bugs (seven), and driver test are built (2026-11-25); the statement pass and the evaluator are mutation-tested (2026-11-26: 645 and 649 mutants, none unexplained), and so is the engine (2026-11-26: 2,488 mutants, none unexplained).
-- No function. A `where` compares values and expressions; see [Reading](#reading).
+- Text, built on 2026-11-26, with the notes in [todo/text-functions.md](todo/text-functions.md): the statement pass reads `||`, `lower`, and `hex`, and the evaluator, the engine, and the `database/sql` driver compute them, where arithmetic runs. The evaluator is compared with SQLite by generated expressions and a fuzz target, and the engine by `TestEngine_text`; the generated checks of text are next. No other function. A `where` compares values and expressions; see [Reading](#reading).
 
 **Decided,** with the details in [todo/expressions.md](todo/expressions.md):
 
@@ -110,7 +110,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 
 **Decided,** with the details in [todo/writing.md](todo/writing.md):
 
-- Upserts. An `insert` without a clause fails on a conflict and changes nothing, as today, which is SQLite's `abort`. `insert ... on conflict (key) do nothing` and `insert ... on conflict (key) do update set ...` are built when they are next. Agreed by Markus on 2026-11-24.
+- Upserts. An `insert` without a clause fails on a conflict and changes nothing, as today, which is SQLite's `abort`. `insert ... on conflict (key) do nothing` and `insert ... on conflict (key) do update set ...` are built when they are next. Agreed by Markus on 2026-11-24. The statement pass reads both forms, with `excluded.<column>` (2026-11-26); the engine and its checks are still to come, so no upsert runs yet.
 - Several rows per `insert`, and `insert ... select`, are details, built when they are next. Decided by the lead on 2026-11-24.
 
 **Undecided:** `insert ... default values`, `update ... from`, and `set (a, b) = (...)`.
@@ -163,6 +163,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - A sort that no index gives runs in the cache's SQLite, which spills to a temporary file ([research/memory-bounds.md](research/memory-bounds.md)).
 - The rows of a `returning` are held in memory without a bound ([todo/operators.md](todo/operators.md)).
 - A stop of the instance does not stop a sort that runs ([todo/storage-core.md](todo/storage-core.md)), and the first phase of `db.Close()` has no bound ([todo/driver.md](todo/driver.md)).
+- The core runs the cache's checkpoints itself, a failed sync or checkpoint stops the instance, which then closes without SQLite's checkpoint, and production runs `synchronous = full` (2026-11-26, [todo/cache-checkpoints.md](todo/cache-checkpoints.md)).
 
 **Decided,** with the details in [todo/operators.md](todo/operators.md): an operator that holds rows gets a limit with a clear error first, so that a statement that would hold more than a set amount fails and changes nothing. Spooling to the cache comes later, one operator at a time, starting with the rows of a `returning`. A spool that fills the disk stops the whole instance ([research/memory-bounds.md](research/memory-bounds.md)). Agreed by Markus on 2026-11-24.
 

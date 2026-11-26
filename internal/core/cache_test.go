@@ -795,3 +795,53 @@ func randomTableIndex(rng *rand.Rand, name string, ct *s4qlpb.CreateTable) *s4ql
 	}
 	return ci.Build()
 }
+
+func TestDB_sync(t *testing.T) {
+	t.Run("should stop for good at the commit whose sync of the write-ahead log fails, return nil from that commit, and serve it after a start from the recorded position", func(t *testing.T) {
+		w := newWorld(t)
+		vfs, options := checkpointFaults(t, 0)
+		rec := &recorder{}
+		options.Logger = rec.logger()
+		d := w.serve(t, "a", options)
+		transact(t, d, create("t1", 1, "k", "v"))
+
+		// With synchronous = full, the commit to the cache syncs the log, and that sync fails. The
+		// commit to the cache comes after the manifest swap, so the transaction is in the log.
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.WAL, Times: 1})
+		transact(t, d, upsert("t1", 1, 10))
+		is.True(t, isDone(d))
+		is.Equal(t, 1, vfs.Failures())
+		err := d.Err()
+		is.Error(t, core.ErrLocal, err)
+		is.True(t, strings.Contains(err.Error(), "the commit of the cache after the manifest swap"), err.Error())
+		se, ok := errors.AsType[*sqlite.Error](err)
+		is.True(t, ok && se.Code == 1034, "not SQLITE_IOERR_FSYNC: "+err.Error())
+		commits := rec.named(core.EventCommit)
+		is.Equal(t, "committed_and_stopped", commits[len(commits)-1][core.AttrOutcome])
+		is.Equal(t, 0, len(rec.named(core.EventCheckpoint)))
+
+		// Whether the transaction reached the cache or not, the next start serves it: from the cache,
+		// or by catching up from the position that the cache records.
+		is.NotError(t, d.Close(t.Context()))
+		again := w.serve(t, "a", core.Options{})
+		is.Equal(t, "t1(k*0,v): 1,10", read(t, again))
+		is.NotError(t, again.Close(t.Context()))
+		is.Equal(t, "t1(k*0,v): 1,10", read(t, w.serve(t, "b", core.Options{})))
+	})
+
+	t.Run("should stop at the first commit when every sync fails, where synchronous = normal and SQLite's automatic checkpoint let every commit succeed", func(t *testing.T) {
+		w := newWorld(t)
+		vfs, options := checkpointFaults(t, 0)
+		d := w.serve(t, "a", options)
+		transact(t, d, create("t1", 1, "k", "v"))
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.AnyFile})
+		transact(t, d, rows(0, 2000)...)
+		is.True(t, isDone(d))
+		is.Error(t, core.ErrLocal, d.Err())
+		// The sync of the log at the commit is the first that fails, and nothing syncs after the stop.
+		is.Equal(t, 1, vfs.Failures())
+		vfs.Fail(faultvfs.Fault{})
+		is.NotError(t, d.Close(t.Context()))
+		is.Equal(t, keyed(2000), read(t, w.serve(t, "a", core.Options{})))
+	})
+}

@@ -283,7 +283,8 @@ func (*Parameter) expr()   {}
 func (*Subquery) expr()    {}
 func (*Arithmetic) expr()  {}
 
-// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
+// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type,
+// and for an insert with ON CONFLICT, which it has no plan of yet. A
 // column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
 // NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
 // one without have the same plan. A column with DEFAULT has the literal of its DEFAULT as its
@@ -313,6 +314,10 @@ func NewPlan(s stmt.Statement) Plan {
 	case *stmt.DropIndex:
 		return &DropIndex{Index: s.Index, IfExists: s.IfExists}
 	case *stmt.Insert:
+		if s.Conflict.Present() {
+			// An insert without its clause would write where the statement does not.
+			panic("engine: an insert with ON CONFLICT")
+		}
 		row := make([]Expr, len(s.Values))
 		for i, t := range s.Values {
 			row[i] = term(t)
@@ -628,8 +633,8 @@ func formatExpr(e Expr) string {
 }
 
 // formatArithmetic of the expression e: a literal as [formatExpr] prints it, a parameter by its
-// number, a column as the statement writes it, a negation with a - before its operand, and every
-// binary operator in parentheses, so that the text shows the tree.
+// number, a column as the statement writes it, a negation with a - before its operand, a call with
+// its argument, and every binary operator in parentheses, so that the text shows the tree.
 func formatArithmetic(e stmt.Expression) string {
 	switch e.Kind {
 	case stmt.ExprValue:
@@ -640,8 +645,10 @@ func formatArithmetic(e stmt.Expression) string {
 		return e.Column.Raw
 	case stmt.ExprNegate:
 		return "-" + formatArithmetic(e.Operands[0])
-	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
+	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprConcat:
 		return fmt.Sprint("(", formatArithmetic(e.Operands[0]), " ", e.Kind, " ", formatArithmetic(e.Operands[1]), ")")
+	case stmt.ExprCall:
+		return fmt.Sprint(e.Function, "(", formatArithmetic(e.Operands[0]), ")")
 	}
 	panic(fmt.Sprintf("engine: an expression of kind %v", int(e.Kind)))
 }

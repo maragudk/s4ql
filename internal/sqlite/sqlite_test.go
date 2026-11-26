@@ -426,6 +426,81 @@ func TestConn_DenyProcessPragmas(t *testing.T) {
 	})
 }
 
+func TestConn_NoCheckpointOnClose(t *testing.T) {
+	// wal opens a database in WAL mode at a new path, with a row in the log, which a checkpoint at
+	// the close would copy into the file.
+	wal := func(t *testing.T) (*sqlite.Conn, string) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "a.db")
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("pragma journal_mode = wal"))
+		is.NotError(t, c.Exec("pragma wal_autocheckpoint = 0"))
+		is.NotError(t, c.Exec("create table t (k integer primary key) strict"))
+		is.NotError(t, c.Exec("insert into t values (1)"))
+		return c, path
+	}
+	walSize := func(t *testing.T, path string) int64 {
+		t.Helper()
+		info, err := os.Stat(path + "-wal")
+		if errors.Is(err, os.ErrNotExist) {
+			return -1
+		}
+		is.NotError(t, err)
+		return info.Size()
+	}
+
+	t.Run("should checkpoint and delete the write-ahead log at the close of the last connection without it", func(t *testing.T) {
+		c, path := wal(t)
+		is.True(t, walSize(t, path) > 0)
+		is.NotError(t, c.Close())
+		is.Equal(t, int64(-1), walSize(t, path))
+	})
+
+	t.Run("should leave the write-ahead log at the close, and the next open should recover the row from it", func(t *testing.T) {
+		c, path := wal(t)
+		before := walSize(t, path)
+		dbInfo, err := os.Stat(path)
+		is.NotError(t, err)
+		is.NotError(t, c.NoCheckpointOnClose())
+		is.NotError(t, c.Close())
+		is.Equal(t, before, walSize(t, path))
+		after, err := os.Stat(path)
+		is.NotError(t, err)
+		is.Equal(t, dbInfo.Size(), after.Size())
+
+		c = open(t, path)
+		is.EqualSlice(t, []string{"integer:1"}, query(t, c, "select k from t"))
+	})
+
+	t.Run("should take the setting of the connection that closes last", func(t *testing.T) {
+		c, path := wal(t)
+		other, err := sqlite.Open(path)
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{"integer:1"}, query(t, other, "select k from t"))
+		is.NotError(t, c.NoCheckpointOnClose())
+		is.NotError(t, c.Close())
+		is.NotError(t, other.Close())
+		is.Equal(t, int64(-1), walSize(t, path))
+
+		c, path = wal(t)
+		other, err = sqlite.Open(path)
+		is.NotError(t, err)
+		is.EqualSlice(t, []string{"integer:1"}, query(t, other, "select k from t"))
+		is.NotError(t, other.NoCheckpointOnClose())
+		is.NotError(t, c.Close())
+		is.NotError(t, other.Close())
+		is.True(t, walSize(t, path) > 0)
+	})
+
+	t.Run("should refuse a closed connection", func(t *testing.T) {
+		c, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		is.NotError(t, c.Close())
+		is.Equal(t, codeMisuse, code(t, c.NoCheckpointOnClose()))
+	})
+}
+
 func TestConn_SetLengthLimit(t *testing.T) {
 	t.Run("should refuse a longer string or blob with SQLITE_TOOBIG", func(t *testing.T) {
 		c := memory(t)
