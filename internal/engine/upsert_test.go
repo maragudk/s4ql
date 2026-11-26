@@ -837,6 +837,8 @@ var upsertCases = []stmttest.Call{
 	// Errors of SQLite.
 	{Src: "insert into t (k, n) values (1, 1) on conflict (v) do nothing"},
 	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.zz"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set s = lower(excluded.zz) || yy"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set s = 'a' where hex(excluded.zz) = s and yy is null"},
 	{Src: "insert into t (k) values (1) on conflict (k) do nothing"},
 	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set n = null"},
 	// In a transaction, which a roll back takes back, and in a read-only one.
@@ -925,6 +927,8 @@ func TestPair_upsert(t *testing.T) {
 				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = 'q' where excluded.a = ? || ?", Args: []any{key, x, y}},
 				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = lower(? || ?)", Args: []any{key, x, y}},
 				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = 'q' where b = lower(? || ?)", Args: []any{key, x, y}},
+				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = 'q' where id = lower(? || ?)", Args: []any{key, x, y}},
+				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = 'q' where ? || ? || a = 'x'", Args: []any{key, x, y}},
 				{Src: "insert into q (id, a, b) values (?, 'p', ?) on conflict (id) do update set a = excluded.b || excluded.b", Args: []any{key, x}},
 				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = excluded.a || ? returning *", Args: []any{key, x}},
 				{Src: "delete from q where id = '9'"},
