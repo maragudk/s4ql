@@ -123,8 +123,11 @@ func TestDB_checkpoint(t *testing.T) {
 		is.True(t, !isDone(d))
 	})
 
-	t.Run("should stop for good with a local failure when a sync of a checkpoint fails, acknowledge the commit before it, and find that commit in the cache at the next start", func(t *testing.T) {
-		for files, name := range map[faultvfs.File]string{faultvfs.WAL: "write-ahead log", faultvfs.MainDB: "file of the cache"} {
+	for _, file := range []struct {
+		name  string
+		files faultvfs.File
+	}{{"write-ahead log", faultvfs.WAL}, {"file of the cache", faultvfs.MainDB}} {
+		t.Run("should stop for good with a local failure when the checkpoint's sync of the "+file.name+" fails, acknowledge the commit before it, and find that commit in the cache at the next start", func(t *testing.T) {
 			w := newWorld(t)
 			vfs, options := checkpointFaults(t, 8)
 			rec := &recorder{}
@@ -132,54 +135,103 @@ func TestDB_checkpoint(t *testing.T) {
 			d := w.serve(t, "a", options)
 			transact(t, d, create("t1", 1, "k", "v"))
 
-			// With synchronous = full, SQLite syncs the log at every commit, and at a checkpoint the log
-			// before it copies pages and the file after. The file is synced only at a checkpoint. The
-			// fault of the log is armed again before each commit, so that the sync of the commit
-			// succeeds and the next one, which a checkpoint after that commit makes, fails. The log has
-			// not started again since the cache was made, so no commit syncs its header.
-			if files == faultvfs.MainDB {
-				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: files, Times: 1})
+			// With synchronous = full, SQLite syncs the log at every commit and at a checkpoint that
+			// copies frames, and the file only at a checkpoint that copies the whole log. The fault of
+			// the log is armed again before each commit, so that the sync of the commit succeeds and the
+			// next one, which a checkpoint after that commit makes, fails. The log has not started again
+			// since the cache was made, so no commit syncs its header.
+			if file.files == faultvfs.MainDB {
+				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: file.files, Times: 1})
 			}
 			commits := 0
 			for !isDone(d) {
 				if commits == 100 {
-					t.Fatal("no stop after 100 commits: " + name)
+					t.Fatal("no stop after 100 commits")
 				}
-				if files == faultvfs.WAL {
-					vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: files, After: 1, Times: 1})
+				if file.files == faultvfs.WAL {
+					vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: file.files, After: 1, Times: 1})
 				}
 				// Every commit returns nil, also the one whose checkpoint fails: it is in the log and in
 				// the cache.
 				transact(t, d, rows(commits*500, 500)...)
 				commits++
 			}
-			is.Equal(t, 1, vfs.Failures(), name)
+			is.Equal(t, 1, vfs.Failures())
 			err := d.Err()
 			is.Error(t, core.ErrStopped, err)
 			is.Error(t, core.ErrLocal, err)
 			is.True(t, strings.Contains(err.Error(), "a checkpoint of the cache"), err.Error())
 			se, ok := errors.AsType[*sqlite.Error](err)
-			is.True(t, ok && se.Code == 1034, name+": not SQLITE_IOERR_FSYNC: "+err.Error())
+			is.True(t, ok && se.Code == 1034, "not SQLITE_IOERR_FSYNC: "+err.Error())
 
 			checkpoints := rec.named(core.EventCheckpoint)
 			last := checkpoints[len(checkpoints)-1]
-			is.Equal(t, "failed", last[core.AttrOutcome], name)
-			is.Equal[any](t, slog.LevelWarn, last["level"], name)
+			is.Equal(t, "failed", last[core.AttrOutcome])
+			is.Equal[any](t, slog.LevelWarn, last["level"])
+			committed := rec.named(core.EventCommit)
+			is.Equal(t, "committed_and_stopped", committed[len(committed)-1][core.AttrOutcome])
 			stops := rec.named(core.EventStop)
-			is.Equal(t, 1, len(stops), name)
-			is.Equal(t, "local_failure", stops[0][core.AttrOutcome], name)
+			is.Equal(t, 1, len(stops))
+			is.Equal(t, "local_failure", stops[0][core.AttrOutcome])
 
-			// The commits before the stop are acknowledged, so the log has them all, and the next start
-			// from the position that the cache records serves them.
+			// The commits before the stop are acknowledged, so the log has them all. The cache records
+			// the last of them, so the next start has nothing to catch up, and serves them.
 			want := keyed(commits * 500)
 			vfs.Fail(faultvfs.Fault{})
-			is.NotError(t, d.Close(t.Context()), name)
-			again := w.serve(t, "a", core.Options{})
-			is.Equal(t, want, read(t, again), name)
+			is.NotError(t, d.Close(t.Context()))
+			restart := &recorder{}
+			again := w.serve(t, "a", core.Options{Logger: restart.logger()})
+			is.Equal(t, want, read(t, again))
+			is.Equal(t, 0, len(restart.named(core.EventCatchUp)))
 			// An instance with an empty cache replays the log to the same rows.
-			is.NotError(t, again.Close(t.Context()), name)
-			is.Equal(t, want, read(t, w.serve(t, "b", core.Options{})), name)
+			is.NotError(t, again.Close(t.Context()))
+			is.Equal(t, want, read(t, w.serve(t, "b", core.Options{})))
+		})
+	}
+
+	t.Run("should not stop when a commit from the loop of a scan cannot checkpoint because the scan's statement is open, and checkpoint at the next commit", func(t *testing.T) {
+		w := newWorld(t)
+		rec := &recorder{}
+		options := core.Options{Logger: rec.logger()}
+		options.CheckpointAfter(1)
+		d := w.serve(t, "a", options)
+		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 1))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		for _, err := range tx.Scan(t.Context(), "t1") {
+			is.NotError(t, err)
+			is.NotError(t, tx.CreateTable(t.Context(), tableOf("t2", 1, "k")))
+			is.NotError(t, tx.Commit(t.Context()))
+			break
 		}
+		is.True(t, !isDone(d))
+		checkpoints := rec.named(core.EventCheckpoint)
+		is.Equal(t, "busy", checkpoints[len(checkpoints)-1][core.AttrOutcome])
+		_, hasLog := checkpoints[len(checkpoints)-1][core.AttrCheckpointLog]
+		is.True(t, !hasLog)
+
+		transact(t, d, upsert("t1", 2, 2))
+		checkpoints = rec.named(core.EventCheckpoint)
+		is.Equal(t, "checkpointed", checkpoints[len(checkpoints)-1][core.AttrOutcome])
+		is.Equal(t, "t1(k*0,v): 1,1 | 2,2\nt2(k*0): ", read(t, d))
+	})
+
+	t.Run("should checkpoint at 1000 frames by default", func(t *testing.T) {
+		w := newWorld(t)
+		rec := &recorder{}
+		d := w.serve(t, "a", core.Options{Logger: rec.logger()})
+		transact(t, d, create("t1", 1, "k", "v"))
+		path := filepath.Join(w.dir, "a.db")
+		for i := 0; len(rec.named(core.EventCheckpoint)) == 0; i++ {
+			if i == 1000 {
+				t.Fatal("no checkpoint after 1000 commits")
+			}
+			before, _ := walOf(t, path)
+			is.True(t, before < 1000, fmt.Sprint("a log of ", before, " frames, and no checkpoint"))
+			transact(t, d, rows(i*2000, 2000)...)
+		}
+		is.True(t, rec.named(core.EventCheckpoint)[0][core.AttrCheckpointLog].(int64) >= 1000)
 	})
 
 	t.Run("should not stop while a read transaction holds the checkpoints back, and start the write-ahead log again once it has ended", func(t *testing.T) {
@@ -263,7 +315,7 @@ func TestDB_checkpoint(t *testing.T) {
 }
 
 // BenchmarkDB_checkpoint measures commits of 10 and of 200 rows on an instance with syncs on, as an
-// instance has them by default, through many checkpoints: 3000 commits of 10 rows pass the default
+// instance has them by default. With -benchtime 3000x, the commits of 10 rows pass the default
 // threshold of 1000 frames several times.
 func BenchmarkDB_checkpoint(b *testing.B) {
 	for _, rows := range []int{10, 200} {

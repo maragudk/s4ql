@@ -80,9 +80,8 @@ type Options struct {
 
 	// syncOff stops SQLite from syncing the cache to disk, for tests.
 	syncOff bool
-	// checkpointAfter is the number of pages in the write-ahead log from which the writer
-	// checkpoints the cache after a commit: see [DB.checkpoint]. The default is [checkpointAfter];
-	// tests lower it.
+	// checkpointAfter is the number of frames in the write-ahead log from which the writer
+	// checkpoints the cache after a commit: see [DB.checkpoint]. The default is 1000.
 	checkpointAfter int
 	// bugs that tests plant.
 	bugs bugs
@@ -125,7 +124,9 @@ func (o Options) withDefaults() (Options, error) {
 		o.LengthLimit = maxLength
 	}
 	if o.checkpointAfter == 0 {
-		o.checkpointAfter = checkpointAfter
+		// SQLite's default for its automatic checkpoint, SQLITE_DEFAULT_WAL_AUTOCHECKPOINT, which
+		// every connection of the core turns off: see [openConn].
+		o.checkpointAfter = 1000
 	}
 	switch {
 	case o.Lease > 365*24*time.Hour:

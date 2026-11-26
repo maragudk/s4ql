@@ -838,7 +838,8 @@ func TestDB_sync(t *testing.T) {
 		transact(t, d, rows(0, 2000)...)
 		is.True(t, isDone(d))
 		is.Error(t, core.ErrLocal, d.Err())
-		is.True(t, vfs.Failures() >= 1, fmt.Sprint(vfs.Failures()))
+		// The sync of the log at the commit is the first that fails, and nothing syncs after the stop.
+		is.Equal(t, 1, vfs.Failures())
 		vfs.Fail(faultvfs.Fault{})
 		is.NotError(t, d.Close(t.Context()))
 		is.Equal(t, keyed(2000), read(t, w.serve(t, "a", core.Options{})))

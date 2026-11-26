@@ -70,10 +70,10 @@ func (o *Options) SyncOn() {
 	o.syncOff = false
 }
 
-// CheckpointAfter sets the number of pages in the write-ahead log from which the writer
+// CheckpointAfter sets the number of frames in the write-ahead log from which the writer
 // checkpoints the cache after a commit.
-func (o *Options) CheckpointAfter(pages int) {
-	o.checkpointAfter = pages
+func (o *Options) CheckpointAfter(frames int) {
+	o.checkpointAfter = frames
 }
 
 // AutoCheckpoint is SQLite's setting wal_autocheckpoint of the write connection and of the

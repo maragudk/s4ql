@@ -187,6 +187,13 @@ func isTooBig(err error) bool {
 	return errors.As(err, &sqliteErr) && sqliteErr.Code.Primary() == 18
 }
 
+// isLocked reports whether err is SQLite's SQLITE_LOCKED, "database table is locked": a conflict
+// within one connection, such as a statement that is still open.
+func isLocked(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code.Primary() == 6
+}
+
 // invalidf is an error that wraps [ErrInvalid].
 func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: %v", ErrInvalid, fmt.Sprintf(format, args...))

@@ -943,9 +943,9 @@ var plantedBugs = []plantedBug{
 	},
 	{
 		// A sync of the cache fails only where the workload makes it fail. With synchronous = full,
-		// SQLite syncs the file of the cache only at a checkpoint, and the write-ahead log at every
-		// commit and at a checkpoint; the bug leaves the error of a commit alone, so only a fault that
-		// a checkpoint meets finds it. The VFS of faultvfs fails the sync and changes nothing else, so
+		// SQLite syncs the file of the cache only at a checkpoint that copies the whole log, and the
+		// write-ahead log at every commit and at a checkpoint that copies frames; the bug leaves the
+		// error of a commit alone, so only a fault that a checkpoint meets finds it. The VFS of faultvfs fails the sync and changes nothing else, so
 		// the bug leaves no wrong page behind, and the one thing that it changes is that the instance
 		// does not stop. The control has syncs and no faults.
 		bug:  "ignoreCheckpointError",
@@ -960,7 +960,7 @@ var plantedBugs = []plantedBug{
 			w.syncs = true
 			return w
 		}(), "ignoreCheckpointError")),
-		symptoms: []string{"syncs, and the instance did not stop"},
+		symptoms: []string{"syncs, and the instance did not stop for it"},
 	},
 	{
 		// A swap has an unknown outcome only if the store or the network fails.

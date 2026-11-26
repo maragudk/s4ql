@@ -29,6 +29,7 @@ import (
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
+	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
@@ -136,11 +137,13 @@ type workload struct {
 	// syncs opens the cache of each node through a VFS of its own, of faultvfs, with syncs on, as an
 	// instance has them by default, and checkpoints after a few pages of the write-ahead log, so that
 	// a run has many checkpoints. With synchronous = full, SQLite syncs the write-ahead log at every
-	// commit, and the log and the file of the cache at every checkpoint.
+	// commit and at a checkpoint that copies frames, and the file of the cache only at a checkpoint
+	// that copies the whole log.
 	syncs bool
 	// syncFaults is the number of times, with syncs, that a task of each node makes the next sync of
-	// its cache fail, each at a random time: half of the time of the file of the cache, which only a
-	// checkpoint syncs, and else of the write-ahead log, which mostly a commit syncs.
+	// its cache fail, each at a random time while its callers run: half of the time of the file of
+	// the cache, which only a checkpoint syncs, and else of the write-ahead log, which mostly a commit
+	// syncs.
 	syncFaults int
 }
 
@@ -1078,10 +1081,11 @@ func (r *run) close(ctx context.Context, n *node, d *core.DB) {
 	ctx, cancel := n.host.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	// A sync of the cache that failed while the database was open is a local I/O failure, which
-	// stops the instance. The close itself may fail a sync too, which is not counted.
+	// stops the instance at once, so one open fails one sync at the most, and the stop is for it. The
+	// close itself may fail a sync too, which is not counted.
 	if n.vfs != nil {
-		if failed := n.vfs.Failures() - n.failuresAtOpen; failed > 0 && !errors.Is(d.Err(), core.ErrLocal) {
-			r.o.violate(ctx, r.c.world, "the cache of %v failed %v syncs, and the instance did not stop", n.name, failed)
+		if failed := n.vfs.Failures() - n.failuresAtOpen; failed > 1 || (failed == 1 && !failedSync(d.Err())) {
+			r.o.violate(ctx, r.c.world, "the cache of %v failed %v syncs, and the instance did not stop for it: %v", n.name, failed, d.Err())
 		}
 	}
 	err := d.Close(ctx)
@@ -1110,7 +1114,7 @@ func (r *run) stopped(ctx context.Context, n *node, d *core.DB) {
 	// A sync of the cache fails only where the workload makes it fail.
 	explained := (errors.Is(cause, core.ErrLocal) && r.w.buggify && strings.Contains(cause.Error(), "injected")) ||
 		(errors.Is(cause, format.ErrNameMismatch) && n.damagedTwice.Load()) ||
-		(errors.Is(cause, core.ErrLocal) && n.vfs != nil && n.vfs.Failures() > n.failuresAtOpen)
+		(failedSync(cause) && n.vfs != nil && n.vfs.Failures() > n.failuresAtOpen)
 	if !explained {
 		r.o.violate(ctx, r.c.world, "the instance stopped: %v", cause)
 	}
@@ -1118,6 +1122,13 @@ func (r *run) stopped(ctx context.Context, n *node, d *core.DB) {
 	if _, err := r.open(ctx, n); err != nil {
 		r.o.violate(ctx, r.c.world, "open again: %v", err)
 	}
+}
+
+// failedSync reports whether err is a local I/O failure for a sync of the cache that failed:
+// SQLITE_IOERR_FSYNC.
+func failedSync(err error) bool {
+	se, ok := errors.AsType[*sqlite.Error](err)
+	return errors.Is(err, core.ErrLocal) && ok && se.Code == 1034
 }
 
 // isStopped reports whether d has stopped, by its channel.
@@ -1203,7 +1214,7 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 	if n.vfs != nil && w.syncFaults > 0 {
 		tasks = append(tasks, n.host.Go(ctx, "disk", func(ctx context.Context) {
 			for range w.syncFaults {
-				if n.host.Sleep(ctx, time.Duration(intn(n.host, 120_000))*time.Millisecond) != nil {
+				if n.host.Sleep(ctx, time.Duration(intn(n.host, 60_000))*time.Millisecond) != nil || n.callers.Load() == 0 {
 					return
 				}
 				files, file := faultvfs.MainDB, "file"

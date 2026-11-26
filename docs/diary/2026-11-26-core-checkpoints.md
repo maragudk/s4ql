@@ -112,3 +112,58 @@ Under `normal`, a commit whose pages never reached the disk was served until the
 ### Future work
 
 - The engine's night-sized runs, the race detector, `-count=20`, `make test`, lint, and the review.
+
+## Step 3: self-review, the fixes, and the night-sized runs
+
+**Author:** core-checkpoints builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Run the `fabrik:code-review` skill over your diff and fix what matters. Do not push." (from the brief of step 1)
+**Interpretation:** two independent reviewers over `git diff main...HEAD`, then fix what both found and what is serious, and run the checks that the brief names.
+**Inferred intent:** land a branch that a reviewer would pass.
+
+### What I did
+
+- Two reviewers on the most capable model reviewed `git diff main...HEAD` at `2530b01b`, each told it competes with the other.
+- Both found, and I fixed:
+  - **A commit from the loop of a scan stopped the instance as a local failure.** `sqlite3BtreeCheckpoint` returns `SQLITE_LOCKED` for every mode, `noop` too, while a statement is open on the connection, and `DB.checkpoint` stopped on any error. SQLite lets a commit succeed with a read statement open, and one reviewer reproduced the stop with a `CreateTable` and a `Commit` inside `for range tx.Scan`. `isLocked` in `/internal/core/errors.go` now counts as "busy": no stop, and the next commit checkpoints. A new subtest in `TestDB_checkpoint` shows it; it fails without the fix ("Not true" at the check that the instance did not stop).
+  - The doc comment of `conn.setUp` spoke of what its callers do, and said that SQLite syncs the file at every checkpoint; it syncs the file only at a checkpoint that copies the whole log (`walCheckpoint`, `mxSafeFrame==mxFrame`). Fixed there, in the comments of the simulation and of the planted bug, and in the record.
+  - The constant `checkpointAfter` was used once; it is inlined in `Options.withDefaults` with its reason.
+  - The committed README had the placeholder `BUGCOUNT`.
+  - A busy checkpoint logged `checkpoint.log_frames=-1`; a busy or failed checkpoint now logs no frame counts.
+  - The doc of `Tx.Commit` now names a failed checkpoint as a case of nil and a stop, and the phase `duration.cache` includes the checkpoint, so the phases add up to the total.
+  - The two cases of the failed checkpoint are two subtests, not a loop over a map, and the subtest now shows that the restart has nothing to catch up, as its name says, and that the commit's outcome is `committed_and_stopped`.
+  - The simulation's checks were coarser than the rule: `run.close` let any `ErrLocal` stop excuse every failed sync, so an ignored checkpoint failure followed by a commit's failed sync hid the bug, and `run.stopped` explained any local stop on a node whose VFS had failed. Now one open may fail one sync at the most, and the stop must be for it (`failedSync`: `ErrLocal` with `SQLITE_IOERR_FSYNC`), in both.
+- One reviewer alone found, and I fixed because they were cheap and real: no test showed the default threshold of 1000 frames ("should checkpoint at 1000 frames by default"); the task `disk` armed faults after the callers had ended, which only the close's checkpoint could meet (it now arms within 60 s each and not after the callers); `TestDB_sync` checked `Failures() >= 1` where the code gives exactly 1; the frames that the threshold counts were called pages; the record said only the simulation uses `syncOff`, and `BenchmarkDB_catchUp` does too; "through the page cache" in the open point meant the operating system's.
+- Left as they are: the names of the telemetry in `telemetry.go`, used once each, which is the file's convention; `free` skipping `closeVFSes` when `Run` fails, since the test has failed then; and the references to SQLite's internal functions in the record, which are the evidence.
+- Runs: the new tests with `-count=20` (40 s) and with `-race -count=20` (321 s); `go test ./internal/core/` (88 s) and `./internal/engine/` (329 s, against 299 s for the engine at `main` in one run each at a load of 10 to 14); the engine's `TestDifferential -sequences 400` (726 s) and `TestSimulation` with `S4QL_ENGINE_SIM_SEEDS=100` (332 s), all passing.
+
+### Why
+
+The `SQLITE_LOCKED` stop was a stop for good with the cause "local I/O failure" where nothing failed, on a path that the package allows; that is the one finding that changed behaviour.
+
+### What worked
+
+- Two reviewers who agreed on the serious finding, each with a reproduction or a reading of `sqlite3BtreeCheckpoint`.
+
+### What didn't work
+
+- To build a test binary of the engine at `main`, I checked out `main`'s files of the core into the worktree for a minute and then ran `git checkout HEAD -- internal/core/`, which also reverted my uncommitted edit of `/internal/core/README.md` (the count 406). I made the edit again. The reviewers were told that the files had been swapped for a minute.
+
+### What I learned
+
+- `SQLITE_LOCKED` is the answer to any checkpoint on a connection with an open statement, whatever the mode, because `sqlite3BtreeCheckpoint` checks `inTransaction` before the mode.
+
+### What was tricky
+
+- Tightening `run.close` without a false positive: a clean core fails at most one sync per open, because the failing call stops the instance at once and the writer lock keeps a second commit or catch-up from running beside it.
+
+### What warrants review
+
+- `isLocked` in `DB.checkpoint`: a checkpoint skipped for an open statement is never retried by anything but the next commit.
+- `failedSync` and the rule of one failed sync per open in `run.close`.
+
+### Future work
+
+- The cost of `full` on Linux, and SQLite's checkpoint at the close after a stop, both open in `/docs/todo/cache-checkpoints.md`.

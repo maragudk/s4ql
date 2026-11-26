@@ -73,8 +73,7 @@ func openConn(open func(path, vfs string) (*sqlite.Conn, error), path string, op
 		return nil, err
 	}
 	// SQLite's automatic checkpoint drops its error, so the core runs every checkpoint itself:
-	// see [DB.checkpoint]. Only a connection that commits a write can run the automatic one, and the
-	// setting is per connection, so it is off on every connection, also on a reader.
+	// see [DB.checkpoint]. The setting is per connection, and is off on every one.
 	if err := cn.exec("pragma wal_autocheckpoint = 0"); err != nil {
 		_ = c.Close()
 		return nil, err
@@ -268,13 +267,10 @@ func (c *conn) readSchema(sql string, row func(s *sqlite.Stmt) error, args ...an
 // version with [ErrCacheVersion], and one that records another identity than the given one with
 // [ErrCacheDatabase].
 //
-// With synchronous = full, SQLite syncs the write-ahead log at every commit, and the log and the
-// file of the cache at every checkpoint (https://sqlite.org/pragma.html#pragma_synchronous). A sync
-// that fails then fails the commit that needed it, and the instance stops at that commit, as every
-// local I/O failure stops it, and not only at a later checkpoint: under synchronous = normal SQLite
-// would sync the log only at a checkpoint, so a commit whose pages never reached the disk would go
-// on being served until then. A commit to the cache comes after the manifest swap, so a failed one
-// is in the log already, and the next start catches the cache up to it.
+// With synchronous = full, SQLite syncs the write-ahead log at every commit, and the file of the
+// cache at every checkpoint that copies the whole log (https://sqlite.org/pragma.html#pragma_synchronous),
+// so a sync that fails fails the commit that needed it. Under synchronous = normal SQLite would sync
+// the log only at a checkpoint, and a commit whose frames never reached the disk would succeed.
 func (c *conn) setUp(syncOff bool, identity string) error {
 	if err := c.wal(); err != nil {
 		return err

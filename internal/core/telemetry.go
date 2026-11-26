@@ -47,7 +47,8 @@ const (
 	// eventTxEnded is the end of a write transaction that the instance ended because it lost its
 	// lease, when the transaction is rolled back in the cache and the writer lock is free.
 	eventTxEnded = "transaction_ended"
-	// eventCheckpoint is one checkpoint of the cache that the writer ran after a commit.
+	// eventCheckpoint is one checkpoint of the cache that the writer ran after a commit to the cache,
+	// also one of a catch-up.
 	eventCheckpoint = "checkpoint"
 )
 
