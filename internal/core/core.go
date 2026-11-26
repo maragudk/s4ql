@@ -405,12 +405,24 @@ func (d *DB) CloseCache() {
 func (d *DB) closeCache() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	keepLog := d.keepLogLocked()
 	for _, c := range d.readers {
-		_ = c.close()
+		_ = c.close(keepLog)
 	}
 	if d.w != nil {
-		_ = d.w.close()
+		_ = d.w.close(keepLog)
 	}
+}
+
+// keepLogLocked is whether a connection to the cache that closes now must leave the write-ahead log
+// as it is: once the instance has stopped for a local I/O failure. SQLite's close of the last
+// connection to a database otherwise runs a checkpoint, drops its error, and on success deletes the
+// log. After a failed sync that is a second try in place: a sync that succeeds where the first one
+// failed, and that deletes the log while the file of the cache may hold older pages than the log,
+// when an earlier checkpoint that read transactions held back has copied pages into the file that
+// are not written again. With the log left, the next open recovers from it. It requires mu.
+func (d *DB) keepLogLocked() bool {
+	return errors.Is(d.stopped, ErrLocal)
 }
 
 // Done is closed when the instance has stopped for good.
@@ -840,7 +852,7 @@ func (d *DB) closeIdleLocked() {
 	for _, c := range append(slices.Clone(d.readers), d.w) {
 		if !c.closed && c.users == 0 {
 			c.closed, closed = true, true
-			if err := c.close(); err != nil {
+			if err := c.close(d.keepLogLocked()); err != nil {
 				d.closeErrs = append(d.closeErrs, fmt.Errorf("close: a connection to the cache: %w", err))
 			}
 		}

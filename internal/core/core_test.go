@@ -62,10 +62,15 @@ func cacheDir(t *testing.T) string {
 	return dir
 }
 
-// leftOpen are the caches in dir whose write-ahead log is there, which a connection that has read
-// them keeps: "The WAL file exists for as long as any database connection has the database open.
-// Usually, the WAL file is deleted automatically when the last connection to the database closes."
-// (https://sqlite.org/wal.html) A connection that has not read a cache yet keeps no log, so not every
+// leftOpen are the caches in dir that a connection still has open. Such a connection, once it has
+// read the cache, keeps its write-ahead log: "The WAL file exists for as long as any database
+// connection has the database open. Usually, the WAL file is deleted automatically when the last
+// connection to the database closes." (https://sqlite.org/wal.html) An instance that has stopped for
+// a local I/O failure closes its connections without that checkpoint, so its log stays too. So for
+// each cache with a log, leftOpen opens a connection of its own, reads the cache, and closes the
+// connection: if it was the last one, its close checkpoints and deletes the log, as the next open of
+// the cache would recover from it, and if another connection holds the cache, the log stays. A
+// connection that has not read a cache yet holds no lock on it and keeps no log, so not every
 // connection that is left shows.
 func leftOpen(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
@@ -74,11 +79,31 @@ func leftOpen(dir string) ([]string, error) {
 	}
 	var names []string
 	for _, e := range entries {
-		if name, ok := strings.CutSuffix(e.Name(), "-wal"); ok {
+		name, ok := strings.CutSuffix(e.Name(), "-wal")
+		if !ok {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if err := readAndClose(path); err != nil {
+			return nil, fmt.Errorf("left open: %v: %w", name, err)
+		}
+		if _, err := os.Stat(path + "-wal"); err == nil {
 			names = append(names, name)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
 	}
 	return names, nil
+}
+
+// readAndClose the cache at path with a connection of its own.
+func readAndClose(path string) error {
+	c, err := sqlite.OpenExistingVFS(path, "")
+	if err != nil {
+		return err
+	}
+	err = c.Exec("select count(*) from sqlite_schema")
+	return errors.Join(err, c.Close())
 }
 
 // client of the world's store, with a name of its own.
@@ -562,6 +587,74 @@ func TestDB_Close(t *testing.T) {
 			is.Error(t, format.ErrMalformed, err)
 			is.Equal(t, 0, time.Since(start))
 		})
+	})
+}
+
+func TestDB_Close_afterLocalFailure(t *testing.T) {
+	for _, stop := range []struct {
+		name  string
+		fault faultvfs.Fault
+		after int
+	}{
+		{"a commit's sync of the write-ahead log", faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.WAL, Times: 1}, 0},
+		{"a checkpoint's sync of the file of the cache", faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.MainDB, Times: 1}, 8},
+	} {
+		t.Run("should leave the write-ahead log and the file of the cache as they are after a stop for "+stop.name+", and the next start should serve every commit", func(t *testing.T) {
+			w := newWorld(t)
+			vfs, options := checkpointFaults(t, stop.after)
+			d := w.serve(t, "a", options)
+			transact(t, d, create("t1", 1, "k", "v"))
+			vfs.Fail(stop.fault)
+			commits := 0
+			for !isDone(d) {
+				if commits == 100 {
+					t.Fatal("no stop after 100 commits")
+				}
+				transact(t, d, rows(commits*500, 500)...)
+				commits++
+			}
+			is.Error(t, core.ErrLocal, d.Err())
+			is.Equal(t, 1, vfs.Failures())
+
+			// The close writes, syncs, and truncates nothing of the cache's files: every such
+			// operation would fail, and none does.
+			path := filepath.Join(w.dir, "a.db")
+			file, err := os.ReadFile(path)
+			is.NotError(t, err)
+			log, err := os.ReadFile(path + "-wal")
+			is.NotError(t, err)
+			is.True(t, len(log) > 0)
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Write | faultvfs.Sync | faultvfs.Truncate, Files: faultvfs.MainDB | faultvfs.WAL})
+			is.NotError(t, d.Close(t.Context()))
+			is.Equal(t, 1, vfs.Failures())
+			fileAfter, err := os.ReadFile(path)
+			is.NotError(t, err)
+			logAfter, err := os.ReadFile(path + "-wal")
+			is.NotError(t, err)
+			is.True(t, bytes.Equal(file, fileAfter), "the close changed the file of the cache")
+			is.True(t, bytes.Equal(log, logAfter), "the close changed the write-ahead log")
+
+			// The next open recovers from the log, and serves every commit.
+			vfs.Fail(faultvfs.Fault{})
+			is.Equal(t, keyed(commits*500), read(t, w.serve(t, "a", core.Options{})))
+		})
+	}
+
+	t.Run("should checkpoint and delete the write-ahead log at a close without a stop for a local failure", func(t *testing.T) {
+		w := newWorld(t)
+		vfs, options := checkpointFaults(t, 1<<30)
+		d := w.serve(t, "a", options)
+		transact(t, d, create("t1", 1, "k", "v"))
+		transact(t, d, rows(0, 500)...)
+		path := filepath.Join(w.dir, "a.db")
+		log, checkpointed := walOf(t, path)
+		is.True(t, log > 0 && checkpointed == 0, fmt.Sprint(log, " frames, ", checkpointed, " in the file"))
+
+		is.NotError(t, d.Close(t.Context()))
+		is.Equal(t, 0, vfs.Failures())
+		_, err := os.Stat(path + "-wal")
+		is.Error(t, os.ErrNotExist, err)
+		is.Equal(t, keyed(500), read(t, w.serve(t, "a", core.Options{})))
 	})
 }
 

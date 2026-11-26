@@ -62,6 +62,11 @@ static int s4ql_set_deny_process_pragmas(sqlite3 *db) {
 	return sqlite3_set_authorizer(db, s4ql_deny_process_pragmas, 0);
 }
 
+// s4ql_no_checkpoint_on_close on the connection: SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE.
+static int s4ql_no_checkpoint_on_close(sqlite3 *db) {
+	return sqlite3_db_config(db, SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, 1, (int *)0);
+}
+
 // s4ql_order of the texts of two values, byte by byte with a prefix first: -1, 0, or 1. It sets
 // *nomem if a text cannot be made.
 static int s4ql_order(sqlite3_value *a, sqlite3_value *b, int *nomem) {
@@ -399,6 +404,21 @@ func (c *Conn) DenyProcessPragmas() error {
 		return errorFromConn(nil, C.SQLITE_MISUSE)
 	}
 	if rc := C.s4ql_set_deny_process_pragmas(c.db); rc != C.SQLITE_OK {
+		return errorFromConn(c.db, rc)
+	}
+	return nil
+}
+
+// NoCheckpointOnClose for the connection from now on, SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE. Without
+// it, the close of the last connection to a database in WAL mode checkpoints the write-ahead log
+// into the database file and, if that succeeds, deletes the log. With it on the connection that
+// closes last, the close copies nothing and the log stays, so that the next open recovers from it.
+// It fails with SQLITE_MISUSE on a closed connection.
+func (c *Conn) NoCheckpointOnClose() error {
+	if c.db == nil {
+		return errorFromConn(nil, C.SQLITE_MISUSE)
+	}
+	if rc := C.s4ql_no_checkpoint_on_close(c.db); rc != C.SQLITE_OK {
 		return errorFromConn(c.db, rc)
 	}
 	return nil

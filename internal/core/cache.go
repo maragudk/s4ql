@@ -116,9 +116,16 @@ func (c *conn) forget() {
 	clear(c.tables)
 }
 
-// close the connection.
-func (c *conn) close() error {
+// close the connection. With keepLog, the close runs no checkpoint and leaves the write-ahead log
+// as it is, also when it is the last connection to the cache: see [DB.keepLogLocked].
+func (c *conn) close(keepLog bool) error {
 	c.forget()
+	if keepLog {
+		// It fails only on a closed connection, which the close then leaves as it is.
+		if err := c.c.NoCheckpointOnClose(); err != nil {
+			return err
+		}
+	}
 	return c.c.Close()
 }
 

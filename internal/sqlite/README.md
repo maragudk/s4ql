@@ -8,6 +8,7 @@ The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md)
 - find, register, and unregister a VFS, which the tests of the cache need for `faultvfs/`
 - prepare one statement, and, for the oracle of the parser, prepare the first statement of any text and say where it ends
 - deny the PRAGMAs that change settings for the whole process, which the oracle needs because it prepares any SQL
+- keep the write-ahead log at the close of the last connection, without the checkpoint that SQLite runs there (`NoCheckpointOnClose`), which the storage core needs once it has stopped for a local I/O failure
 - lower the length limit of a connection, which the shape check of the SQL parser in `internal/sql/shapetest` needs because it evaluates any expression
 - add stubs of the functions `regexp` and `match`, and of `glob` with ESCAPE, to a connection with `AddTestFunctions`, which the shape check in `internal/sql/shapetest` needs because SQLite has no function of its own that runs for REGEXP, MATCH, and GLOB ... ESCAPE. The stubs give the operators a meaning that SQLite does not give them, so they are for the connections of tests only
 - bind and read 64-bit integers, reals, text, and blobs, which slice 4 needs, and bind NULL
