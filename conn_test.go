@@ -809,6 +809,140 @@ func TestParameters(t *testing.T) {
 	})
 }
 
+// blobValuer is a [driver.Valuer] that gives its own bytes, which [driver.DefaultParameterConverter]
+// passes on as they are.
+type blobValuer []byte
+
+func (v blobValuer) Value() (driver.Value, error) {
+	return []byte(v), nil
+}
+
+// rawBytes is a type whose kind is a slice of bytes, which [driver.DefaultParameterConverter]
+// converts to a []byte over the same array.
+type rawBytes []byte
+
+func TestArgument(t *testing.T) {
+	t.Run("should give the blob that the insert stored in the row of its RETURNING, also when the caller changes the bytes of the argument before it reads the row", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, "create table r (k int primary key, b blob) strict, without rowid")
+
+		b := []byte{1}
+		rows, err := db.QueryContext(t.Context(), "insert into r values (1, ?) returning b", b)
+		is.NotError(t, err)
+		defer func() { _ = rows.Close() }()
+		// The statement has run and is committed. The bytes are the caller's again, such as a buffer
+		// that it fills for its next statement.
+		b[0] = 2
+
+		is.True(t, rows.Next(), "the insert gives a row")
+		var returned []byte
+		is.NotError(t, rows.Scan(&returned))
+		is.NotError(t, rows.Close())
+
+		var stored []byte
+		is.NotError(t, db.QueryRowContext(t.Context(), "select b from r where k = 1").Scan(&stored))
+		is.EqualSlice(t, []byte{1}, stored, "the row that is stored")
+		is.EqualSlice(t, []byte{1}, returned, "the row that RETURNING gives")
+	})
+
+	t.Run("should give the rows of a query for the blob that its argument was when the query ran, directly, prepared, and in a transaction, also when the caller changes the bytes before it reads the rows", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, "create table q (k blob primary key, v int) strict, without rowid", "insert into q values (x'01', 10)", "insert into q values (x'02', 20)")
+		const src = "select v from q where k = ?"
+		prepared, err := db.PrepareContext(t.Context(), src)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, prepared.Close()) }()
+
+		for _, conv := range []struct {
+			name string
+			arg  func([]byte) any
+		}{
+			{"a []byte", func(k []byte) any { return k }},
+			{"a type whose kind is a slice of bytes", func(k []byte) any { return rawBytes(k) }},
+			{"a sql.RawBytes", func(k []byte) any { return sql.RawBytes(k) }},
+			{"a driver.Valuer of a []byte", func(k []byte) any { return blobValuer(k) }},
+		} {
+			for _, how := range []struct {
+				name string
+				run  func(tx *sql.Tx, k any) (*sql.Rows, error)
+			}{
+				{"directly", func(_ *sql.Tx, k any) (*sql.Rows, error) { return db.QueryContext(t.Context(), src, k) }},
+				{"prepared", func(_ *sql.Tx, k any) (*sql.Rows, error) { return prepared.QueryContext(t.Context(), k) }},
+				{"in a transaction", func(tx *sql.Tx, k any) (*sql.Rows, error) { return tx.QueryContext(t.Context(), src, k) }},
+				{"prepared in a transaction", func(tx *sql.Tx, k any) (*sql.Rows, error) {
+					return tx.StmtContext(t.Context(), prepared).QueryContext(t.Context(), k)
+				}},
+			} {
+				name := conv.name + " " + how.name
+				tx := begin(t, db, nil)
+				k := []byte{1}
+				rows, err := how.run(tx, conv.arg(k))
+				is.NotError(t, err, name)
+				k[0] = 2
+
+				var got []int64
+				for rows.Next() {
+					var v int64
+					is.NotError(t, rows.Scan(&v), name)
+					got = append(got, v)
+				}
+				is.NotError(t, rows.Err(), name)
+				is.NotError(t, rows.Close(), name)
+				is.NotError(t, tx.Rollback(), name)
+				is.EqualSlice(t, []int64{10}, got, name)
+			}
+		}
+	})
+
+	t.Run("should commit the blobs that the arguments were when each write ran, to the cache and to the commit object, also when the caller changes the bytes before the commit", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, "create table r (k int primary key, b blob) strict, without rowid")
+		prepared, err := db.PrepareContext(t.Context(), "insert into r values (?, ?)")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, prepared.Close()) }()
+
+		tx := begin(t, db, nil)
+		b := []byte{1}
+		_, err = tx.ExecContext(t.Context(), "insert into r values (1, ?)", b)
+		is.NotError(t, err)
+		b[0] = 9
+		b = []byte{2}
+		_, err = tx.StmtContext(t.Context(), prepared).ExecContext(t.Context(), 2, rawBytes(b))
+		is.NotError(t, err)
+		b[0] = 9
+		b, c := []byte{3}, []byte{4}
+		_, err = tx.ExecContext(t.Context(), "insert into r values (3, ?); insert into r values (4, ?)", sql.RawBytes(b), blobValuer(c))
+		is.NotError(t, err)
+		b[0], c[0] = 9, 9
+		b = []byte{5}
+		rows, err := tx.QueryContext(t.Context(), "insert into r values (5, ?) returning b", b)
+		is.NotError(t, err)
+		b[0] = 9
+		is.True(t, rows.Next())
+		var returned []byte
+		is.NotError(t, rows.Scan(&returned))
+		is.NotError(t, rows.Close())
+		is.EqualSlice(t, []byte{5}, returned, "the row that RETURNING gives")
+		is.NotError(t, tx.Commit())
+
+		const want = "k INT, b BLOB: 1 [1]; 2 [2]; 3 [3]; 4 [4]; 5 [5]"
+		is.Equal(t, want, rowsText(t, db, "select * from r"), "the cache")
+		is.EqualSlice(t, []string{
+			"create table r (k int primary key, b blob) strict, without rowid",
+			"insert into r values (1, ?) with x'01'",
+			"insert into r values (?, ?) with 2 with x'02'",
+			"insert into r values (3, ?); with x'03'",
+			"insert into r values (4, ?) with x'04'",
+			"insert into r values (5, ?) returning b with x'05'",
+		}, annotations(t, w), "the commit object")
+		is.NotError(t, db.Close())
+		is.Equal(t, want, rowsText(t, w.serve(t, "b"), "select * from r"), "the cache of another instance")
+	})
+}
+
 // typedTables are a table of each of the five types of a column, each named by its type with an "s".
 var typedTables = []string{
 	"create table ints (v int primary key) strict, without rowid",
