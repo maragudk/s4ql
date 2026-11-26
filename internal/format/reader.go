@@ -77,8 +77,7 @@ var unmarshalOptions = proto.UnmarshalOptions{RecursionLimit: 100, NoLazyDecodin
 //   - a record larger than [MaxRecordSize], and bytes that are not Protocol Buffers
 //
 // It skips an annotation of a kind it does not know. It does not refuse a field it does not know
-// inside an annotation, and an annotation it hands out can hold such fields, and values with no
-// known kind.
+// inside an annotation, and an annotation it hands out can hold such fields.
 //
 // It checks the bytes against the name of the commit object, their SHA-256 checksum, as it reads,
 // and reports a mismatch at the end. Until [CommitReader.Next] has reported the end with [io.EOF],

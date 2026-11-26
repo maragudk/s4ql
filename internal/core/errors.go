@@ -133,6 +133,12 @@ var (
 // errLeaseLost is the reason for [ErrNoLease] when another instance has taken the lease.
 var errLeaseLost = fmt.Errorf("%w: not_holder", ErrNoLease)
 
+// errTxEnded is the error of a call of a transaction whose connection has left the transaction of
+// the cache while the core holds it open, which SQLite does only when it rolls the transaction
+// back for an error, such as an I/O error. It is a local failure, which stops the instance: see
+// [DB.cacheError].
+var errTxEnded = errors.New("the transaction of the cache has ended")
+
 // errorKind of an error from the cache.
 type errorKind int
 
@@ -179,6 +185,24 @@ func classify(err error) errorKind {
 func ended(ctx context.Context, err error) bool {
 	ctxErr := ctx.Err()
 	return ctxErr != nil && errors.Is(err, ctxErr)
+}
+
+// harmless reports whether err, of a step of the cache on the connection c, is a stop for ctx that
+// left the transaction of the cache as it was: the error of ctx, which has ended, while c is still
+// in that transaction. SQLite stops a read for ctx and keeps the transaction, as
+// [sqlite.Stmt.StepContext] says. While the transaction of the core is open, which open says, a
+// connection that has left the transaction of the cache after an error has lost it to an error
+// that SQLite rolled it back for, whatever error the step gave: the error that harmless gives is
+// then one that wraps [errTxEnded], and not err, so that the error of ctx is not taken for a stop.
+// Otherwise it gives err.
+func (c *conn) harmless(ctx context.Context, open bool, err error) (bool, error) {
+	if err == nil {
+		return false, nil
+	}
+	if open && c.c.Autocommit() {
+		return false, fmt.Errorf("%w, after the error of a step: %v", errTxEnded, err)
+	}
+	return ended(ctx, err), err
 }
 
 // endedError is the error of ctx, which has ended: [context.Canceled] or [context.DeadlineExceeded],

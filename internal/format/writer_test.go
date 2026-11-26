@@ -65,7 +65,7 @@ func TestCommitWriter(t *testing.T) {
 		is.True(t, proto.Equal(dropTable("t"), items[5].change), "drop differs")
 		is.True(t, proto.Equal(createIndex("u_v", "u", descending(1), ascending(0)), items[6].change), "create index differs")
 		is.True(t, proto.Equal(dropIndex("u_w"), items[7].change), "drop index differs")
-		is.True(t, proto.Equal(statement("insert into t values (?, ?)", integer(1), text("a")), items[8].annotation), "first annotation differs")
+		is.True(t, proto.Equal(statement("insert into t values (?, ?)"), items[8].annotation), "first annotation differs")
 		is.True(t, proto.Equal(statement("drop table t"), items[9].annotation), "second annotation differs")
 	})
 
@@ -189,22 +189,6 @@ func TestCommitWriter(t *testing.T) {
 		is.Equal(t, 2, len(items))
 		is.True(t, proto.Equal(upsertRows("t", []uint32{0}, []*s4qlpb.Value{integer(1)}), items[0].change), "the first change differs")
 		is.True(t, proto.Equal(upsertRows("t", []uint32{1}, []*s4qlpb.Value{integer(3)}), items[1].change), "the second change differs")
-	})
-
-	t.Run("should write a parameter that is -0.0 with its sign, where a change must hold 0.0", func(t *testing.T) {
-		var b bytes.Buffer
-		w, err := format.NewCommitWriter(&b, format.EmptyLog, testCommitTime)
-		is.NotError(t, err)
-		is.NotError(t, w.UpsertRow("t", []uint32{0}, []*s4qlpb.Value{realValue(0)}))
-		is.NotError(t, w.Annotate(statement("insert into t values (?)", realValue(math.Copysign(0, -1)))))
-		name, err := w.Close()
-		is.NotError(t, err)
-
-		_, items, err := readAll(b.Bytes(), name)
-		is.NotError(t, err)
-		is.Equal(t, 2, len(items))
-		is.True(t, !math.Signbit(items[0].change.GetUpsertRows().GetRows()[0].GetValues()[0].GetReal()), "the row holds -0.0")
-		is.True(t, math.Signbit(items[1].annotation.GetStatement().GetParameters()[0].GetReal()), "the parameter lost its sign")
 	})
 
 	t.Run("should write and read back a default of every type, DEFAULT NULL apart from no default, and DEFAULT NULL on a column that does not take NULL and on the primary key", func(t *testing.T) {
@@ -453,18 +437,9 @@ func TestCommitWriter(t *testing.T) {
 		{name: "should refuse a statement whose SQL is not valid UTF-8", write: func(w *format.CommitWriter) error {
 			return w.Annotate(statement("select '\xff'"))
 		}},
-		{name: "should refuse a statement with a parameter without a kind", write: func(w *format.CommitWriter) error {
-			return w.Annotate(statement("select ?", &s4qlpb.Value{}))
-		}},
-		{name: "should refuse a statement with a parameter that is NaN", write: func(w *format.CommitWriter) error {
-			return w.Annotate(statement("select ?", realValue(math.NaN())))
-		}},
-		{name: "should refuse a statement with a parameter that is infinite", write: func(w *format.CommitWriter) error {
-			return w.Annotate(statement("select ?", realValue(math.Inf(-1))))
-		}},
-		{name: "should refuse a statement with a parameter that is text with the character NUL", write: func(w *format.CommitWriter) error {
-			return w.Annotate(statement("select ?", text("\x00")))
-		}},
+		{name: "should refuse a statement with parameters, which the format no longer holds", write: func(w *format.CommitWriter) error {
+			return w.Annotate(oldStatement("select ?", integer(1)))
+		}, why: "holds field 2"},
 	}
 	for _, test := range refused {
 		t.Run(test.name, func(t *testing.T) {
@@ -577,11 +552,7 @@ func FuzzCommitWriter(f *testing.F) {
 				c = dropIndex(table + "_i")
 				err = w.DropIndex(table + "_i")
 			case 5:
-				var parameters []*s4qlpb.Value
-				for range in.byte() % 3 {
-					parameters = append(parameters, in.value())
-				}
-				a := statement(strings.ToValidUTF8(in.string(), "?"), parameters...)
+				a := statement(strings.ToValidUTF8(in.string(), "?"))
 				if err := w.Annotate(a); err != nil {
 					t.Fatal(err)
 				}
@@ -756,7 +727,7 @@ func writeExample(t *testing.T, w interface{ Write([]byte) (int, error) }) forma
 	is.NotError(t, cw.DropTable("t"))
 	is.NotError(t, cw.CreateIndex(createIndex("u_v", "u", descending(1), ascending(0)).GetCreateIndex()))
 	is.NotError(t, cw.DropIndex("u_w"))
-	is.NotError(t, cw.Annotate(statement("insert into t values (?, ?)", integer(1), text("a"))))
+	is.NotError(t, cw.Annotate(statement("insert into t values (?, ?)")))
 	is.NotError(t, cw.Annotate(statement("drop table t")))
 	name, err := cw.Close()
 	is.NotError(t, err)

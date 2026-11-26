@@ -351,7 +351,7 @@ var plantable = map[string]func(b *bugs){
 	"checkOutside":          func(b *bugs) { b.checkOutside = true },
 	"keepOpen":              func(b *bugs) { b.keepOpen = true },
 	"keepRead":              func(b *bugs) { b.keepRead = true },
-	"annotateNext":          func(b *bugs) { b.annotateNext = true },
+	"argsNext":              func(b *bugs) { b.argsNext = true },
 	"keepFailed":            func(b *bugs) { b.keepFailed = true },
 	"readNewest":            func(b *bugs) { b.readNewest = true },
 	"rollbackKeeps":         func(b *bugs) { b.rollbackKeeps = true },
@@ -396,7 +396,6 @@ var plantable = map[string]func(b *bugs){
 	"commitFailed":          func(b *bugs) { b.commitFailed = true },
 	"commitLater":           func(b *bugs) { b.commitLater = true },
 	"annotateText":          func(b *bugs) { b.annotateText = true },
-	"argsFromStart":         func(b *bugs) { b.argsFromStart = true },
 	"undoInTx":              func(b *bugs) { b.undoInTx = true },
 	"firstResult":           func(b *bugs) { b.firstResult = true },
 }

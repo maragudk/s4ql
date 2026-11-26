@@ -88,6 +88,9 @@ type Options struct {
 	bugs bugs
 	// local is how the instance reaches its local files, which tests change to make them fail.
 	local local
+	// progressPeriod of every connection, as [sqlite.Conn.SetProgressPeriod] says, if it is not 0,
+	// which tests set to end a context at a chosen point of a step of the cache.
+	progressPeriod int
 }
 
 // syncs is how SQLite syncs the cache to disk: with synchronous = full, unless it is [syncsOff].
@@ -529,13 +532,14 @@ func stopOutcome(cause error) string {
 }
 
 // cacheError turns an error from the cache, during the given operation, into the error to return. A
-// local I/O failure stops the instance. "Busy" is logged and returned, and stops nothing. Any other
+// local I/O failure stops the instance, and so does a transaction of the cache that has ended under
+// the core, [errTxEnded]. "Busy" is logged and returned, and stops nothing. Any other
 // error is returned as it is.
 func (d *DB) cacheError(ctx context.Context, operation string, err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case classify(err) == kindLocal || errors.Is(err, ErrCacheVersion):
+	case classify(err) == kindLocal || errors.Is(err, ErrCacheVersion) || errors.Is(err, errTxEnded):
 		return d.stop(ctx, fmt.Errorf("%w: %v: %w", ErrLocal, operation, err))
 	case classify(err) == kindBusy:
 		d.event(ctx, slog.LevelWarn, eventBusy, slog.String(attrOperation, operation), slog.String(attrOutcome, "busy"), errAttr(err))

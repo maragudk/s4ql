@@ -132,9 +132,9 @@ func TestConn_ExecAll(t *testing.T) {
 		is.Equal(t, "t1 (v1 INT): 2 3\n", i.state())
 		is.Equal(t, fmt.Sprint([][]string{
 			{t1 + ";"},
-			{"insert into t1 (v1) values (?); with 1"},
-			{"update t1 set v1 = ? where v1 = ?; with 2 with 1"},
-			{"insert into t1 (v1) values (?); with 3"},
+			{"insert into t1 (v1) values (?);"},
+			{"update t1 set v1 = ? where v1 = ?;"},
+			{"insert into t1 (v1) values (?);"},
 		}), fmt.Sprint(logAnnotations(t, i.store)))
 	})
 

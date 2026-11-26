@@ -75,8 +75,8 @@ type Sequence struct {
 	step uint64
 	// The streams of the areas that start anew at each statement, as [stepStream] says. The stream
 	// of an area that is off in the profile panics at a draw.
-	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning, rSubquery, rArithmetic, rSeveral Rand
-	g                                                                                                                                            *Generator
+	rPlan, rTables, rInserts, rSelects, rChanges, rIndexes, rDefaults, rArguments, rOthers, rOrder, rReturning, rSubquery, rArithmetic, rSeveral, rTextFunctions Rand
+	g                                                                                                                                                            *Generator
 	// inner are the selects of the subqueries that the hooks of the statement that the sequence writes
 	// gave, for [Generator.Inner], by their numbers from 1.
 	inner []stmt.Select
@@ -95,6 +95,14 @@ type Sequence struct {
 	// the select and of its subqueries.
 	again  *Call
 	limits []int
+	// textAgain is the last call of a select, an update, or a delete with text, for
+	// [Profile.TextAgain], or nil, and textLimits are the numbers from 1 of the parameters of its
+	// LIMITs, of the select and of its subqueries.
+	textAgain  *Call
+	textLimits []int
+	// textEdges are the edges of the length limit that the statement that the sequence writes has a
+	// text at, as [Call.TextEdges] says.
+	textEdges []TextEdge
 	// selected are the conditions of the WHERE of the select that the sequence writes, as
 	// [Sequence.where] gave them, for its ORDER BY.
 	selected []stmt.Condition
@@ -299,7 +307,7 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	q.rPlan, q.rTables, q.rInserts, q.rSelects, q.rChanges = q.stream(areaPlan), q.stream(areaTables), q.stream(areaInserts), q.stream(areaSelects), q.stream(areaChanges)
 	q.rIndexes, q.rDefaults, q.rArguments, q.rOthers = q.stream(areaIndexes), q.stream(areaDefaults), q.stream(areaArguments), q.stream(areaOthers)
 	q.rOrder, q.rReturning, q.rSubquery, q.rArithmetic = q.stream(areaOrder), q.stream(areaReturning), q.stream(areaSubquery), q.stream(areaArithmetic)
-	q.rSeveral = q.stream(areaSeveral)
+	q.rSeveral, q.rTextFunctions = q.stream(areaSeveral), q.stream(areaTextFunctions)
 	r := q.entity(areaNames, "")
 	tableNames, columnNames := common[0], common[1]
 	for range max(1+r.IntN(2), p.TableNames) {
@@ -355,6 +363,10 @@ func newSequence(seed uint64, p *Profile) (*Sequence, error) {
 	if p.on(areaArithmetic) {
 		q.arithmeticHooks()
 	}
+	if p.on(areaTextFunctions) {
+		// After the hooks of arithmetic, whose conditions and assignments the hooks of text leave.
+		q.textHooks()
+	}
 	return q, nil
 }
 
@@ -379,6 +391,14 @@ func (q *Sequence) shapeOf(table stmt.Name) []stmt.Column {
 			typ = shape[r.IntN(i)].Type
 		}
 		shape = append(shape, stmt.Column{Name: stmt.Name{Value: folds[i]}, Type: typ, PrimaryKey: i == key})
+	}
+	if q.profile.TextShapes > 0 && r.IntN(q.profile.TextShapes) == 0 {
+		// A key of type TEXT, and each other column of type TEXT one time in two.
+		for i := range shape {
+			if shape[i].PrimaryKey || r.IntN(2) == 0 {
+				shape[i].Type = stmt.TypeText
+			}
+		}
 	}
 	// Of the columns outside the key, none takes NULL, every one does, or each one time in two.
 	nulls := r.IntN(3)
@@ -2228,6 +2248,20 @@ type Call struct {
 	// [Sequence.several] joined has one for each of its statements, so Supports can have more than
 	// Statements.
 	Supports []bool
+	// TextEdges are the texts of the statement that the generator wrote for an edge of the length
+	// limit [LengthLimit], by [Sequence.textEdge] and [Sequence.textEdgeConstant], each once, in the
+	// order of their first draw, so that a test counts a length at an edge that it measures only where
+	// the generator wrote that length. A call that runs an earlier text again, with other arguments,
+	// has none.
+	TextEdges []TextEdge
+}
+
+// TextEdge is a text that the generator wrote for an edge of the length limit: of a concatenation
+// for the Function 0, whose result is Length bytes long, or of lower or hex, whose argument is, on
+// the row of the text that it aimed it at, for a text with a column.
+type TextEdge struct {
+	Function stmt.Function
+	Length   int
 }
 
 // Integers of args, and true, if each is a Go integer without a name that fits a signed 64-bit
@@ -2429,7 +2463,7 @@ func (q *Sequence) next() Call {
 		// an integer from 0 to 4, which s4ql takes.
 		r := q.rSubquery
 		c := *q.again
-		c.Args = slices.Clone(c.Args)
+		c.Args, c.TextEdges = slices.Clone(c.Args), nil
 		for i, a := range c.Args {
 			if r.IntN(2) != 0 {
 				continue
@@ -2442,10 +2476,30 @@ func (q *Sequence) next() Call {
 		}
 		return c
 	}
+	if p.on(areaTextFunctions) && p.TextAgain > 0 && q.textAgain != nil && q.rTextFunctions.IntN(p.TextAgain) == 0 {
+		// The text of an earlier statement with text again, as a prepared statement runs, with each
+		// argument the same one time in two and otherwise another, but for a LIMIT.
+		r := q.rTextFunctions
+		c := *q.textAgain
+		c.Args, c.TextEdges = slices.Clone(c.Args), nil
+		for i, a := range c.Args {
+			if r.IntN(2) != 0 || slices.Contains(q.textLimits, i+1) {
+				continue
+			}
+			c.Args[i] = q.textLike(r, a)
+		}
+		return c
+	}
 	if p.on(areaArithmetic) && q.rArithmetic.IntN(8*p.Arithmetic) == 0 {
 		// A text that the statement pass refuses for its arithmetic.
 		r := q.rArithmetic
 		form := ArithmeticRefused[r.IntN(len(ArithmeticRefused))]
+		return Call{Src: fmt.Sprintf(form, q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))]), Query: r.IntN(2) == 0}
+	}
+	if p.on(areaTextFunctions) && q.rTextFunctions.IntN(8*p.TextFunctions) == 0 {
+		// A text that the statement pass refuses for its text.
+		r := q.rTextFunctions
+		form := TextRefused[r.IntN(len(TextRefused))]
 		return Call{Src: fmt.Sprintf(form, q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))]), Query: r.IntN(2) == 0}
 	}
 	if p.Others > 0 && q.rOthers.IntN(p.Others) == 0 {
@@ -2483,7 +2537,7 @@ func (q *Sequence) statement() Call {
 		k++
 	}
 	k = q.aim(r, k, p.Aim > 0 && r.IntN(4) < p.Aim)
-	q.inner = nil
+	q.inner, q.textEdges = nil, nil
 	src, s, args := q.g.CallOf(k)
 	if p.on(areaSubquery) {
 		// An argument of the LIMIT of a subquery that s4ql refuses, as for that of a select below.
@@ -2513,7 +2567,18 @@ func (q *Sequence) statement() Call {
 	}
 	// A query, and an insert, an update, or a delete with RETURNING, of slice 14, runs through Exec
 	// one time in eight, and every other statement through Query one time in eight.
-	c := Call{Src: src, Args: args, Query: (k == KindSelect || returns(s)) != (r.IntN(8) == 0), Supported: true}
+	c := Call{Src: src, Args: args, Query: (k == KindSelect || returns(s)) != (r.IntN(8) == 0), Supported: true, TextEdges: q.textEdges}
+	if p.on(areaTextFunctions) && hasText(s) {
+		q.textAgain, q.textLimits = &c, nil
+		if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 {
+			q.textLimits = append(q.textLimits, sel.Limit.Parameter)
+		}
+		for _, sub := range subqueriesOf(s) {
+			if sub.Limit.Parameter > 0 {
+				q.textLimits = append(q.textLimits, sub.Limit.Parameter)
+			}
+		}
+	}
 	if subqueriesOf(s) != nil {
 		q.again, q.limits = &c, nil
 		if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 {

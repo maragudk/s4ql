@@ -162,7 +162,7 @@ func TestReplay(t *testing.T) {
 			// A column that takes NULL.
 			is.NotError(t, cw.CreateTable(nullableTable(tableOf("t3", 1, "k", "x", "y"), 2)))
 			is.NotError(t, cw.UpsertRow("t3", []uint32{2, 0, 1}, row(nil, 1, 1)))
-			is.NotError(t, cw.Annotate(s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: new("insert"), Parameters: row("text", 1.5, nil)}.Build()}.Build()))
+			is.NotError(t, cw.Annotate(s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: new("insert")}.Build()}.Build()))
 		})
 		// Rows that list only some columns: only those change, in rows that are there.
 		l.commit(func(cw *format.CommitWriter) {
