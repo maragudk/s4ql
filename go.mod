@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.10
 	github.com/aws/smithy-go v1.28.9
 	google.golang.org/protobuf v1.36.12
+	hegel.dev/go/hegel v0.10.3
 	maragu.dev/is v0.3.1
 )
 
@@ -26,6 +27,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.39.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0 // indirect
+	github.com/ebitengine/purego v0.12.0-alpha.1.0.20261015130536-d456b1bb95e8 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 )
 
 tool google.golang.org/protobuf/cmd/protoc-gen-go
