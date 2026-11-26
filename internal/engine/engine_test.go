@@ -2808,6 +2808,70 @@ func TestEngine_updateOrder(t *testing.T) {
 
 		w.run("update t set x = nx, c = ? where a > 0", strings.Repeat("c", 600))
 	})
+
+	// Each row of t gives NULL to a column of its own, which does not take it: the row of the key 1
+	// to x, 2 to y, and 3 to z. In the order of the key the rows are 1, 2, 3; in that of ia and of
+	// iab, which holds the same b in every row, 2, 1, 3; and in that of iad, in place of both, 3, 1,
+	// 2. u holds the value of a subquery.
+	setup := []string{
+		"create table t (k int primary key, a int, b int, x int not null, y int not null, z int not null, nx int, ny int, nz int) strict, without rowid",
+		"create index ia on t (a)", "create index iab on t (b, a)",
+		"insert into t values (1, 20, 5, 1, 1, 1, null, 1, 1)",
+		"insert into t values (2, 10, 5, 1, 1, 1, 1, null, 1)",
+		"insert into t values (3, 30, 5, 1, 1, 1, 1, 1, null)",
+		"create table u (k int primary key, v int) strict, without rowid", "insert into u values (1, 0)",
+	}
+	for _, c := range []struct {
+		name, src, want string
+	}{
+		{name: "should change the rows of a range of the key in the order of the key", src: "update t set x = nx, y = ny, z = nz where k > 0", want: "t.x"},
+		{name: "should change the rows of a range of an index in the order of the index", src: "update t set x = nx, y = ny, z = nz where a > 0 and a < 100", want: "t.y"},
+		{name: "should change the rows of an equality of an index in the order of the rest of its key", src: "update t set x = nx, y = ny, z = nz where b = 5", want: "t.y"},
+		{name: "should change the rows of a range of a descending index in the order of the index, backward", src: "update t set x = nx, y = ny, z = nz where a < 100 and a >= 0", want: "t.z"},
+		{name: "should change the rows of a scan in the order of the key", src: "update t set x = nx, y = ny, z = nz where x = 1", want: "t.x"},
+		{name: "should change the rows in the order of the key when the update changes the key", src: "update t set k = k + 10, x = nx, y = ny, z = nz where a > 0", want: "t.x"},
+		{name: "should change the rows in the order of the key when the update sets the key to itself", src: "update t set k = k, x = nx, y = ny, z = nz where a > 0", want: "t.x"},
+		{name: "should change the rows in the order of the key when the update sets a column of the index that it reads by", src: "update t set a = a, x = nx, y = ny, z = nz where a > 0", want: "t.x"},
+		{name: "should change the rows in the order of the index when the update sets a column of another index", src: "update t set b = b, x = nx, y = ny, z = nz where a > 0", want: "t.y"},
+		{name: "should change the rows in the order of the key when the WHERE has a subquery", src: "update t set x = nx, y = ny, z = nz where a > (select v from u where k = 1)", want: "t.x"},
+		{name: "should change the rows in the order of the key when the update has RETURNING", src: "update t set x = nx, y = ny, z = nz where a > 0 returning k", want: "t.x"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := setup
+			if strings.Contains(c.name, "descending") {
+				s = slices.Delete(slices.Clone(setup), 1, 2)
+				s[1] = "create index iad on t (a desc)"
+			}
+			w := newChangeTrio(t, 0, s...)
+			is.Equal(t, "19/1299: NOT NULL constraint failed: "+c.want, w.run(c.src).err, c.src)
+		})
+	}
+
+	// In one pass, SQLite finds, checks, and writes a row before it reads the next, so the error of
+	// the WHERE of a later row comes after that of the SET of an earlier one. In two passes, every
+	// WHERE is evaluated first. The row of the key 2 comes first in ia, and gives NULL to x; that of
+	// the key 1 is too long for the WHERE.
+	oneOrTwo := []string{
+		"create table t (k int primary key, a int, x int not null, nx int, s text) strict, without rowid",
+		"create index ia on t (a)",
+		"insert into t values (1, 20, 1, 1, '" + strings.Repeat("s", 600) + "')",
+		"insert into t values (2, 10, 1, null, '')",
+	}
+	t.Run("should give the error of the SET of a row before that of the WHERE of a later row, in one pass", func(t *testing.T) {
+		// The instance that reads every row reads the row of the key 1 first, whose WHERE fails before
+		// any row is found, as the rows whose WHERE is evaluated depend on the access.
+		w := newChangeTrio(t, 1000, oneOrTwo...)
+		src, arg := "update t set x = nx where a > 0 and s || ? > ''", strings.Repeat("c", 500)
+		want := w.o.run(t, src, arg)
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", want.err)
+		is.Equal(t, want.String(), w.byKey.execValues(src, values([]any{arg})).String())
+		is.Equal(t, w.o.state(t), w.byKey.state())
+	})
+
+	t.Run("should give the error of the WHERE of any row before that of a SET, in two passes", func(t *testing.T) {
+		w := newChangeTrio(t, 1000, oneOrTwo...)
+		is.Equal(t, "18/18: string or blob too big", w.run("update t set a = a, x = nx where a > 0 and s || ? > ''", strings.Repeat("c", 500)).err)
+	})
 }
 
 // flipContext is a context whose Err gives [context.Canceled] once it has been called n times, where

@@ -765,7 +765,7 @@ func (readOnly) insertNew(context.Context, string, []*s4qlpb.Value) (bool, error
 	return false, nil
 }
 func (readOnly) delete(context.Context, string, []*s4qlpb.Value) (bool, error) { return false, nil }
-func (readOnly) keys(context.Context, string, func(keySet) error) error        { return nil }
+func (readOnly) keys(context.Context, string, []core.KeyColumn, func(keySet) error) error { return nil }
 
 // query runs the plan q, with args for its parameters, in a read transaction of its own, and gives
 // its rows, which hold the transaction until they end. The transaction ends if the rows cannot be

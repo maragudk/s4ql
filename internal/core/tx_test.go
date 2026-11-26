@@ -3551,6 +3551,114 @@ func TestTx_Keys(t *testing.T) {
 	})
 }
 
+func TestTx_KeysBy(t *testing.T) {
+	// ordered is a table of the primary key c0 and the columns c1, an integer, c2, a text, and c3, a
+	// real, which take NULL, with the index ix on c1 descending and c2 ascending, which holds many
+	// rows that tie in c1 and in both, and NULL in each.
+	ordered := func(t *testing.T, tx *core.Tx) (*s4qlpb.CreateTable, *s4qlpb.CreateIndex) {
+		t.Helper()
+		ct := nullableTable(typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL), 1, 2, 3)
+		ix := indexOf("ix", "t", desc(1), 2)
+		is.NotError(t, tx.CreateTable(t.Context(), ct))
+		is.NotError(t, tx.CreateIndex(t.Context(), ix))
+		r := rand.New(rand.NewPCG(3, 4))
+		maybe := func(v any) any {
+			if r.IntN(4) == 0 {
+				return nil
+			}
+			return v
+		}
+		for k := range 300 {
+			is.NotError(t, tx.Upsert(t.Context(), "t", row(k*7%300, maybe(r.IntN(5)), maybe(fmt.Sprint(r.IntN(3))), maybe(float64(r.IntN(3))))))
+		}
+		return ct, ix
+	}
+	// valuesOf the columns by of the row.
+	valuesOf := func(by []core.KeyColumn, r []*s4qlpb.Value) []*s4qlpb.Value {
+		var vs []*s4qlpb.Value
+		for _, c := range by {
+			vs = append(vs, r[c.Position])
+		}
+		return vs
+	}
+
+	t.Run("should give each key once in the order of the columns, as the index of those columns holds the rows, whatever the order of the adds", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			ct, ix := ordered(t, tx)
+			by := core.IndexKey(ct, ix)
+			var want []string
+			for _, r := range scanBy(t, tx, "t", core.IndexScan{Index: "ix"}) {
+				want = append(want, strings.SplitN(r, ",", 2)[0])
+			}
+			var rows [][]*s4qlpb.Value
+			for r, err := range tx.Scan(t.Context(), "t") {
+				is.NotError(t, err)
+				rows = append(rows, r)
+			}
+			rand.New(rand.NewPCG(5, 6)).Shuffle(len(rows), func(i, j int) { rows[i], rows[j] = rows[j], rows[i] })
+			is.NotError(t, tx.KeysBy(t.Context(), "t", by, func(k *core.KeySet) error {
+				for _, r := range append(rows, rows...) {
+					is.NotError(t, k.Add(t.Context(), valuesOf(by, r)))
+				}
+				is.Equal(t, 300, len(want))
+				is.EqualSlice(t, want, keysOf(t, k))
+				return nil
+			}))
+		})
+	})
+
+	t.Run("should let the transaction change the table between two keys, and take no key once the keys are read", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			ct, ix := ordered(t, tx)
+			by := core.IndexKey(ct, ix)
+			is.NotError(t, tx.KeysBy(t.Context(), "t", by, func(k *core.KeySet) error {
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(2, 1, "b", nil))))
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(1, 1, "a", nil))))
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(3, nil, "a", nil))))
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(4, 2, nil, nil))))
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(5, 1, nil, nil))))
+				var got []string
+				for key, err := range k.All(t.Context()) {
+					is.NotError(t, err)
+					got = append(got, text(key))
+					found, err := tx.Delete(t.Context(), "t", key)
+					is.NotError(t, err)
+					is.True(t, found)
+					is.Error(t, core.ErrInvalid, k.Add(t.Context(), valuesOf(by, row(6, 1, "a", nil))))
+				}
+				// c1 descending, NULL last, and then c2 ascending, NULL first.
+				is.EqualSlice(t, []string{"4", "5", "1", "2", "3"}, got)
+				return nil
+			}))
+		})
+	})
+
+	t.Run("should refuse an order without every column of the primary key, or with a column twice or that the table does not have, and a key of another length", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			ordered(t, tx)
+			for _, by := range [][]core.KeyColumn{{}, {{Position: 1}}, {{Position: 0}, {Position: 0}}, {{Position: 0}, {Position: 9}}, {{Position: -1}, {Position: 0}}} {
+				is.Error(t, core.ErrInvalid, tx.KeysBy(t.Context(), "t", by, func(*core.KeySet) error {
+					t.Fatal("f runs for an order that is refused")
+					return nil
+				}), fmt.Sprint(by))
+			}
+			is.NotError(t, tx.KeysBy(t.Context(), "t", []core.KeyColumn{{Position: 1}, {Position: 0}}, func(k *core.KeySet) error {
+				is.Error(t, core.ErrInvalid, k.Add(t.Context(), row(1)))
+				is.Error(t, core.ErrInvalid, k.Add(t.Context(), row(1, "a")))
+				is.NotError(t, k.Add(t.Context(), row(nil, 1)))
+				is.EqualSlice(t, []string{"1"}, keysOf(t, k))
+				return nil
+			}))
+		})
+	})
+}
+
 // armingSpool is a spool file that calls arm before each write. It does not embed the file, so that
 // no method of the file, such as ReadFrom, goes around arm.
 type armingSpool struct {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -555,7 +556,7 @@ func (tx *Tx) touch(t *table, key []*s4qlpb.Value, existed bool) error {
 		tx.temps++
 		names := []string{fmt.Sprint("s4ql_touched_", tx.temps), fmt.Sprint("s4ql_existed_", tx.temps)}
 		for _, name := range names {
-			if err := tx.createKeyTable(t, name); err != nil {
+			if err := tx.createKeyTable(t, name, nil); err != nil {
 				return err
 			}
 		}
@@ -569,24 +570,53 @@ func (tx *Tx) touch(t *table, key []*s4qlpb.Value, existed bool) error {
 }
 
 // createKeyTable makes the temporary table of the given name that holds primary keys of the table
-// t, and nothing else: a column k0, k1, and so on, of the type of each column of the key, in key
-// order, which are its primary key.
-func (tx *Tx) createKeyTable(t *table, name string) error {
+// t, and nothing else: for a nil by, a column k0, k1, and so on, of the type of each column of the
+// key, in key order, which are its primary key. For a set of [Tx.KeysBy] in the order by, it has a
+// column c0, c1, and so on, of the type of each column of by, whose columns of the primary key are
+// unique, and beside it the table of the name with the suffix _sorted, whose column n numbers the
+// keys k0, k1, and so on in their order.
+func (tx *Tx) createKeyTable(t *table, name string, by []KeyColumn) error {
+	typed := func(b *strings.Builder, prefix string, positions []int) error {
+		for i, position := range positions {
+			typ, err := typeSQL(t.columns[position].typ)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(b, prefix, i, " ", typ, ", ")
+		}
+		return nil
+	}
 	var b strings.Builder
 	b.WriteString("create table temp.")
 	b.WriteString(quote(name))
 	b.WriteString(" (")
-	for i, position := range t.key {
-		typ, err := typeSQL(t.columns[position].typ)
-		if err != nil {
+	if by == nil {
+		if err := typed(&b, "k", t.key); err != nil {
 			return err
 		}
-		fmt.Fprint(&b, "k", i, " ", typ, ", ")
+		b.WriteString("primary key (")
+		b.WriteString(keyColumns("", len(t.key)))
+		b.WriteString(")) strict, without rowid")
+		return tx.c.c.Exec(b.String())
 	}
-	b.WriteString("primary key (")
-	b.WriteString(keyColumns("", len(t.key)))
-	b.WriteString(")) strict, without rowid")
-	return tx.c.c.Exec(b.String())
+	positions := make([]int, len(by))
+	for i, c := range by {
+		positions[i] = c.Position
+	}
+	if err := typed(&b, "c", positions); err != nil {
+		return err
+	}
+	_, keyed := orderColumns(t, by)
+	fmt.Fprint(&b, "unique (", keyed, ")) strict")
+	if err := tx.c.c.Exec(b.String()); err != nil {
+		return err
+	}
+	var sorted strings.Builder
+	fmt.Fprint(&sorted, "create table temp.", quote(name+"_sorted"), " (n integer primary key, ")
+	if err := typed(&sorted, "k", t.key); err != nil {
+		return err
+	}
+	return tx.c.c.Exec(strings.TrimSuffix(sorted.String(), ", ") + ") strict")
 }
 
 // dropTouched drops the temporary tables of the keys that the transaction touched in the table of
@@ -727,14 +757,22 @@ func (tx *Tx) Delete(ctx context.Context, name string, key []*s4qlpb.Value) (boo
 }
 
 // KeySet is a set of primary keys of one table, which a write transaction holds in a temporary table
-// of the cache, so that it can hold any number of keys. It lasts for the call of [Tx.Keys] that
-// gives it.
+// of the cache, so that it can hold any number of keys. It lasts for the call of [Tx.Keys] or
+// [Tx.KeysBy] that gives it.
 type KeySet struct {
 	tx *Tx
 	t  *table
+	// by is the order of a set of [Tx.KeysBy], the columns of the table whose values [KeySet.Add]
+	// takes, and nil for a set of [Tx.Keys], which is in the order of the primary key.
+	by []KeyColumn
 	// add, first, and next are the statements of [KeySet.Add] and [KeySet.All], each on the
-	// temporary table of the set.
+	// temporary table of the set. For a set with by, first is unused and next reads the sorted table.
 	add, first, next string
+	// sorted is the temporary table of a set with by, in which the first read of [KeySet.All]
+	// numbers its keys in their order with the statement sort, and in which next reads them.
+	sorted, sort string
+	// isSorted is whether sort has run, after which the set takes no key.
+	isSorted bool
 	// gone is set when the call of [Tx.Keys] ends, which drops the set.
 	gone bool
 }
@@ -752,6 +790,30 @@ type KeySet struct {
 // with a statement that has ended before the row of the key changes. The set is in the cache, so
 // neither holds rows in memory, and the rows that the statement writes never come back to it.
 func (tx *Tx) Keys(ctx context.Context, name string, f func(*KeySet) error) error {
+	return tx.keys(ctx, name, nil, f)
+}
+
+// KeysBy runs f as [Tx.Keys] does, with an empty set of primary keys of the table with the given
+// name whose [KeySet.All] gives them in another order: by the values of the columns by of the row of
+// each key, each ascending, or descending if it says so, as SQLite orders the values of a column, so
+// NULL before every value ascending and after every value descending. The columns by are columns of
+// the table, each once, and they hold every column of the primary key, as the key of an index does
+// that [IndexKey] gives, so that the order is total. [KeySet.Add] takes the values of the columns
+// by, and the set takes no key once All has begun. It fails before f with an error that wraps
+// [ErrInvalid] for columns by that are not such columns.
+//
+// It is for a statement that changes its rows in the order in which a scan by an index finds them,
+// as SQLite's UPDATE does when it changes each row as it finds it: the order does not depend on the
+// order in which the keys are added.
+func (tx *Tx) KeysBy(ctx context.Context, name string, by []KeyColumn, f func(*KeySet) error) error {
+	if by == nil {
+		by = []KeyColumn{}
+	}
+	return tx.keys(ctx, name, by, f)
+}
+
+// keys is [Tx.Keys] for a nil by, and [Tx.KeysBy] otherwise.
+func (tx *Tx) keys(ctx context.Context, name string, by []KeyColumn, f func(*KeySet) error) error {
 	const operation = "keys"
 	if err := tx.check(ctx, operation); err != nil {
 		return err
@@ -761,30 +823,79 @@ func (tx *Tx) Keys(ctx context.Context, name string, f func(*KeySet) error) erro
 		tx.leave(ctx)
 		return err
 	}
+	if by != nil {
+		if err := t.checkOrder(by); err != nil {
+			tx.leave(ctx)
+			return err
+		}
+	}
 	tx.temps++
 	temp := fmt.Sprint("s4ql_keys_", tx.temps)
-	if err := tx.createKeyTable(t, temp); err != nil {
+	if err := tx.createKeyTable(t, temp, by); err != nil {
 		tx.leave(ctx)
 		return tx.fail(ctx, operation, err)
 	}
 	tx.leave(ctx)
 
-	columns := keyColumns("", len(t.key))
-	from := fmt.Sprint(" from temp.", quote(temp))
-	k := &KeySet{
-		tx:    tx,
-		t:     t,
-		add:   fmt.Sprint("insert or ignore into temp.", quote(temp), " values (", placeholders(len(t.key)), ")"),
-		first: fmt.Sprint("select ", columns, from, " order by ", columns, " limit 1"),
-		next:  fmt.Sprint("select ", columns, from, " where (", columns, ") > (", placeholders(len(t.key)), ") order by ", columns, " limit 1"),
+	k := &KeySet{tx: tx, t: t, by: by}
+	if by == nil {
+		columns := keyColumns("", len(t.key))
+		from := fmt.Sprint(" from temp.", quote(temp))
+		k.add = fmt.Sprint("insert or ignore into temp.", quote(temp), " values (", placeholders(len(t.key)), ")")
+		k.first = fmt.Sprint("select ", columns, from, " order by ", columns, " limit 1")
+		k.next = fmt.Sprint("select ", columns, from, " where (", columns, ") > (", placeholders(len(t.key)), ") order by ", columns, " limit 1")
+	} else {
+		k.sorted = temp + "_sorted"
+		terms, keyed := orderColumns(t, by)
+		k.add = fmt.Sprint("insert or ignore into temp.", quote(temp), " values (", placeholders(len(by)), ")")
+		k.sort = fmt.Sprint("insert into temp.", quote(k.sorted), " select row_number() over (order by ", terms, "), ", keyed, " from temp.", quote(temp))
+		k.next = fmt.Sprint("select n, ", keyColumns("", len(t.key)), " from temp.", quote(k.sorted), " where n > ? order by n limit 1")
 	}
 	err = f(k)
 	k.gone = true
 	return cmp.Or(err, tx.dropKeys(ctx, temp, k))
 }
 
-// dropKeys drops the temporary table temp of the set k, and the statements on it that are at rest,
-// unless the transaction can only be rolled back, which drops it then.
+// checkOrder of a set of [Tx.KeysBy] of the table: by holds columns of the table, each once, and
+// every column of the primary key.
+func (t *table) checkOrder(by []KeyColumn) error {
+	seen := make([]bool, len(t.columns))
+	for _, c := range by {
+		if c.Position < 0 || c.Position >= len(t.columns) || seen[c.Position] {
+			return invalidf("an order of keys of the table %q by the columns %v", t.name, by)
+		}
+		seen[c.Position] = true
+	}
+	for _, position := range t.key {
+		if !seen[position] {
+			return invalidf("an order of keys of the table %q by the columns %v, without the key column %v", t.name, by, position)
+		}
+	}
+	return nil
+}
+
+// orderColumns of a set of the table t in the order by, which [table.checkOrder] took, whose
+// temporary table has the columns c0, c1, and so on, one for each column of by: the terms of the
+// ORDER BY of its order, and its columns of the primary key, in key order.
+func orderColumns(t *table, by []KeyColumn) (terms, keyed string) {
+	names, order := make([]string, len(by)), make([]string, len(by))
+	for i, c := range by {
+		names[i] = fmt.Sprint("c", i)
+		order[i] = names[i]
+		if c.Descending {
+			order[i] += " desc"
+		}
+	}
+	key := make([]string, len(t.key))
+	for i, position := range t.key {
+		key[i] = names[slices.IndexFunc(by, func(c KeyColumn) bool { return c.Position == position })]
+	}
+	return strings.Join(order, ", "), strings.Join(key, ", ")
+}
+
+// dropKeys drops the temporary tables temp of the set k, and its sorted table if it was made, and
+// the statements on them that are at rest, unless the transaction can only be rolled back, which
+// drops them then.
 func (tx *Tx) dropKeys(ctx context.Context, temp string, k *KeySet) error {
 	const operation = "drop keys"
 	if err := tx.checkOpen(); err != nil {
@@ -794,31 +905,45 @@ func (tx *Tx) dropKeys(ctx context.Context, temp string, k *KeySet) error {
 		return err
 	}
 	defer tx.leave(ctx)
-	for _, sql := range []string{k.add, k.first, k.next} {
-		if s, ok := tx.c.stmts[sql]; ok {
+	for _, sql := range []string{k.add, k.first, k.next, k.sort} {
+		if s, ok := tx.c.stmts[sql]; ok && sql != "" {
 			delete(tx.c.stmts, sql)
 			if err := s.Finalize(); err != nil {
 				return tx.fail(ctx, operation, err)
 			}
 		}
 	}
-	return tx.fail(ctx, operation, tx.c.c.Exec(fmt.Sprint("drop table temp.", quote(temp))))
+	tables := []string{temp}
+	if k.sorted != "" {
+		tables = append(tables, k.sorted)
+	}
+	for _, name := range tables {
+		if err := tx.c.c.Exec(fmt.Sprint("drop table temp.", quote(name))); err != nil {
+			return tx.fail(ctx, operation, err)
+		}
+	}
+	return nil
 }
 
 // Add the key to the set, unless the set has it. The key has a value for each primary-key column of
-// the table, in key order. It fails as [Tx.Delete] does, and with an error that wraps [ErrInvalid]
-// once the call of [Tx.Keys] has ended.
+// the table, in key order, and for a set of [Tx.KeysBy] a value for each column of its order
+// instead, in that order, which are the values of the row of the key. It fails as [Tx.Delete] does,
+// and with an error that wraps [ErrInvalid] once the call of [Tx.Keys] has ended, and for a set of
+// [Tx.KeysBy] once [KeySet.All] has begun.
 func (k *KeySet) Add(ctx context.Context, key []*s4qlpb.Value) error {
 	const operation = "add key"
 	if k.gone {
 		return invalidf("a key added to a set that is gone")
+	}
+	if k.isSorted {
+		return invalidf("a key added to an ordered set that is read")
 	}
 	tx := k.tx
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
 	defer tx.leave(ctx)
-	if err := k.t.checkKey(key, tx.c.limit); err != nil {
+	if err := k.checkKey(key, tx.c.limit); err != nil {
 		return err
 	}
 	if err := tx.c.exec(k.add, values(key)...); err != nil {
@@ -830,13 +955,38 @@ func (k *KeySet) Add(ctx context.Context, key []*s4qlpb.Value) error {
 	return nil
 }
 
+// checkKey that [KeySet.Add] takes: a valid value of the table for each column of the primary key,
+// or of the order of a set of [Tx.KeysBy], as [table.checkValue] checks it.
+func (k *KeySet) checkKey(key []*s4qlpb.Value, limit int) error {
+	t := k.t
+	if k.by == nil {
+		return t.checkKey(key, limit)
+	}
+	if len(key) != len(k.by) {
+		return invalidf("a key of %v values for an order of keys of the table %q by %v columns", len(key), t.name, len(k.by))
+	}
+	for i, v := range key {
+		if err := t.checkValue(k.by[i].Position, v, limit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // All keys of the set, in the order of the primary key, as SQLite compares keys. Each is read by a
 // statement of its own, which has ended when All gives the key: the least key of the set that is
 // greater than the one before it. So the transaction can change any table, the set among them,
 // between two keys, and All gives a key that is added then if it is greater than the last. The
 // sequence ends with an error if a read fails, and with one that wraps [ErrInvalid] once the call of
 // [Tx.Keys] has ended.
+//
+// For a set of [Tx.KeysBy], All gives the keys in the order of the set, as KeysBy says. Its first
+// read numbers the keys in that order, after which the set takes no key, and each key is read by a
+// statement of its own, as above, so the transaction can change any table between two keys.
 func (k *KeySet) All(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	if k.by != nil {
+		return k.allSorted(ctx)
+	}
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		var last []*s4qlpb.Value
 		for {
@@ -851,6 +1001,73 @@ func (k *KeySet) All(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 			last = key
 		}
 	}
+}
+
+// allSorted is [KeySet.All] of a set of [Tx.KeysBy].
+func (k *KeySet) allSorted(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	return func(yield func([]*s4qlpb.Value, error) bool) {
+		if err := k.numbered(ctx); err != nil {
+			yield(nil, err)
+			return
+		}
+		var n int64
+		for {
+			key, err := k.numberedAfter(ctx, &n)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if key == nil || !yield(key, nil) {
+				return
+			}
+		}
+	}
+}
+
+// numbered numbers the keys of a set of [Tx.KeysBy] in its order, once.
+func (k *KeySet) numbered(ctx context.Context) error {
+	const operation = "sort keys"
+	if k.gone {
+		return invalidf("keys read from a set that is gone")
+	}
+	if k.isSorted {
+		return nil
+	}
+	tx := k.tx
+	if err := tx.check(ctx, operation); err != nil {
+		return err
+	}
+	defer tx.leave(ctx)
+	// SQLite builds a record of what it sorts for each key, which can be longer than the length limit
+	// where the key is not: see conn.unlimited. The keys that it writes are no longer than the rows
+	// that they are of.
+	if err := tx.c.unlimited(func() error { return tx.c.exec(k.sort) }); err != nil {
+		return tx.fail(ctx, operation, err)
+	}
+	k.isSorted = true
+	return nil
+}
+
+// numberedAfter gives the key of a set of [Tx.KeysBy] that is numbered next after *n, and sets *n to
+// its number, or gives nil if there is none.
+func (k *KeySet) numberedAfter(ctx context.Context, n *int64) ([]*s4qlpb.Value, error) {
+	const operation = "read keys"
+	if k.gone {
+		return nil, invalidf("keys read from a set that is gone")
+	}
+	tx := k.tx
+	if err := tx.check(ctx, operation); err != nil {
+		return nil, err
+	}
+	defer tx.leave(ctx)
+	var key []*s4qlpb.Value
+	err := tx.c.query(k.next, func(s *sqlite.Stmt) error {
+		*n = s.ColumnInt64(0)
+		var err error
+		key, err = readRow(s, 1, len(k.t.key))
+		return err
+	}, *n)
+	return key, tx.fail(ctx, operation, err)
 }
 
 // after gives the least key of the set that is greater than last, or the least key if last is nil,
