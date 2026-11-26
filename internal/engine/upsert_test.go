@@ -931,10 +931,10 @@ func TestPair_upsert(t *testing.T) {
 				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = 'q' where ? || ? || a = 'x'", Args: []any{key, x, y}},
 				{Src: "insert into q (id, a, b) values (?, 'p', ?) on conflict (id) do update set a = excluded.b || excluded.b", Args: []any{key, x}},
 				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = excluded.a || ? returning *", Args: []any{key, x}},
-				{Src: "delete from q where id = '9'"},
 			} {
 				c.Query = strings.Contains(c.Src, "returning")
 				is.Equal(t, "", p.step(c), c.Src)
+				is.Equal(t, "", p.step(stmttest.Call{Src: "delete from q where id = '9'"}))
 			}
 		}
 		is.True(t, y2[comparedWithSQLite] > 0)
