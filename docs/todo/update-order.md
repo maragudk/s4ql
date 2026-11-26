@@ -59,3 +59,16 @@ Decided by the builder on 2026-11-26, after an independent review of step 2 time
 ## Open: where SQLite's planner decides
 
 The cases of "Where SQLite's planner decides" above are not matched: in each, the engine changes the rows in the order of the rules' access, and SQLite in that of its own. `excusedPlannerOrder` excuses them in the generated checks, checked row by row in each order, and no test requires SQLite's error for them. The smallest statement: `create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid`, `create index ia on t (a)`, the rows `(1, 20, 1, 1, null, 1)` and `(2, 10, 1, 1, 1, null)`, and `update t set x = nx, y = ny` gives `NOT NULL constraint failed: t.y` in SQLite, which reads through `ia`, and `t.x` in s4ql. To match them, the rules of the access of an update would have to be SQLite's estimate of costs: for a scan of every row, the width of each index and of the table by the declared types of their columns (`estimateIndexWidth` and `estimateTableWidth` in SQLite), with the index created last first among equals. That is a question of design for the lead: whether the rules of the access may follow SQLite's costs for an update, or whether the order of a one-pass update stays that of the rules.
+
+## Step 4: the replay read as an adversary, and landed
+
+Decided by the builder on 2026-11-26.
+
+- **No fault found in the replay.** Every path that fails after the first run takes its changes back: a statement of its own with the transaction, and one in a transaction with the roll back to the savepoint that `runSink` opens again. An error of the context, of the cache, or of the storage during the replay is given as it is, and the transaction is then as before the statement. RETURNING never replays, since SQLite runs it in two passes in the order of the key. The sets of `core.Tx.KeysBy` are dropped when their call ends, also when it fails, so a replay leaves no temporary table behind in a long transaction.
+- **`TestEngine_cancelChange` cancels an update by an index that fails for a row** at each call of its context's `Err` in turn, through the run and the replay, of its own and in a transaction that goes on and commits: each cancel gives the context's error and changes nothing, and the update gives SQLite's error once it is no longer canceled. It is the only test that fails when `writeIn` runs the sink without `runSink`, since the transaction case of `TestEngine_updateOrder` gives the same error in both orders.
+- **The planted bug `evalStops` at 1,000 seeds** passed: 174 seeds of the profile `arithmetic` find it, 153 of them in SQLite too, in 152 s.
+
+## Open
+
+- **A generator that reaches the case,** as "What the generated checks did, and do now" says, after which the kind is required in `testdata/reached/TestDifferential.kinds`.
+- **The five cases where SQLite's planner decides,** as "Open: where SQLite's planner decides" says: a question of design for the lead.

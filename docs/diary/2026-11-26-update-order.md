@@ -158,3 +158,49 @@ At the nightly's sizes after the last change of code (0919f73c), run at once on 
 ### Future work
 
 The generator that reaches the kind, as in step 2. Whether the rules of an update's access follow SQLite's costs stays the lead's question.
+
+## Step 4: read the replay as an adversary, close two gaps, and land
+
+**Author:** builder (update-order-land)
+
+### Prompt Context
+
+**Verbatim prompt:** "You come fresh to a finished branch: first read one new piece of it as an adversary, then close two gaps, then land it. [...] 1. **Read the replay as an adversary** [...] Plant at least five faults of your own choosing in the replay, one at a time, never committed, and see that each fails a short test; add a test where one does not. 2. **Close the two gaps the builder named.** A test of an update by an index whose context ends during the first run and during the replay. And the planted bug that the builder changed so that it stops the replay and succeeds has not been run at the nightly's size [...] 4. **Land.** Merge `origin/main` [...]" (abridged; the brief is the lead's)
+**Interpretation:** look for a path of `runSink`, `runSavepointed`, and `update.replay` that keeps the first run's changes, gives success for a failure, or leaves the transaction in another state than the caller is told; prove the tests by planted faults; add the cancel test; run `evalStops` at 1,000 seeds; merge `main` and land.
+**Inferred intent:** trust in the replay, which no independent reader had seen, before it reaches `main`.
+
+### What I did
+
+- Read the diff of `runSink`, `runSavepointed`, `replayer`, and `failsRow` against the merge base, with `core.Tx.Savepoint`, `Release`, `RollbackTo`, and `keys` in `/internal/core/tx.go`, `writeIn` in `/internal/engine/tx.go`, and `ExecAll` in `/internal/engine/several.go`. No fault found; the reasons are in `/docs/todo/update-order.md`, step 4.
+- Added a case to `TestEngine_cancelChange` in `/internal/engine/engine_test.go`: 40 rows, `ia (a)` in the reverse order of the key, the key 20 gives NULL to y and the key 25 to x, so the run changes 20 rows and fails with `t.y` and the replay changes 14 and fails with `t.x`. The context is canceled at each call of `Err` in turn; each cancel must give `context.Canceled` and leave the oracle's rows, and the last run SQLite's error. Of its own and in a transaction that goes on, commits, and survives a replay of the log.
+- Planted seven faults, one at a time, never committed, each run against `go test -count=1 -run 'TestEngine_updateOrder|TestRunSink|TestEngine_cancelChange' ./internal/engine/`: `release` in place of `rollbackTo` in `runSink` (caught by `TestRunSink`, two cases of `TestEngine_updateOrder`, and the new case); the replay's `context.Canceled` turned into the run's error (only the new case); no savepoint opened again after the roll back (`TestRunSink`, the transaction case, the new case); a replay that succeeds accepted (`TestRunSink`); the replay without `onePass` (the case of the SET before a later WHERE); `writeIn` with `s.run` in place of `runSink` (only the new case); `rollbackTo` in place of `release` after a run in `runSavepointed`, which takes back every successful update by an index of its own (`TestRunSink` and `TestEngine_paths` in `go test -short ./internal/engine/`).
+- `S4QL_ENGINE_SIM_SEEDS=1000 go test -count=1 -run '^TestSimulation_plantedBugs$/.*Stops' -v -timeout 120m ./internal/engine/` from a copy of the tree in `/Volumes/990/s4ql/update-order-land/src`, with `GOTMPDIR` and `TMPDIR` there: passed, "174 of 1000 seeds of the profile arithmetic find the bug, 153 of them by \", and in SQLite\"", 152 s of test, 3 min 9 s with the build.
+- Merged `origin/main` (no conflict; it touched `/internal/core/tx.go` only in the error of a commit whose context ended, not the engine's write path, so the differential run at 400 sequences of step 3 stands).
+
+### Why
+
+The replay was written after the independent review of step 2, and its builder named the cancel test and the run of `evalStops` at the nightly's size as not done.
+
+### What worked
+
+Planting before trusting: the first version of the new case set x and y from 1 to 1, so a run whose changes stayed looked like one taken back, and the first fault passed it. With x and y at 0 before the update, it failed at the call 105.
+
+### What didn't work
+
+The first fault (`release` for `rollbackTo`) passed the new case at first, for the reason above. Running the planted bug's subtest at 1 seed to see which subtests the pattern matches fails by design: `the bug is found by ", and in SQLite" too rarely`.
+
+### What I learned
+
+Two of seven faults were caught only by the new case: the transaction case of `TestEngine_updateOrder` sets only y from a column that fails, so its error is the same in both orders and it cannot tell a replay from none. `core.Tx.RollbackTo` and `Release` do not check the context, so a statement whose context ends during its replay is still rolled back.
+
+### What was tricky
+
+Keeping the long run away from the faults: the faults were planted in the worktree while the 1,000 seeds ran from a copy of the tree.
+
+### What warrants review
+
+The new case in `TestEngine_cancelChange`: that it reaches the replay rests on the final error being `t.x`, which only the replay gives, and on the cancel loop covering every call of `Err` before that.
+
+### Future work
+
+The generator that reaches the case, and the five cases where SQLite's planner decides; see "Open" in `/docs/todo/update-order.md`.
