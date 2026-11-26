@@ -764,7 +764,7 @@ func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return
 func (readOnly) insertNew(context.Context, string, []*s4qlpb.Value) (bool, error) {
 	return false, nil
 }
-func (readOnly) delete(context.Context, string, []*s4qlpb.Value) (bool, error) { return false, nil }
+func (readOnly) delete(context.Context, string, []*s4qlpb.Value) (bool, error)            { return false, nil }
 func (readOnly) keys(context.Context, string, []core.KeyColumn, func(keySet) error) error { return nil }
 
 // query runs the plan q, with args for its parameters, in a read transaction of its own, and gives
