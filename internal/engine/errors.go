@@ -63,6 +63,11 @@ func checkArguments(parameters int, args []*s4qlpb.Value) error {
 	if err := countArguments(parameters, len(args)); err != nil {
 		return err
 	}
+	return checkValues(args)
+}
+
+// checkValues args, the arguments of a statement, as [checkArgument] checks each, by its number.
+func checkValues(args []*s4qlpb.Value) error {
 	for i, a := range args {
 		if err := checkArgument(i+1, a); err != nil {
 			return err
@@ -210,11 +215,7 @@ func countArguments(parameters, n int) error {
 	if n == parameters {
 		return nil
 	}
-	noun := "parameters"
-	if parameters == 1 {
-		noun = "parameter"
-	}
-	return fmt.Errorf("%w: %v for a statement with %v %v", ErrArguments, n, parameters, noun)
+	return fmt.Errorf("%w: %v for a statement with %v %v", ErrArguments, n, parameters, parameterNoun(parameters))
 }
 
 // internalError that matches [ErrInternal], and wraps nothing else.

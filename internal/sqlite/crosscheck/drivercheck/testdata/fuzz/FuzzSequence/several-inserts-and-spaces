@@ -1,0 +1,4 @@
+go test fuzz v1
+string("create table t1 (v1 int primary key) strict, without rowid\x1einsert into t1 (v1) values (1);insert into t1 (v1) values (2)\x1einsert into t1 (v1) values (3); insert into t1 (v1) values (4)\x1einsert into t1 (v1) values (?); insert into t1 (v1) values (?)\x1einsert into t1 (v1) values (5); selec\x1einsert into t1 (v1) values (6); /* ")
+[]byte("\x00\x00\x00\x05\x00\x00")
+bool(false)

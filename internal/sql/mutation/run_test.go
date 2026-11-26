@@ -95,29 +95,44 @@ func TestRunner_run(t *testing.T) {
 	})
 }
 
-// TestEngineLayers checks the layers of the tests of the engine against its test files.
+// TestEngineLayers checks the layers of the tests of the engine and of the evaluator against their
+// test files.
 func TestEngineLayers(t *testing.T) {
-	t.Run("should count the seeds of every fuzz target of the engine in the layer fuzz seeds", func(t *testing.T) {
-		root, err := moduleRoot()
-		is.NotError(t, err)
-		files, err := filepath.Glob(filepath.Join(root, enginePkg, "*_test.go"))
-		is.NotError(t, err)
-		fuzz := regexp.MustCompile(`(?m)^func (Fuzz\w*)\(\w+ \*testing\.F\)`)
-		targets := map[string]bool{}
-		for _, f := range files {
-			src, err := os.ReadFile(f)
+	tests := []struct {
+		pkg     string
+		layers  map[string]string
+		targets int
+	}{
+		{pkg: enginePkg, layers: engineLayers, targets: 12},
+		{pkg: exprPkg, layers: exprLayers, targets: 1},
+	}
+	for _, test := range tests {
+		t.Run("should count the seeds of every fuzz target of "+test.pkg+" in the layer fuzz seeds", func(t *testing.T) {
+			root, err := moduleRoot()
 			is.NotError(t, err)
-			for _, m := range fuzz.FindAllStringSubmatch(string(src), -1) {
-				targets[m[1]] = true
-				is.Equal(t, layerFuzzSeeds, engineLayers[m[1]], m[1]+" in "+filepath.Base(f))
+			files, err := filepath.Glob(filepath.Join(root, test.pkg, "*_test.go"))
+			is.NotError(t, err)
+			fuzz := regexp.MustCompile(`(?m)^func (Fuzz\w*)\(\w+ \*testing\.F\)`)
+			targets := map[string]bool{}
+			for _, f := range files {
+				src, err := os.ReadFile(f)
+				is.NotError(t, err)
+				for _, m := range fuzz.FindAllStringSubmatch(string(src), -1) {
+					targets[m[1]] = true
+					is.Equal(t, layerFuzzSeeds, test.layers[m[1]], m[1]+" in "+filepath.Base(f))
+				}
 			}
-		}
-		is.True(t, len(targets) >= 12, "too few fuzz targets")
-		for name, layer := range engineLayers {
-			if layer == layerFuzzSeeds {
-				is.True(t, targets[name], "no fuzz target of the engine is named "+name)
+			is.True(t, len(targets) >= test.targets, "too few fuzz targets")
+			for name, layer := range test.layers {
+				if layer == layerFuzzSeeds {
+					is.True(t, targets[name], "no fuzz target of "+test.pkg+" is named "+name)
+				}
 			}
-		}
+		})
+	}
+
+	t.Run("should run the differential test of the evaluator in the layer generator", func(t *testing.T) {
+		is.Equal(t, layerGenerator, exprLayers["TestDifferential"])
 	})
 }
 

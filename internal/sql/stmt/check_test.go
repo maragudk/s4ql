@@ -1599,6 +1599,10 @@ var checkCases = []checkCase{
 	{name: "a value on both sides after a condition", src: "select * from t where 5 < v and 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 36)"},
 	{name: "a value on both sides in an update", src: "update t set v = 1 where 2 = 2", err: "s4ql: not supported: value compared with a value (at offset 29)"},
 	{name: "a value on both sides in a delete", src: "delete from t where 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 24)"},
+	// A value on the right of a value is refused before what it holds is read.
+	{name: "a string after a sign on the right of a value", src: "select * from t where 1 = -'a'", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "a string after a sign on the right of an expression without a column", src: "select * from t where 1 + 1 = -'a'", err: "s4ql: not supported: value compared with a value (at offset 30)"},
+	{name: "a subquery that is not supported on the right of a value", src: "select * from t where 1 = (select v from t where 1 = 1)", err: "s4ql: not supported: value compared with a value (at offset 26)"},
 	// A column on both sides tests the left one, compared with the right one alone.
 	{name: "a column on both sides", src: "select * from t where a = b", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 27}, Table: name("t", "t", 14),
 		Where: []stmt.Condition{cond(name("a", "a", 22), stmt.OpEqual, ex(ec("b", 26), 26, 27))}}},
@@ -2055,6 +2059,11 @@ var checkCases = []checkCase{
 	{name: "a string after a sign in arithmetic", src: "update t set v = v - -'a'", err: "s4ql: not supported: string after a sign (at offset 22)"},
 	{name: "NULL after a sign in arithmetic", src: "update t set v = v - -null", err: "s4ql: not supported: NULL after a sign (at offset 22)"},
 	{name: "a + sign in arithmetic", src: "update t set v = v + +1", err: "s4ql: not supported: + sign (at offset 21)"},
+	{name: "NULL after a + sign in arithmetic", src: "update t set v = v + +null", err: "s4ql: not supported: NULL after a sign (at offset 21)"},
+	{name: "NULL after a ~ in arithmetic", src: "update t set v = v + ~null", err: "s4ql: not supported: ~ operator (at offset 21)"},
+	{name: "a ~ after a sign in arithmetic", src: "update t set v = 1 + -~v", err: "s4ql: not supported: ~ operator (at offset 22)"},
+	{name: "a second sign in arithmetic", src: "update t set v = 1 + - -v", err: "s4ql: not supported: second sign (at offset 23)"},
+	{name: "a + after a sign in arithmetic", src: "update t set v = 1 + -+v", err: "s4ql: not supported: second sign (at offset 22)"},
 	{name: "a + sign before a column", src: "update t set v = +v", err: "s4ql: not supported: + sign (at offset 17)"},
 	{name: "a second sign before a column", src: "update t set v = - -v", err: "s4ql: not supported: second sign (at offset 19)"},
 	{name: "a bitwise not after a sign", src: "update t set v = -~v", err: "s4ql: not supported: ~ operator (at offset 18)"},
@@ -2076,6 +2085,11 @@ var checkCases = []checkCase{
 	{name: "a column with the name of its table in arithmetic", src: "update t set v = t.v + 1", err: "s4ql: not supported: column with the name of a table (at offset 17)"},
 	{name: "a literal in parentheses in set", src: "update t set v = (1)", err: "s4ql: not supported: parentheses (at offset 17)"},
 	{name: "a negative literal in parentheses", src: "update t set v = (-1)", err: "s4ql: not supported: parentheses (at offset 17)"},
+	{name: "a + sign before a literal in parentheses", src: "update t set v = v * (+1)", err: "s4ql: not supported: + sign (at offset 22)"},
+	{name: "a ~ before a literal in parentheses", src: "update t set v = v * (~1)", err: "s4ql: not supported: ~ operator (at offset 22)"},
+	{name: "a negated column in parentheses", src: "update t set v = v * (-w)", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 25}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{{Column: name("v", "v", 13), Value: ex(stmt.Expression{Kind: stmt.ExprMultiply, Span: stmt.Span{Start: 17, End: 25}, Operands: []stmt.Expression{
+			ec("v", 17), {Kind: stmt.ExprNegate, Span: stmt.Span{Start: 22, End: 24}, Operands: []stmt.Expression{ec("w", 23)}}}}, 17, 25)}}}},
 	{name: "a column in parentheses in set", src: "update t set v = (w)", err: "s4ql: not supported: parentheses (at offset 17)"},
 	{name: "a parameter in parentheses in arithmetic", src: "update t set v = v * (?)", err: "s4ql: not supported: parentheses (at offset 21)"},
 	{name: "parentheses around parentheses", src: "update t set v = ((v + 1))", err: "s4ql: not supported: parentheses (at offset 17)"},
@@ -2085,6 +2099,10 @@ var checkCases = []checkCase{
 	{name: "a subquery in arithmetic in where", src: "select * from t where v = (select k from u) + 1", err: "s4ql: not supported: subquery (at offset 26)"},
 	{name: "a function in arithmetic", src: "update t set v = v + abs(v)", err: "s4ql: not supported: function call (at offset 21)"},
 	{name: "a function in set", src: "update t set v = abs(v)", err: "s4ql: not supported: function call (at offset 17)"},
+	// What a negation holds is named for itself.
+	{name: "a negated function in arithmetic", src: "update t set v = 1 + -abs(v)", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a negated cast in set", src: "update t set v = -cast(v as int)", err: "s4ql: not supported: CAST (at offset 18)"},
+	{name: "an operator that is not arithmetic in negated parentheses", src: "select * from t where v = -(v % 2)", err: "s4ql: not supported: binary operator (at offset 28)"},
 	{name: "a cast in set", src: "update t set v = cast(v as int)", err: "s4ql: not supported: CAST (at offset 17)"},
 	{name: "a case in set", src: "update t set v = case when v then 1 end", err: "s4ql: not supported: CASE (at offset 17)"},
 	{name: "a collate in arithmetic", src: "update t set v = v + 1 collate nocase", err: "s4ql: not supported: COLLATE (at offset 21)"},
@@ -3125,6 +3143,22 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
 			verify(t, src)
 		}
+		// IS NULL and a column compared with a column are two levels too, also where every condition is
+		// one.
+		for _, condition := range []string{"v is null", "v = w"} {
+			alone := func(n int) string {
+				return "select * from t where " + condition + strings.Repeat(" and "+condition, n-1)
+			}
+			src := alone(999)
+			_, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+			src = alone(1000)
+			_, err = stmt.Check(src)
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: WHERE deeper than SQLite's limit (at offset %v)", len(src)-len("and "+condition)), err.Error())
+			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+			verify(t, src)
+		}
 		// A sign in the second condition takes a level too, on either side of its column, and in the
 		// third none.
 		_, err := stmt.Check(where("v = 1 and -1 = v", 998))
@@ -3256,6 +3290,10 @@ func TestCheck(t *testing.T) {
 		}{
 			{"in set", "update t set v = 1", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
 			{"in set after a negative literal", "update t set v = -1", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a column", "update t set v = v", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a parameter", "update t set v = ?", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a negated column", "update t set v = -v", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
+			{"in set after a negated parameter", "update t set v = -?", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
 			{"in set with a where", "update t set v = 1", " where v = 1", 999, "expression", func(src string) int { return len(src) - len("+ 1 where v = 1") }},
 			{"on the right of a comparison", "select * from t where v = 1", "", 998, "WHERE", func(src string) int { return len(src) }},
 			{"on the left of a comparison", "select * from t where 1", " = v", 998, "WHERE", func(src string) int { return len(src) }},
@@ -3278,6 +3316,39 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message, c.name)
 			verify(t, src)
 		}
+		// The deeper operand may be the right one: * binds more tightly than +, so in `1 + 1 * 1 * ...`
+		// the + is one level more than the chain of * on its right, which is refused at its end.
+		right := func(n int) string {
+			return "update t set v = 1 + 1" + strings.Repeat(" * 1", n)
+		}
+		src := right(998)
+		_, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		o, _ := verify(t, src)
+		is.Equal(t, supported, o)
+		src = right(999)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: expression deeper than SQLite's limit (at offset %v)", len(src)), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
+		// A negation is one level more than its operand, here a chain of * in parentheses, which add
+		// none, and is refused after the parenthesis.
+		negated := func(n int) string {
+			return "update t set v = -(1" + strings.Repeat(" * 1", n) + ")"
+		}
+		src = negated(998)
+		_, err = stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		o, _ = verify(t, src)
+		is.Equal(t, supported, o)
+		src = negated(999)
+		_, err = stmt.Check(src)
+		is.Equal(t, fmt.Sprintf("s4ql: not supported: expression deeper than SQLite's limit (at offset %v)", len(src)), err.Error())
+		is.Equal(t, "Expression tree is too large (maximum depth 1000)", oracle.Judge(src).Message)
+		verify(t, src)
+
 		// In a subquery, SQLite counts the levels of the WHERE of the statement and those of the WHERE
 		// of the subquery together, once it has found the tables, as for a subquery of conditions.
 		inner := func(n int) string {
@@ -3286,11 +3357,11 @@ func TestCheck(t *testing.T) {
 		tables := open(t)
 		tables.must("create table t (k int primary key, v int) strict, without rowid")
 		tables.must("create table u (k int primary key, a int) strict, without rowid")
-		src := inner(497)
-		_, err := stmt.Check(src)
+		src = inner(497)
+		_, err = stmt.Check(src)
 		is.NotError(t, err)
 		is.NotError(t, tables.exec(src))
-		o, _ := verify(t, src)
+		o, _ = verify(t, src)
 		is.Equal(t, supported, o)
 		src = inner(498)
 		_, err = stmt.Check(src)
@@ -3324,9 +3395,16 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
 			verify(t, src)
 		}
-		// Where SQLite's parser gives up, the pass has refused the text long before.
-		src := "update t set v = " + strings.Repeat("(1 + ", 831) + "1" + strings.Repeat(")", 831)
+		// Parentheses that are closed count no more, however many come one after the other.
+		src := "update t set v = (v + 1)" + strings.Repeat(" * (v - 1)", 150) + " where k = (v + 1)" + strings.Repeat(" * (v - 1)", 150)
 		_, err := stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		o, _ := verify(t, src)
+		is.Equal(t, supported, o)
+		// Where SQLite's parser gives up, the pass has refused the text long before.
+		src = "update t set v = " + strings.Repeat("(1 + ", 831) + "1" + strings.Repeat(")", 831)
+		_, err = stmt.Check(src)
 		is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len("update t set v = ")+100*len("(1 + ")), err.Error())
 		is.Equal(t, "Recursion limit", oracle.Judge(src).Message)
 		verify(t, src)

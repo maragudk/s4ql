@@ -1078,8 +1078,9 @@ func (r *recognizer) setValue(e ast.Expr) Term {
 
 // plainValue reports whether e is read as a plain value, a literal or a parameter, by
 // [recognizer.term], or refused by it with the names that it gives: a literal, a ?, or a unary
-// operator other than a - before a parameter, a name, parentheses, or an operator, each of which is
-// an arithmetic expression.
+// operator other than a - before a parameter, a name, or parentheses, each of which is an
+// arithmetic expression. A binary operator is never the operand of a -, which binds more tightly
+// than every binary operator.
 func plainValue(e ast.Expr) bool {
 	switch e := e.(type) {
 	case *ast.Literal, *ast.Variable:
@@ -1089,7 +1090,7 @@ func plainValue(e ast.Expr) bool {
 			return true
 		}
 		switch e.X.(type) {
-		case *ast.Variable, *ast.ColumnRef, *ast.Paren, *ast.Binary:
+		case *ast.Variable, *ast.ColumnRef, *ast.Paren:
 			return false
 		}
 		return true
@@ -1228,13 +1229,13 @@ func (r *recognizer) parenthesized(p *ast.Paren, deep string) (Expression, int) 
 }
 
 // isZero reports whether the expression e is the literal 0 or 0.0, with or without a sign, also one
-// that SQLite reads as 0.0, as `1e-400`.
+// that SQLite reads as 0.0, as `1e-400`. Only a literal has a Value.
 func isZero(e Expression) bool {
 	switch v := e.Value.(type) {
 	case Integer:
-		return e.Kind == ExprValue && v == 0
+		return v == 0
 	case Real:
-		return e.Kind == ExprValue && v == 0
+		return v == 0
 	}
 	return false
 }

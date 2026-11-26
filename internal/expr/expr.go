@@ -12,6 +12,7 @@
 package expr
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/bits"
@@ -72,7 +73,8 @@ type node struct {
 	index int
 	// typ of a column: [TypeInteger] or [TypeReal].
 	typ Type
-	// left and right operands of an operator, as indexes in the nodes. A negation has a left one only.
+	// left and right operands of an operator, as indexes in the nodes. A negation has a left one only,
+	// and nothing reads them for another node.
 	left, right int32
 	// span of the node in the text of the statement.
 	span stmt.Span
@@ -126,7 +128,7 @@ func resolveColumns(e stmt.Expression, resolve func(stmt.Name) (Column, error), 
 // add the node e and its operands to x, its operands first, with the columns that [Check] resolved
 // by their folded names, and give the index of e in the nodes.
 func (x *Program) add(e stmt.Expression, columns map[string]Column) (int32, error) {
-	n := node{kind: e.Kind, span: e.Span, left: -1, right: -1}
+	n := node{kind: e.Kind, span: e.Span}
 	operands := 0
 	switch e.Kind {
 	case stmt.ExprValue:
@@ -339,7 +341,10 @@ func evalNode(nodes []node, i int32, row, args []*s4qlpb.Value) (Value, error) {
 func arithmetic(op stmt.ExpressionKind, l, r Value, n *node) (Value, error) {
 	if l.kind == kindInteger && r.kind == kindInteger {
 		v, kind := integerArithmetic(op, int64(l.bits), int64(r.bits))
-		if kind != nil {
+		switch {
+		case errors.Is(kind, ErrInternal):
+			return Value{}, kind
+		case kind != nil:
 			return Value{}, &Error{Kind: kind, Op: n.kind, Span: n.span}
 		}
 		return integerValue(v), nil
@@ -370,7 +375,7 @@ func arithmetic(op stmt.ExpressionKind, l, r Value, n *node) (Value, error) {
 }
 
 // integerArithmetic of the operator op on a and b: the result, or the kind of the error, an
-// overflow or a division by zero.
+// overflow or a division by zero, or an internal error for an operator that is not arithmetic.
 func integerArithmetic(op stmt.ExpressionKind, a, b int64) (int64, error) {
 	switch op {
 	case stmt.ExprAdd:

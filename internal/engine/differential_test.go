@@ -3894,6 +3894,10 @@ func variantOf(seed uint64) (restarts bool, limit int) {
 // the 300 of the one sequence of all areas before the profiles.
 func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
+	case stmttest.Several:
+		// Texts of several statements, which [engine.Conn.Exec] refuses for their second statement:
+		// they are [engine.Conn.ExecAll]'s.
+		return 0
 	case stmttest.Mixed:
 		n *= 5
 	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic:
@@ -4025,6 +4029,17 @@ func TestDifferential(t *testing.T) {
 		is.True(t, total[comparedWithSQLite] >= 12108, "the calls that run in SQLite")
 		if total["excused: "+excusedLong] == 0 {
 			t.Errorf("no literal is longer than the length limit")
+		}
+		// Kinds that the mixed profile reaches twice, below the three times that a row of the file
+		// needs, since it writes texts of several statements in place of some statements, which the
+		// run must reach once at least.
+		for _, kind := range []string{
+			"reached: arithmetic with a column in WHERE of a delete, no such column",
+			"reached: arithmetic without a column in WHERE of a delete, wrong number of arguments",
+		} {
+			if total[kind] == 0 {
+				t.Errorf("no profile reaches %q", kind)
+			}
 		}
 	case full && n > flagDefault("sequences"):
 		// More sequences of each profile, those of the full run among them.

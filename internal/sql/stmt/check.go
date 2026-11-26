@@ -30,34 +30,55 @@ var lengthLimit = parser.MaxLength
 // even if the second one is a syntax error, since SQLite prepares the first statement without
 // reading the second.
 func Check(src string) (Statement, error) {
-	if len(src) > lengthLimit {
-		return nil, &NotSupportedError{What: "text longer than SQLite's limit", Offset: lengthLimit}
-	}
-	if err := checkText(src); err != nil {
+	if err := checkWhole(src); err != nil {
 		return nil, err
 	}
-
-	tree, tail, err := parser.Parse(src)
-	if err != nil {
-		// The parser gives only errors of its own type.
-		e := err.(*parser.Error)
-		if e.Limit {
-			return nil, &NotSupportedError{What: "statement beyond a limit of the parser", Offset: firstToken(src, 0)}
-		}
-		return nil, &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: e.Message, Offset: e.Offset}
-	}
-	if tree == nil {
-		return nil, nil
-	}
-
-	s, ns := recognize(src, tree)
-	if ns != nil {
-		return nil, ns
+	s, tail, err := statementAt(src, 0)
+	if err != nil || s == nil {
+		return nil, err
 	}
 	if at := firstToken(src, tail); at < len(src) {
 		return nil, &NotSupportedError{What: "second statement", Offset: at}
 	}
 	return s, nil
+}
+
+// checkWhole is the check of the text src before it is parsed: [NotSupportedError] for a text longer
+// than SQLite's limit, and then as [checkText] says; otherwise nil.
+func checkWhole(src string) error {
+	if len(src) > lengthLimit {
+		return &NotSupportedError{What: "text longer than SQLite's limit", Offset: lengthLimit}
+	}
+	if err := checkText(src); err != nil {
+		return err
+	}
+	return nil
+}
+
+// statementAt of src, which passed [checkWhole]: the first statement that starts at or after the
+// offset at, as [parser.ParseAt] reads it, and its tail, if s4ql supports it. Its errors are those of
+// [Check] after the checks of the whole text, with their offsets in src: SQLite's syntax error, and
+// "not supported" for a limit of the parser and for a statement that s4ql does not support. A rest
+// without a statement gives no statement and no error, with the tail at the end of the text.
+func statementAt(src string, at int) (Statement, int, error) {
+	// checkWhole has refused a NUL byte.
+	tree, tail, err := parser.ParseAt(src, at, len(src))
+	if err != nil {
+		// The parser gives only errors of its own type.
+		e := err.(*parser.Error)
+		if e.Limit {
+			return nil, 0, &NotSupportedError{What: "statement beyond a limit of the parser", Offset: firstToken(src, at)}
+		}
+		return nil, 0, &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: e.Message, Offset: e.Offset}
+	}
+	if tree == nil {
+		return nil, tail, nil
+	}
+	s, ns := recognize(src, tree)
+	if ns != nil {
+		return nil, 0, ns
+	}
+	return s, tail, nil
 }
 
 // checkText for what s4ql rejects before it parses: the first NUL byte or byte that is not valid

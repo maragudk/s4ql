@@ -3016,6 +3016,18 @@ func TestOperator_String(t *testing.T) {
 	})
 }
 
+func TestExpressionKind_String(t *testing.T) {
+	t.Run("should give each kind as SQL writes its operator, or its name, and nothing for no kind", func(t *testing.T) {
+		var got []string
+		for _, k := range []stmt.ExpressionKind{0, stmt.ExprValue, stmt.ExprParameter, stmt.ExprColumn, stmt.ExprNegate, stmt.ExprAdd,
+			stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprDivide + 1} {
+			got = append(got, k.String())
+		}
+		is.Equal(t, fmt.Sprint([]string{"", "value", "parameter", "column", "-", "+", "-", "*", "/", ""}), fmt.Sprint(got))
+		is.True(t, !stmt.Expression{}.Present())
+	})
+}
+
 func TestOperator_Swapped(t *testing.T) {
 	t.Run("should swap < and >, <= and >=, keep = and !=, and give no operator for a test for NULL or no operator", func(t *testing.T) {
 		var got []string

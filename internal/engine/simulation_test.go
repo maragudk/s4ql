@@ -2884,6 +2884,11 @@ func TestSimulation(t *testing.T) {
 		return
 	}
 	for _, p := range stmttest.Profiles {
+		if p == stmttest.Several {
+			// Texts of several statements, which [engine.Conn.Exec] refuses for their second statement:
+			// they are [engine.Conn.ExecAll]'s.
+			continue
+		}
 		if !slices.ContainsFunc(simEnvironments, func(e simEnvironment) bool {
 			return slices.ContainsFunc(e.cells, func(c simCell) bool { return c.profile == p })
 		}) {

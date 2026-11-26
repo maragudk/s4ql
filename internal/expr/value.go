@@ -108,17 +108,14 @@ func (v Value) Proto() *s4qlpb.Value {
 	return p
 }
 
-// String of v: the integer, the real as [fmt.Sprint] writes it, with -0 for negative zero, or NULL.
+// String of v: the integer, the real as [fmt.Sprint] writes it, which writes negative zero as -0,
+// or NULL.
 func (v Value) String() string {
 	switch v.kind {
 	case kindInteger:
 		return fmt.Sprint(int64(v.bits))
 	case kindReal:
-		f := math.Float64frombits(v.bits)
-		if f == 0 && math.Signbit(f) {
-			return "-0"
-		}
-		return fmt.Sprint(f)
+		return fmt.Sprint(math.Float64frombits(v.bits))
 	}
 	return "NULL"
 }

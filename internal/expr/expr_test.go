@@ -269,29 +269,40 @@ func TestCheck(t *testing.T) {
 		is.Equal(t, expr.RealValue(1.5), v)
 	})
 
-	t.Run("should give an internal error for a tree that the pass never gives", func(t *testing.T) {
+	t.Run("should give an internal error that names the fault for a tree that the pass never gives", func(t *testing.T) {
 		column := stmt.Expression{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "a"}}
-		for _, e := range []stmt.Expression{
-			{},
-			{Kind: stmt.ExprValue, Value: stmt.Text("1")},
-			{Kind: stmt.ExprValue, Value: stmt.Null{}},
-			{Kind: stmt.ExprParameter},
-			{Kind: stmt.ExprAdd, Operands: []stmt.Expression{column}},
-			{Kind: stmt.ExprNegate, Operands: []stmt.Expression{column, column}},
-			{Kind: stmt.ExprNegate},
-			{Kind: stmt.ExpressionKind(99)},
+		for _, c := range []struct {
+			e    stmt.Expression
+			want string
+		}{
+			{stmt.Expression{}, "an expression of kind 0"},
+			{stmt.Expression{Kind: stmt.ExprValue, Value: stmt.Text("1")}, "a literal of stmt.Text in arithmetic"},
+			{stmt.Expression{Kind: stmt.ExprValue, Value: stmt.Null{}}, "a literal of stmt.Null in arithmetic"},
+			{stmt.Expression{Kind: stmt.ExprParameter}, "a parameter numbered 0"},
+			{stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{column}}, "+ with 1 operands"},
+			{stmt.Expression{Kind: stmt.ExprNegate, Operands: []stmt.Expression{column, column}}, "- with 2 operands"},
+			{stmt.Expression{Kind: stmt.ExprNegate}, "- with 0 operands"},
+			{stmt.Expression{Kind: stmt.ExpressionKind(99)}, "an expression of kind 99"},
 		} {
-			_, err := expr.Check(e, resolve)
+			_, err := expr.Check(c.e, resolve)
 			is.True(t, errors.Is(err, expr.ErrInternal), err)
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
 		}
 	})
 
-	t.Run("should give an internal error for a column of no type or at no position", func(t *testing.T) {
+	t.Run("should give an internal error that names the fault for a column of no type or at no position", func(t *testing.T) {
 		e, _, err := parse("a + 1")
 		is.NotError(t, err)
-		for _, c := range []expr.Column{{Position: 0}, {Position: -1, Type: s4qlpb.Type_TYPE_INT}} {
-			_, err := expr.Check(e, func(stmt.Name) (expr.Column, error) { return c, nil })
+		for _, c := range []struct {
+			column expr.Column
+			want   string
+		}{
+			{expr.Column{Position: 0}, "a column of type TYPE_UNSPECIFIED"},
+			{expr.Column{Position: -1, Type: s4qlpb.Type_TYPE_INT}, "a column at position -1"},
+		} {
+			_, err := expr.Check(e, func(stmt.Name) (expr.Column, error) { return c.column, nil })
 			is.True(t, errors.Is(err, expr.ErrInternal), err)
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
 		}
 	})
 }
@@ -368,20 +379,51 @@ func TestProgram_Bind(t *testing.T) {
 		}
 	})
 
-	t.Run("should give an internal error for a parameter without an argument, or one of no kind", func(t *testing.T) {
+	t.Run("should give an internal error that names the fault for a parameter without an argument, or one of no kind", func(t *testing.T) {
 		e, _, err := parse("a + ?")
 		is.NotError(t, err)
 		x, err := expr.Check(e, resolve)
 		is.NotError(t, err)
-		for _, args := range [][]*s4qlpb.Value{nil, {{}}} {
-			_, err := x.Bind(args)
+		for _, c := range []struct {
+			args []*s4qlpb.Value
+			want string
+		}{
+			{nil, "parameter 1 of 0 arguments"},
+			{[]*s4qlpb.Value{{}}, "argument 1 of no kind"},
+		} {
+			_, err := x.Bind(c.args)
 			is.True(t, errors.Is(err, expr.ErrInternal), err)
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
+		}
+	})
+
+	t.Run("should take an argument that is not finite, whose arithmetic gives an error that the result is not finite or a value", func(t *testing.T) {
+		e, full, err := parse("c + ? * d")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		for _, c := range []struct {
+			arg, d float64
+			at     string
+		}{
+			{math.NaN(), 1, "? * d"},
+			{math.Inf(1), 0, "? * d"},
+			{math.Inf(-1), 1, "? * d"},
+		} {
+			b, err := x.Bind([]*s4qlpb.Value{float(c.arg)})
+			is.NotError(t, err)
+			_, err = b.Eval(row(integer(0), integer(0), float(1), float(c.d)))
+			var ee *expr.Error
+			is.True(t, errors.As(err, &ee), "an *expr.Error")
+			is.True(t, errors.Is(err, expr.ErrNotFinite), err)
+			is.Equal(t, c.at, full[ee.Span.Start:ee.Span.End])
 		}
 	})
 
 	t.Run("should give an internal error for the zero Program", func(t *testing.T) {
 		_, err := (&expr.Program{}).Bind(nil)
 		is.True(t, errors.Is(err, expr.ErrInternal), err)
+		is.Equal(t, "s4ql: internal error: a program that is not checked", err.Error())
 	})
 }
 
@@ -393,22 +435,49 @@ func TestBound_Eval_faults(t *testing.T) {
 	b, err := x.Bind(nil)
 	is.NotError(t, err)
 
-	t.Run("should give an internal error for a row without the column", func(t *testing.T) {
+	t.Run("should give an internal error that names the fault for a row without the column", func(t *testing.T) {
 		_, err := b.Eval([]*s4qlpb.Value{integer(1)})
 		is.True(t, errors.Is(err, expr.ErrInternal), err)
+		is.Equal(t, "s4ql: internal error: the column at 2 of a row of 1 values", err.Error())
+		_, err = b.Eval([]*s4qlpb.Value{integer(1), integer(2)})
+		is.Equal(t, "s4ql: internal error: the column at 2 of a row of 2 values", err.Error())
 	})
 
-	t.Run("should give an internal error for a value of another type than its column", func(t *testing.T) {
-		for _, r := range [][]*s4qlpb.Value{row(float(1), integer(0), float(1), float(0)), row(integer(1), integer(0), integer(1), float(0)),
-			row(text("1"), integer(0), float(1), float(0)), row(&s4qlpb.Value{}, integer(0), float(1), float(0))} {
-			_, err := b.Eval(r)
+	t.Run("should give an internal error that names the fault for a value of another type than its column", func(t *testing.T) {
+		for _, c := range []struct {
+			row  []*s4qlpb.Value
+			want string
+		}{
+			{row(float(1), integer(0), float(1), float(0)), "a value of type real in a column of type integer"},
+			{row(integer(1), integer(0), integer(1), float(0)), "a value of type integer in a column of type real"},
+			{row(text("1"), integer(0), float(1), float(0)), "a value of kind text in arithmetic"},
+			{row(&s4qlpb.Value{}, integer(0), float(1), float(0)), "a value of kind not set in arithmetic"},
+		} {
+			_, err := b.Eval(c.row)
 			is.True(t, errors.Is(err, expr.ErrInternal), err)
+			is.Equal(t, "s4ql: internal error: "+c.want, err.Error())
+		}
+	})
+
+	t.Run("should give an internal error for arithmetic of an operator that no program holds, of integers and of reals", func(t *testing.T) {
+		for _, c := range []struct {
+			l, r expr.Value
+		}{
+			{expr.IntegerValue(1), expr.IntegerValue(2)},
+			{expr.RealValue(1), expr.IntegerValue(2)},
+		} {
+			v, err := expr.Arithmetic(stmt.ExprNegate, c.l, c.r)
+			is.True(t, errors.Is(err, expr.ErrInternal), err)
+			is.True(t, !errors.Is(err, expr.ErrEvaluation), err)
+			is.Equal(t, "s4ql: internal error: arithmetic of the operator -", err.Error())
+			is.Equal(t, expr.Value{}, v)
 		}
 	})
 
 	t.Run("should give an internal error for the zero Bound", func(t *testing.T) {
 		_, err := expr.Bound{}.Eval(zeros)
 		is.True(t, errors.Is(err, expr.ErrInternal), err)
+		is.Equal(t, "s4ql: internal error: an expression that is not bound", err.Error())
 	})
 }
 
@@ -432,6 +501,22 @@ func TestBound_Eval_allocations(t *testing.T) {
 		is.Equal(t, expr.RealValue(want), v)
 		// The address sanitizer moves values to the heap that the compiler keeps on the stack
 		// otherwise: 14 allocations here.
+		if !asanEnabled {
+			is.Equal(t, 0.0, allocations)
+		}
+	})
+
+	t.Run("should allocate nothing to bind an expression without a parameter", func(t *testing.T) {
+		e, _, err := parse("(a + 3) / (b - 1) + -c * 2.5 - d / 7")
+		is.NotError(t, err)
+		x, err := expr.Check(e, resolve)
+		is.NotError(t, err)
+		var b expr.Bound
+		allocations := testing.AllocsPerRun(100, func() {
+			b, err = x.Bind(nil)
+		})
+		is.NotError(t, err)
+		is.Equal(t, expr.TypeReal, b.Type())
 		if !asanEnabled {
 			is.Equal(t, 0.0, allocations)
 		}

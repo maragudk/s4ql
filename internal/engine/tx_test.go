@@ -494,6 +494,11 @@ func TestConn_differential(t *testing.T) {
 	runs := map[string]tally{}
 	var names []string
 	for _, p := range stmttest.Profiles {
+		if p == stmttest.Several {
+			// Texts of several statements, which [engine.Conn.Exec] refuses for their second statement:
+			// they are [engine.Conn.ExecAll]'s.
+			continue
+		}
 		y := tally{}
 		runs[p.Name], names = y, append(names, p.Name)
 		times := uint64(1)

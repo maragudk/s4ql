@@ -697,7 +697,6 @@
 2	reached: arithmetic with a column in SET of a update, wrong number of arguments
 1	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: division by zero
 2	reached: arithmetic with a column in WHERE of a delete, an evaluation error: s4ql: integer overflow
-1	reached: arithmetic with a column in WHERE of a delete, no such column
 12	reached: arithmetic with a column in WHERE of a delete, no such table
 18	reached: arithmetic with a column in WHERE of a delete, not supported
 19	reached: arithmetic with a column in WHERE of a delete, ok
@@ -741,7 +740,6 @@
 6	reached: arithmetic without a column in WHERE of a delete, no such table
 7	reached: arithmetic without a column in WHERE of a delete, not supported
 14	reached: arithmetic without a column in WHERE of a delete, ok
-1	reached: arithmetic without a column in WHERE of a delete, wrong number of arguments
 5	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: integer overflow
 2	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: real result that is not finite
 2	reached: arithmetic without a column in WHERE of a select, no such column
@@ -807,6 +805,10 @@
 # WHERE of a select, string or blob too big"; "arithmetic without a column in a subquery of a
 # select, no such column". "evaluation error by one path and not by another" is required by
 # TestConn_differential since.
+# Left out on 2026-11-26, when the mixed profile began to write texts of several statements in
+# place of some statements, and reached each twice where it had reached it three times: "arithmetic
+# with a column in WHERE of a delete, no such column" and "arithmetic without a column in WHERE of a
+# delete, wrong number of arguments". TestDifferential requires each once at least.
 # The fixes after the review of the engine's checks of arithmetic of 2026-11-25: a third of the
 # total that day.
 18	reached: arithmetic of a write whose evaluation error the model's access judges

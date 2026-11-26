@@ -37,3 +37,4 @@ The list is in the directory [todo](todo), one file per area, one per slice of s
 - [slice-15.md](todo/slice-15.md): slice 15 of the roadmap, a scalar subquery in a `where`.
 - [arithmetic.md](todo/arithmetic.md): the piece of work arithmetic, `+`, `-`, `*`, and `/` in `set` and in `where`.
 - [generated-workload.md](todo/generated-workload.md): the profiles and the random streams of the generated checks.
+- [several-statements.md](todo/several-statements.md): the piece of work several statements in one `Exec`.

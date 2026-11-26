@@ -8,11 +8,11 @@ A piece of work is named by its feature, such as "upserts", and no longer by a n
 
 | Area | Supported now | Decided next |
 | --- | --- | --- |
-| [Expressions and functions](#expressions-and-functions) | Literals, `null`, and `?`. Arithmetic: `+`, `-`, `*`, `/`, and a unary `-` on integers and reals, in `set` and in `where`, with generated checks, seven planted bugs, and a driver test (mutation testing to come). | More operators and functions, and expressions in more places. The evaluator is s4ql's own, in Go. SQLite's answer or an error. Time and randomness from the host. |
+| [Expressions and functions](#expressions-and-functions) | Literals, `null`, and `?`. Arithmetic: `+`, `-`, `*`, `/`, and a unary `-` on integers and reals, in `set` and in `where`, with generated checks, seven planted bugs, and a driver test and mutation testing of the statement pass and the evaluator (the engine's round is still running). | More operators and functions, and expressions in more places. The evaluator is s4ql's own, in Go. SQLite's answer or an error. Time and randomness from the host. |
 | [Reading](#reading) | `select` from one table, with `where`, `order by`, `limit`, and a scalar subquery in the `where`. | Operators of s4ql's own for grouping and joining. |
 | [Writing](#writing) | `insert` of one row, `update`, `delete`, and `returning`. | `on conflict (key) do nothing` and `do update`. Several rows per `insert`. |
 | [Schema](#schema) | `strict, without rowid` tables with one key column, defaults, indexes, and `if not exists`. | `strict, without rowid` with a primary key stays required. |
-| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and one statement per text. | Several statements in one `Exec`. |
+| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and several statements in one `Exec`, with hand-written tests, a generated workload, and the driver's generated comparison with mattn. | The rest of the generated checks of several statements: the engine's differential test, planted bugs, a fuzz target for the split, and mutation testing. |
 | [Limits of the core](#limits-of-the-core) | A commit that is too large fails. The rows of a `returning` are held in memory without a bound. | A limit on the memory of an operator, with a clear error. Spooling later. |
 
 ## Principles
@@ -63,7 +63,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
   - An integer overflow, a division by zero, and a real result that is not finite are errors, and the statement then changes nothing. In the driver they match `s4ql.ErrEvaluation`, with `s4ql.ErrOverflow`, `s4ql.ErrDivisionByZero`, or `s4ql.ErrNotFinite`.
   - Text and blobs never meet arithmetic. An integer against a real across a comparison or a `set` is refused.
   - A column may be compared with, or copied from, a column of the same type.
-  - Checked with the evaluator against SQLite with generated expressions and a fuzz test, the engine's differential tests, and independent reviews. Its generated workload, simulation with planted bugs (seven), and driver test are built (2026-11-25); mutation testing of the arithmetic code is still to come.
+  - Checked with the evaluator against SQLite with generated expressions and a fuzz test, the engine's differential tests, and independent reviews. Its generated workload, simulation with planted bugs (seven), and driver test are built (2026-11-25); the statement pass and the evaluator are mutation-tested (2026-11-26: 645 and 649 mutants, none unexplained), and the engine's round is still running.
 - No function. A `where` compares values and expressions; see [Reading](#reading).
 
 **Decided,** with the details in [todo/expressions.md](todo/expressions.md):
@@ -143,11 +143,10 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - A plain `?`, directly and through prepared statements (slice 2).
 - Arguments: Go integers, a `float64` or `float32`, a `string`, a `[]byte` that is not nil, and nil, also through a `driver.Valuer` (slices 2, 4, and 6).
 - Transactions with `db.BeginTx`: a write transaction, which waits for the single writer, and a read-only one, at `sql.LevelDefault` or `sql.LevelSerializable`. A statement outside a transaction is a transaction of its own (slice 3).
-- One statement for each text.
+- Several statements in one `Exec`, built on 2026-11-25, with the notes in [todo/several-statements.md](todo/several-statements.md): they mean the same as running them one after another, inside a transaction as part of it, and outside one each committing on its own, as in SQLite and mattn's driver (agreed by Markus on 2026-11-24). `Query` and `Prepare` take one statement. Checked with hand-written tests and a comparison with mattn's driver, and since 2026-11-26 with a generated workload of texts of several statements, which the driver's generated test runs in one `Exec` on both sides and compares with mattn's own `Exec`, and since 2026-11-26 the split is compared with SQLite by a differential test and a fuzz target. The engine's differential test of them, simulation with planted bugs, and mutation testing are still to come.
 
 **Decided,** with the details in [todo/driver.md](todo/driver.md):
 
-- Several statements in one `Exec` mean the same as running them one after another. Inside a transaction they are part of it. Outside one, each commits on its own, and a failure halfway leaves the earlier ones applied, as in SQLite and mattn's driver. Agreed by Markus on 2026-11-24. `Query` with several statements stays refused, as the lead decided the same day.
 - A statement while rows of the same transaction are open stays refused until an application needs it. Decided by the lead on 2026-11-24.
 - The other forms of a parameter, such as `$1` and `:name`, and Go types such as `time.Time` are details for when they are next. Decided by the lead on 2026-11-24.
 
