@@ -94,7 +94,7 @@ type library struct {
 	free, openV2, closeV2, nextStmt, exec, prepareV3, extendedErrcode, errstr, errmsg, errorOffset,
 	dbHandle, limit, bindText, bindBlob, bindNull, step, columnCount, columnName, columnType, columnText,
 	columnBlob, columnBytes, reset, finalize, libversion, sourceid, complete, keywordCount, keywordName,
-	compileoptionGet, status64 js.Value
+	compileoptionGet, status64, dbConfigIP js.Value
 
 	// transfer is a Uint8Array of transferLen bytes. A method uses it only between two calls into
 	// JavaScript that cannot call back into Go, so no other goroutine can use it meanwhile.
@@ -149,6 +149,9 @@ var lib = sync.OnceValue(func() *library {
 		keywordName:      x.Get("sqlite3_keyword_name"),
 		compileoptionGet: x.Get("sqlite3_compileoption_get"),
 		status64:         x.Get("sqlite3_status64"),
+		// The build exports sqlite3_db_config, which is variadic, through a wrapper of its own for
+		// the options that take an int and an int*.
+		dbConfigIP: x.Get("sqlite3__wasm_db_config_ip"),
 	}
 })
 
@@ -395,6 +398,22 @@ func (c *Conn) PrepareFirst(sql string) (*Stmt, int, error) {
 		return nil, tail, nil
 	}
 	return &Stmt{stmt: stmt, db: c.db}, tail, nil
+}
+
+// NoCheckpointOnClose for the connection from now on, SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE. Without
+// it, the close of the last connection to a database in WAL mode checkpoints the write-ahead log
+// into the database file and, if that succeeds, deletes the log. With it on the connection that
+// closes last, the close copies nothing and the log stays, so that the next open recovers from it.
+// It fails with SQLITE_MISUSE on a closed connection.
+func (c *Conn) NoCheckpointOnClose() error {
+	if c.db == 0 {
+		return errorFromConn(0, codeMisuse)
+	}
+	// 1006 is SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE.
+	if rc := call(lib().dbConfigIP, c.db, 1006, 1, 0); rc != codeOK {
+		return errorFromConn(c.db, rc)
+	}
+	return nil
 }
 
 // SetLengthLimit of the connection, SQLITE_LIMIT_LENGTH: the largest string or blob, in bytes, that

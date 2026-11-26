@@ -940,7 +940,7 @@ func TestFilter(t *testing.T) {
 		plus := func(v stmt.Value) *expr.Bound {
 			t.Helper()
 			e := stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "w"}}, {Kind: stmt.ExprValue, Value: v}}}
-			b, err := bindArithmetic(ct, e, nil)
+			b, err := bindExpression(ct, e, nil, 1000)
 			is.NotError(t, err)
 			return b
 		}
@@ -952,7 +952,8 @@ func TestFilter(t *testing.T) {
 		}{
 			{c: condition{position: 2, op: stmt.OpEqual, per: plus(stmt.Integer(1))}, row: []*s4qlpb.Value{integer(1), integer(2)}, err: "a condition of the column at 2 of a row of 2 values"},
 			{c: condition{position: -1, op: stmt.OpEqual, per: plus(stmt.Integer(1))}, row: []*s4qlpb.Value{integer(1), integer(2)}, err: "a condition of the column at -1 of a row of 2 values"},
-			{c: condition{position: 1, op: stmt.OpEqual, per: plus(stmt.Integer(1))}, row: []*s4qlpb.Value{integer(1), text}, err: "a value of kind text in a comparison of arithmetic"},
+			{c: condition{position: 1, op: stmt.OpEqual, per: plus(stmt.Integer(1))}, row: []*s4qlpb.Value{integer(1), text}, err: "a comparison of values of the classes text and integer"},
+			{c: condition{position: 1, op: stmt.OpEqual, per: plus(stmt.Integer(1))}, row: []*s4qlpb.Value{integer(1), s4qlpb.Value_builder{Blob: []byte{1}}.Build()}, err: "a value of kind blob in a comparison of an expression"},
 			{c: condition{position: 1, op: stmt.OpEqual, per: plus(stmt.Real(0.5))}, row: []*s4qlpb.Value{integer(1), integer(2)}, err: "a comparison of values of the classes integer and real"},
 			{c: condition{op: stmt.Operator(99), test: plus(stmt.Integer(1)), value: integer(2)}, row: []*s4qlpb.Value{integer(1), integer(2)}, err: "a computed condition with the operator 99"},
 		} {
@@ -1453,7 +1454,7 @@ func TestUpdate_bind(t *testing.T) {
 	t.Run("should give the internal error of a copy of a column that the table does not have, which the names of SET rule out", func(t *testing.T) {
 		u := &update{table: newFake().with("t", []string{"k", "a"}).tables["t"].ct, computed: []*expr.Bound{nil}, copied: []int{-1}}
 		set := []Assignment{{Column: stmt.Name{Value: "a"}, Value: &Arithmetic{Expression: stmt.Expression{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "z"}}}}}
-		err := u.bind(map[string]int{"k": 0, "a": 1}, set, nil)
+		err := u.bind(map[string]int{"k": 0, "a": 1}, set, nil, 1000)
 		is.Equal(t, "s4ql: internal error: an assignment of the column z, which the table does not have", fmt.Sprint(err))
 	})
 }

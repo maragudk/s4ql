@@ -23,6 +23,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/core/coretest"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -629,8 +630,9 @@ func (i *instance) open(empty bool, options engine.Options) {
 	}
 	ctx := context.WithoutCancel(i.t.Context())
 	// A slow machine must not make the cache busy or the lease run out: the waits for both are far
-	// longer than any statement takes.
-	coreOptions := core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog, LengthLimit: i.limit}
+	// longer than any statement takes. No sync fails and no crash loses what the operating system
+	// holds, so syncs of the cache would check nothing.
+	coreOptions := coretest.SyncOff(core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog, LengthLimit: i.limit})
 	d, err := core.Open(ctx, i.host, i.store.Client(fmt.Sprint("client-", i.host.Uint64()), nil), i.path, "db", coreOptions)
 	is.NotError(i.t, err)
 	is.NotError(i.t, d.Wait(ctx))
@@ -1159,15 +1161,6 @@ func (p *pair) step(c stmttest.Call) string {
 	upsert, _ := s.(*stmt.Insert)
 	if upsert != nil && !upsert.Conflict.Present() {
 		upsert = nil
-	}
-	if refusal := stmttest.TextRefusal(s); upsert != nil && refusal != "" && len(c.Args) == s.Parameters() {
-		// Text is refused before the database is read, whatever it holds, also with a value longer
-		// than the length limit.
-		if got.err != "not supported" || got.message != refusal {
-			return fmt.Sprintf("%q: the engine gives %v, and the rule %q", src, got, refusal)
-		}
-		p.y.excused(excusedUpsertType)
-		return ""
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
 		if failure == "" {

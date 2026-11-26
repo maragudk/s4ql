@@ -33,9 +33,6 @@ func excludedColumn(name string) string {
 // gives those of an update, with excluded.c as a column of its type, named "the column excluded.c of
 // type T" in a message.
 func UpsertRefusals(table string, columns []TableColumn, s *stmt.Insert, args []any, readOnly bool) []string {
-	if refusal := TextRefusal(s); refusal != "" {
-		return []string{refusal}
-	}
 	if readOnly {
 		return nil
 	}

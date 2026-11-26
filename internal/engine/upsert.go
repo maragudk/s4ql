@@ -265,7 +265,7 @@ func (b build) doUpdate(ctx context.Context, w writer, t *s4qlpb.CreateTable, c 
 		return u, where, nil
 	}
 
-	if err := u.bind(of, set, b.args); err != nil {
+	if err := u.bind(of, set, b.args, b.limit); err != nil {
 		return nil, nil, err
 	}
 	if err := u.checkTypes(); err != nil {
@@ -286,7 +286,7 @@ func (b build) doUpdate(ctx context.Context, w writer, t *s4qlpb.CreateTable, c 
 		}
 		u.values[i] = v.Proto()
 	}
-	if err := b.constants(conditions); err != nil {
+	if err := b.constants(ctx, both, conditions); err != nil {
 		return nil, nil, err
 	}
 	return u, where, nil

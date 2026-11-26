@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -38,23 +37,6 @@ func newFakeS3(tb testing.TB) *fakeS3 {
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	tb.Cleanup(f.srv.Close)
 	return f
-}
-
-// isolate the test from the AWS configuration of the machine that runs it: no shared files, and no
-// settings of the SDK from the environment. The options of s4ql name the rest.
-func isolate(tb testing.TB) {
-	tb.Helper()
-	dir := tb.TempDir()
-	tb.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
-	tb.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
-	for _, name := range []string{
-		"AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_CA_BUNDLE",
-		"AWS_DEFAULTS_MODE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
-		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-	} {
-		tb.Setenv(name, "")
-	}
 }
 
 func (f *fakeS3) serve(w http.ResponseWriter, r *http.Request) {
