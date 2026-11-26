@@ -52,3 +52,52 @@ The positions of a text's events. A statement that s4ql does not support carries
 ### Future work
 
 See the next steps.
+
+## Step 2: the symptoms of 1,000 seeds, a crash aimed between statements, and the self-review
+
+**Author:** several-statements-bugs
+
+### Prompt Context
+
+**Verbatim prompt:** "3. **Accepted symptoms.** For each bug, derive its list of accepted symptoms from what the bug can cause, by classifying every violation over 1,000 seeds (`S4QL_ENGINE_SIM_SEEDS=1000`, bug by bug, not all bugs in one process), and show that no seed fails with a symptom outside its list and that the rerun without the bug finds nothing. Say for each bug how many of the 1,000 seeds find it, and how many by the bug's own symptom."
+**Interpretation:** run each bug alone over the first 1,000 seeds of the profile `several`, record every violation of every seed, and build each bug's list from those, with an explanation of each entry.
+**Inferred intent:** no list wider than what the bug causes, and each entry explained.
+
+### What I did
+
+- A probe test, kept out of the repository, ran 1,000 seeds of a bug in one process from a test binary on `/Volumes/990/s4ql/several-statements-bugs/`, one bug after another (`all.sh` there), and printed every violation of each seed. `cover.py` there counts the seeds, those by the bug's own violation, and picks greedily from a list of phrases the fewest that cover every seed; I then read the classes of each bug to see that each entry follows from the bug. The lists and counts are in `/docs/todo/several-statements.md` and in the comments of `TestSimulation_plantedBugs`.
+- Without a bug, 1,000 seeds of each environment found nothing.
+- `TestSimulation` failed after the first recount: `no run reaches "texts of several statements whose call did not return after a statement succeeded", which is required, three times`. The crasher of the default environment hit a text between its statements in about 1 seed of 40. In the profile `several`, `run.crash` now waits up to ten seconds for an instance that runs a text after one of its statements succeeded, and then as before. The cells reach 4 such texts, and 1,000 seeds 271; with that, `commitLater` is found by 610 of 1,000 seeds (534 before), 296 of them by a statement lost in a crash after it. The other profiles crash as before, so no other count moved.
+- The kinds of texts are in `/internal/engine/testdata/reached/TestSimulation.kinds` at a third of their totals, and `TestSimulation.tsv` is recounted. I dropped a kind that counted the same as the state "not run".
+- The driver check's fix: a refusal planted in `ExecAll` for the first statement of a text with a later statement that `stmt.Split` refuses failed `TestGenerated` both with the old walk and the new (`s4ql gives exec: exec failed with s4ql: not supported: PLANTED (at offset 24), where the rule gives ""`). The entry of `Supports` only matters where `stmt.Check` refuses the text of a statement, so I found no small fault that only the fix finds; the reason is recorded.
+- The self-review (`code-review`, high) found four nits, all fixed: a text that is not valid UTF-8 or holds NUL had no rule (now an explicit violation, as in the differential tests; the generator writes none); `commitFailed` left the write transaction open when its annotation failed (now rolled back); the values of a statement's subqueries reached its attempt only with its event, so a crash after the commit and before the event lost them (the observer now writes them on the statement that runs, the first without an event); and every write looked up the text in the context before the flags of the bugs (the flags come first now).
+
+### Why
+
+A list taken from the bug's real violations, with each entry explained, is a list that a different fault cannot hide in.
+
+### What worked
+
+Reading the classes, not only the cover: they showed that every seed of `argsFromStart` and `commitLater` that a first cover counted outside the own violation had it, cut off by my probe's truncation of a violation at 600 bytes.
+
+### What didn't work
+
+- `for x in "hammer none" "default none" …; do set -- $x; …` in zsh: no word splitting, so ten runs of the default environment without a bug and `out-hammer goOn-.txt` as a file name.
+- `python3 cover.py out-hammer-commitFailed.txt …` failed with `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xed in position 5194`, because the probe cut violations inside a character; the scripts read with `errors='replace'`.
+- The first version of the aimed crash broke out of its second loop when it found no running node: `if live != nil { break }` after `live` had been set to every live node. A flag `aimed` fixed it.
+
+### What I learned
+
+`undoInTx` is found by its own violation in only half of its seeds: the roll back frees the place of the writer, so another caller's statement commits while the caller's transaction is still open as far as the caller knows, which `run.verifyOverlaps` sees first.
+
+### What was tricky
+
+Telling a real second symptom from a truncated own one, above.
+
+### What warrants review
+
+The aimed crash in `run.crash`, which only the profile `several` takes, and the lists of `oneCommit` and `undoInTx`, the longest.
+
+### Future work
+
+Mutation testing of the loop, as the brief says.
