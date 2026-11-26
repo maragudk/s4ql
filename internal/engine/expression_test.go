@@ -1610,7 +1610,6 @@ func TestEngine_arithmetic(t *testing.T) {
 	})
 }
 
-
 func TestEngine_text(t *testing.T) {
 	// The table of the tests of text: a key, three TEXT columns, a BLOB, an INT, and a REAL, with an
 	// index on s, and rows with text that is not ASCII, empty, and NULL.

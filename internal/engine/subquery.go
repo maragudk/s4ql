@@ -417,7 +417,8 @@ func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []con
 	}
 	for _, in := range b.subs.all() {
 		if in.s == nil {
-			return internalError("a subquery %v without its table", in.number)
+			// Only where the statement does not have the subquery, which the loop below refuses.
+			continue
 		}
 		if err := b.hoist(ctx, in.s.table, in.conditions, true); err != nil {
 			return err
