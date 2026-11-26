@@ -2148,6 +2148,10 @@ var checkCases = []checkCase{
 		Subqueries: []stmt.Select{{Span: stmt.Span{Start: 27, End: 63}, Table: name("u", "u", 41), Columns: []stmt.Name{name("k", "k", 34)},
 			Where: []stmt.Condition{condExpr(ecall(stmt.FuncLower, 49, 57, ec("x", 55)), stmt.OpEqual, lit(stmt.Text("a"), 60, 63), false)}}}}},
 
+	{name: "a call compared with a subquery", src: "select * from t where lower(v) = (select x from u)", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 50}, Table: name("t", "t", 14),
+		Where:      []stmt.Condition{condExpr(ecall(stmt.FuncLower, 22, 30, ec("v", 28)), stmt.OpEqual, sub(1, 33, 50), false)},
+		Subqueries: []stmt.Select{{Span: stmt.Span{Start: 34, End: 49}, Table: name("u", "u", 48), Columns: []stmt.Name{name("x", "x", 41)}}}}},
+
 	// Text that is not supported.
 	{name: "a function other than lower or hex in set", src: "update t set v = abs(w)", err: "s4ql: not supported: function other than lower or hex (at offset 17)"},
 	{name: "upper", src: "update t set v = upper(w)", err: "s4ql: not supported: function other than lower or hex (at offset 17)"},
@@ -2209,6 +2213,10 @@ var checkCases = []checkCase{
 	{name: "a number with a digit separator in a concatenation", src: "update t set v = w || 1_000", err: "s4ql: not supported: number in a concatenation (at offset 22)"},
 	{name: "the remainder in a concatenation", src: "update t set v = 'a' || (w % 2)", err: "s4ql: not supported: binary operator (at offset 25)"},
 	{name: "the id of goqite's queue with randomblob, which comes later", src: "update t set v = 'm_' || lower(hex(randomblob(16)))", err: "s4ql: not supported: function other than lower or hex (at offset 35)"},
+	{name: "lower with ORDER BY and no argument", src: "update t set v = lower(order by w)", err: "s4ql: not supported: wrong number of arguments (at offset 23)"},
+	{name: "a call alone as a condition", src: "select * from t where lower(v)", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a call in arithmetic with a refused argument, refused for its place first", src: "update t set v = lower(1) + 2", err: "s4ql: not supported: text in arithmetic (at offset 17)"},
+	{name: "a concatenation in arithmetic with a refused operand, refused for its place first", src: "update t set v = 'a' || 1 + 2", err: "s4ql: not supported: text in arithmetic (at offset 17)"},
 	{name: "a call without its closing parenthesis", src: "update t set v = lower(w", err: "incomplete input"},
 	{name: "a concatenation without a right operand", src: "update t set v = w ||", err: "incomplete input"},
 	{name: "a call with an empty second argument", src: "update t set v = lower(w,)", err: `near ")": syntax error`},

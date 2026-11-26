@@ -409,8 +409,8 @@ func ArithmeticSites(s stmt.Statement) []ArithmeticSite {
 	return sites
 }
 
-// Operators of the expression e: its nodes that compute, the negations and the binary operators, from
-// the root, in the order of a walk that visits a node before its operands.
+// Operators of the expression e: its nodes that compute, the negations, the binary operators, and the
+// calls, from the root, in the order of a walk that visits a node before its operands.
 func Operators(e stmt.Expression) []stmt.Expression {
 	var ops []stmt.Expression
 	if len(e.Operands) > 0 {

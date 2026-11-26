@@ -1650,6 +1650,20 @@ func TestEngine_text(t *testing.T) {
 		is.Equal(t, before, i.state())
 	})
 
+	t.Run("should give row value misused of a subquery of * at SQLite's offset, that of a call on the left, before the refusal of text", func(t *testing.T) {
+		setup := []string{"create table t (k int primary key, v text) strict, without rowid", "create table u (a int primary key, b int) strict, without rowid"}
+		for _, src := range []string{
+			"select * from t where lower(v) = (select * from u)",
+			"select * from t where   LOWER (v) != (select * from u)",
+			"select * from t where hex(lower(v)) < (select * from u)",
+			"select * from t where lower(v) || 'a' = (select * from u)",
+			"select * from t where 'a' || lower(v) = (select * from u)",
+			"select * from t where v || 'a' = (select * from u)",
+		} {
+			pin(t, setup, src, "1/1: row value misused")
+		}
+	})
+
 	t.Run("should plan a concatenation and a call as an Arithmetic, and format them", func(t *testing.T) {
 		s, err := stmt.Check("update t set s = 'm_' || lower(hex(b)) where lower(s) = ?")
 		is.NotError(t, err)

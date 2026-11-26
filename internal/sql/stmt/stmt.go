@@ -447,10 +447,10 @@ type Function int
 // The functions of an [ExprCall].
 const (
 	// FuncLower is lower(x), x with the ASCII letters in lower case. Its argument is never a number,
-	// a blob, or NULL.
+	// a blob, or NULL where the text shows its type, as for a literal.
 	FuncLower Function = iota + 1
 	// FuncHex is hex(x), the bytes of x in upper-case hexadecimal digits. Its argument is never a
-	// number or NULL.
+	// number or NULL where the text shows its type, as for a literal.
 	FuncHex
 )
 

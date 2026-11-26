@@ -305,6 +305,9 @@ func TestCheck(t *testing.T) {
 			{stmt.Expression{Kind: stmt.ExprNegate, Operands: []stmt.Expression{column, column}}, "- with 2 operands"},
 			{stmt.Expression{Kind: stmt.ExprNegate}, "- with 0 operands"},
 			{stmt.Expression{Kind: stmt.ExpressionKind(99)}, "an expression of kind 99"},
+			{stmt.Expression{Kind: stmt.ExprConcat, Operands: []stmt.Expression{column}}, "|| with 1 operands"},
+			{stmt.Expression{Kind: stmt.ExprCall, Operands: []stmt.Expression{column}}, "a call of function 0 with 1 operands"},
+			{stmt.Expression{Kind: stmt.ExprCall, Function: stmt.FuncLower}, "a call of function 1 with 0 operands"},
 		} {
 			_, err := expr.Check(c.e, resolve)
 			is.True(t, errors.Is(err, expr.ErrInternal), err)

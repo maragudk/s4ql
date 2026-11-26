@@ -171,8 +171,14 @@ func (x *Program) add(e stmt.Expression, columns map[string]Column) (int32, erro
 	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
 		operands = 2
 	case stmt.ExprConcat:
+		if len(e.Operands) != 2 {
+			return 0, internalError("%v with %v operands", e.Kind, len(e.Operands))
+		}
 		return 0, &stmt.NotSupportedError{What: "concatenation", Offset: e.Span.Start}
 	case stmt.ExprCall:
+		if len(e.Operands) != 1 || e.Function.String() == "" {
+			return 0, internalError("a call of function %v with %v operands", int(e.Function), len(e.Operands))
+		}
 		return 0, &stmt.NotSupportedError{What: "call of " + e.Function.String(), Offset: e.Span.Start}
 	default:
 		return 0, internalError("an expression of kind %v", int(e.Kind))

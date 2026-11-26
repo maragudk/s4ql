@@ -1101,9 +1101,10 @@ func plainValue(e ast.Expr) bool {
 // maxParentheses that an expression may have open at once, those of a call included. SQLite has no
 // such limit, but its parser holds each open parenthesis, and each operator that waits for its right
 // operand, on a stack of 2,499 entries, and gives `Recursion limit` beyond it: `(1 + (1 + ...))`
-// parses to 830 levels. With at most 100 parentheses, no second sign, and two levels of binary
-// operators of arithmetic, or one of ||, which never meet, an expression holds far fewer entries than
-// that, so the pass never supports a text that SQLite's parser refuses.
+// parses to 830 levels. A call holds its name and its parenthesis there, and one entry more. With at
+// most 100 parentheses, no second sign, and two levels of binary operators of arithmetic, or one of
+// ||, which never meet, an expression holds far fewer entries than that, so the pass never supports a
+// text that SQLite's parser refuses.
 const maxParentheses = 100
 
 // arithmetic operators, by the kind of their token.
@@ -1115,7 +1116,7 @@ var arithmetic = map[token.Kind]ExpressionKind{
 // text shows of their type. Arithmetic takes numbers, and || and the functions take text, as the
 // rule "SQLite's answer or an error" has it: SQLite reads text as a number in arithmetic and writes
 // a number or a blob as text for ||, lower, and hex, which s4ql does not copy. What the text cannot
-// show, the type of a column or of an argument, is for the engine.
+// show, the type of a column or of an argument, is not decided here.
 type place int
 
 const (
@@ -1147,15 +1148,12 @@ func (p place) refusal(what string) string {
 	return ""
 }
 
-// functions of an [ExprCall], by their names in lower case.
-var functions = map[string]Function{"lower": FuncLower, "hex": FuncHex}
-
 // expression e, which starts at the next token, at the place p, and its height as SQLite counts it:
 // a literal, a parameter, and a column are 1 deep, a literal after a - 2 deep, and an operator or a
 // call one deeper than its deeper operand. Parentheses add nothing. An operator or a call deeper than
 // [maxDepth] is not supported, as deep: at the operator for its left operand, and at the token after
-// its operand, or after the call, for another. The caller reads a plain value itself, so a literal
-// here is the operand of an operator or the argument of a call.
+// its operand, or after the call, for another. A plain value is read by [recognizer.term], so a
+// literal here is the operand of an operator or the argument of a call.
 func (r *recognizer) expression(e ast.Expr, deep string, p place) (Expression, int) {
 	switch x := e.(type) {
 	case *ast.Paren:
@@ -1303,11 +1301,17 @@ func (r *recognizer) call(c *ast.FuncCall, deep string, p place) (Expression, in
 	if what := quotingName(c.Name); what != "" {
 		r.reject(what)
 	}
-	f := functions[asciiLower(dequote(c.Name))]
-	switch {
-	case f == 0:
+	var f Function
+	var argument place
+	switch asciiLower(dequote(c.Name)) {
+	case "lower":
+		f, argument = FuncLower, inLower
+	case "hex":
+		f, argument = FuncHex, inHex
+	default:
 		r.reject("function other than lower or hex")
-	case p == inArithmetic:
+	}
+	if p == inArithmetic {
 		// SQLite reads the text that the function gives as a number.
 		r.reject("text in arithmetic")
 	}
@@ -1327,7 +1331,6 @@ func (r *recognizer) call(c *ast.FuncCall, deep string, p place) (Expression, in
 	if _, ok := c.Args[0].(*ast.Paren); ok {
 		r.reject("parentheses")
 	}
-	argument := map[Function]place{FuncLower: inLower, FuncHex: inHex}[f]
 	x, height := r.expression(c.Args[0], deep, argument)
 	if len(c.Args) > 1 {
 		r.reject("wrong number of arguments")

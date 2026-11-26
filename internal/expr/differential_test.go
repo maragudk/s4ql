@@ -530,7 +530,11 @@ func (k *checker) check(c exprCase) string {
 		// Text, which the evaluator refuses at its root, the one place where the pass puts it.
 		x, err := expr.Check(e, resolve)
 		var ns *stmt.NotSupportedError
-		if !errors.As(err, &ns) || ns.Offset != e.Span.Start || ns.What != "concatenation" && ns.What != "call of "+e.Function.String() {
+		want := "concatenation"
+		if e.Kind == stmt.ExprCall {
+			want = "call of " + e.Function.String()
+		}
+		if !errors.As(err, &ns) || ns.Offset != e.Span.Start || ns.What != want {
 			return fmt.Sprintf("%v: the check gives %v and %v, and not the refusal of text", c, x, err)
 		}
 		k.tally["case: refused, text"]++

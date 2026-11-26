@@ -43,9 +43,10 @@ func missingName(e stmt.Expression, found func(stmt.Name) bool) (stmt.Name, bool
 // leftmostOffset of the expression e: the offset of its first leaf in the text, where SQLite gives
 // the offset of an error of a comparison whose left side is e. A negative literal starts at its sign,
 // and SQLite gives the offset of the number after it, which is one more where the sign and the number
-// have no space between them, as they mostly have.
+// have no space between them, as they mostly have. A call is a node with an offset of its own, its
+// name, where SQLite stops.
 func leftmostOffset(e stmt.Expression) int {
-	for len(e.Operands) > 0 {
+	for len(e.Operands) > 0 && e.Kind != stmt.ExprCall {
 		e = e.Operands[0]
 	}
 	switch v := e.Value.(type) {
