@@ -130,10 +130,6 @@ func simulate(t *testing.T, req Request) Response {
 		world := sim.New(req.Seed, sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: req.Buggify}, MaxSteps: 5_000_000})
 		r := newRun(t, req, world, duration(req.End), disks, false)
 		r.ends(world.Run(r.main), &res)
-		if r.refusal != "" {
-			res = Response{Error: "the bucket is refused: " + r.refusal}
-			return
-		}
 		if req.Lines {
 			res.Lines = world.Lines()
 		}
@@ -199,12 +195,6 @@ type run struct {
 	endedAt time.Duration
 	// target is the instance that the client calls now, or nil in a run without a client.
 	target *instance
-	// changes holds the objects that writes put into the store since the last answer of a session.
-	changes []StoredObject
-	// offset is the time of the history at the time 0 of the run: zero without a bucket.
-	offset time.Duration
-	// refusal says why the run is refused after it started: the store did not take the bucket.
-	refusal string
 	// box is the task of the visitor's statement that is on its way, or nil: see [run.sql].
 	box host.Task
 }
@@ -332,10 +322,6 @@ func (r *run) setUp(ctx context.Context) bool {
 		Latency: duration(r.req.Latency),
 		Faults:  r.req.Faults.store(),
 	})
-	if !r.seedStore(ctx) {
-		r.end()
-		return false
-	}
 	for i := range r.req.Instances {
 		in := &instance{name: instanceName(i), lease: duration(r.req.Leases[i%len(r.req.Leases)]), disk: r.disks[i], inFlight: map[*pending]context.CancelFunc{}}
 		r.instances = append(r.instances, in)
@@ -405,10 +391,6 @@ func (r *run) start(ctx context.Context, in *instance, path string) {
 		name = fmt.Sprint(in.name, in.restarts+1)
 	}
 	inst := r.world.NewInstance(name)
-	if r.offset != 0 {
-		// The wall clock reads the time of the history, which goes on from the runs before.
-		inst.ShiftWall(r.offset)
-	}
 	p := &process{i: in, name: name, inst: inst, path: path}
 	p.lifecycle = inst.NewSemaphore("lifecycle", 1)
 	p.client = &client{r: r, p: p, inner: r.store.Client(name, inst)}
@@ -431,7 +413,7 @@ func (r *run) open(ctx context.Context, p *process) {
 		Logger: slog.New(coreHandler{r: r, p: p}),
 		VFS:    p.i.disk.name(),
 	}
-	d, err := core.Open(ctx, procHost{Instance: p.inst, r: r, p: p}, p.client, p.path, r.req.Prefix, options)
+	d, err := core.Open(ctx, procHost{Instance: p.inst, r: r, p: p}, p.client, p.path, prefix, options)
 	if err != nil {
 		p.mu.Lock()
 		p.failed = true
@@ -1431,11 +1413,6 @@ func (r *run) returned(k *pending, version store.Version, err error) {
 func (r *run) storeEvent(ctx context.Context, format string, args []any) {
 	e := storeLine(format, args)
 	k, _ := ctx.Value(pendingKey{}).(*pending)
-	// The requests of the seed have no pending request of an instance, and its client is cut off
-	// alone. A request of the seed can still arrive late, after the seed, and is refused then.
-	if (e.Kind == "request" && k == nil) || (e.Kind == "store" && e.Process == "seed") {
-		return
-	}
 	if e.Kind == "request" && k != nil {
 		if e.What == "sent" && len(args) > 1 {
 			_, _ = fmt.Sscanf(fmt.Sprint(args[1]), "request %d:", &k.request)
@@ -1457,7 +1434,6 @@ func (r *run) storeEvent(ctx context.Context, format string, args []any) {
 		if content, version, ok := r.store.Object(e.Key); ok {
 			e.Version = string(version)
 			e.Object = r.object(e.Key, version, content)
-			r.changed(e.Key, content)
 		}
 	case "read":
 		if _, version, ok := r.store.Object(e.Key); ok {

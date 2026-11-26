@@ -815,12 +815,13 @@ function drawS3() {
 // SETTINGS of the session: a starts alone, b stands by, and the client calls a.
 const SETTINGS = { workload: { callers: 0 }, client: { instance: "a" }, standby: true };
 
-// PREFIX of the database in S3: the key of each of its objects starts with it and a slash.
+// PREFIX of the database in S3, as the engine names its objects: the key of each starts with it and
+// a slash.
 const PREFIX = "db";
 
 // begin a session on the engine, on an empty S3.
 async function begin(e) {
-  take(await e.start({ seed: R.newSeed(), ...SETTINGS, prefix: PREFIX }));
+  take(await e.start({ seed: R.newSeed(), ...SETTINGS }));
   state = (await e.now(COMMITS)).state;
 }
 
