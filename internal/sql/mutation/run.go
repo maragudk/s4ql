@@ -55,8 +55,12 @@ var stmtLayers = map[string]string{
 	"TestGenerate_nearMisses": layerMutants,
 	"TestCheck_grammar":       layerGenerator,
 	"TestGenerate":            layerGenerator,
+	"TestSplit_differential":  layerGenerator,
 	"FuzzCheck":               layerFuzzSeeds,
 	"FuzzGenerate":            layerFuzzSeeds,
+	"FuzzSplit":               layerFuzzSeeds,
+	"FuzzLiteral":             layerFuzzSeeds,
+	"FuzzStartedTable":        layerFuzzSeeds,
 	"TestCheck_corpusMutants": layerMutants,
 	"TestGenerate_mutants":    layerMutants,
 }
@@ -90,7 +94,19 @@ const (
 	stmtPkg   = "internal/sql/stmt"
 	enginePkg = "internal/engine"
 	exprPkg   = "internal/expr"
+	// crosscheckModule is the directory of the module of the checks against mattn/go-sqlite3, which
+	// replaces this module with the tree that it is in, so that it builds against a mutant too.
+	crosscheckModule = "internal/sqlite/crosscheck"
+	// driverCheckPkg is the package of the driver check, in crosscheckModule.
+	driverCheckPkg = crosscheckModule + "/drivercheck"
 )
+
+// driverCheckLayers of the tests of the driver check that are not of the layer other packages, when
+// the package at the root is the mutated package.
+var driverCheckLayers = map[string]string{
+	"TestGenerated": layerGenerator,
+	"FuzzSequence":  layerFuzzSeeds,
+}
 
 // exprLayers of the tests of package expr that are not hand-written, when expr is the mutated
 // package.
@@ -157,7 +173,8 @@ type runner struct {
 
 // testPackages of the module under internal whose test binaries depend on the package in pkg, as
 // directories relative to the root, sorted. For the package at the root, ".", which no package under
-// internal depends on, they are the root itself.
+// internal depends on, they are the root itself and the driver check, which is in a module of its
+// own, if the tree has it.
 func (r *runner) testPackages(pkg string) ([]string, error) {
 	patterns := []string{"./internal/..."}
 	target := module + "/" + pkg
@@ -190,6 +207,11 @@ func (r *runner) testPackages(pkg string) ([]string, error) {
 				dir = "."
 			}
 			dirs = append(dirs, dir)
+		}
+	}
+	if pkg == "." {
+		if _, err := os.Stat(filepath.Join(r.root, driverCheckPkg)); err == nil {
+			dirs = append(dirs, driverCheckPkg)
 		}
 	}
 	slices.Sort(dirs)
@@ -255,6 +277,10 @@ func (r *runner) plan(pkgs []string) error {
 					l = layerHand
 					if xl, ok := exprLayers[t]; ok {
 						l = xl
+					}
+				case tp == driverCheckPkg:
+					if dl, ok := driverCheckLayers[t]; ok {
+						l = dl
 					}
 				case tp == pkg:
 					l = layerHand
@@ -330,8 +356,14 @@ func binName(pkg string) string {
 
 // goCmd runs the go command in the root of the module and gives its output.
 func (r *runner) goCmd(ctx context.Context, args ...string) ([]byte, error) {
+	return r.goCmdIn(ctx, ".", args...)
+}
+
+// goCmdIn runs the go command in the directory dir, relative to the root of the module, and gives its
+// output.
+func (r *runner) goCmdIn(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "go", args...)
-	cmd.Dir = r.root
+	cmd.Dir = filepath.Join(r.root, dir)
 	if r.gocache != "" {
 		cmd.Env = append(os.Environ(), "GOCACHE="+r.gocache)
 	}
@@ -348,7 +380,11 @@ func (r *runner) build(ctx context.Context, pkg, overlay, bin string) (string, e
 	if overlay != "" {
 		args = append(args, "-overlay", overlay)
 	}
-	out, err := r.goCmd(ctx, append(args, "./"+pkg)...)
+	dir, pattern := ".", "./"+pkg
+	if rest, ok := strings.CutPrefix(pkg, crosscheckModule+"/"); ok {
+		dir, pattern = crosscheckModule, "./"+rest
+	}
+	out, err := r.goCmdIn(ctx, dir, append(args, pattern)...)
 	return string(out), err
 }
 
