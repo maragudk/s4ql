@@ -6,7 +6,7 @@ Markus set the bar on 2026-11-26: "I've heard great things about Hegel, so if th
 
 ## In short
 
-Hegel adds one thing that nothing in the project gives: a failing case shrunk to its essentials. A bug planted in the engine that the seeded differential test reports after 16 to 38 statements, many of them in odd spellings with comments and quoted keywords, Hegel reports, for nine of eleven bugs, as 2 to 4 plain statements. It finds no planted fault that the seeded checks miss, and it misses some that they find at once: the faults of two related values (the smallest integer divided by -1, a text exactly at the length limit) and a bug that needs a table of many rows. Adopt it as an addition, for series of statements against SQLite and for pure components with an oracle, with generators written for Hegel. Do not try to drive the existing seeded generators with it.
+Hegel adds one thing that nothing in the project gives: a failing case shrunk to its essentials. A bug planted in the engine that the seeded differential test reports after 16 to 38 statements, many of them in odd spellings with comments and quoted keywords, Hegel reports, for ten of eleven bugs, as 2 to 5 plain statements. It finds no planted fault that the seeded checks miss, and it misses some that they find at once: the faults of two related values (the smallest integer divided by -1, a text exactly at the length limit) and a bug that needs a table of many rows. Adopt it as an addition, for series of statements against SQLite and for pure components with an oracle, with generators written for Hegel. Do not try to drive the existing seeded generators with it.
 
 ## What it needs
 
@@ -19,9 +19,9 @@ Hegel adds one thing that nothing in the project gives: a failing case shrunk to
 
 ## The two tests
 
-**`TestHegel_cases` in `internal/expr/hegel_test.go`.** Hegel draws a typed tree of arithmetic two times in three and of text otherwise, at most four levels deep, over a row of the eight columns of the existing `schema`, with literals, columns, and parameters, NULL from a column or an argument, one leaf in 40 of the wrong type for the refusals, and a length limit from 30 to 4,000 bytes one case in four, with texts and blobs whose lengths sit at an edge of the limit. Each case goes to the existing `checker.check`, the oracle of `TestDifferential`: SQLite's value bit for bit, or the error that the exact reference justifies, with SQLite's quirk shown. 5,000 cases take about 1.5 seconds.
+**`TestHegel_cases` in `internal/expr/hegel_test.go`.** Hegel draws a typed tree of arithmetic two times in three and of text otherwise, at most four levels deep, over a row of the eight columns of the existing `schema`, with literals, columns, and parameters, NULL from a column or an argument, one leaf in 40 of the wrong type for the refusals, and a length limit from 30 to 4,000 bytes one case in four, with texts and blobs whose lengths sit at an edge of the limit. Each case goes to the existing `checker.check`, the oracle of `TestDifferential`: SQLite's value bit for bit, or the error that the exact reference justifies, with SQLite's quirk shown. 5,000 cases take about 2 seconds, and 15 under the race detector.
 
-**`TestHegel_series` in `internal/engine/hegel_test.go`.** Hegel draws a series of 1 to 30 statements on two tables, `t` and `u`, whose shapes it draws at each create table: a key at any place and of any of the five types, one to three other columns, NOT NULL and defaults now and then. The statements are create and drop table and index (with IF NOT EXISTS and IF EXISTS), inserts with and without a list of columns in any order, updates and deletes with a WHERE of comparisons and IS NULL joined by AND, the value on either side, selects of `*` or of columns with ORDER BY and LIMIT, RETURNING on a quarter of the changes, a third of the values as `?`, one value in 100 of the wrong type, and a restart of the instance one step in 20. Each statement goes to the existing `pair.step`, the oracle of `TestDifferential`, and the tables at the end are compared. The directions of the scans, which `TestDifferential` draws at random and logs, are drawn by Hegel too, so that a failure replays exactly. 200 series take about 6 seconds without the race detector.
+**`TestHegel_series` in `internal/engine/hegel_test.go`.** Hegel draws a series of 1 to 30 statements on two tables, `t` and `u`, whose shapes it draws at each create table: a key at any place and of any of the five types, one to three other columns, NOT NULL and defaults now and then. The statements are create and drop table and index (with IF NOT EXISTS and IF EXISTS), inserts with and without a list of columns in any order, updates and deletes with a WHERE of comparisons and IS NULL joined by AND, the value on either side, selects of `*` or of columns with ORDER BY and LIMIT, RETURNING on a quarter of the changes, a third of the values as `?`, three values in four from a few of each type, so that keys meet, and the others from the whole type, one value in 100 of the wrong type, a restart of the instance one step in 20, and the length limit of `TestDifferential` one series in four. Each statement goes to the existing `pair.step`, the oracle of `TestDifferential`, and the tables at the end are compared. The directions of the scans, which `TestDifferential` draws at random and logs, are drawn by Hegel too, so that a failure replays exactly. The helpers of `TestDifferential` take a `testing.TB`, and each series gets one of its own (`seriesT`), which closes the instances and removes the directories of the series at its end, and turns a fatal error of a helper into a failure of the series that Hegel shrinks, where `Goexit` on the test would end the run. 200 series take about 7 seconds, and 15 under the race detector.
 
 Both found nothing at `main`.
 
@@ -33,44 +33,44 @@ Faults were planted by hand in a copy of `internal/expr/expr.go` that was never 
 
 ### The evaluator
 
-The seeded check is `TestDifferential` of `internal/expr`, 3,600 cases for each of eight seeds; its failing case is the generator's case as drawn. "Hegel" is `TestHegel_cases` as committed (derandomized, 5,000 cases); "Hegel, 5 seeds" is its generator on five other seeds of 2,000 cases each.
+The seeded check is `TestDifferential` of `internal/expr`, 3,600 cases for each of eight seeds; its failing case is the generator's case as drawn. "Hegel" is `TestHegel_cases` as committed (derandomized, 5,000 cases); "Hegel, 5 seeds" is its generator, before a last change that keeps rows and arguments within the limit, on five other seeds of 2,000 cases each.
 
 | Fault planted in `expr.go` | Seeded: cases to the failure, nodes | Hegel: cases to the failure, nodes shrunk to | Hegel, 5 seeds: found, nodes shrunk to |
 | --- | --- | --- | --- |
-| `negZero`: the negation as `-1 * x`, which gives -0.0 for 0.0 | 10, 4 | 850, 8 | 5 of 5, 2 to 4 |
-| `nullShort`: a NULL on the left skips the right operand and its error | 77, 27 | 179, 8 | 5 of 5, 5 to 11 |
+| `negZero`: the negation as `-1 * x`, which gives -0.0 for 0.0 | 10, 4 | 833, 8 | 5 of 5, 2 to 4 |
+| `nullShort`: a NULL on the left skips the right operand and its error | 77, 27 | 160, 8 | 5 of 5, 5 to 11 |
 | `mulEdge`: the smallest integer as a product is an overflow | 120, 3 | not found | 2 of 5, 3 and 10 |
 | `divMinusOne`: the smallest integer divided by -1 is no overflow | 54, 15 | not found | 1 of 5, 3 |
-| `lowerLimit`: `lower` may make a text as long as the limit | 98, 10 | 110, 2 | 4 of 5, 2 |
-| `hexLimit`: `hex` may make a text as long as the limit | 164, 7 | 3,900, 2 | 2 of 5, 2 |
-| `negZeroDiv`: a division by -0.0 is no division by zero | 149, 23 | 200, 3 | 5 of 5, 3 to 9 |
+| `lowerLimit`: `lower` may make a text as long as the limit | 98, 10 | 627, 2 | 4 of 5, 2 |
+| `hexLimit`: `hex` may make a text as long as the limit | 164, 7 | 3,069, 2 | 2 of 5, 2 |
+| `negZeroDiv`: a division by -0.0 is no division by zero | 149, 23 | 45, 10 | 5 of 5, 3 to 9 |
 | `concatLimit`: a concatenation as long as the limit is too long | 45, 5 | not found | 2 of 5, 3 |
 | `subOverflow`: the overflow of `-` checked as that of `+` | 5, 19 | 2, 2 | 5 of 5, 2 |
-| `lowerUnicode`: `lower` folds every letter, as Unicode does | 15, 2 | 135, 2 | 5 of 5, 2 |
+| `lowerUnicode`: `lower` folds every letter, as Unicode does | 15, 2 | 23, 2 | 5 of 5, 2 |
 
-The seeded check finds all ten within 164 cases, in under 30 milliseconds each. Hegel as committed finds seven, and shrinks each to 2 to 8 nodes, such as `-?` with the argument 1 for `subOverflow` (19 nodes seeded) and `(a / ?)` with `a = 0` and the argument -0.0 for `negZeroDiv` (23 nodes). Its shrinking is good, not perfect: for `negZero` it stopped at `(-(0 + (0 + 0.0)) + d)`, where two nodes would do. The three that it misses need two related values, which the seeded generator draws on purpose (`relate`, `edge`, `edgeOfLimit`) and an independent draw meets rarely. The first version of the Hegel generator, without lengths at the edges of the limit, missed all four faults of the limit.
+The seeded check finds all ten within 164 cases, in under 30 milliseconds each. Hegel as committed finds seven, and shrinks each to 2 to 10 nodes, such as `-?` with the argument 1 for `subOverflow` (19 nodes seeded) and `lower('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')` under a limit of 30 for `lowerLimit` (10 nodes). Its shrinking is good, not perfect: for `negZero` it stopped at `(a * -((a + 0.0) + a))` with `a = 0`, and for `negZeroDiv` at `(a + (-(a + a) / (a * -0.0)))`, where two and three nodes would do and other seeds reached them (`-?` with the argument 0, and `(0 / ?)` with the argument -0.0). The three that it misses need two related values, which the seeded generator draws on purpose (`relate`, `edge`, `edgeOfLimit`) and an independent draw meets rarely. The first version of the Hegel generator, without lengths at the edges of the limit, missed all four faults of the limit.
 
 `FuzzExpr`, fuzzed for up to 30 seconds with each fault, failed at once on an entry of its seed corpus, which holds the generator's cases (`failure while testing seed corpus entry: FuzzExpr/seed#75` for `nullShort`, the same 27 nodes), and Go does not minimize a failing seed. So for these faults the fuzz test is the seeded generator again.
 
 ### The engine
 
-The seeded check is `differentialFind` of `TestDifferential`, on the sequences of the profile that weighs what the bug breaks (as `TestDifferential_plantedBugs` and `TestSimulation_plantedBugs` choose it), 48 statements each, until the first sequence that finds the bug; its failing case is the log of the statements before the failure. Hegel is `TestHegel_series` as committed (derandomized, 200 series), and for `oldValues` also on three other seeds.
+The seeded check is `differentialFind` of `TestDifferential`, on the sequences of the profile that weighs what the bug breaks (as `TestDifferential_plantedBugs` and `TestSimulation_plantedBugs` choose it), 48 statements each, until the first sequence that finds the bug; its failing case is the log of the statements before the failure. Hegel is `TestHegel_series` as committed (derandomized, 200 series). An earlier version of its generator, before the fixes of the review, found the same ten and shrank them alike; on three other seeds it found `oldValues` at the 9th, 31st, and 177th series, each shrunk to 3 statements.
 
 | Planted bug | Seeded: sequence that finds it, statements up to the failure | Hegel: series that finds it, its statements, shrunk to | Hegel: cases and time of the shrinking |
 | --- | --- | --- | --- |
-| `skipUnique` (tables) | 1st, 38 | 5th, 6, 3 | 2,701, 20 s |
-| `listOrder` (tables) | 1st, 21 | 2nd, 2, 2 | 3,007, 16 s |
-| `zeroLeftOut` (defaults) | 5th, 22 | 2nd, 2, 2 | 3,514, 21 s |
-| `nullDefault` (defaults) | 1st, 16 | 3rd, 10, 4 | 6,433, 65 s |
-| `openBound` (where) | 2nd, 29 | 5th, 5, 3 | 4,969, 54 s |
-| `changeNothing` (changes) | 1st, 18 | 3rd, 5, 3 | 2,925, 26 s |
-| `keepOldKey` (changes) | 1st, 26 | 25th, 13, 3 | 7,992, 183 s |
-| `oldValues` (returning) | 1st, 21 | 177th, 21, 3; seeds 1 to 3: 9th, 31st, and 177th, each shrunk to 3 | 7,785 to 12,177, 80 to 187 s |
-| `ascendLast` (order) | 1st, 30 | 7th, 13, 6 | 12,687, 261 s |
+| `skipUnique` (tables) | 1st, 38 | 3rd, 14, 3 | 4,982, 72 s |
+| `listOrder` (tables) | 1st, 21 | 2nd, 2, 2 | 4,083, 28 s |
+| `zeroLeftOut` (defaults) | 5th, 22 | 3rd, 7, 2 | 5,471, 55 s |
+| `nullDefault` (defaults) | 1st, 16 | 3rd, 9, 2 | 6,087, 43 s |
+| `openBound` (where) | 2nd, 29 | 9th, 13, 3 | 8,940, 161 s |
+| `changeNothing` (changes) | 1st, 18 | 3rd, 16, 3 | 3,421, 27 s |
+| `keepOldKey` (changes) | 1st, 26 | 10th, 11, 3 | 6,781, 57 s |
+| `oldValues` (returning) | 1st, 21 | 3rd, 19, 5 | 9,472, 143 s |
+| `ascendLast` (order) | 1st, 30 | 139th, 12, 4 | 6,358, 99 s |
 | `limitFirst` (order) | 1st, 12 | not found in 200 | |
-| `starKeyFirst` (returning) | 1st, 21 | 6th, 6, 2 | 4,713, 25 s |
+| `starKeyFirst` (returning) | 1st, 21 | 2nd, 2, 2 | 4,850, 32 s |
 
-The seeded check finds every bug in its first sequences, in milliseconds. Hegel finds ten of the eleven in its first 25 series (`oldValues` on the derandomized seed only at the 177th), and shrinks nine of them to two to four statements in plain SQL. It misses `limitFirst`, which needs more rows than the LIMIT, sorted by no index, which a series of at most 30 statements on two tables rarely builds; the profile `order` builds such tables on purpose. For `oldValues` the seeded failure is the 21st statement of a sequence, written as `\fupDAtE -- c\n/**/\r\n"current_date"\f\n--\nSEt\nWITH== /*-*/ 'a', ...`; Hegel's is
+The seeded check finds every bug in its first sequences, in milliseconds. Hegel finds ten of the eleven, eight of them in its first ten series and `ascendLast` at the 139th, and shrinks them to two to five statements in plain SQL, eight of them to two or three. It misses `limitFirst`, which needs more rows than the LIMIT, sorted by no index, which a series of at most 30 statements on two tables rarely builds; the profile `order` builds such tables on purpose. For `oldValues` the seeded failure is the 21st statement of a sequence, written as `\fupDAtE -- c\n/**/\r\n"current_date"\f\n--\nSEt\nWITH== /*-*/ 'a', ...`; Hegel's, on one of the other seeds, is
 
 ```sql
 create table t(k int primary key, c1 real not null) strict, without rowid
@@ -78,9 +78,9 @@ insert into t values (0, 0.0)
 update t set k = 1 returning *
 ```
 
-where the engine gives the row `0, 0.0` and SQLite `1, 0.0`. For `skipUnique`, the seeded failure is the 38th statement; Hegel's is three: a create table, `insert into t values (0, null)`, and `insert into t(k) values (0)`, which SQLite refuses with `UNIQUE constraint failed` and the engine takes. Its shrinking is not always minimal: for `nullDefault` it kept a create and a drop of a second table that play no part, and for `ascendLast` six statements, among them a second create of `t` that SQLite refuses.
+where the engine gives the row `0, 0.0` and SQLite `1, 0.0`. For `skipUnique`, the seeded failure is the 38th statement; Hegel's is three: a create table of `t(k int primary key, c1 int not null)` and `insert into t values (0, 0)` twice, the second of which SQLite refuses with `UNIQUE constraint failed` and the engine takes. For `starKeyFirst` it is two: a create table of `t(c0 int, k int primary key, c2 int)` and `delete from t returning *`, whose columns the engine gives as `k, c0, c2`. Its shrinking is not always minimal: for `oldValues` it kept a create and a drop of a second table that play no part, which makes five statements where three do.
 
-Shrinking is what costs. A clean run of 200 series takes 6 seconds; shrinking one failure took 2,700 to 12,700 more series and 16 seconds to 4.5 minutes on the busy machine. That is paid only when a test fails, but a failing CI job pays it.
+Shrinking is what costs. A clean run of 200 series takes 6 seconds; shrinking one failure took 3,400 to 9,500 more series and half a minute to almost 3 minutes on the busy machine. That is paid only when a test fails, but a failing CI job pays it.
 
 ## Where it adds value, and where it does not
 
@@ -96,7 +96,7 @@ It does not replace the seeded checks. They find the faults first, they reach th
 
 1. **The dependency.** `hegel.dev/go/hegel v0.10.3` in `go.mod`, pinned, and moved on purpose. A release of the form `0.N.0` is read before it is taken.
 2. **The tests.** The two tests of this branch as they are, in the packages they check, beside the seeded tests and with their oracles: `TestHegel_cases` calls `checker.check` and `TestHegel_series` calls `pair.step`, so a rule of the oracle is written once. They own their generators, which do not touch `stmttest`, and need no recount file: Hegel's tests pin no counts, so a change of their generator moves no number of the seeded tests.
-3. **CI.** Nothing to install, since the library is in the module and the module cache already holds it. The tests run in the jobs that already run their packages: under `-short` in `make test` with 10 cases each; in full in the job `test` (`internal/expr`, under the race detector) and in `sql` and `test-engine` (`internal/engine`). The cost is about 1.5 seconds for the evaluator and 6 seconds for the engine without the race detector. Before landing, one run of the branch in CI must show the jobs `asan` and `asan-engine` pass with Hegel's library loaded. The nightly can run more cases (`WithTestCases`) for little, since a clean case is cheap; that is a decision for when the nightly is next changed.
+3. **CI.** Nothing to install, since the library is in the module and the module cache already holds it. The tests run in the jobs that already run their packages: under `-short` in `make test` with 10 cases each; in full in the job `test` (`internal/expr`, under the race detector) and in `sql` and `test-engine` (`internal/engine`). The cost is about 2 seconds for the evaluator and 7 seconds for the engine without the race detector, and 15 seconds each with it. Before landing, one run of the branch in CI must show the jobs `asan` and `asan-engine` pass with Hegel's library loaded. The nightly can run more cases (`WithTestCases`) for little, since a clean case is cheap; that is a decision for when the nightly is next changed.
 4. **Reading a failure.** Hegel prints each draw with the line of its call, which reads poorly where a line holds two draws or a draw inside a condition. `TestHegel_series` therefore writes each statement with `Note`, which Hegel prints for the shrunk case, and the failure message holds the series. A test of Hegel writes one draw per line where it can.
 
 ## Recommendation
