@@ -916,11 +916,11 @@ func TestArgument(t *testing.T) {
 		is.Equal(t, want, rowsText(t, db, "select * from r"), "the cache")
 		is.EqualSlice(t, []string{
 			"create table r (k int primary key, b blob) strict, without rowid",
-			"insert into r values (1, ?) with x'01'",
-			"insert into r values (?, ?) with 2 with x'02'",
-			"insert into r values (3, ?); with x'03'",
-			"insert into r values (4, ?) with x'04'",
-			"insert into r values (5, ?) returning b with x'05'",
+			"insert into r values (1, ?)",
+			"insert into r values (?, ?)",
+			"insert into r values (3, ?);",
+			"insert into r values (4, ?)",
+			"insert into r values (5, ?) returning b",
 		}, annotations(t, w), "the commit object")
 		is.NotError(t, db.Close())
 		is.Equal(t, want, rowsText(t, w.serve(t, "b"), "select * from r"), "the cache of another instance")
