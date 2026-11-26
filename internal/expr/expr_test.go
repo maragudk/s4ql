@@ -235,6 +235,28 @@ func TestCheck(t *testing.T) {
 		})
 	}
 
+	t.Run("should refuse a concatenation and a call, which the evaluator does not compute yet, at the root, after the names", func(t *testing.T) {
+		for _, c := range []struct{ src, what, at string }{
+			{"s || 'a'", "concatenation", "s ||"},
+			{"'a' || hex(x)", "concatenation", "'a'"},
+			{"lower(s)", "call of lower", "lower"},
+			{"hex(lower(?) || s)", "call of hex", "hex"},
+		} {
+			e, full, err := parse(c.src)
+			is.NotError(t, err)
+			_, err = expr.Check(e, resolve)
+			var ns *stmt.NotSupportedError
+			is.True(t, errors.As(err, &ns), "a *stmt.NotSupportedError")
+			is.True(t, errors.Is(err, stmt.ErrNotSupported))
+			is.Equal(t, c.what, ns.What, c.src)
+			is.Equal(t, strings.Index(full, c.at), ns.Offset, c.src)
+		}
+		e, _, err := parse("lower(zz)")
+		is.NotError(t, err)
+		_, err = expr.Check(e, resolve)
+		is.Error(t, errNoSuchColumn, err)
+	})
+
 	t.Run("should give the error of resolve before a refusal of the type of another column", func(t *testing.T) {
 		e, _, err := parse("s + zz")
 		is.NotError(t, err)

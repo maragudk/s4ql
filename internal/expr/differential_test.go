@@ -526,6 +526,16 @@ func (k *checker) check(c exprCase) string {
 		return ""
 	}
 
+	if e.Kind == stmt.ExprConcat || e.Kind == stmt.ExprCall {
+		// Text, which the evaluator refuses at its root, the one place where the pass puts it.
+		x, err := expr.Check(e, resolve)
+		var ns *stmt.NotSupportedError
+		if !errors.As(err, &ns) || ns.Offset != e.Span.Start || ns.What != "concatenation" && ns.What != "call of "+e.Function.String() {
+			return fmt.Sprintf("%v: the check gives %v and %v, and not the refusal of text", c, x, err)
+		}
+		k.tally["case: refused, text"]++
+		return ""
+	}
 	refusal, atCheck := refusalOf(e, c)
 	x, err := expr.Check(e, resolve)
 	if atCheck {
@@ -678,6 +688,9 @@ func FuzzExpr(f *testing.F) {
 		c := g.next()
 		f.Add(c.src, encode(c.row[:4]), encode(c.args))
 	}
+	// Text, which the evaluator refuses.
+	f.Add("'m_' || lower(hex(x))", []byte(nil), []byte(nil))
+	f.Add("hex(? || s)", []byte(nil), encode([]*s4qlpb.Value{text("1")}))
 	f.Fuzz(func(t *testing.T, src string, row, args []byte) {
 		c := exprCase{src: src, row: make([]*s4qlpb.Value, len(schema)), args: decode(args)}
 		values := decode(row)

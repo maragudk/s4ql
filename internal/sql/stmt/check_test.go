@@ -2208,6 +2208,7 @@ var checkCases = []checkCase{
 	{name: "a numbered parameter in a concatenation", src: "update t set v = w || ?1", err: "s4ql: not supported: numbered parameter (at offset 22)"},
 	{name: "a number with a digit separator in a concatenation", src: "update t set v = w || 1_000", err: "s4ql: not supported: number in a concatenation (at offset 22)"},
 	{name: "the remainder in a concatenation", src: "update t set v = 'a' || (w % 2)", err: "s4ql: not supported: binary operator (at offset 25)"},
+	{name: "the id of goqite's queue with randomblob, which comes later", src: "update t set v = 'm_' || lower(hex(randomblob(16)))", err: "s4ql: not supported: function other than lower or hex (at offset 35)"},
 	{name: "a call without its closing parenthesis", src: "update t set v = lower(w", err: "incomplete input"},
 	{name: "a concatenation without a right operand", src: "update t set v = w ||", err: "incomplete input"},
 	{name: "a call with an empty second argument", src: "update t set v = lower(w,)", err: `near ")": syntax error`},
@@ -3385,21 +3386,32 @@ func TestCheck(t *testing.T) {
 			most             int
 			deep             string
 			offset           func(src string) int
+			// link of the chain, " + 1" for "".
+			link string
 		}{
-			{"in set", "update t set v = 1", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a negative literal", "update t set v = -1", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a column", "update t set v = v", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a parameter", "update t set v = ?", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a negated column", "update t set v = -v", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a negated parameter", "update t set v = -?", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set with a where", "update t set v = 1", " where v = 1", 999, "expression", func(src string) int { return len(src) - len("+ 1 where v = 1") }},
-			{"on the right of a comparison", "select * from t where v = 1", "", 998, "WHERE", func(src string) int { return len(src) }},
-			{"on the left of a comparison", "select * from t where 1", " = v", 998, "WHERE", func(src string) int { return len(src) }},
-			{"on the left after a negative literal", "delete from t where -1", " = v", 997, "WHERE", func(src string) int { return len(src) }},
-			{"after an and", "select * from t where v = 1 and v = 1", "", 997, "WHERE", func(src string) int { return len(src) }},
+			{"in set", "update t set v = 1", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a negative literal", "update t set v = -1", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a column", "update t set v = v", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a parameter", "update t set v = ?", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a negated column", "update t set v = -v", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a negated parameter", "update t set v = -?", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set with a where", "update t set v = 1", " where v = 1", 999, "expression", func(src string) int { return len(src) - len("+ 1 where v = 1") }, ""},
+			{"on the right of a comparison", "select * from t where v = 1", "", 998, "WHERE", func(src string) int { return len(src) }, ""},
+			{"on the left of a comparison", "select * from t where 1", " = v", 998, "WHERE", func(src string) int { return len(src) }, ""},
+			{"on the left after a negative literal", "delete from t where -1", " = v", 997, "WHERE", func(src string) int { return len(src) }, ""},
+			{"after an and", "select * from t where v = 1 and v = 1", "", 997, "WHERE", func(src string) int { return len(src) }, ""},
+			// A concatenation is an operator, and a call one level more than its argument.
+			{"of concatenations in set", "update t set v = 'a'", "", 999, "expression", func(src string) int { return len(src) - len("|| 'a'") }, " || 'a'"},
+			{"of concatenations on the right of a comparison", "select * from t where v = w", "", 998, "WHERE", func(src string) int { return len(src) }, " || ?"},
+			{"of concatenations in a call in set", "update t set v = lower(w", ")", 998, "expression", func(src string) int { return len(src) }, " || 'a'"},
+			{"of concatenations in a call on the left of a comparison", "select * from t where hex(v", ") = 'x'", 997, "WHERE", func(src string) int { return len(src) }, " || 'a'"},
 		} {
+			link := c.link
+			if link == "" {
+				link = " + 1"
+			}
 			chain := func(n int) string {
-				return c.start + strings.Repeat(" + 1", n) + c.end
+				return c.start + strings.Repeat(link, n) + c.end
 			}
 			src := chain(c.most)
 			_, err := stmt.Check(src)
@@ -3473,23 +3485,29 @@ func TestCheck(t *testing.T) {
 		// Each level holds as many entries of the stack of SQLite's parser as an expression can: an
 		// addition and a multiplication that wait for their right operands, a negation, and a
 		// parenthesis. In a subquery after an AND, the statement holds more entries of the stack.
-		for _, c := range []struct{ start, end string }{
-			{"update t set v = ", ""},
-			{"select * from t where v = 1 and k = (select k from u where a = ", ")"},
+		// The parenthesis of a call counts as one, and a concatenation that waits for its right operand,
+		// a call, and a parenthesis hold the most of text. The calls are of lower, since the text of hex
+		// is twice as long as its argument, which nested 100 times SQLite cannot hold.
+		for _, c := range []struct{ start, open, inner, end string }{
+			{"update t set v = ", "a + b * -(", "a + 1", ""},
+			{"select * from t where v = 1 and k = (select k from u where a = ", "a + b * -(", "a + 1", ")"},
+			{"update t set v = ", "a || lower(", "a", ""},
+			{"select * from t where v = 1 and k = (select k from u where a = ", "a || (b || lower(", "a", ")"},
 		} {
 			nested := func(n int) string {
-				return c.start + strings.Repeat("a + b * -(", n) + "a + 1" + strings.Repeat(")", n) + c.end
+				return c.start + strings.Repeat(c.open, n) + c.inner + strings.Repeat(")", n*strings.Count(c.open, "(")) + c.end
 			}
-			src := nested(100)
+			n := 100 / strings.Count(c.open, "(")
+			src := nested(n)
 			_, err := stmt.Check(src)
 			is.NotError(t, err)
 			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
 			o, _ := verify(t, src)
 			is.Equal(t, supported, o)
 
-			src = nested(101)
+			src = nested(n + 1)
 			_, err = stmt.Check(src)
-			is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len(c.start)+100*len("a + b * -(")+len("a + b * -")), err.Error())
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len(c.start)+n*len(c.open)+strings.Index(c.open, "(")), err.Error())
 			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
 			verify(t, src)
 		}

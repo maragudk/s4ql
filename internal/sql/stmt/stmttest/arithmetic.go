@@ -292,9 +292,15 @@ func setRefusals(name string, columns []TableColumn, set []stmt.Assignment, args
 // class of its values, "integer", "real", or "null" where an argument that is NULL makes every value
 // NULL, as the documents of the evaluator type it, and the refusals of its operands: each column of
 // type TEXT or BLOB, and each argument that is text or a blob, at its offset. Where there are
-// refusals, the expression has no class, and the class is "".
+// refusals, the expression has no class, and the class is "". An expression of text, a
+// concatenation or a call at its root, which the evaluator does not compute yet, has the one refusal
+// of its root.
 func expressionClass(e stmt.Expression, columns []TableColumn, args []any) (string, []string) {
 	switch e.Kind {
+	case stmt.ExprConcat:
+		return "", []string{fmt.Sprintf("s4ql: not supported: concatenation (at offset %v)", e.Span.Start)}
+	case stmt.ExprCall:
+		return "", []string{fmt.Sprintf("s4ql: not supported: call of %v (at offset %v)", e.Function, e.Span.Start)}
 	case stmt.ExprValue:
 		return ArgumentClass(BoundValue(stmt.Term{Value: e.Value}, args)), nil
 	case stmt.ExprParameter:
@@ -351,10 +357,12 @@ func expressionNames(e stmt.Expression) []stmt.Name {
 }
 
 // ArithmeticRefusal reports whether message is of a kind of refusal that [ArithmeticRefusals] may
-// give: of an operand of arithmetic, of a class, of a correlated subquery, or of an argument of LIMIT.
+// give: of an operand of arithmetic, of a class, of a correlated subquery, of an argument of LIMIT,
+// or of text.
 func ArithmeticRefusal(message string) bool {
 	for _, part := range []string{" in arithmetic (at offset ", " in arithmetic, which is ", " compared with an expression of type ", "s4ql: not supported: an expression of type ",
-		" compared with the column ", " for the column ", "s4ql: not supported: correlated subquery (at offset ", ", for LIMIT, which takes an integer from 0"} {
+		" compared with the column ", " for the column ", "s4ql: not supported: correlated subquery (at offset ", ", for LIMIT, which takes an integer from 0",
+		"s4ql: not supported: concatenation (at offset ", "s4ql: not supported: call of "} {
 		if strings.Contains(message, part) {
 			return true
 		}

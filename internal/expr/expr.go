@@ -87,7 +87,10 @@ type node struct {
 // type is looked at, so that an error of resolve, such as SQLite's for a column that the table does
 // not have, comes before a refusal for the type of another column, as in SQLite, which finds the
 // names when it prepares the statement. A column alone, as in `set a = b`, is an expression too, and
-// is refused for the same types.
+// is refused for the same types. An expression of text, a concatenation or a call of a function,
+// which the evaluator does not compute yet, is the [stmt.NotSupportedError] "concatenation" or "call
+// of lower" or "call of hex", at its offset, once its names are resolved; its root is such a node,
+// since an operand of arithmetic is never one.
 func Check(e stmt.Expression, resolve func(stmt.Name) (Column, error)) (*Program, error) {
 	columns := map[string]Column{}
 	if err := resolveColumns(e, resolve, columns); err != nil {
@@ -167,6 +170,10 @@ func (x *Program) add(e stmt.Expression, columns map[string]Column) (int32, erro
 		operands = 1
 	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
 		operands = 2
+	case stmt.ExprConcat:
+		return 0, &stmt.NotSupportedError{What: "concatenation", Offset: e.Span.Start}
+	case stmt.ExprCall:
+		return 0, &stmt.NotSupportedError{What: "call of " + e.Function.String(), Offset: e.Span.Start}
 	default:
 		return 0, internalError("an expression of kind %v", int(e.Kind))
 	}
