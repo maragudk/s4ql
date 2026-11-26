@@ -28,7 +28,10 @@
 // as the content is read, so that content that does not match it fails at its end.
 //
 // The client owns the HTTP transport that [New] makes for it, and [Client.Close] closes every
-// connection of that transport once the last request of the client has ended.
+// connection of that transport once the last request of the client has ended. The requests of the
+// SDK's default chain for credentials, such as to the endpoint of a container or to STS, go through
+// an HTTP client of the SDK's own type, with the same roots, no proxy, and HTTP/1.1 only, and not
+// through that transport, so Close does not close their connections.
 package s3store
 
 import (
@@ -96,7 +99,11 @@ type Options struct {
 	PathStyle bool
 
 	// RootCAs that the store's certificate must chain to. If it is nil, the system's roots are
-	// used. The SDK's own setting for this, AWS_CA_BUNDLE or ca_bundle, makes [New] fail.
+	// used. The SDK's own setting for this, AWS_CA_BUNDLE or else ca_bundle of the shared
+	// configuration, names a PEM file whose certificates are added to a copy of RootCAs, so that
+	// both are trusted and RootCAs is not changed. Without RootCAs, the bundle replaces the
+	// system's roots, as it does in the SDK's own HTTP client. A bundle that is missing or holds no
+	// certificate makes [New] fail.
 	RootCAs *x509.CertPool
 
 	// Logger receives one event for each request to the store. If it is nil, the events are
@@ -144,28 +151,27 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		}
 	}
 
-	// The transport has no timeout of its own: a call ends when its context does, and every
-	// error of a write but those that mean "not applied" means that its outcome is unknown anyway.
-	// It speaks HTTP/1.1 only, so that the retries of net/http that can happen are those of
-	// HTTP/1.1, and goes through no proxy, which could send a request again.
-	c := &Client{bucket: opts.Bucket}
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	c.transport = &http.Transport{
-		Protocols:             protocols,
-		TLSClientConfig:       &tls.Config{RootCAs: opts.RootCAs, MinVersion: tls.VersionTLS12},
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       90 * time.Second,
-		ExpectContinueTimeout: time.Second,
+	// The SDK adds the certificates of a CA bundle of its configuration to the roots of an HTTP
+	// client of its own type alone. It gets one whose roots are a copy of RootCAs, and the roots
+	// that come out of the configuration are those of the transport below. The SDK's default
+	// chain sends its requests for credentials through that client, which goes through no proxy
+	// and speaks HTTP/1.1 only, as the transport below does.
+	var roots *x509.CertPool
+	if opts.RootCAs != nil {
+		roots = opts.RootCAs.Clone()
 	}
-	httpClient := &http.Client{
-		Transport: c.transport,
-		// A redirect is answered as it is, as an error, and not followed with a second request.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	sdkClient := awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		tr.Proxy = nil
+		tr.Protocols = new(http.Protocols)
+		tr.Protocols.SetHTTP1(true)
+		if tr.TLSClientConfig == nil {
+			tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		tr.TLSClientConfig.RootCAs = roots
+	})
 
 	loads := []func(*config.LoadOptions) error{
-		config.WithHTTPClient(httpClient),
+		config.WithHTTPClient(sdkClient),
 		config.WithLogger(logging.Nop{}),
 		config.WithClientLogMode(0),
 	}
@@ -181,6 +187,33 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	}
 	if cfg.Region == "" {
 		return nil, errors.New("s3store: no region, in the options or from the SDK's default chain")
+	}
+	configured, ok := cfg.HTTPClient.(*awshttp.BuildableClient)
+	if !ok {
+		return nil, fmt.Errorf("s3store: configuration: an HTTP client of the type %T, whose roots are unknown", cfg.HTTPClient)
+	}
+	if tc := configured.GetTransport().TLSClientConfig; tc != nil {
+		roots = tc.RootCAs
+	}
+
+	// The transport has no timeout of its own: a call ends when its context does, and every
+	// error of a write but those that mean "not applied" means that its outcome is unknown anyway.
+	// It speaks HTTP/1.1 only, so that the retries of net/http that can happen are those of
+	// HTTP/1.1, and goes through no proxy, which could send a request again.
+	c := &Client{bucket: opts.Bucket}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	c.transport = &http.Transport{
+		Protocols:             protocols,
+		TLSClientConfig:       &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	httpClient := &http.Client{
+		Transport: c.transport,
+		// A redirect is answered as it is, as an error, and not followed with a second request.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
 	c.s3 = s3.NewFromConfig(cfg, func(o *s3.Options) {
