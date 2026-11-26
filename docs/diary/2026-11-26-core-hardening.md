@@ -52,3 +52,101 @@ The adversarial review of 2026-11-26 (`/docs/research/adversarial-core-2026-11-2
 ### Future work
 
 - Fault 1 stays open for Markus.
+
+## Step 2: the hardening
+
+**Author:** core-hardening builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Each small, each with a test: when the upload of a commit object finds an object already there, check that object's checksum against what was to be written before treating it as the same; at `Open`, refuse a cache at the empty-log position that holds tables, and a cache whose text encoding is not UTF-8; check the limit of key columns in replay as the write path does; check for a stop between rows in `Tx.scan`; correct `docs/todo/s3-client.md` where it says a store that checks no payload hash \"still works\"."
+**Interpretation:** five small changes, each red first.
+**Inferred intent:** close the claims that were true on paper where it costs little.
+
+### What I did
+
+- `Tx.upload` in `/internal/core/tx.go`: on `store.ErrExists` it reads the object (`Tx.uploaded`, at most the spool's size and a byte) and counts it as the commit object only if the length and the SHA-256 match. `TestTx_Commit_exists` in `/internal/core/tx_test.go` uses a store, `squatter`, that puts other bytes at the key first.
+- `conn.setUp` in `/internal/core/cache.go` checks `pragma encoding` before it makes the table `s4ql_cache` (`checkEncoding`), and `checkObjects` refuses a table of the database in a cache at `EmptyLog`. Tests in `TestOpen_cache_foreign` in `/internal/core/cache_test.go`.
+- Replay refuses a key of more than 250 columns (`maxKeyColumns`, shared with `checkCreateTable`); a case of `TestReplay`.
+- `Tx.scan` in `/internal/core/index.go` looks at the stop between rows; `TestTx_scan` in `/internal/core/index_test.go` failed first with "Expected "1", but got "3"".
+- `/docs/todo/s3-client.md` now says what a store without checksums costs.
+
+### Why
+
+Each closes a case that a program other than s4ql, or a collision, would need; none needed a rule of the spec.
+
+### What worked
+
+The tests were red first where the fault could be shown: the scan read all three rows, and the squatter's object was committed.
+
+### What didn't work
+
+- The first version of the read in `Tx.upload` failed the commit at the first mismatch. `TestSimulation_plantedBugs` then failed in the workload of `skipUnreadable`, which damages 200 in 1000 downloads: "seed 0 found something else: [commit of transaction 9057639001382112477: commit: not committed: the object at the key tenant/db/commits/b5/... is not the commit object ...]". A read can be damaged on its way like any download.
+- The encoding test first required the file to be unchanged, and failed with "the instance changed the main file of the cache UTF-16le": `conn.wal` puts the file into the journal mode wal before anything else. I left that order alone, because another builder changes `setUp`, and the test checks that no table was made.
+
+### What I learned
+
+The simulation's damaged downloads reach every `Get`, also one that the commit path adds, so every new read of a commit object must take damage as the norm.
+
+### What was tricky
+
+Choosing how often to read again: the catch-up stops after two damaged downloads, which the harness explains with `damagedTwice`, but a commit that fails is a violation in the harness. See step 3 for where it ended.
+
+### What warrants review
+
+`Tx.upload`'s loop with `exists`, and `checkObjects`' second read of the position.
+
+### Future work
+
+None.
+
+## Step 3: self-review
+
+**Author:** core-hardening builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Run the `fabrik:code-review` skill over your diff and fix what matters."
+**Interpretation:** two competing reviewers on the diff, then fix what is real.
+**Inferred intent:** catch what I missed before the lead reviews.
+
+### What I did
+
+Two reviewers read `git diff main...HEAD -- internal/`. Both found no serious fault in the three fixes, and both checked on paper that every commit of the write connection is bracketed by `moving` and `moved`, that a shared cache gives no false stop, and that `watchWait` cannot overflow. What I fixed:
+
+- **Both:** the upload re-sent the whole commit object and downloaded the foreign one until the context ended, with no bound. It now remembers that the object exists, only reads it again, and fails as not committed after ten reads in a row without the checksum (one in 10^7 under the simulation's heaviest damage). The subtest reads nine damaged copies and counts three creates.
+- **Both:** the scenario with a `Watch` of a year passed before the fix too; only the table of `WatchWait` shows the overflow. The comment of the test says so now. The comment in `withDefaults` gave a wrong reason for the bound, and is corrected.
+- **Both:** `replayCommitsEarly` can now leave a cache at `EmptyLog` with a table, which the next open refuses; its symptoms list "it records no commit object".
+- **Both:** the catch-up's restart had one scenario only. `TestDB_catchUp_moved` in `/internal/core/catchup_test.go` moves the cache at the second download of c1, once to c1 (the catch-up goes on from the middle of the log) and once to a name that is not in the log (`ErrCacheNotInLog`).
+- **One, a real race:** `setUp` reads the position and then the schema in two statements, so an instance that opens a shared cache while another commits its first table would refuse the cache. `checkObjects` now reads the position again before it refuses.
+- Comments: replay's doc and `errCacheMoved` no longer reason from the catch-up, which `catchUpFrom` now explains; `fetchAgain`'s doc names `errCacheMoved`; the doc of `Reader.Read` no longer links an unexported type; `ErrLocal`'s doc names the replaced file; the test comment no longer names the root package; the comment of `setUp` is back on the call it describes; `watchWait`'s parameter no longer shadows the type `watch`; the stop message names `next` too.
+
+Left, with reasons: no deterministic test reaches `next` (no yield sits between the commit of SQLite and `DB.moved`, and adding a yield site to `Tx.Commit` only for this changes every trace of the simulation); `ignoreCacheError`'s variant that commits and reports an error leaves `at` stale, but only under that planted bug and only in a window the scheduler never opens; the retry loop of a read has no bound, since each turn needs a whole commit of the write connection.
+
+### Why
+
+Both reviewers' agreements are the strong signal; the race at `Open` was serious enough to fix on one reviewer's word.
+
+### What worked
+
+The reviewers agreed on the main points without seeing each other's report.
+
+### What didn't work
+
+My first count of creates in the new upload subtest was 2, and the test said "Expected "2", but got "3"": the attempt after the lost answer is a create too, and it is the one that finds the object.
+
+### What I learned
+
+A reviewer that reads the planted bugs against a new refusal at `Open` finds new symptoms that no run had shown yet.
+
+### What was tricky
+
+Nothing beyond the count above.
+
+### What warrants review
+
+`checkObjects`' second read, and the bound of ten reads in `Tx.upload`.
+
+### Future work
+
+None beyond the report.

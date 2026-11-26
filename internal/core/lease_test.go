@@ -1204,8 +1204,10 @@ func TestLease_duration(t *testing.T) {
 		is.True(t, err != nil)
 	})
 
-	// The adversarial review of 2026-11-26 found that a Watch longer than a holder's lease of
-	// centuries made the wait overflow, and the instance took the lease at once.
+	// The adversarial review of 2026-11-26 (docs/research/adversarial-core-2026-11-26.md) found that
+	// a Watch longer than a holder's lease of centuries made the wait overflow, and the instance took
+	// the lease at once. Open now refuses such a Watch, and the table of WatchWait below has the
+	// overflow; the scenario with the longest Watch that Open takes passed before the fix too.
 	t.Run("should refuse to watch the manifest less often than once a year", func(t *testing.T) {
 		w := newWorld(t)
 		_, err := core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "a.db"), "db", core.Options{Watch: 1<<63 - 1})

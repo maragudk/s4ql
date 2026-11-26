@@ -116,7 +116,7 @@ type ReadTx struct {
 // that a read on an instance that has stopped serving meanwhile is refused and not served late.
 //
 // With that second check, the position of the state that the read fixed is compared with what the
-// write connection has made of the position of the cache ([cachePosition]): the position that it
+// write connection has made of the position of the cache: the position that it
 // last committed, or the one that it commits now. A reader whose connection is to the file that
 // the write connection writes to always sees one of the two. Any other position means that the file
 // at the path of the cache is another, as when the files of the cache were deleted and another
@@ -182,7 +182,7 @@ func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 		// (With fixedOnce, the planted bug.)
 		if now.moves == before.moves || d.bugs.fixedOnce {
 			if r.position != now.at && r.position != now.next {
-				return nil, d.stop(ctx, fmt.Errorf("%w: %v: the cache is at %v, and this instance last committed %v to it, so the file at its path is not the one that the instance writes to, as after the files of the cache were deleted or replaced", ErrLocal, operation, r.position, now.at))
+				return nil, d.stop(ctx, fmt.Errorf("%w: %v: the cache is at %v, where this instance has it at %v or %v, so the file at its path is not the one that the instance writes to, as after the files of the cache were deleted or replaced", ErrLocal, operation, r.position, now.at, now.next))
 			}
 			return r, nil
 		}
@@ -202,7 +202,8 @@ type cachePosition struct {
 	// at is the position that the write connection last committed to the cache, or read from it.
 	at format.Name
 	// next is the position of the transaction of the cache that the write connection commits now,
-	// and at when there is none. A read can see it before it is at.
+	// and at after the commit. A read can see it before it is at. After a commit that failed, it can
+	// stay a position that the cache never had until the next change.
 	next format.Name
 	// moves counts the changes of at and next.
 	moves uint64

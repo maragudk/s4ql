@@ -44,8 +44,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 //
 // Its error wraps [format.ErrNewerVersion], [format.ErrMalformed], or [format.ErrNameMismatch] as
 // the reader reports them; [errCacheMoved] for a commit object whose parent is not the position of
-// the cache, which the walk of a catch-up rules out unless another instance on the same cache has
-// committed to it meanwhile; and [ErrLogBroken] for a commit object that the reader accepts and that
+// the cache; and [ErrLogBroken] for a commit object that the reader accepts and that
 // does not fit the cache: a table that is there already or is not there, a primary key of more
 // columns than a write takes, a column position outside the table, a row or a key that does not fit
 // the table, a value of the wrong storage class, a row to change or delete that is not there, an
@@ -141,12 +140,8 @@ func isFromBody(err error) bool {
 }
 
 // errCacheMoved is wrapped by the error of [replay] for a cache that is not at the parent of the
-// commit object. The walk of a catch-up gives replay each commit object after the one before it, so
-// the cache has then moved since the catch-up read its position: another instance on the same cache
-// committed to it, such as a holder that lost its lease while it committed a transaction whose
-// manifest swap was applied. Replay applies nothing then, and the catch-up starts again from the
-// position that the cache records.
-var errCacheMoved = errors.New("the cache has moved since the catch-up read its position")
+// commit object, of which replay then applies nothing.
+var errCacheMoved = errors.New("the cache is not at the parent of the commit object")
 
 // authentic returns refusal if the bytes of the commit object that r reads match its name, which r
 // knows at the end. Until then nothing that r handed out can be trusted, so a commit object that

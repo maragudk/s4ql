@@ -276,14 +276,15 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 		return err
 	}
 
+	if err := c.checkEncoding(); err != nil {
+		return err
+	}
+
 	// A cache that has its table is only read, so that an instance of the same database opens it
 	// while another one writes to it. A new cache gets its table in a transaction that holds the
 	// write lock from its start, and that looks again whether the table is there: of two instances
 	// that open one new cache at once, exactly one makes it, and the other then reads what the first
 	// recorded.
-	if err := c.checkEncoding(); err != nil {
-		return err
-	}
 	made, err := c.made()
 	if err != nil {
 		return err
@@ -369,10 +370,20 @@ func (c *conn) checkObjects(empty bool) error {
 		}
 		return foreign("it holds the %v %q on the table %q, which s4ql does not make", typ, name, owner)
 	})
-	if err == nil && empty && len(tables) > 0 {
+	if err != nil || !empty || len(tables) == 0 {
+		return err
+	}
+	// The position was read in a statement of its own, before the schema, so another instance on
+	// the same cache can have committed a table and its position in between. A commit writes both in
+	// one transaction, so the position that is read now is at that commit, if there was one.
+	position, err := c.position()
+	if err != nil {
+		return err
+	}
+	if position == format.EmptyLog {
 		return foreign("it records no commit object, and holds the table %q", tables[0])
 	}
-	return err
+	return nil
 }
 
 // foreign is the error that wraps [ErrCacheVersion] for a cache that holds what this package does

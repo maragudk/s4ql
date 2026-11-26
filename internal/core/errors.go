@@ -31,7 +31,8 @@ var (
 	ErrClosed = errors.New("closed")
 
 	// ErrLocal is wrapped by the cause of the stop of an instance whose cache or spool file failed:
-	// a local I/O failure. It also wraps the error of [Open] for a cache that cannot be opened.
+	// a local I/O failure. A reader whose file at the path of the cache is not the one that the
+	// instance writes to is one. It also wraps the error of [Open] for a cache that cannot be opened.
 	ErrLocal = errors.New("local I/O failure")
 
 	// ErrCacheNotInLog is wrapped by the cause of the stop of an instance whose cache records a

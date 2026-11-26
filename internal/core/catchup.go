@@ -74,7 +74,11 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 }
 
 // catchUpFrom is [DB.catchUp] from the position from to head, which differ, and adds to applied and
-// bytes what it applied and read. Its error wraps [errCacheMoved] if the cache moves meanwhile.
+// bytes what it applied and read. The walk hands [replay] each commit object after the one before
+// it, the first after from, so an error of replay that wraps [errCacheMoved] means that the cache
+// is no longer at the position that the walk started from: another instance on the same cache has
+// committed to it, such as a holder that lost its lease while it committed a transaction whose
+// manifest swap was applied. The error is returned then.
 func (d *DB) catchUpFrom(ctx context.Context, from, head format.Name, applied *int, bytes *int64) error {
 	var missing []format.Name
 	// Each commit object is read to its end here, so that its parent is known to be what its
@@ -142,7 +146,9 @@ func parentOf(name format.Name, body io.Reader) (format.Name, error) {
 
 // fetchAgain fetches the commit object with the given name as [DB.fetch] does, and again for as
 // long as it fails for a reason that another try can cure, with a longer wait after each failure
-// and a renewal of the lease when one is due. It requires the manifest lock.
+// and a renewal of the lease when one is due. An error that wraps [errCacheMoved] it returns at
+// once, since another try would apply the commit object to a cache that is elsewhere. It requires
+// the manifest lock.
 func (d *DB) fetchAgain(ctx context.Context, name format.Name, use func(body io.Reader) error) error {
 	wait := retrySoon
 	for {

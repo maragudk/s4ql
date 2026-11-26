@@ -994,7 +994,9 @@ var plantedBugs = []plantedBug{
 		control: new(plant(competing(func(w *workload) {
 			w.faults.BrokenRead, w.faults.CutOff, w.faults.Outage, w.options.ObjectTimeout, w.crashes = 0, 0, 0, 5*time.Minute, 1
 		}), "replayCommitsEarly")),
-		symptoms: []string{"the cache of", "the instance stopped", "a read saw at commit", "the replay of the whole log"},
+		// A part of the first commit object that is kept in a cache at the empty log makes the open
+		// after a crash refuse the cache.
+		symptoms: []string{"the cache of", "the instance stopped", "a read saw at commit", "the replay of the whole log", "it records no commit object"},
 	},
 	{
 		bug:      "keyTwice",

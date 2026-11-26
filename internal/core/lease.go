@@ -422,22 +422,22 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 }
 
 // watchWait is how long an instance that has watched the manifest stand still for elapsed waits
-// before it reads the manifest again, which is at most watch, or zero once it has watched for the
+// before it reads the manifest again, which is at most interval, or zero once it has watched for the
 // duration of the holder's lease and the margin, and may take the lease.
 //
 // The duration is what the manifest says, so it can be any positive duration up to the largest,
 // and the wait is computed without a sum or a difference that can leave the range of a duration:
-// the time left of the lease is compared before the margin is added to it. An elapsed time below
+// the time left of the lease is compared with the interval before the margin is added to it. An elapsed time below
 // zero, of a monotonic clock that went back, counts as none.
-func watchWait(duration, elapsed, watch time.Duration) time.Duration {
+func watchWait(duration, elapsed, interval time.Duration) time.Duration {
 	m := margin(duration)
 	// Neither difference leaves the range: duration is above zero and elapsed is not below it, and
 	// the margin is at most a tenth of the largest duration, or two seconds.
 	left := duration - max(elapsed, 0)
-	if left >= watch-m {
-		return watch
+	if left >= interval-m {
+		return interval
 	}
-	// left is below watch - m here, so the sum is below watch.
+	// left is below interval - m here, so the sum is below interval.
 	return max(left+m, 0)
 }
 
