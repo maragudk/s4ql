@@ -30,6 +30,7 @@ import (
 
 	"maragu.dev/s4ql/internal/ctxtest"
 	"maragu.dev/s4ql/internal/sqlite"
+	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 )
 
 // Result codes from https://sqlite.org/rescode.html that several tests use.
@@ -498,6 +499,58 @@ func TestConn_NoCheckpointOnClose(t *testing.T) {
 		is.NotError(t, err)
 		is.NotError(t, c.Close())
 		is.Equal(t, codeMisuse, code(t, c.NoCheckpointOnClose()))
+	})
+}
+
+func TestConn_Autocommit(t *testing.T) {
+	t.Run("should report a connection outside a transaction, in one after BEGIN, and outside again after COMMIT and ROLLBACK", func(t *testing.T) {
+		c := memory(t)
+		is.True(t, c.Autocommit())
+		is.NotError(t, c.Exec("begin"))
+		is.True(t, !c.Autocommit())
+		is.NotError(t, c.Exec("commit"))
+		is.True(t, c.Autocommit())
+		is.NotError(t, c.Exec("begin immediate"))
+		is.True(t, !c.Autocommit())
+		is.NotError(t, c.Exec("rollback"))
+		is.True(t, c.Autocommit())
+	})
+
+	t.Run("should panic on a closed connection", func(t *testing.T) {
+		c, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		is.NotError(t, c.Close())
+		is.Equal(t, "sqlite: connection is closed", panicMessage(t, func() { c.Autocommit() }))
+	})
+}
+
+func TestConn_SetProgressPeriod(t *testing.T) {
+	t.Run("should look at the context of a step every period of instructions", func(t *testing.T) {
+		c := memory(t)
+		is.NotError(t, c.Exec("create table t (k int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("with recursive c (x) as (select 0 union all select x + 1 from c where x < 999) insert into t select x from c"))
+		calls := func(t *testing.T) int {
+			t.Helper()
+			s := prepare(t, c, "select count(k) from t")
+			ctx := ctxtest.EndAtErr(t.Context(), math.MaxInt)
+			ok, err := s.StepContext(ctx)
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, int64(1000), s.ColumnInt64(0))
+			return ctx.Calls()
+		}
+		is.Equal(t, 0, calls(t))
+		c.SetProgressPeriod(100)
+		hundred := calls(t)
+		is.True(t, hundred >= 10 && hundred <= 50, fmt.Sprint(hundred, " calls"))
+		c.SetProgressPeriod(1)
+		one := calls(t)
+		is.True(t, one >= 1000, fmt.Sprint(one, " calls"))
+	})
+
+	t.Run("should panic for a period that is not positive", func(t *testing.T) {
+		c := memory(t)
+		is.Equal(t, "sqlite: progress period not positive", panicMessage(t, func() { c.SetProgressPeriod(0) }))
 	})
 }
 
@@ -1467,6 +1520,103 @@ func TestStmt_StepContext(t *testing.T) {
 		is.EqualSlice(t, []string{"integer:20002"}, query(t, c, "select count(*) from t"))
 	})
 
+	t.Run("should give the I/O error of a step that fails after its context ended, which rolled back the transaction, and not the context's error", func(t *testing.T) {
+		// When a step fails, SQLite calls the progress handler once more on its way out if the
+		// handler is due, and a handler that stops the step there would turn the I/O error into
+		// SQLITE_INTERRUPT. The I/O error has rolled back the whole transaction of the connection all
+		// the same, also for a statement that only reads (adversarial review of 2026-11-26, agy 13.1).
+		v, err := faultvfs.New()
+		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, v.Close()) })
+		path := filepath.Join(t.TempDir(), "a.db")
+		c, err := sqlite.OpenVFS(path, v.Name())
+		is.NotError(t, err)
+		t.Cleanup(func() { is.NotError(t, c.Close()) })
+
+		is.NotError(t, c.Exec("create table t (k int primary key, b blob) strict, without rowid"))
+		is.NotError(t, c.Exec("create table t2 (k int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("insert into t values (1, x'01')"))
+		s := prepare(t, c, "select k, k, b from t")
+
+		// Another connection changes t, so that c reads the pages of t again in its next transaction.
+		other := open(t, path)
+		is.NotError(t, other.Exec("insert into t values (3, x'03')"))
+
+		is.NotError(t, c.Exec("begin immediate"))
+		is.NotError(t, c.Exec("insert into t2 values (2)"))
+
+		// With a period of 1, SQLite looks at the context at every jump and on its way out of every
+		// step, and the context ends at the first look after the read of t failed, which is the look
+		// on the way out of the failed step.
+		c.SetProgressPeriod(1)
+		ctx := &failedContext{Context: t.Context(), vfs: v, done: make(chan struct{})}
+		v.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB})
+		_, stepErr := s.StepContext(ctx)
+		failures := v.Failures()
+		v.Fail(faultvfs.Fault{})
+		resetErr := s.Reset()
+
+		// SQLITE_IOERR_READ.
+		const ioErrRead = 266
+		is.Equal(t, 1, failures, "the read of t failed")
+		is.Equal(t, ioErrRead, code(t, stepErr))
+		is.True(t, !errors.Is(stepErr, context.Canceled))
+		is.Equal(t, ioErrRead, code(t, resetErr))
+		// The I/O error rolled back the transaction: the insert into t2 is gone, and c is out of
+		// its transaction, so the commit fails.
+		is.True(t, c.Autocommit())
+		is.Equal(t, 0, len(query(t, c, "select k from t2")))
+		is.True(t, c.Exec("commit") != nil)
+	})
+
+	t.Run("should fail with SQLITE_INTERRUPT and not the context's error for a write that the stop rolled back with its transaction", func(t *testing.T) {
+		c := memory(t)
+		_ = sorted(t, c, 20_000)
+		is.NotError(t, c.Exec("create table t2 (k int primary key) strict, without rowid"))
+		is.NotError(t, c.Exec("begin"))
+		is.NotError(t, c.Exec("insert into t2 values (-1)"))
+		s := prepare(t, c, "insert into t2 select k from t order by v")
+		_, err := s.StepContext(ctxtest.EndAtErr(t.Context(), 2))
+		is.Equal(t, codeInterrupt, code(t, err))
+		is.True(t, !errors.Is(err, context.Canceled))
+		is.True(t, c.Autocommit())
+		is.Equal(t, 0, len(query(t, c, "select k from t2")))
+
+		// Outside an explicit transaction, the stop rolls back the statement alone, and gives the
+		// error of the context.
+		is.Equal(t, codeInterrupt, code(t, s.Reset()))
+		_, err = s.StepContext(ctxtest.EndAtErr(t.Context(), 2))
+		is.Error(t, context.Canceled, err)
+		is.Equal(t, 0, len(query(t, c, "select k from t2")))
+	})
+
+	t.Run("should not stop a step that has ended, so that a write it committed is not given as stopped, at any look at the context", func(t *testing.T) {
+		// SQLite looks at the context once more after a step that ended with SQLITE_DONE, which has
+		// committed its write outside an explicit transaction by then.
+		c := memory(t)
+		c.SetProgressPeriod(1)
+		is.NotError(t, c.Exec("create table t (k int primary key) strict, without rowid"))
+		ended := 0
+		done := false
+		for at := 1; at <= 1000 && !done; at++ {
+			s := prepare(t, c, "insert into t values (1)")
+			_, err := s.StepContext(ctxtest.EndAtErr(t.Context(), at))
+			n := len(query(t, c, "select k from t"))
+			switch {
+			case err == nil:
+				is.Equal(t, 1, n)
+				done = true
+			case n != 0:
+				t.Fatal("the insert is committed, and was stopped at the look ", at, ": ", err)
+			default:
+				is.Error(t, context.Canceled, err)
+				ended++
+			}
+		}
+		is.True(t, done, "the insert never ran to its end")
+		is.True(t, ended > 0, "no look at the context stopped the insert")
+	})
+
 	t.Run("should not interrupt a count of every row of a table, which SQLite runs in one instruction, and interrupt a count of a column", func(t *testing.T) {
 		c := memory(t)
 		_ = sorted(t, c, 100_000)
@@ -2190,6 +2340,26 @@ func FuzzConn_Prepare(f *testing.F) {
 		}
 		is.NotError(t, s.Finalize())
 	})
+}
+
+// failedContext ends at the first call of its Err after an operation of its VFS has failed.
+type failedContext struct {
+	context.Context
+	vfs  *faultvfs.VFS
+	once sync.Once
+	done chan struct{}
+}
+
+func (c *failedContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *failedContext) Err() error {
+	if c.vfs.Failures() == 0 {
+		return nil
+	}
+	c.once.Do(func() { close(c.done) })
+	return context.Canceled
 }
 
 // memory database for a test, closed when the test ends.
