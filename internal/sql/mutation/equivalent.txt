@@ -1701,3 +1701,27 @@ internal/engine/several.go before swap cases: case len(parts) == 1 && failed == 
 	The two cases swap their bodies, which are both return nil; only the comment moves.
 internal/engine/several.go before condition: failed == nil => true
 	A text of one statement that Split refused after it then returns nil at that case, which the next case returns for it anyway.
+
+# The split of a text into its statements, internal/sql/stmt.
+stmt/check.go Check operator: err != nil || s == nil => err != nil && s == nil
+	statementAt never gives a statement with an error, and a rest without a statement has its tail at the end of the text, so Check then finds no second statement there and gives the nil statement and the nil error, as the return did.
+stmt/check.go statementAt constant: return nil, 0, ns => return nil, 1, ns
+	The tail beside an error is read by no caller: Check and Split return at the error.
+stmt/split.go Split condition: tail < len(src) => true
+	For a first statement whose tail is the end of the text, trimmedEnd reads no token after it and gives nil, and the statement ends the view, trimmed or not, so its part runs to the end of the text as before.
+stmt/split.go trimmedEnd remove statement: return nil => #2
+	Without the shortcut for a text that the trim leaves as it is, no token runs past its end, so the loop gives no error and the function returns nil after it.
+stmt/split.go trimmedEnd swap arguments: max(pos, end) => max(end, pos)
+	max is commutative.
+# staysComment is called only for a comment that runs past the end of the trimmed text. A comment
+# starts with - or /, which no space is, so it starts before that end; and a token that is not a
+# comment does not become one when its end is cut, since its first bytes decide its kind. The prefix
+# of a comment is a comment to the end, or for /* at the end of the text, a slash of one byte.
+stmt/split.go staysComment operator: kind != token.Comment || pos >= end => kind != token.Comment && pos >= end
+	A comment starts before end, so the guard holds for no comment either way; a token that is not a comment then goes on, and its cut prefix is no comment, so it gives false as the guard did.
+stmt/split.go staysComment condition: kind != token.Comment => false
+	As for &&: a token that is not a comment goes on, and its cut prefix is no comment, so it gives false.
+stmt/split.go staysComment operator: pos >= end => pos > end
+	A comment never starts at end, which is a space or the end of the text.
+stmt/split.go staysComment operator: k == token.Comment && n == end-pos => k == token.Comment || n == end-pos
+	The prefix is either a comment that runs to end, true either way, or the slash of a /* at the end of the text, one byte of the two before end, false either way.
