@@ -57,7 +57,9 @@ func hasCall(e stmt.Expression) bool {
 // replaces a pending one, a column that the table has and a call go on beside it, and any other node
 // that the walk reaches ends it with the pending column. So `hex(nosuch) = nosuch2` gives `no such
 // column: nosuch2`, `hex(nosuch) || s || x = 'a'` gives x, and `lower(nosuch) = s and nosuch2 = 1`
-// gives nosuch, at the comparison after it.
+// gives nosuch, at the comparison after it. A column of excluded, of DO UPDATE, is a column as any
+// other: the row that the insert proposes has the columns of the table, so found reports for it
+// whether the table has its column, and it is missing as [missingExcluded] names it.
 type resolver struct {
 	found   func(stmt.Name) bool
 	pending *stmt.Name
@@ -72,6 +74,11 @@ func (n *resolver) resolve(e stmt.Expression) (stmt.Name, bool) {
 			return stmt.Name{}, false
 		}
 		return e.Column, true
+	case stmt.ExprExcluded:
+		if n.found(e.Column) {
+			return stmt.Name{}, false
+		}
+		return missingExcluded(e), true
 	case stmt.ExprCall:
 		for _, o := range e.Operands {
 			if name, stop := n.resolve(o); stop {
@@ -90,6 +97,14 @@ func (n *resolver) resolve(e stmt.Expression) (stmt.Name, bool) {
 		}
 	}
 	return stmt.Name{}, false
+}
+
+// missingExcluded is the name of the column of excluded e as SQLite names it where the table does not have it,
+// in `no such column: excluded.c`: the values of the two names as the statement writes them, at the
+// offset of the first, and without the question about quotes.
+func missingExcluded(e stmt.Expression) stmt.Name {
+	name := e.Table.Value + "." + e.Column.Value
+	return stmt.Name{Value: name, Raw: name, Offset: e.Table.Offset}
 }
 
 // all the names of the expression e, as a walk of its own: the column that ends it, also one pending
@@ -368,9 +383,13 @@ func valueName(e Expr, v *s4qlpb.Value) (string, error) {
 }
 
 // columnName of the column at position of the table t in a message: "the column t.a of type INT",
-// with the names as the table stores them.
+// with the names as the table stores them, or "the column excluded.a of type INT" for a column of the
+// row that an upsert proposes, of its combined table, as [excludedName] names it.
 func columnName(t *s4qlpb.CreateTable, position int) string {
 	c := t.GetColumns()[position]
+	if name, ok := strings.CutPrefix(c.GetName(), excludedPrefix); ok {
+		return fmt.Sprintf("the column excluded.%v of type %v", name, typeName(c.GetType()))
+	}
 	return fmt.Sprintf("the column %v.%v of type %v", t.GetTable(), c.GetName(), typeName(c.GetType()))
 }
 

@@ -3136,6 +3136,15 @@ func TestText(t *testing.T) {
 		sqliteError(t, 18, 18, "string or blob too big", err)
 		_, err = db.ExecContext(t.Context(), "update t set s = ? || ? || s where k = 99", strings.Repeat("a", 600), strings.Repeat("b", 600))
 		sqliteError(t, 18, 18, "string or blob too big", err)
+		// In DO UPDATE, also without a conflict where SQLite computes the text at the start of the
+		// statement, and only on the conflict where it computes it on the row.
+		_, err = db.ExecContext(t.Context(), "insert into t values (9, 'x') on conflict (k) do update set s = ? || ? || s", strings.Repeat("a", 600), strings.Repeat("b", 600))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		_, err = db.ExecContext(t.Context(), "insert into t values (1, 'x') on conflict (k) do update set s = lower(? || ?)", strings.Repeat("a", 600), strings.Repeat("b", 600))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		res, err := db.ExecContext(t.Context(), "insert into t values (9, 'x') on conflict (k) do update set s = lower(? || ?)", strings.Repeat("a", 600), strings.Repeat("b", 600))
+		is.Equal(t, int64(1), affected(t, res, err))
+		exec(t, db, "delete from t where k = 9")
 		tx := begin(t, db, nil)
 		_, err = tx.ExecContext(t.Context(), "update t set s = ? where k = 2", strings.Repeat("c", 600))
 		is.NotError(t, err)
@@ -4582,5 +4591,83 @@ func TestExec_several(t *testing.T) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		is.EqualSlice(t, []string{"ok: " + t1 + ";", "ok: \n" + insert1 + ";", "sqlite_error:  " + insert1 + ";"}, h.events)
+	})
+}
+
+func TestUpsert(t *testing.T) {
+	const (
+		table = "create table settings (key text primary key, value text not null, version int not null default 1) strict, without rowid"
+		set   = "insert into settings (key, value) values (?, ?) on conflict (key) do update set value = excluded.value, version = version + 1 returning key, value, version"
+	)
+
+	t.Run("should insert, update, and do nothing through Exec, Query, Prepare, a transaction, and several statements in one Exec, and replay into an empty cache", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table)
+		is.Equal(t, "key TEXT, value TEXT, version INT: theme dark 1", rowsText(t, db, set, "theme", "dark"))
+		is.Equal(t, "key TEXT, value TEXT, version INT: theme light 2", rowsText(t, db, set, "theme", "light"))
+
+		res, err := db.ExecContext(t.Context(), "insert into settings (key, value) values (?, ?) on conflict (key) do nothing", "theme", "blue")
+		is.Equal(t, int64(0), affected(t, res, err))
+		res, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('lang', 'da') on conflict (key) do update set value = excluded.value where value != excluded.value")
+		is.Equal(t, int64(1), affected(t, res, err))
+		res, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('lang', 'da') on conflict (key) do update set value = excluded.value where value != excluded.value")
+		is.Equal(t, int64(0), affected(t, res, err))
+
+		p, err := db.PrepareContext(t.Context(), set)
+		is.NotError(t, err)
+		var key, value string
+		var version int64
+		is.NotError(t, p.QueryRowContext(t.Context(), "theme", "green").Scan(&key, &value, &version))
+		is.Equal(t, "theme green 3", fmt.Sprint(key, " ", value, " ", version))
+
+		// In a transaction, which its roll back takes back.
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		is.NotError(t, tx.StmtContext(t.Context(), p).QueryRowContext(t.Context(), "theme", "red").Scan(&key, &value, &version))
+		is.Equal(t, "theme red 4", fmt.Sprint(key, " ", value, " ", version))
+		is.NotError(t, tx.Rollback())
+		is.NotError(t, p.Close())
+
+		// Several statements in one Exec, which counts the changes of the last.
+		res, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('a', '1') on conflict (key) do nothing; "+
+			"insert into settings (key, value) values ('a', '2') on conflict (key) do update set value = excluded.value || value")
+		is.Equal(t, int64(1), affected(t, res, err))
+		is.Equal(t, "value TEXT: 21", rowsText(t, db, "select value from settings where key = 'a'"))
+
+		// Text in DO UPDATE, prepared, with an argument.
+		p, err = db.PrepareContext(t.Context(), "insert into settings (key, value) values (?, 'x') on conflict (key) do update set value = 'm_' || lower(hex(?)) where lower(value) != 'm_ab' returning value")
+		is.NotError(t, err)
+		is.NotError(t, p.QueryRowContext(t.Context(), "a", []byte{0xab}).Scan(&value))
+		is.Equal(t, "m_ab", value)
+		is.Equal(t, sql.ErrNoRows, p.QueryRowContext(t.Context(), "a", []byte{0xab}).Scan(&value))
+		is.NotError(t, p.Close())
+
+		res, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('a', '1') on conflict (key) do nothing; "+
+			"insert into settings (key, value) values ('a', '2') on conflict (key) do update set value = excluded.value")
+		is.Equal(t, int64(1), affected(t, res, err))
+
+		want := "key TEXT, value TEXT, version INT: a 2 1; lang da 1; theme green 3"
+		is.Equal(t, want, rowsText(t, db, "select * from settings"))
+		notes := annotations(t, w)
+		is.Equal(t, `insert into settings (key, value) values ('a', '2') on conflict (key) do update set value = excluded.value`, notes[len(notes)-1])
+
+		// Another instance, with an empty cache, replays the upserts.
+		is.NotError(t, db.Close())
+		other := w.serve(t, "b")
+		is.Equal(t, want, rowsText(t, other, "select * from settings"))
+	})
+
+	t.Run("should fail as SQLite does for a target that is not the key, refuse a value of another type, and change nothing", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table, "insert into settings (key, value) values ('theme', 'dark')")
+		_, err := db.ExecContext(t.Context(), "insert into settings (key, value) values ('theme', 'x') on conflict (value) do nothing")
+		is.Equal(t, "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint", fmt.Sprint(err))
+		_, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('theme', 'x') on conflict (key) do update set version = excluded.value")
+		is.Error(t, s4ql.ErrNotSupported, err)
+		_, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('theme', 'x') on conflict (key) do update set value = excluded.version || value")
+		is.Equal(t, "s4ql: not supported: column of type INT in a concatenation (at offset 96)", fmt.Sprint(err))
+		is.Equal(t, "key TEXT, value TEXT, version INT: theme dark 1", rowsText(t, db, "select * from settings"))
 	})
 }

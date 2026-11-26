@@ -86,12 +86,30 @@ type DropIndex struct {
 
 // Insert inserts the rows of Source into a table, each as a new row. Source gives a value for each
 // of Columns, in their order, or, if Columns is nil, for each column of the table, in the order of
-// the table. It gives each row that it inserts, as the table stores it, if Returning is not nil.
+// the table. It gives each row that it inserts, as the table stores it, if Returning is not nil. An
+// upsert has its ON CONFLICT clause as Conflict, which says what it does in place of the insert of a
+// row whose key the table has; for any other insert, Conflict is nil.
 type Insert struct {
 	Table     stmt.Name
 	Columns   []stmt.Name
 	Source    Node
+	Conflict  *Conflict
 	Returning *Returning
+}
+
+// Conflict is the ON CONFLICT clause of an upsert, an [Insert]: the columns of its Target, as the
+// statement writes them, which must be the primary key of the table, and its Action. With
+// [stmt.DoNothing], the upsert changes nothing where the table has a row of the key of the row that
+// it proposes. With [stmt.DoUpdate], it sets the columns of Set in that row, if every one of Where is
+// true of it, as an [Update] sets the columns of a row that its [Filter] gives. A value of Set and a
+// side of a condition of Where name the columns of the row that the table holds as an update does,
+// and those of the row that the insert proposes as excluded.c, [stmt.ExprExcluded], whose columns
+// are those of the table.
+type Conflict struct {
+	Target []stmt.Name
+	Action stmt.ConflictAction
+	Set    []Assignment
+	Where  []Condition
 }
 
 // Update sets the columns of Set in each row of Source, a [*Scan] of the table, or a [*Filter] of
@@ -283,15 +301,14 @@ func (*Parameter) expr()   {}
 func (*Subquery) expr()    {}
 func (*Arithmetic) expr()  {}
 
-// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type,
-// and for an insert with ON CONFLICT, which it has no plan of yet. A
+// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
 // column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
 // NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
 // one without have the same plan. A column with DEFAULT has the literal of its DEFAULT as its
 // Default. A select, an update, and a delete with WHERE read their rows through a [*Filter] of the
 // conditions, in the order of the text. A select with ORDER BY has an [*Order] of its columns over
 // that, and one with LIMIT a [*Limit] over that, as [Query] says. An insert, an update, and a delete
-// with RETURNING have its [*Returning]. A select, an update, and a delete with scalar subqueries in
+// with RETURNING have its [*Returning], and an upsert its [*Conflict]. A select, an update, and a delete with scalar subqueries in
 // their WHERE have the [*Query] of each in their Subqueries, and a [*Subquery] as the value of the
 // condition that compares a column with it. An arithmetic expression of a value is an
 // [*Arithmetic], and one that a condition tests is its Expression.
@@ -314,21 +331,17 @@ func NewPlan(s stmt.Statement) Plan {
 	case *stmt.DropIndex:
 		return &DropIndex{Index: s.Index, IfExists: s.IfExists}
 	case *stmt.Insert:
-		if s.Conflict.Present() {
-			// An insert without its clause would write where the statement does not.
-			panic("engine: an insert with ON CONFLICT")
-		}
 		row := make([]Expr, len(s.Values))
 		for i, t := range s.Values {
 			row[i] = term(t)
 		}
-		return &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{row}}, Returning: returningOf(s.Returning)}
-	case *stmt.Update:
-		p := &Update{Table: s.Table, Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning), Subqueries: subqueriesOf(s.Subqueries)}
-		for _, a := range s.Set {
-			p.Set = append(p.Set, Assignment{Column: a.Column, Value: term(a.Value)})
+		p := &Insert{Table: s.Table, Columns: s.Columns, Source: &Values{Rows: [][]Expr{row}}, Returning: returningOf(s.Returning)}
+		if c := s.Conflict; c.Present() {
+			p.Conflict = &Conflict{Target: c.Target, Action: c.Action, Set: assignmentsOf(c.Set), Where: conditionsOf(c.Where)}
 		}
 		return p
+	case *stmt.Update:
+		return &Update{Table: s.Table, Set: assignmentsOf(s.Set), Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning), Subqueries: subqueriesOf(s.Subqueries)}
 	case *stmt.Delete:
 		return &Delete{Table: s.Table, Source: rowsOf(s.Table, s.Where), Returning: returningOf(s.Returning), Subqueries: subqueriesOf(s.Subqueries)}
 	case *stmt.Select:
@@ -383,15 +396,29 @@ func rowsOf(table stmt.Name, where []stmt.Condition) Node {
 	if where == nil {
 		return source
 	}
-	f := &Filter{Source: source}
+	return &Filter{Source: source, Conditions: conditionsOf(where)}
+}
+
+// conditionsOf a WHERE: the [Condition] of each, in their order, or nil for none.
+func conditionsOf(where []stmt.Condition) []Condition {
+	var conditions []Condition
 	for _, c := range where {
 		condition := Condition{Column: c.Column, Expression: c.Expression, Operator: c.Operator, ValueFirst: c.ValueFirst}
 		if c.Operator != stmt.OpIsNull && c.Operator != stmt.OpIsNotNull {
 			condition.Value = term(c.Value)
 		}
-		f.Conditions = append(f.Conditions, condition)
+		conditions = append(conditions, condition)
 	}
-	return f
+	return conditions
+}
+
+// assignmentsOf a SET: the [Assignment] of each, in their order.
+func assignmentsOf(set []stmt.Assignment) []Assignment {
+	var assignments []Assignment
+	for _, a := range set {
+		assignments = append(assignments, Assignment{Column: a.Column, Value: term(a.Value)})
+	}
+	return assignments
 }
 
 // term of a row of an insert, of an assignment, of a condition, or of a LIMIT, as an expression: its
@@ -423,7 +450,8 @@ func term(t stmt.Term) Expr {
 // Format the plan p as text: a line for each statement and node, with the nodes that a node reads
 // from indented under it, and every name as the statement writes it. A column of a table that takes
 // NULL has NULL after its type, and every other column is NOT NULL; a column with a default has
-// DEFAULT and its literal after that.
+// DEFAULT and its literal after that. An upsert has its ON CONFLICT clause after its columns, with its
+// WHERE as a filter prints its conditions.
 func Format(p Plan) string {
 	var b strings.Builder
 	switch p := p.(type) {
@@ -470,17 +498,19 @@ func Format(p Plan) string {
 		if p.Columns != nil {
 			fmt.Fprint(&b, " (", names(p.Columns), ")")
 		}
+		if c := p.Conflict; c != nil {
+			fmt.Fprint(&b, " on conflict (", names(c.Target), ") ", strings.ToLower(c.Action.String()))
+			if c.Action == stmt.DoUpdate {
+				fmt.Fprint(&b, " set ", formatSet(c.Set))
+			}
+			if c.Where != nil {
+				fmt.Fprint(&b, " where ", formatConditions(c.Where))
+			}
+		}
 		fmt.Fprint(&b, formatReturning(p.Returning), "\n")
 		formatNode(&b, p.Source, 1)
 	case *Update:
-		fmt.Fprint(&b, "update ", p.Table.Raw, " set ")
-		for i, a := range p.Set {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			fmt.Fprint(&b, a.Column.Raw, " = ", formatExpr(a.Value))
-		}
-		fmt.Fprint(&b, formatReturning(p.Returning), "\n")
+		fmt.Fprint(&b, "update ", p.Table.Raw, " set ", formatSet(p.Set), formatReturning(p.Returning), "\n")
 		formatNode(&b, p.Source, 1)
 		formatSubqueries(&b, p.Subqueries)
 	case *Delete:
@@ -519,21 +549,7 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 		}
 		b.WriteString("\n")
 	case *Filter:
-		b.WriteString("filter")
-		for i, c := range n.Conditions {
-			if i > 0 {
-				b.WriteString(" and")
-			}
-			tested := c.Column.Raw
-			if c.Expression.Present() {
-				tested = formatArithmetic(c.Expression)
-			}
-			fmt.Fprint(b, " ", tested, " ", c.Operator)
-			if c.Value != nil {
-				fmt.Fprint(b, " ", formatExpr(c.Value))
-			}
-		}
-		b.WriteString("\n")
+		fmt.Fprint(b, "filter ", formatConditions(n.Conditions), "\n")
 		formatNode(b, n.Source, depth+1)
 	case *Order:
 		b.WriteString("order by")
@@ -564,6 +580,39 @@ func formatNode(b *strings.Builder, n Node, depth int) {
 	default:
 		panic(fmt.Sprintf("engine: a node of type %T", n))
 	}
+}
+
+// formatSet of the assignments set: each column, as the statement writes it, and its value, with a
+// comma between two.
+func formatSet(set []Assignment) string {
+	var b strings.Builder
+	for i, a := range set {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprint(&b, a.Column.Raw, " = ", formatExpr(a.Value))
+	}
+	return b.String()
+}
+
+// formatConditions of a filter or of DO UPDATE: each the side that it tests, its operator, and its
+// value, if it has one, with "and" between two.
+func formatConditions(conditions []Condition) string {
+	var b strings.Builder
+	for i, c := range conditions {
+		if i > 0 {
+			b.WriteString(" and ")
+		}
+		tested := c.Column.Raw
+		if c.Expression.Present() {
+			tested = formatArithmetic(c.Expression)
+		}
+		fmt.Fprint(&b, tested, " ", c.Operator)
+		if c.Value != nil {
+			fmt.Fprint(&b, " ", formatExpr(c.Value))
+		}
+	}
+	return b.String()
 }
 
 // formatSubqueries of a statement: a line "subquery" and its number for each, in their order, with
@@ -633,8 +682,9 @@ func formatExpr(e Expr) string {
 }
 
 // formatArithmetic of the expression e: a literal as [formatExpr] prints it, a parameter by its
-// number, a column as the statement writes it, a negation with a - before its operand, a call with
-// its argument, and every binary operator in parentheses, so that the text shows the tree.
+// number, a column as the statement writes it, excluded.c as it writes its two names, a negation
+// with a - before its operand, a call with its argument, and every binary operator in parentheses,
+// so that the text shows the tree.
 func formatArithmetic(e stmt.Expression) string {
 	switch e.Kind {
 	case stmt.ExprValue:
@@ -643,6 +693,8 @@ func formatArithmetic(e stmt.Expression) string {
 		return fmt.Sprint("?", e.Parameter)
 	case stmt.ExprColumn:
 		return e.Column.Raw
+	case stmt.ExprExcluded:
+		return e.Table.Raw + "." + e.Column.Raw
 	case stmt.ExprNegate:
 		return "-" + formatArithmetic(e.Operands[0])
 	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprConcat:
