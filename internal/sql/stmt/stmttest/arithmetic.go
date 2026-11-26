@@ -54,8 +54,12 @@ func numeric(classes ...string) bool {
 	return !slices.Contains(classes, "text") && !slices.Contains(classes, "blob")
 }
 
-// columnNamed of the column of the table of the name, as the engine names it in a message.
+// columnNamed of the column of the table of the name, as the engine names it in a message, and a
+// column of the row that an upsert proposes as excluded.c, as [UpsertClause] names it.
 func columnNamed(table string, c TableColumn) string {
+	if name, ok := excludedName(c.Name); ok {
+		return fmt.Sprintf("the column excluded.%v of type %v", name, c.Type)
+	}
 	return fmt.Sprintf("the column %v.%v of type %v", table, c.Name, c.Type)
 }
 
@@ -122,16 +126,23 @@ func ArithmeticRefusals(table string, columns []TableColumn, s stmt.Statement, a
 	return refusals
 }
 
-// TextRefusal of the select, the update, or the delete s: s4ql's "not supported" of its first
-// concatenation or call of a function, in the order of the text, the outer one of two at one offset,
+// TextRefusal of the select, the update, the delete, or the upsert s: s4ql's "not supported" of its
+// first concatenation or call of a function, in the order of the text, in SET and WHERE or in those
+// of DO UPDATE, the outer one of two at one offset,
 // which s4ql gives for the whole statement whatever the database holds, as `concatenation`, `call of
 // lower`, or `call of hex`; or "" for a statement without one. Every other refusal of
 // [ArithmeticRefusals] is then none.
 func TextRefusal(s stmt.Statement) string {
 	where, subs := whereOf(s)
 	var roots []stmt.Expression
-	if u, ok := s.(*stmt.Update); ok {
-		for _, a := range u.Set {
+	switch s := s.(type) {
+	case *stmt.Update:
+		for _, a := range s.Set {
+			roots = append(roots, a.Value.Expression)
+		}
+	case *stmt.Insert:
+		where = s.Conflict.Where
+		for _, a := range s.Conflict.Set {
 			roots = append(roots, a.Value.Expression)
 		}
 	}

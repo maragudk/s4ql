@@ -882,9 +882,10 @@ const (
 	// statement in the cache is longer than the limit, which s4ql refuses as not supported. See
 	// [pair.tooLongForCache].
 	excusedCacheLimit = "a create table whose statement in the cache is longer than the length limit, checked against the length of that statement"
-	// excusedUpsert is an insert with ON CONFLICT, which the engine refuses before it reads the
-	// database, as [stmttest.UpsertRefusal] says, until it runs one.
-	excusedUpsert = "an insert with ON CONFLICT, which the engine does not run yet, checked against the refusal"
+	// excusedUpsertType is an upsert that the engine refuses by s4ql's rules of its types, of the
+	// proposed row and of DO UPDATE, or for its text, checked against [stmttest.UpsertRefusals]. See
+	// [pair.checkUpsert].
+	excusedUpsertType = "an upsert refused by the rule of exact types or for its text, checked against s4ql's rules"
 	// excusedSortTooBig is a select with ORDER BY that SQLite refuses under the length limit with
 	// `string or blob too big`, for the record of what it sorts of a row, and that s4ql answers with
 	// rows: the known difference of slice 13, by the decision of the lead in docs/todo/slice-13.md.
@@ -1155,13 +1156,17 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	// An upsert is refused before the database is read, whatever it holds, also
-	// one with a value longer than the length limit.
-	if refusal := stmttest.UpsertRefusal(s); refusal != "" && len(c.Args) == s.Parameters() {
+	upsert, _ := s.(*stmt.Insert)
+	if upsert != nil && !upsert.Conflict.Present() {
+		upsert = nil
+	}
+	if refusal := stmttest.TextRefusal(s); upsert != nil && refusal != "" && len(c.Args) == s.Parameters() {
+		// Text is refused before the database is read, whatever it holds, also with a value longer
+		// than the length limit.
 		if got.err != "not supported" || got.message != refusal {
 			return fmt.Sprintf("%q: the engine gives %v, and the rule %q", src, got, refusal)
 		}
-		p.y.excused(excusedUpsert)
+		p.y.excused(excusedUpsertType)
 		return ""
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
@@ -1173,7 +1178,10 @@ func (p *pair) step(c stmttest.Call) string {
 	// A statement with arithmetic has rules of its own for its types and its evaluation errors, as
 	// [pair.checkArithmetic] says.
 	check := p.checkType
-	if s != nil && expressed(s) {
+	switch {
+	case upsert != nil:
+		check = func(c stmttest.Call, args []any, got answer) (string, string) { return p.checkUpsert(c, upsert, args, got) }
+	case s != nil && expressed(s):
 		check = func(c stmttest.Call, args []any, got answer) (string, string) { return p.checkArithmetic(c, s, args, got) }
 	}
 	if kind, failure := check(c, args, got); kind != "" || failure != "" {
@@ -3597,7 +3605,7 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 // checkLength of the call c, whose answer of the engine is got, against s4ql's rule for a literal
 // that is longer than the length limit: an insert, an update, or a delete that SQLite prepares fails
 // with SQLite's `string or blob too big`, after the names, for a literal of an insert, of SET, or of
-// a condition of an update or a delete. SQLite meets such a literal only with a limit below the
+// a condition of an update or a delete, and of the row or of DO UPDATE of an upsert. SQLite meets such a literal only with a limit below the
 // length of the text that holds it, and then gives the error for a string literal only when it steps
 // the statement, which an update or a delete does only for a row that it finds, and turns a blob
 // literal into NULL, so the call is not run in SQLite. It gives [excusedLong] for an insert and
@@ -3612,7 +3620,15 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 	var terms []stmt.Term
 	switch s := s.(type) {
 	case *stmt.Insert:
+		// An upsert measures the values of DO UPDATE after those of its row, as an update measures
+		// them.
 		terms = s.Values
+		for _, a := range s.Conflict.Set {
+			terms = append(terms, a.Value)
+		}
+		for _, c := range s.Conflict.Where {
+			terms = append(terms, c.Value)
+		}
 	case *stmt.Update, *stmt.Delete:
 		excuse = excusedLongChange
 		terms = changeTerms(s)
@@ -4772,9 +4788,12 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		"select * from t1 where v1 = (select v1 from t1 where lower(v1) = 'a')",
 		"delete from t1 where hex(nosuch) = ?",
 		"select * from t1 where v1 || ? = 'x'",
-		// Upserts, which the engine refuses before it reads the database.
+		// Upserts, which the pair judges by the rules of upsert_test.go.
 		"insert into t1 values (1) on conflict (v1) do nothing",
 		"insert into t1 values (2) on conflict (v1) do update set w = excluded.v1 + 1 where excluded.v1 > 0 returning *",
+		"insert into t1 values (1) on conflict (v1) do update set v1 = excluded.v1 + 1",
+		`insert into "foo BAR" values (7) on conflict ("bar""X") do nothing returning *`,
+		"insert into t1 values (-1) on conflict (V1) do update set w = 1 where excluded.v1 * 9223372036854775807 > 0",
 	} {
 		add(src, i%2 == 1)
 	}

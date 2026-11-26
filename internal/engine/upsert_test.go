@@ -1,15 +1,133 @@
 package engine_test
 
 import (
+	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
+
+// checkUpsert of the call c of the upsert s, with the arguments args as SQLite binds them, whose
+// answer of the engine is got, against s4ql's rules for an upsert, independently of the engine. A
+// statement that SQLite does not prepare gets SQLite's error, which the caller compares. Otherwise:
+//
+//   - "Not supported" must be a refusal of [stmttest.UpsertRefusals]: the engine may give any of
+//     them, since their order is the engine's own, which its own tests pin.
+//   - An evaluation error must be justified by SQLite: SQLite's result of the failing operator alone,
+//     on its operands, must show the quirk that s4ql refuses, for its one value where the operator
+//     has no column, and otherwise on the row of the conflict that the documented rule evaluates it
+//     on, as [stmttest.UpsertQuirkQuery] gives the query. In a read-only transaction the engine
+//     computes nothing, so it never has one.
+//   - Where the engine gives no error, no refusal and no evaluation error was due: SQLite's result of
+//     no operator of DO UPDATE may show a quirk where the rule evaluates it.
+//
+// It gives the kind of excuse if the rule decides the call, or "", and what differs, or "".
+func (p *pair) checkUpsert(c stmttest.Call, s *stmt.Insert, args []any, got answer) (excuse, failure string) {
+	t, o := p.t, p.o
+	t.Helper()
+	if len(args) != s.Parameters() || o.prepare(t, c.Src) != nil {
+		return "", ""
+	}
+	table, columns := o.columns(t, s.Table.Value)
+	refusals := stmttest.UpsertRefusals(table, columns, s, args, p.readOnly)
+	switch got.err {
+	case "not supported":
+		if !slices.Contains(refusals, got.message) {
+			return excusedUpsertType, fmt.Sprintf("%q with the arguments %#v: the engine gives %q, and the rules %q", c.Src, args, got.message, refusals)
+		}
+		return excusedUpsertType, ""
+	case evaluationError:
+		if p.readOnly {
+			return excusedEvaluation, fmt.Sprintf("%q with the arguments %#v: the engine gives %q in a read-only transaction", c.Src, args, got.message)
+		}
+		if !p.upsertQuirk(c.Src, s, columns, args, got.eval) {
+			return excusedEvaluation, fmt.Sprintf("%q with the arguments %#v: the engine gives %q, which SQLite's result of its operator justifies for no value that the rule evaluates", c.Src, args, got.message)
+		}
+		return excusedEvaluation, ""
+	case "":
+		if len(refusals) > 0 {
+			return "", fmt.Sprintf("%q with the arguments %#v: the engine gives %v, and the rules refuse it with one of %q", c.Src, args, got, refusals)
+		}
+		if p.upsertQuirk(c.Src, s, columns, args, nil) {
+			return "", fmt.Sprintf("%q with the arguments %#v: the engine gives %v, and SQLite shows the quirk of an operator of DO UPDATE where the rule evaluates it", c.Src, args, got)
+		}
+	}
+	return "", ""
+}
+
+// upsertQuirk reports whether SQLite shows the quirk of an operator of DO UPDATE of the upsert s of
+// the text src, into a table of the columns, with the arguments args, where the rule evaluates it, as
+// [stmttest.UpsertQuirkQuery] says: of the operator of the evaluation error ee, of its kind, or, for
+// a nil ee, of any operator, of any kind. Of two operators of one spelling whose nodes start at one
+// offset, which the message of the error does not tell apart, either justifies the error.
+func (p *pair) upsertQuirk(src string, s *stmt.Insert, columns []stmttest.TableColumn, args []any, ee *expr.Error) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	var key string
+	for _, c := range columns {
+		if c.PrimaryKey {
+			key = c.Name
+		}
+	}
+	// probe runs q in a savepoint that it rolls back, and gives its answer and SQLite's count of
+	// changes.
+	probe := func(q string, args []any) (answer, int64) {
+		is.Equal(t, "", o.run(t, "savepoint s4ql_quirk").err)
+		a := o.run(t, q, args...)
+		changes, _ := o.changes(t)
+		is.Equal(t, "", o.run(t, "rollback to s4ql_quirk").err)
+		is.Equal(t, "", o.run(t, "release s4ql_quirk").err)
+		if a.err != "" {
+			t.Fatalf("%q: SQLite gives %v", q, a.err)
+		}
+		return a, changes
+	}
+	// The probes write, which sets SQLite's count of changes, so the count is set back once they have
+	// run: by an insert of as many rows into a temporary table WITHOUT ROWID, which has no rowid to
+	// change, after a delete of its rows.
+	before, _ := o.changes(t)
+	defer func() {
+		if changes, _ := o.changes(t); changes == before {
+			return
+		}
+		is.Equal(t, "", o.run(t, "create temp table if not exists s4ql_changes (x int primary key) without rowid").err)
+		is.Equal(t, "", o.run(t, "delete from temp.s4ql_changes").err)
+		q := "with recursive c(x) as (select 1 union all select x + 1 from c where x < ?1) insert into temp.s4ql_changes select x from c where ?1 > 0"
+		is.Equal(t, "", o.run(t, q, before).err, q)
+		changes, _ := o.changes(t)
+		is.Equal(t, before, changes, "SQLite's count of changes after the probes")
+	}()
+	_, inserted := probe(stmttest.UpsertConflictQuery(s, src, key, args))
+	for _, site := range stmttest.UpsertSites(s.Conflict) {
+		if inserted > 0 && site.Root.HasColumn() {
+			// The table has no row of the key, and the rule evaluates no expression with a column.
+			continue
+		}
+		for _, n := range stmttest.Operators(site.Root) {
+			kinds := stmttest.EvaluationKinds
+			if ee != nil {
+				if n.Span.Start != ee.Span.Start || n.Kind.String() != ee.Op.String() {
+					continue
+				}
+				kinds = []error{ee.Kind}
+			}
+			for _, kind := range kinds {
+				if a, _ := probe(stmttest.UpsertQuirkQuery(s, src, key, site, n, kind, args)); len(a.rows) > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
 
 // upsertSetUp is the database of the tests of upserts: a table of a column of each type, one that
 // does not take NULL, and one with a default, with an index, and its rows.
@@ -421,6 +539,108 @@ func TestEngine_upsert(t *testing.T) {
 			s, err := stmt.Check(c.src)
 			is.NotError(t, err)
 			is.Equal(t, c.want, engine.Format(engine.NewPlan(s)), c.src)
+		}
+	})
+}
+
+// upsertCases of the differential test of upserts, run in their order on the rows of
+// [upsertSetUp], each through Query where it has RETURNING and through Exec otherwise. A call whose
+// text is "begin", "begin read only", "commit", or "rollback" begins or ends a transaction of the
+// pair.
+var upsertCases = []stmttest.Call{
+	{Src: "insert into t (k, n) values (4, 4) on conflict (k) do nothing returning *"},
+	{Src: "insert into t (k, n) values (4, 5) on conflict (k) do nothing returning *"},
+	{Src: "insert into t (k, n) values (1, 9) on conflict (k) do update set n = excluded.n + n, v = excluded.d returning *"},
+	{Src: "insert into t (k, v, n) values (?, ?, ?) on conflict (k) do update set v = excluded.v * ?, s = s where v < excluded.v + 100", Args: []any{int64(2), int64(5), int64(1), int64(3)}},
+	{Src: "insert into t (k, v, n) values (?, ?, ?) on conflict (k) do update set v = excluded.v * ? where v is not null", Args: []any{int64(7), int64(5), int64(1), int64(3)}},
+	{Src: "insert into t (k, w, n) values (2, 0.5, 1) on conflict (k) do update set w = w / excluded.w, b = excluded.b, s = excluded.s returning w, b, s"},
+	// Refusals, of the proposed row and of DO UPDATE.
+	{Src: "insert into t (k, n, v) values (1, 1, 'x') on conflict (k) do nothing"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.w"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.s * 2"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = 1 where excluded.s = 2"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set s = lower(excluded.s)"},
+	// Evaluation errors, of a constant and on the row of the conflict, and none where the rule
+	// evaluates nothing.
+	{Src: "insert into t (k, n) values (9, 1) on conflict (k) do update set v = 9223372036854775807 + 1"},
+	{Src: "insert into t (k, n, v) values (1, 1, 9223372036854775807) on conflict (k) do update set v = excluded.v + v"},
+	{Src: "insert into t (k, n, v) values (8, 1, 9223372036854775807) on conflict (k) do update set v = excluded.v + v returning *"},
+	{Src: "insert into t (k, n, v) values (1, 1, 0) on conflict (k) do update set v = 1 where v / excluded.v = 1"},
+	{Src: "insert into t (k, n, v) values (1, 1, 0) on conflict (k) do update set v = 1 where v = 99 and v / excluded.v = 1"},
+	{Src: "insert into t (k, n, w) values (1, 1, 1e308) on conflict (k) do update set w = excluded.w * 10.0 where excluded.w > 0.0"},
+	// Errors of SQLite.
+	{Src: "insert into t (k, n) values (1, 1) on conflict (v) do nothing"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.zz"},
+	{Src: "insert into t (k) values (1) on conflict (k) do nothing"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set n = null"},
+	// In a transaction, which a roll back takes back, and in a read-only one.
+	{Src: "begin"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set n = 100 returning n"},
+	{Src: "insert into t (k, n) values (20, 1) on conflict (k) do nothing"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set n = null"},
+	{Src: "rollback"},
+	{Src: "begin read only"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do nothing"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.s"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (zz) do nothing"},
+	{Src: "rollback"},
+	{Src: "begin"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set n = 200"},
+	{Src: "commit"},
+}
+
+func TestPair_upsert(t *testing.T) {
+	t.Run("should give SQLite's answer, a refusal of s4ql's rules, or a justified error, for each case, on the core and in memory", func(t *testing.T) {
+		for _, memory := range []bool{false, true} {
+			i := newInstance(t, engine.Options{})
+			if memory {
+				i = newMemoryInstance(t)
+			}
+			y := tally{}
+			p := newPair(t, i, y)
+			for _, src := range upsertSetUp {
+				is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+			}
+			var log []string
+			for _, c := range upsertCases {
+				log = append(log, c.Src)
+				switch c.Src {
+				case "begin", "begin read only":
+					readOnly := c.Src != "begin"
+					for _, conn := range []*engine.Conn{i.c, p.other.c} {
+						is.NotError(t, map[bool]func(context.Context) error{false: conn.Begin, true: conn.BeginReadOnly}[readOnly](t.Context()))
+					}
+					for _, s := range oracleBegin(readOnly) {
+						is.Equal(t, "", p.o.run(t, s).err, s)
+					}
+					p.inTx, p.readOnly = true, readOnly
+					continue
+				case "commit", "rollback":
+					for _, conn := range []*engine.Conn{i.c, p.other.c} {
+						if c.Src == "commit" {
+							is.NotError(t, conn.Commit(t.Context()))
+						} else {
+							is.NotError(t, conn.Rollback(t.Context()))
+						}
+					}
+					for _, s := range oracleEnd(p.readOnly, c.Src == "commit") {
+						is.Equal(t, "", p.o.run(t, s).err, s)
+					}
+					p.inTx, p.readOnly = false, false
+					continue
+				}
+				s, _ := stmt.Check(c.Src)
+				c.Query = s.(*stmt.Insert).Returning.Present()
+				if failure := p.step(c); failure != "" {
+					t.Fatalf("after\n%v\n%v", strings.Join(log[:len(log)-1], "\n"), failure)
+				}
+			}
+			want := p.o.state(t)
+			is.Equal(t, want, i.state())
+			is.Equal(t, want, p.other.state())
+			for _, kind := range []string{"excused: " + excusedUpsertType, "excused: " + excusedEvaluation, comparedWithSQLite} {
+				is.True(t, y[kind] > 0, kind)
+			}
 		}
 	})
 }
