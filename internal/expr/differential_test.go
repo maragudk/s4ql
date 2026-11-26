@@ -434,10 +434,10 @@ func (r *reference) compute(e stmt.Expression) (expr.Value, *refError) {
 // text of the concatenation or the call e, by the rules that s4ql takes from SQLite: || joins the
 // bytes of its operands, and is NULL if one is NULL; lower changes the bytes A to Z to a to z, as
 // [unicode.ToLower] changes them, and leaves every other byte, and NULL, as it is; hex writes each
-// byte of a text or a blob in two digits, as [hex.EncodeToString] does, in upper case, and is the empty text for
-// NULL. SQLite refuses to make a text longer than the limit, and asks for one byte more than lower
-// and hex give, for the NUL at its end. Both operands of || are computed, the left first, before it
-// joins them.
+// byte of a text or a blob in two digits, as [hex.EncodeToString] does, in upper case, and is the
+// empty text for NULL. SQLite refuses to make a text longer than the limit, and asks for one byte
+// more than lower and hex give, for the NUL at its end. Both operands of || are computed, the left
+// first, before it joins them.
 func (r *reference) text(e stmt.Expression) (expr.Value, *refError) {
 	l, err := r.value(e.Operands[0])
 	if err != nil {

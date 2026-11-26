@@ -1,0 +1,5 @@
+go test fuzz v1
+string("lower(heX('0000K0000ß0İ'))")
+[]byte("0")
+[]byte("")
+uint16(0)

@@ -1,0 +1,5 @@
+go test fuzz v1
+string("LOWER(lower('Ķ'))")
+[]byte("0")
+[]byte("0")
+uint16(0)
