@@ -145,3 +145,49 @@ Telling which of the reviewers' laxer cases are one rule and which are three.
 ### Future work
 
 The lead's decision on the laxer cases and on the partial statement in a transaction.
+
+## Step 4: the missing test of the walk, the merge of main, and the long run
+
+**Author:** text-engine-land builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Add the one test the reviewer found missing: `walkNames` in `internal/sql/stmt/stmttest/rule.go` could treat a missing column inside a call as the end of the walk without any test of `stmttest` failing, because `TestMissingColumn_arithmetic` has no case with a call."
+**Interpretation:** One case with a call in `TestMissingColumn_arithmetic`, checked against the pinned SQLite, shown to catch the fault; then merge `origin/main`, run the short checks and the differential test at the nightly's size once, and land the branch.
+**Inferred intent:** Close the last gap the independent review found, and get the branch onto `main` with the checks its last fixes had not seen.
+
+### What I did
+
+Asked the pinned SQLite, through `internal/sqlite` in a throwaway test, for `lower(nosuch) = nosuch2` (it names `nosuch2`), `hex(nosuch) || nosuch2 = 1` (`nosuch2`), and `lower(nosuch) = 1` (`nosuch`), and added the three shapes to `TestMissingColumn_arithmetic` in `/internal/sql/stmt/stmttest/arithmetic_test.go`. Planting the fault, `return name, true` in place of `*missing = &name` in the call case of `walkNames`, fails the test with `Expected "y", but got "x"` on `select * from t where lower(x) = y`; without it the test passes. The fault was not committed.
+
+Merged `origin/main` (#181 and #182) without conflicts; no file of the branch has a local `isolate` or opens the core outside `coretest`. Updated `/docs/roadmap.md` (the line on text said the engine was still to come) and the section "Status" of `/README.md` (text is built, and "functions" in "Not built" became "other functions").
+
+Ran `make test`, `make lint`, `go test ./drivercheck/` in `/internal/sqlite/crosscheck` (62 s), and `go test -count=1 -p 3 -run '^TestDifferential$' -timeout 40m ./internal/engine/ -sequences 400`, which passed in 884 s.
+
+### Why
+
+The walk of `stmttest` is the oracle of the generated checks for SQLite's `no such column`; a fault in it that no test sees would turn the oracle off for calls.
+
+### What worked
+
+The throwaway test against `internal/sqlite` settled the expected names against the pinned build, not the Homebrew CLI, which agreed.
+
+### What didn't work
+
+My shell wrapper of the long run, `...; status=$?; echo "exit $status ..."`, failed in zsh with `(eval):1: read-only variable: status` after the test had already finished; the log showed `ok maragu.dev/s4ql/internal/engine 884.003s`.
+
+### What I learned
+
+The case with a concatenation, `hex(x) || y = 1`, also gives the later name: the call leaves its column pending and the `||` node walks on into `y`, a column, which ends the walk with itself.
+
+### What was tricky
+
+Nothing beyond the shell variable.
+
+### What warrants review
+
+The three new cases in `TestMissingColumn_arithmetic`, and the two lines of the README's status.
+
+### Future work
+
+The generated checks of text, as `/docs/todo/text-functions.md` lists them.
