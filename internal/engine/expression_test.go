@@ -1940,14 +1940,17 @@ func TestEngine_text(t *testing.T) {
 		is.NotError(t, d.i.c.Begin(t.Context()))
 		is.Equal(t, "", d.o.run(t, "begin").err)
 		d.run("update t set s = s || 'x'").ok()
+		// Before any row, the count of changes goes to 0 as SQLite sets it.
+		d.run("delete from t where s = ? || ?", strings.Repeat("a", 600), strings.Repeat("b", 600)).is("18/18: string or blob too big")
+		d.run("update t set s = s || 'x'").ok()
 		const lengths = "select k, length(s) as n from t"
-		is.Equal(t, `columns "k INT, n ", rows ["1,2" "2,601"]`, d.o.run(t, lengths).String())
+		is.Equal(t, `columns "k INT, n ", rows ["1,3" "2,602"]`, d.o.run(t, lengths).String())
 		before := d.i.queryValues("select k, s from t", nil).String()
 		d.run("update t set s = s || s").is("18/18: string or blob too big")
 		is.Equal(t, before, d.i.queryValues("select k, s from t", nil).String())
 		// SQLite changed the row of k = 1 before the row of k = 2 failed, and holds no statement journal
 		// for an update that sets no column that does not take NULL, so the change stays.
-		is.Equal(t, `columns "k INT, n ", rows ["1,4" "2,601"]`, d.o.run(t, lengths).String())
+		is.Equal(t, `columns "k INT, n ", rows ["1,6" "2,602"]`, d.o.run(t, lengths).String())
 		d.run("update t set s = lower(s) || 'Y' where k = 2").ok()
 		is.NotError(t, d.i.c.Rollback(t.Context()))
 		is.Equal(t, "", d.o.run(t, "rollback").err)
