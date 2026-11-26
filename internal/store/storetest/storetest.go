@@ -633,6 +633,9 @@ func endedCause(t T, ctx context.Context, env Env) {
 		if errors.Is(err, cause) {
 			t.Errorf("%v with a context that ended with a cause: the error %v wraps the cause", op, err)
 		}
+		if err != nil && strings.Contains(err.Error(), "another call") {
+			t.Errorf("%v with a context that ended with a cause: the error %v holds the text of the cause", op, err)
+		}
 	}
 
 	// The content of a read whose context ends after the read has returned.

@@ -434,6 +434,7 @@ func TestClient_connections(t *testing.T) {
 			is.True(t, err != nil, op+": no error")
 			is.True(t, errors.Is(err, context.Canceled), op+": "+fmt.Sprint(err))
 			is.True(t, !errors.Is(err, cause), op+": the error wraps the cause: "+fmt.Sprint(err))
+			is.True(t, !strings.Contains(err.Error(), "another goroutine"), op+": the text holds the cause: "+fmt.Sprint(err))
 		}
 
 		f := newFake(t)

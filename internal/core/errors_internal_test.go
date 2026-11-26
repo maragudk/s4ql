@@ -51,15 +51,19 @@ func TestEndedError(t *testing.T) {
 		is.Equal(t, context.DeadlineExceeded, endedError(ctx))
 	})
 
-	t.Run("should give the error of a context that ended with a cause, with the cause in the text and not wrapped", func(t *testing.T) {
+	t.Run("should give the error of a context that ended with a cause, and neither wrap nor name the cause", func(t *testing.T) {
 		ctx, cancel := context.WithCancelCause(t.Context())
-		cause := fmt.Errorf("another goroutine: %w, %w", ErrOutcomeUnknown, ErrStopped)
-		cancel(cause)
-		err := endedError(ctx)
-		is.True(t, errors.Is(err, context.Canceled), err.Error())
-		for _, target := range []error{cause, ErrOutcomeUnknown, ErrStopped} {
-			is.True(t, !errors.Is(err, target), err.Error())
-		}
-		is.Equal(t, "context canceled (cause: another goroutine: the outcome of the commit is unknown, the instance has stopped)", err.Error())
+		cancel(fmt.Errorf("another goroutine: %w, %w", ErrOutcomeUnknown, ErrStopped))
+		is.Equal(t, context.Canceled, endedError(ctx))
+	})
+
+	t.Run("should give the error of an exceeded deadline for a context canceled with exactly that cause, as a timeout ends one derived from it", func(t *testing.T) {
+		ctx, cancel := context.WithCancelCause(t.Context())
+		cancel(context.DeadlineExceeded)
+		is.Equal(t, context.DeadlineExceeded, endedError(ctx))
+
+		ctx, cancel = context.WithCancelCause(t.Context())
+		cancel(fmt.Errorf("another goroutine: %w", context.DeadlineExceeded))
+		is.Equal(t, context.Canceled, endedError(ctx))
 	})
 }

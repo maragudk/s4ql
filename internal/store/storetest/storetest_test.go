@@ -274,7 +274,7 @@ func failures(t *testing.T, seeds int, wrap func(store.Store) store.Store) map[s
 }
 
 // wrapsCause wraps the cause of the end of a call's context in the error of the call, as net/http
-// does.
+// can.
 type wrapsCause struct{ store.Store }
 
 func (s *wrapsCause) Get(ctx context.Context, key string) (io.ReadCloser, store.Version, error) {

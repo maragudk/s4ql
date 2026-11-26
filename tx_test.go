@@ -1112,7 +1112,7 @@ func TestTx_contextCause(t *testing.T) {
 		t.Run("should give a commit that is not committed an error that matches none of the cause's errors, when "+c.name, func(t *testing.T) {
 			commitErr := commitEndedAtSwap(t, c.cause, store.ErrChanged)
 			is.True(t, strings.HasPrefix(commitErr.Error(), "s4ql: commit: not committed: context canceled"), commitErr.Error())
-			is.True(t, strings.Contains(commitErr.Error(), c.cause.Error()), "the text names the cause: "+commitErr.Error())
+			is.True(t, !strings.Contains(commitErr.Error(), c.cause.Error()), "the text names the cause: "+commitErr.Error())
 
 			is.True(t, errors.Is(commitErr, context.Canceled), "the error matches the error of the context: "+commitErr.Error())
 			var sqliteErr *s4ql.Error

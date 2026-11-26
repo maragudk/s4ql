@@ -333,11 +333,11 @@ func short(v store.Version) string {
 
 // ended is the error of ctx if it has ended, as a store gives it: [context.Canceled] or
 // [context.DeadlineExceeded], and never another cause, which [store.Store] rules out. A context
-// derived from a timeout of the simulation reports [context.Canceled] with the cause
-// [context.DeadlineExceeded], and gives [context.DeadlineExceeded] here, as a wait of the host does.
+// that was canceled with exactly the cause [context.DeadlineExceeded], which is how a timeout can
+// end a context derived from it, gives [context.DeadlineExceeded].
 func ended(ctx context.Context) error {
 	err := ctx.Err()
-	if err != nil && errors.Is(context.Cause(ctx), context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) && context.Cause(ctx) == context.DeadlineExceeded {
 		return context.DeadlineExceeded
 	}
 	return err

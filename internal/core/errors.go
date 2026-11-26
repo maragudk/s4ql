@@ -182,13 +182,14 @@ func ended(ctx context.Context, err error) bool {
 }
 
 // endedError is the error of ctx, which has ended: [context.Canceled] or [context.DeadlineExceeded],
-// as ctx.Err gives them. A cause of the end that differs from it is named in the text and not
-// wrapped, because a caller can end a context with any error, such as one of s4ql's own of another
-// statement, and an error of this one must not match it.
+// as ctx.Err gives them, and [context.DeadlineExceeded] for a context that was canceled with exactly
+// that cause, which is how a timeout can end a context derived from it. Any other cause of the end is neither wrapped nor
+// named: a context can be ended with any error, such as one that an earlier call of this package
+// returned, and an error of a call must not match it, nor read as if it said what the cause says.
 func endedError(ctx context.Context) error {
 	err := ctx.Err()
-	if cause := context.Cause(ctx); cause != nil && cause != err {
-		return fmt.Errorf("%w (cause: %v)", err, cause)
+	if errors.Is(err, context.Canceled) && context.Cause(ctx) == context.DeadlineExceeded {
+		return context.DeadlineExceeded
 	}
 	return err
 }
