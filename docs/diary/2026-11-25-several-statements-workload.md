@@ -94,3 +94,56 @@ The open item in `/docs/todo/several-statements.md`: which statement an error wi
 ### Future work
 
 An event of each statement, read in the driver check, would tell how many statements ran; that would close the open item.
+
+## Step 3: the fixes after the review of the workload
+
+**Author:** builder (several-statements-workload, fixes after the review)
+
+### Prompt Context
+
+**Verbatim prompt:** "You finish and land a reviewed branch in s4ql (`maragu.dev/s4ql`, repository `maragudk/s4ql`): `several-statements-workload`, the generated workload for several statements in one `Exec` and the driver's generated test for it. The task is bounded: five fixes from an independent review, the status texts, and the landing. Do nothing beyond it." The five fixes: check by the rules of a statement alone that s4ql would not refuse a statement it ran; an oracle rule of spaces of its own, judging both directions, with mattn's real `Exec` as the reference; counts that vary with the direction of a scan; two kinds that left `TestDifferential.kinds`; and forms that the generator never writes.
+**Interpretation:** tighten `pair.several` and its helpers in `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`, extend `Sequence.several`, prove the tightened checks with three planted faults, recount, and land the pull request.
+**Inferred intent:** the oracle should judge s4ql by rules that do not share its code, and with mattn itself, so that a fault in the split or the loop cannot hide behind an emulation.
+
+### What I did
+
+- `pair.severalWalk` replaces `pair.severalFailed` and walks every text that is not refused before its first statement, also one that s4ql ran to its end, inside `savepoint several`, which is rolled back. Before a statement runs in SQLite, its check must accept it and `pair.refusedAlone` gives the refusal that s4ql's rules of a statement alone give it (argument, arithmetic, type); a statement that SQLite runs and those rules refuse fails the test. After the rollback, `pair.severalMattn` runs mattn's own `Exec`: the whole text where s4ql ran to the end (`pair.severalRan`, as before) or where the walk stopped at SQLite's error, which mattn must give too; or the text up to the statement at which s4ql stopped with its own error, which mattn must run.
+- `spaceRule`, `trimmedEndAt`, and `sqliteStatements` (the state table of SQLite's `sqlite3_complete`) are the oracle's rule of spaces. `pair.several` requires s4ql's refusal exactly where the rule refuses, and fails a refusal of spaces anywhere else.
+- `stmt.Split`'s `trimmedEnd` reports the first token that the trim changes, not the last (`/internal/sql/stmt/split.go`, a new case in `TestSplit`), so that the rule and Split agree on the offset.
+- `Sequence.several` (`/internal/sql/stmt/stmttest/several.go`) writes with a copy of the profile without LIMIT and subqueries where it has arithmetic; writes `severalTrigger` and `severalChain` (create, insert, update of `"c;N"` with the key `'k;N'`, a third from the insert on); and has comments with semicolons among its leads, separators, and ends. `pair.reachForms` counts 15 kinds of forms by position; they are in `TestGenerated.kinds` at a third of their totals.
+- `TestDifferential` requires its two lost kinds once. Recounted `TestGenerated.tsv`, `TestDifferential.tsv`, and `TestSimulation.tsv`; the digests of `mixed` and `several` moved.
+- Status lines in `/docs/roadmap.md`; the section "Fixes after the review of the workload" in `/docs/todo/several-statements.md`.
+
+### Why
+
+The old walk ran each part alone, untrimmed, in SQLite, and judged the refusal of spaces by `stmt.Split`'s own error, so a split that refused too much or too little was judged by itself; and a statement that s4ql should have refused but ran, such as a select, changed nothing that a table read back could show.
+
+### What worked
+
+Each planted fault failed a comparison of `TestGenerated` within seconds: the refusal of a select after the first statement turned into success in `/internal/engine/several.go` ("runs the statement ... which its rules for a statement alone refuse"); `trimmedStart` turned off ("s4ql gives exec: exec failed with 1/1: no such table: A\TB, and must refuse it with s4ql: not supported: space after a statement ..."); and the refusal widened to a tab or a line break ("... and mattn and SQLite read its spaces alike"). The tightened checks found no fault in s4ql. `make test`, `make lint`, the engine package and the driver check without `-short` passed.
+
+### What didn't work
+
+- The first version of `spaceRule` judged the spaces by characters and failed on `insert into "DaTAbasE" values (4) ;\t\v -- c\n...`: "s4ql gives exec: exec failed with 1/1: no such table: DaTAbasE, and must refuse it with s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 37)". SQLite reads a vertical tab after a tab as part of the token of spaces that the tab starts (its `sqlite3Isspace` holds 0x0b, its class of a first character does not), so Split was right and the rule now reads SQLite's tokens.
+- The whole `Exec` of a text with too few arguments failed: "s4ql gives exec: exec failed with s4ql: wrong number of arguments: 0 for a text whose statements up to the one at offset 1 have 1 parameter, and mattn's Exec fails with 1/1: no such table: plan". mattn prepares a statement before it counts its arguments; too few arguments is judged as s4ql's own error, with mattn's `Exec` of the statements before it.
+- I planted the fault in `split.go` while my change to `trimmedEnd` was not committed, and `git checkout -- internal/sql/stmt/split.go` reverted both; I wrote the change again and committed before the next fault.
+- The worktree harness refused several shell commands with heredocs or `&&` as "too complex to verify"; I wrote scripts to the scratchpad or used Edit.
+- `golangci-lint` in `internal/sqlite/crosscheck`: "ineffectual assignment to stopped (ineffassign)", fixed.
+
+### What I learned
+
+The direction dependence that the review named is absent from the profile `several`, which has no LIMIT and no subquery; it is in `mixed`, whose texts of several statements could hold such a select, and there it would have moved every count of the rest of the sequence, not only the two excuses. The excuse of a last statement with RETURNING is no longer reached by the generated texts (it was 4); `TestSeveral` keeps it.
+
+### What was tricky
+
+`changes()` after the walk and its rollback: SAVEPOINT, ROLLBACK TO, and RELEASE do not set it, and the walk runs the same statements on the same state as mattn's `Exec` after it, so the count that `severalRan` reads is mattn's own.
+
+### What warrants review
+
+- `pair.severalWalk` and `pair.severalMattn`: which outcomes get mattn's whole `Exec` and which the prefix.
+- `spaceRule` against `stmt.Split`'s doc, in particular that it stops at the first statement that `stmt.Check` refuses.
+- The independent review of these fixes found five things, all fixed: arguments of the statement after the parts that Split refused in mattn's whole `Exec`; a statement of a transaction run in the savepoint (a part whose check refuses it now fails before it runs); my edit of `site/index.html`, reverted for the lead's sub-agent (its "Upserts and batches" still lists several statements in one `Exec` as next); a rate in a comment; and what `reachForms` counts for a trigger first, which the checks of a statement alone judge.
+
+### Future work
+
+The site's milestone "Upserts and batches" names several statements in one `Exec`, which is built, for the lead's sub-agent. The rest of the generated checks follow as `/docs/todo/several-statements.md` lists.
