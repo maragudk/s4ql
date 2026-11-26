@@ -3519,16 +3519,21 @@ func TestCheck(t *testing.T) {
 			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
 			verify(t, src)
 		}
-		// Parentheses that are closed count no more, however many come one after the other.
-		src := "update t set v = (v + 1)" + strings.Repeat(" * (v - 1)", 150) + " where k = (v + 1)" + strings.Repeat(" * (v - 1)", 150)
-		_, err := stmt.Check(src)
-		is.NotError(t, err)
-		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
-		o, _ := verify(t, src)
-		is.Equal(t, supported, o)
+		// Parentheses that are closed count no more, however many come one after the other, those of
+		// a call too.
+		for _, src := range []string{
+			"update t set v = (v + 1)" + strings.Repeat(" * (v - 1)", 150) + " where k = (v + 1)" + strings.Repeat(" * (v - 1)", 150),
+			"update t set v = lower(w)" + strings.Repeat(" || lower(w)", 150),
+		} {
+			_, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+			o, _ := verify(t, src)
+			is.Equal(t, supported, o)
+		}
 		// Where SQLite's parser gives up, the pass has refused the text long before.
-		src = "update t set v = " + strings.Repeat("(1 + ", 831) + "1" + strings.Repeat(")", 831)
-		_, err = stmt.Check(src)
+		src := "update t set v = " + strings.Repeat("(1 + ", 831) + "1" + strings.Repeat(")", 831)
+		_, err := stmt.Check(src)
 		is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len("update t set v = ")+100*len("(1 + ")), err.Error())
 		is.Equal(t, "Recursion limit", oracle.Judge(src).Message)
 		verify(t, src)

@@ -162,6 +162,9 @@ func (c *Conn) execPart(ctx context.Context, src string, p stmt.Part, args []*s4
 	if err == nil {
 		err = checkValues(args)
 	}
+	if err == nil {
+		err = textRefusal(p.Statement)
+	}
 	if err != nil {
 		r.end(ctx, err)
 		return Result{}, err

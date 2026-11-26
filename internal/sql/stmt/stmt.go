@@ -327,8 +327,8 @@ type Term struct {
 	// of a subquery itself.
 	Subquery int
 	// Expression that gives the value, or the zero Expression for a plain value; see
-	// [Expression.Present]. With one, Value is nil, Parameter 0, and Subquery 0. It is an operator,
-	// or, as the value of an [Assignment] or of a [Condition] that tests a column alone, a column
+	// [Expression.Present]. With one, Value is nil, Parameter 0, and Subquery 0. It is an operator or
+	// a call, or, as the value of an [Assignment] or of a [Condition] that tests a column alone, a column
 	// alone, as in `set a = b` and `where a = b`.
 	Expression Expression
 	// Span of the value in the text, its sign included, or of the parameter, or of the subquery from
@@ -393,7 +393,7 @@ type ExpressionKind int
 
 // The kinds of a node of an [Expression].
 const (
-	// ExprValue is a literal: an integer or a real.
+	// ExprValue is a literal: an integer or a real, or a string or a blob in text.
 	ExprValue ExpressionKind = iota + 1
 	// ExprParameter is a plain ?.
 	ExprParameter

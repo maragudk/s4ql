@@ -68,7 +68,7 @@ func TestArithmeticRefusals(t *testing.T) {
 		// Text has the one refusal of its root, and no class.
 		{"update t set s = lower(s)", nil, false, []string{"s4ql: not supported: call of lower (at offset 17)"}},
 		{"update t set k = 'a' || hex(b)", nil, false, []string{"s4ql: not supported: concatenation (at offset 17)"}},
-		{"update t set s = lower(s)", nil, true, nil},
+		{"update t set s = lower(s)", nil, true, []string{"s4ql: not supported: call of lower (at offset 17)"}},
 		{"select * from t where k = hex(?)", []any{"a"}, false, []string{"s4ql: not supported: call of hex (at offset 26)"}},
 		{"select * from t where s || 'a' < r * 2", nil, false, []string{"s4ql: not supported: concatenation (at offset 22)"}},
 	}

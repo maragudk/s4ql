@@ -424,14 +424,17 @@ func (c *Conn) newReportFrom(src string, start time.Duration) *report {
 
 // Check the text src, as [Conn.Exec] and [Conn.Query] check it, for a run with n arguments, without
 // the database and without an event: the text's error, as [check] gives it, [ErrNoStatement],
-// or the error of [ErrArguments] for another number of arguments than the statement has parameters;
-// otherwise nil. It does not check what the arguments are.
+// or the error of [ErrArguments] for another number of arguments than the statement has parameters,
+// or the refusal of [textRefusal]; otherwise nil. It does not check what the arguments are.
 func Check(src string, n int) error {
 	s, err := check(src)
 	if err != nil {
 		return err
 	}
-	return countArguments(s.Parameters(), n)
+	if err := countArguments(s.Parameters(), n); err != nil {
+		return err
+	}
+	return textRefusal(s)
 }
 
 // check the text src, as [Conn.Exec], [Conn.Query], and [Check] check it: its statement, or its
@@ -468,6 +471,9 @@ func prepare(r *report, src string, args []*s4qlpb.Value) (Plan, string, error) 
 	}
 	r.of(s)
 	if err := checkArguments(s.Parameters(), args); err != nil {
+		return nil, "", err
+	}
+	if err := textRefusal(s); err != nil {
 		return nil, "", err
 	}
 	p, text := planOf(s, src)

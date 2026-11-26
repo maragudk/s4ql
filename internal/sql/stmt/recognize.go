@@ -826,7 +826,7 @@ func (r *recognizer) where(w *ast.Where) ([]Condition, int) {
 }
 
 // update: UPDATE table SET and one or more assignments, separated by commas, each a column = a value,
-// where the value is a literal, a parameter, or an arithmetic expression, an optional WHERE, and an
+// where the value is a literal, a parameter, or an expression, an optional WHERE, and an
 // optional RETURNING.
 func (r *recognizer) update(c *ast.Update) *Update {
 	r.accept(c)
@@ -944,7 +944,7 @@ var comparisons = map[token.Kind]Operator{
 
 // condition e of a WHERE clause: two operands compared with one of the operators of [comparisons],
 // or a column IS NULL or IS NOT NULL. It gives the condition and its height as SQLite counts it. An
-// operand is a column, a literal, a parameter, a scalar subquery, or an arithmetic expression, as
+// operand is a column, a literal, a parameter, a scalar subquery, or an expression, as
 // [recognizer.operand] reads it, and one of the two has a column.
 //
 // The condition tests the operand with a column, compared with the other, as [Condition] says: a
@@ -1031,7 +1031,7 @@ func (c comparand) hasColumn() bool {
 
 // operand e of a comparison: the bare name of a column, as [recognizer.conditionColumn] reads it, 1
 // deep; a scalar subquery, as [recognizer.subquery] reads it, with its height; a literal or a
-// parameter, as [recognizer.term] reads it, 1 deep, or 2 with a sign; or an arithmetic expression,
+// parameter, as [recognizer.term] reads it, 1 deep, or 2 with a sign; or an expression,
 // as [recognizer.expression] reads it. A subquery after a - is not supported, at the subquery; one
 // after a + is `+ sign`, as for a parameter.
 func (r *recognizer) operand(e ast.Expr) comparand {
@@ -1290,8 +1290,8 @@ func (r *recognizer) unary(u *ast.Unary, deep string, p place) (Expression, int)
 // case of its ASCII letters, as SQLite finds a function, with one argument, an expression at the
 // place of the argument of that function, in parentheses that count to [maxParentheses]. It is one
 // deeper than its argument. Every other function is not supported, at its name, and so is a call in
-// arithmetic, since it gives text; another number of arguments, at the closing parenthesis or the
-// comma after the first; DISTINCT, ALL, and * in the parentheses, and ORDER BY, FILTER, and OVER, by
+// arithmetic, since it gives text; another number of arguments, at the token after the opening
+// parenthesis where no argument is, or at the comma after the first; DISTINCT, ALL, and * in the parentheses, and ORDER BY, FILTER, and OVER, by
 // the names of their fields and nodes; and parentheses around the argument, which hold nothing of
 // their own. SQLite gives `wrong number of arguments to function lower()` for another number or for
 // *, `ORDER BY may not be used with non-aggregate lower()`, `FILTER may not be used with

@@ -838,7 +838,7 @@ Where an expression of text can stand is where arithmetic can:
 The tree is the one that SQLite builds, which `checkExpressions` checks on every supported text with an expression:
 
 - `||` binds more tightly than `*` and `/`, which bind more tightly than `+` and `-`, and a negation binds most tightly of all.
-- `||` groups to the left: `'a' || 'b' || ?` is `('a' || 'b') || ?`.
+- `||` groups to the left: `'a' || 'b' || ?` is `('a' || 'b') || ?`. A concatenation gives the same text grouped either way, so `checkExpressions` cannot tell the two trees apart, and the case "concatenations, which group to the left" of `TestCheck` pins it.
 - So `v + 1 || 'a'` is `v + (1 || 'a')`, which is refused as `text in arithmetic`, below.
 - Parentheses group, and are no nodes. The `Span` of a call runs from its name to its closing parenthesis.
 
