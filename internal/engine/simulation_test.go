@@ -261,8 +261,10 @@ type node struct {
 	client *simstore.Client
 
 	callers atomic.Int64
-	// running is the number of statements that the node's callers run.
+	// running is the number of statements that the node's callers run, and between the number of
+	// texts of several statements that they run after a statement of the text succeeded.
 	running   atomic.Int64
+	between   atomic.Int64
 	reopening atomic.Bool
 
 	mu sync.Mutex
@@ -678,7 +680,11 @@ type severalKey struct{}
 // [engine.Conn.ExecAll], as its caller saw it: an attempt for each of its statements, as SQLite reads
 // them, or one attempt of the whole text that s4ql's rules refuse before any statement runs.
 type severalText struct {
+	n  *node
 	tx *txRecord
+	// between is set once a statement of the text succeeded that another follows, until the call
+	// returns, while the text counts in [node.between].
+	between bool
 	// refused is set for a text that the rules refuse before any statement runs, with the answer want.
 	refused bool
 	want    answer
@@ -727,7 +733,7 @@ type severalEvent struct {
 func (r *run) several(ctx context.Context, n *node, c *engine.Conn, gen int, call stmttest.Call, tx *txRecord) *attempt {
 	parts := sqliteParts(call.Src)
 	want, why := refusedBefore(call.Src, len(call.Args), parts)
-	text := &severalText{tx: tx, refused: why != "", want: want, failedAt: -1}
+	text := &severalText{n: n, tx: tx, refused: why != "", want: want, failedAt: -1}
 	r.mu.Lock()
 	src := call.Src
 	if text.refused || !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
@@ -782,6 +788,9 @@ func (r *run) several(ctx context.Context, n *node, c *engine.Conn, gen int, cal
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	text.returned, text.err = true, err
+	if text.between {
+		n.between.Add(-1)
+	}
 	return r.severalEnded(ctx, text, res, err)
 }
 
@@ -809,6 +818,10 @@ func (r *run) logged(text *severalText, ev severalEvent, position, access, index
 	}
 	if a.write && !a.nothing && a.tx == nil {
 		r.acked = append(r.acked, a.id)
+	}
+	if k+1 < len(text.attempts) && !text.between {
+		text.between = true
+		text.n.between.Add(1)
 	}
 	if k+1 < len(text.attempts) {
 		next := text.attempts[k+1]
@@ -1618,9 +1631,31 @@ func (r *run) endKept(ctx context.Context, n *node, e *engine.Engine) (served, o
 // files, as the operating system would. The address sanitizer runs no crashes.
 func (r *run) crash(ctx context.Context, i int) []host.Task {
 	// The victim is a node that runs a statement, if one does within ten seconds, so that a crash
-	// often cuts a statement.
+	// often cuts a statement. In the profile of several statements, it is first a node that runs a
+	// text of several statements after a statement of it succeeded, if one does within ten seconds,
+	// so that a crash often cuts a text between its statements or in a later one.
 	var live []*node
 	for range 200 {
+		if r.q.Profile() != stmttest.Several {
+			break
+		}
+		r.mu.Lock()
+		for _, n := range r.nodes {
+			if !n.inst.Crashed() && n.between.Load() > 0 {
+				live = append(live, n)
+			}
+		}
+		r.mu.Unlock()
+		if len(live) > 0 {
+			break
+		}
+		_ = r.world.Sleep(ctx, 50*time.Millisecond)
+	}
+	aimed := len(live) > 0
+	for range 200 {
+		if aimed {
+			break
+		}
 		live = nil
 		var running []*node
 		r.mu.Lock()
@@ -3117,8 +3152,8 @@ func tallyOf(s simulation) map[string]int {
 // severalKinds of the texts of several statements of the run r, whose log is log, for [tallyOf]: the
 // texts, by how they ended, outside a transaction and in one; those refused before any statement
 // ran; those whose call did not return, because their instance crashed, after a statement of them
-// succeeded; those outside a transaction with a commit of one statement and of two or more; and the
-// statements that did not run after one that failed.
+// succeeded; and those outside a transaction with a commit of one statement and of two or more. The
+// statements that did not run after one that failed are the state "not run".
 func severalKinds(r *run, log []logCommit) map[string]int {
 	counts := map[string]int{}
 	inLog := map[uint64]int{}
@@ -3153,9 +3188,6 @@ func severalKinds(r *run, log []logCommit) map[string]int {
 		for _, a := range text.attempts {
 			if inLog[a.id] > 0 {
 				commits++
-			}
-			if a.state == notRun {
-				counts["statements of a text of several statements that did not run after one that failed"]++
 			}
 		}
 		switch {
@@ -3700,9 +3732,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		{"commitFailed", hammerWorkload, "hammer", stmttest.Several, []string{"and its caller was told SQLite's error", "and its caller was told skipped"}},
 		// A write that another statement follows succeeds with its commit left for the next statement:
 		// a crash between the two, which the default environment has, or a commit that then fails loses
-		// it, and a statement that started after its event saw a state without it. 534 seeds, 524 of them
-		// by their own violation; of 300 seeds, 38 lost a statement whose call never returned because its
-		// instance crashed.
+		// it, and a statement that started after its event saw a state without it. 610 seeds, 602 of them
+		// by their own violation; in 296 of them, a statement is lost whose call never returned because
+		// its instance crashed after it, as the crash of [run.crash] aims at such a text.
 		{"commitLater", defaultWorkload, "default", stmttest.Several, []string{"is not in the log", "was acknowledged before it began", "was acknowledged before it started"}},
 		// The annotation of each statement holds the whole text, whose first ID is that of the first
 		// statement: 995 seeds, 992 of them by their own violation, and the others by a statement that

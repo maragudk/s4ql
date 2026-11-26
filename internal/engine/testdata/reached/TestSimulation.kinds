@@ -188,3 +188,20 @@
 36	updates with arithmetic that succeeded in a transaction
 23	updates with arithmetic that succeeded of their own
 26	writes with arithmetic in the log
+991	not run
+229	texts of several statements of their own
+349	texts of several statements in a transaction
+18	texts of several statements that ran to their end of their own
+47	texts of several statements that ran to their end in a transaction
+55	texts of several statements that failed after a statement succeeded of their own
+79	texts of several statements that failed after a statement succeeded in a transaction
+77	texts of several statements that failed after a statement succeeded, as SQLite's error
+20	texts of several statements that failed after a statement succeeded, as failed
+2	texts of several statements that failed after a statement succeeded, as unknown
+35	texts of several statements that failed after a statement succeeded, as skipped
+129	texts of several statements that failed at their first statement of their own
+191	texts of several statements that failed at their first statement in a transaction
+54	texts of several statements refused before any statement ran
+1	texts of several statements whose call did not return after a statement succeeded
+27	texts of several statements with one commit
+17	texts of several statements with a commit of each of two statements or more
