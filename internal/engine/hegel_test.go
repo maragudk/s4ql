@@ -370,8 +370,9 @@ func (s *series) insert(table string) bool {
 	return s.returning(columns)
 }
 
-// update writes an update of one or two columns of the table, with a WHERE three times in four, and
-// a RETURNING one time in four, and reports whether it has one.
+// update writes an update of one or two columns of the table, a column of text set to an expression
+// of text one time in three, with a WHERE three times in four, and a RETURNING one time in four, and
+// reports whether it has one.
 func (s *series) update(table string) bool {
 	columns := s.columns(table)
 	if columns == nil {
@@ -379,7 +380,14 @@ func (s *series) update(table string) bool {
 	}
 	var sets []string
 	for _, i := range hegel.Draw(s.tc, hegel.UniqueLists(hegel.Integers(0, len(columns)-1)).MinSize(1).MaxSize(2)) {
-		sets = append(sets, columns[i].name+" = "+s.value(columns[i].typ, columns[i].nullable))
+		c := columns[i]
+		v := ""
+		if c.typ == "text" && hegel.Draw(s.tc, hegel.WeightedBooleans(1.0/3)) {
+			v = s.text(columns, 2)
+		} else {
+			v = s.value(c.typ, c.nullable)
+		}
+		sets = append(sets, c.name+" = "+v)
 	}
 	fmt.Fprintf(&s.b, "update %v set %v", table, strings.Join(sets, ", "))
 	s.where(columns)
@@ -437,7 +445,9 @@ func (s *series) list(columns []seriesColumn) {
 }
 
 // where writes a WHERE three times in four of one to three conditions joined by AND: a comparison of
-// a column with a value, the value on the left one time in five, or IS NULL or IS NOT NULL.
+// a column with a value, the value on the left one time in five, or IS NULL or IS NOT NULL. Where the
+// column is of text, the value is an expression of text one time in three, and the column one time in
+// four is inside an expression of text, so that each comparison has a column, as s4ql requires.
 func (s *series) where(columns []seriesColumn) {
 	if len(columns) == 0 || hegel.Draw(s.tc, hegel.WeightedBooleans(0.25)) {
 		return
@@ -450,11 +460,26 @@ func (s *series) where(columns []seriesColumn) {
 			continue
 		}
 		op := hegel.Draw(s.tc, hegel.SampledFrom([]string{"=", "<", "<=", ">", ">="}))
-		v := s.value(c.typ, false)
+		// The sides are written in the order of the text, so that the arguments of their parameters
+		// are too.
+		column := func() string {
+			if c.typ == "text" && hegel.Draw(s.tc, hegel.WeightedBooleans(0.25)) {
+				return s.textOf(c, columns)
+			}
+			return c.name
+		}
+		value := func() string {
+			if c.typ == "text" && hegel.Draw(s.tc, hegel.WeightedBooleans(1.0/3)) {
+				return s.text(columns, 2)
+			}
+			return s.value(c.typ, false)
+		}
 		if hegel.Draw(s.tc, hegel.WeightedBooleans(0.2)) {
-			conditions = append(conditions, v+" "+op+" "+c.name)
+			v := value()
+			conditions = append(conditions, v+" "+op+" "+column())
 		} else {
-			conditions = append(conditions, c.name+" "+op+" "+v)
+			left := column()
+			conditions = append(conditions, left+" "+op+" "+value())
 		}
 	}
 	fmt.Fprintf(&s.b, " where %v", strings.Join(conditions, " and "))
@@ -469,6 +494,65 @@ func (s *series) returning(columns []seriesColumn) bool {
 	s.b.WriteString(" returning ")
 	s.list(columns)
 	return true
+}
+
+// text writes an expression of text, a concatenation, a call of lower, or a call of hex, of operands
+// that [series.operand] draws, up to depth levels deep.
+func (s *series) text(columns []seriesColumn, depth int) string {
+	switch hegel.Draw(s.tc, hegel.Integers(0, 2)) {
+	case 0:
+		return s.operand(columns, depth-1, "text") + " || " + s.operand(columns, depth-1, "text")
+	case 1:
+		return "lower(" + s.operand(columns, depth-1, "text") + ")"
+	}
+	return "hex(" + s.operand(columns, depth-1, hegel.Draw(s.tc, hegel.SampledFrom([]string{"text", "blob"}))) + ")"
+}
+
+// textOf writes an expression of text that holds the column c of text: c concatenated with an
+// operand on either side, or a call of lower or hex of c.
+func (s *series) textOf(c seriesColumn, columns []seriesColumn) string {
+	switch hegel.Draw(s.tc, hegel.Integers(0, 3)) {
+	case 0:
+		return c.name + " || " + s.operand(columns, 1, "text")
+	case 1:
+		return s.operand(columns, 1, "text") + " || " + c.name
+	case 2:
+		return "lower(" + c.name + ")"
+	}
+	return "hex(" + c.name + ")"
+}
+
+// operand of an expression of text, of the type typ, text or blob: one time in four another
+// expression of text while depth is above 0, one time in three a column of the type where the table
+// has one, and otherwise a literal of the type or a parameter, NULL one time in ten. One time in 20
+// the column or the parameter is of any type, so now and then of another, which s4ql refuses where
+// SQLite converts it.
+func (s *series) operand(columns []seriesColumn, depth int, typ string) string {
+	if depth > 0 && hegel.Draw(s.tc, hegel.WeightedBooleans(0.25)) {
+		return s.text(columns, depth)
+	}
+	other := hegel.Draw(s.tc, hegel.WeightedBooleans(0.05))
+	var candidates []seriesColumn
+	for _, c := range columns {
+		if other || c.typ == typ {
+			candidates = append(candidates, c)
+		}
+	}
+	if len(candidates) > 0 && hegel.Draw(s.tc, hegel.WeightedBooleans(1.0/3)) {
+		return hegel.Draw(s.tc, hegel.SampledFrom(candidates)).name
+	}
+	if !hegel.Draw(s.tc, hegel.WeightedBooleans(1.0/3)) {
+		return s.literal(typ)
+	}
+	switch {
+	case hegel.Draw(s.tc, hegel.WeightedBooleans(0.1)):
+		s.args = append(s.args, nil)
+	case other:
+		s.args = append(s.args, s.argument(hegel.Draw(s.tc, hegel.SampledFrom([]string{"int", "real", "text", "blob"}))))
+	default:
+		s.args = append(s.args, s.argument(typ))
+	}
+	return "?"
 }
 
 // value of a column of the type typ: NULL one time in ten if nullable, and otherwise a value of the

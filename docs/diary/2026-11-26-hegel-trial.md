@@ -143,3 +143,47 @@ That the numbers of the tables in `/docs/research/hegel-trial.md` are those of t
 ### Future work
 
 The proposal in the note; nothing else.
+
+## Step 4: Landing, after the merge of `main`, with text in the series
+
+**Author:** builder (hegel-tests)
+
+### Prompt Context
+
+**Verbatim prompt:** "Your task is bounded: take the finished trial branch of Hegel (property-based testing with shrinking) through a merge of `main` and its pull request, as an addition to the existing checks. [...] 1. Merge `origin/main`. [...] Make the two Hegel tests compile and pass against `main` as it is now. `TestHegel_series` goes through the existing `pair.step`: where the pair's interface changed, follow it; do not copy rules of the pair into the Hegel test. 2. Decide whether the series now also draw text expressions. If the trial's generator of statements can be widened to `||`, `lower`, and `hex` in a small change that keeps the test at about its present run time, do it; otherwise leave it and record it as open. [...] 5. Record what is open in a new file `docs/todo/hegel.md` [...] 6. Push `hegel-tests`, open a pull request [...] and land it"
+**Interpretation:** merge `main`, make the two tests pass there, widen the series to text if it is cheap, record what is open, and land the branch once every check, the sanitizer jobs among them, has passed.
+**Inferred intent:** Hegel becomes a standing extra safety net beside the seeded checks, covering what `main` computes now.
+
+### What I did
+
+Renamed the branch to `hegel-tests` and merged `origin/main` (#181 to #184). The merge had no conflict, and both tests compiled and passed at once: `TestHegel_series` calls only `pair.step`, `newInstanceLimited`, `newPairWith`, and `stmttest.LengthLimit`, which #184 left as they were, and it never used `textRefusal`.
+
+Widened the generator of `/internal/engine/hegel_test.go` to text: `series.text` writes `||`, `lower`, or `hex` of operands that `series.operand` draws (another expression of text up to two levels, a column of the type, a literal, or a parameter, NULL among them, and one time in 20 a column or a parameter of any type); `series.textOf` writes one that holds a given column. A column of text in SET takes an expression of text one time in three, and a comparison of a column of text takes one on its value side one time in three and holds the column inside one one time in four. Wrote `/docs/todo/hegel.md` and indexed it in `/docs/todo.md`.
+
+### Why
+
+`pair.step` already judges text through `checkArithmetic` and its refusals, so drawing text costs only the generator, and the rules stay in the pair. Only forms that the pass supports are written, since the series marks every statement as supported, and a statement that the pass refuses would fail as "the engine does not support a statement that the pass supports".
+
+### What worked
+
+A probe that counted the outcome of each statement (in a throwaway copy of the file) showed, for 200 series: about 190 of 2,700 statements with text, 12 selects of text that gave rows, and the refusals `argument 1 in a concatenation, which is a real` and `column of type REAL in a call of lower` reached. At the first weights (one in five, one in seven, one in 50) only about 120 statements held text, no select of text gave a row, and no refusal of text came, so the weights were raised. The run takes about 6 seconds, where it took 5.5. Both tests pass ten times in a row (`go test -count=10 -run '^TestHegel_' ./internal/expr/ ./internal/engine/`, 50 s for the engine) and under `-race` (16 s each). `make lint` and `make check-browser` pass.
+
+### What didn't work
+
+The first version of `where` drew the column's side before the value's and then swapped them one time in five, which the review found: with `textOf` the column's side can hold a parameter too, so the arguments were appended in the wrong order for `v op left`, and `hex(?)` could get the text and `c1 || ?` the blob. Both instances bind the same way, so it gave no false failure, only other cases than the generator meant. Fixed by drawing the sides in the order of the text.
+
+### What I learned
+
+Hegel's statistics need a probe to read where the cases go: the `Event`s are not printed by a passing `go test`, and the outcomes per kind of statement were what showed that the first weights reached no row and no refusal of text.
+
+### What was tricky
+
+A comparison needs a column on one side, or the pass refuses it as `value compared with a value`, so the side of the column is either the column or `textOf` of it, never a free expression of text.
+
+### What warrants review
+
+That `series.operand` writes only forms that the pass takes: no number, NULL, or blob literal in `||` or `lower`, no parentheses around a call or its argument. And the results of `asan` and `asan-engine` on the pull request, the first run of Hegel's native library under the sanitizer.
+
+### Future work
+
+In `/docs/todo/hegel.md`: the next places for a Hegel test, the faults of related values that Hegel misses, and text longer than 8 bytes, which the series do not draw.
