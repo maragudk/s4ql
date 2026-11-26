@@ -32,8 +32,12 @@ import (
 // `concatenation`, `call of lower`, or `call of hex`; and nil for any other statement. It comes after
 // the checks of the text and of the arguments, and before the database is read, so its answer does
 // not depend on what the database holds: SQLite looks the names inside a call up in an order of its
-// own, which the engine does not copy.
+// own, which the engine does not copy. For an insert with ON CONFLICT, it is the refusal of
+// [upsertRefusal].
 func textRefusal(s stmt.Statement) error {
+	if err := upsertRefusal(s); err != nil {
+		return err
+	}
 	var roots []stmt.Expression
 	var where []stmt.Condition
 	var subqueries []stmt.Select

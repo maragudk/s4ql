@@ -283,7 +283,8 @@ func (*Parameter) expr()   {}
 func (*Subquery) expr()    {}
 func (*Arithmetic) expr()  {}
 
-// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type. A
+// NewPlan of the statement s, which [stmt.Check] gives. It panics for a statement of another type,
+// and for an insert with ON CONFLICT, which the engine refuses before it plans a statement. A
 // column that is not the primary key and does not say NOT NULL is Nullable. The primary key is NOT
 // NULL also when it does not say so, as in SQLite's WITHOUT ROWID tables, so a key with NOT NULL and
 // one without have the same plan. A column with DEFAULT has the literal of its DEFAULT as its
@@ -313,6 +314,10 @@ func NewPlan(s stmt.Statement) Plan {
 	case *stmt.DropIndex:
 		return &DropIndex{Index: s.Index, IfExists: s.IfExists}
 	case *stmt.Insert:
+		if s.Conflict.Present() {
+			// An insert without its clause would write where the statement does not.
+			panic("engine: an insert with ON CONFLICT, which upsertRefusal refuses")
+		}
 		row := make([]Expr, len(s.Values))
 		for i, t := range s.Values {
 			row[i] = term(t)
