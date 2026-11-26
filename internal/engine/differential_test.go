@@ -2159,6 +2159,28 @@ func (p *pair) indexNames(s stmt.Statement) []string {
 	return names
 }
 
+// subqueryErrorOfOne gives the answer of the two, a and b, of the update or the delete s with
+// arithmetic, that is an evaluation error of the arithmetic of one of its subqueries, where the
+// other succeeds, and whether there is one.
+func subqueryErrorOfOne(s stmt.Statement, a, b answer) (answer, bool) {
+	if _, isSelect := s.(*stmt.Select); s == nil || isSelect || !expressed(s) {
+		return answer{}, false
+	}
+	failed, other := a, b
+	if b.err == evaluationError {
+		failed, other = b, a
+	}
+	if failed.err != evaluationError || other.err != "" || failed.eval == nil {
+		return answer{}, false
+	}
+	for _, sub := range subqueriesIn(s) {
+		if sub.Span.Start <= failed.eval.Span.Start && failed.eval.Span.Start < sub.Span.End {
+			return failed, true
+		}
+	}
+	return answer{}, false
+}
+
 // bothWays runs the call c, whose answer of the engine of the instance is got, on the other instance
 // of the pair, through the same method, by the next of the paths of [otherPaths] for the indexes of
 // the table of c, as [engine.Engine.SetPath] forces it, where the engine of the instance reads the
@@ -2244,6 +2266,22 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, which %v", c.Src, c.Args, path, all.message, why)
 		}
 		p.count("evaluation error by one path and not by another")
+		return ""
+	}
+	if failed, ok := subqueryErrorOfOne(s, got, all); ok && changes == 0 && allChanges == 0 {
+		// The first row of a subquery without an ORDER BY that decides it is the first of the
+		// direction that each instance draws, and so are the rows that it reads before it, whose
+		// arithmetic may give an evaluation error. Where an update or a delete gives one by one
+		// direction and changes nothing by the other, both instances hold what they held, and the
+		// error must be justified as [pair.justify] says, without the values that the instance
+		// computed, which are of another read. A write that changed rows on either side is compared.
+		computed := p.computed
+		p.computed = nil
+		why := p.justify(s, oracleArgs(c.Args), failed.eval)
+		p.computed = computed
+		if why != "" {
+			return fmt.Sprintf("%q with %#v: one instance gives %q, which %v", c.Src, c.Args, failed.message, why)
+		}
 		return ""
 	}
 	if !byKey {

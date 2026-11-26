@@ -2163,6 +2163,11 @@ func (r *run) arithmetic(o *oracle, a *attempt, readOnly bool) string {
 		return fmt.Sprintf("gives %q, and has another number of arguments than parameters", a.answer.message)
 	}
 	if err := o.prepare(r.t, a.src); err != nil {
+		// An update or a delete with two subqueries of `*` of more than one column, which SQLite does not
+		// prepare, is refused by the rule of [subqueryRule], whatever arithmetic it has.
+		if want := subqueryRule(r.t, o, a.src, s, args, readOnly, r.computed(a)); want != "" && a.answer.message == want {
+			return ""
+		}
 		return fmt.Sprintf("gives %q, and SQLite gives %v", a.answer.message, sqliteText(r.t, err))
 	}
 	if a.answer.err != evaluationError {
@@ -3253,8 +3258,10 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// them by their own violation.
 		{"setFromNew", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
 		// A comparison with a side that is NULL true: 262 seeds, 244 of them by their own violation,
-		// counted before it was planted in a comparison of two columns too, on 2026-11-26.
-		{"nullCompares", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
+		// counted before it was planted in a comparison of two columns too, on 2026-11-26. A condition
+		// of a subquery whose arithmetic has a NULL, as `k + ? = 0` with NULL, finds a row for it, which
+		// gives the subquery a value where SQLite has none.
+		{"nullCompares", hammerWorkload, "hammer", stmttest.Arithmetic, append(arithmeticFinds(", and in SQLite"), "gives the subquery")},
 		// An update that stops at its evaluation error and succeeds with the rows before it: 202 seeds,
 		// 168 of them by their own violation; its commit in the log fails in SQLite, which computes the
 		// quirk on every row, in 86.
