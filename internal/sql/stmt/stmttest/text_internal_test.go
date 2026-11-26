@@ -152,15 +152,18 @@ func TestSequence_text(t *testing.T) {
 				}
 			}
 		}
-		for _, f := range []stmt.Function{0, stmt.FuncLower, stmt.FuncHex} {
-			for _, delta := range edgeDeltas {
-				e := TextEdge{Function: f, Length: edgeLength(f, delta)}
+		// The longest result of || that SQLite gives under the limit, and the longest arguments of lower
+		// and of hex, each written out here and not taken from edgeLength.
+		at := map[stmt.Function]int{0: LengthLimit, stmt.FuncLower: LengthLimit - 1, stmt.FuncHex: (LengthLimit - 1) / 2}
+		for f, length := range at {
+			for _, delta := range []int{-1, 0, 1} {
+				e := TextEdge{Function: f, Length: length + delta}
 				is.True(t, counts[e] >= 3, fmt.Sprint(e))
 			}
 		}
 		for e := range counts {
 			// Each a byte short of an edge, at it, or a byte over it.
-			is.True(t, e.Length >= edgeLength(e.Function, -1) && e.Length <= edgeLength(e.Function, 1), fmt.Sprint(e))
+			is.True(t, e.Length >= at[e.Function]-1 && e.Length <= at[e.Function]+1, fmt.Sprint(e))
 		}
 	})
 
