@@ -99,3 +99,57 @@ Self-review (the code-review skill, high): one important finding, the aborting p
 ### Future work
 
 The generated checks of upserts (generators, planted bugs, the driver's generated test), and mutation testing of `upsert.go` and `stmttest/upsert.go`, as `/docs/todo/upserts.md` says.
+
+## Step 3: closing the holes in the tests that an independent review found
+
+**Author:** builder (upsert-engine-fixes)
+
+### Prompt Context
+
+**Verbatim prompt:** "Your task is a bounded round of fixes to tests after an independent review; the code under test was found sound. ... 1. NOT NULL in the order of the table. ... 2. The length of an argument in SET arithmetic. ... 3. The pair's oracle for upserts has no negative self-test. ... 4. One thing to check and record. DO UPDATE with `where 1 = 1`, and with `where ? = 1` with NULL, is refused where SQLite runs it. Find out whether a plain `update` refuses the same conditions by the same rule. ... Never commit a planted fault. For each of 1 to 3, say in the diary which fault now fails which test."
+**Interpretation:** Add cases and self-tests, checked against SQLite, that make each named planted fault fail a test, in the engine and in the driver's pair; check point 4 and record it; change no code under test unless a real fault turns up.
+**Inferred intent:** The upsert step is to be trusted by its tests, not only by a reviewer's hand comparison, before the next builder joins the text engine to the branch.
+
+### What I did
+
+Each planted fault was applied to the file, the tests were run, and the file was restored from a copy kept in `/Volumes/990/s4ql/upsert-engine-fixes/`; none was committed.
+
+1. In `/internal/engine/upsert_test.go`, the NOT NULL subtest of `TestEngine_upsert` now also runs a table `u (k, a not null, b not null)`: `set b = null, a = null` gives SQLite's `NOT NULL constraint failed: u.a`, and so does `set b = ?, a = ?` with two NULLs. **The fault** of checking NOT NULL in the order of SET (`for i := range u.set.positions` in place of `u.set.order` in `upsert.run`) fails it with `Expected "19/1299: NOT NULL constraint failed: u.a", but got "19/1299: NOT NULL constraint failed: u.b"`.
+2. I first checked the reviewer's reasoning: with the `argumentLengths` of `build.doUpdate` disabled, `go test -count=1 ./internal/engine/` passed in full (`ok ... 383.918s`). So no test caught it. The length subtest of `TestEngine_upsert` now runs a table `w (k, v int, r real)` under a limit of 1,000 with a long blob or text argument in arithmetic: in SET (`v = v + ?` with and without a conflict, `r = excluded.r * ?`, `v = 1, r = 1 + ?`), and in WHERE on both sides of a condition (`v + ? = 1`, `1 < excluded.v * ?`, `v = excluded.v + ?`); SQLite gives `string or blob too big` for each when it binds. **The fault** in `doUpdate` fails it with `Expected "18/18: string or blob too big", but got "not supported"` at `set v = v + ?`. WHERE goes through `build.values`, a path shared with the update, of two branches: disabling the check of the tested expression fails `where v + ? = 1`, and disabling that of an arithmetic value fails `where v = excluded.v + ?`.
+3. The engine's pair: a subtest of `TestPair_upsert` gives `pair.checkUpsert` wrong answers next to right ones, in the style of the forged rows of `TestPair_sortTooBig`. **Accepting any "not supported"** fails it at a refusal of `excluded.s` for a statement that refuses `excluded.w`; **ignoring a due refusal** fails it at `answer{}` for `set v = excluded.w` (also without a conflict, and for the proposed row with DO NOTHING); **treating every evaluation error as justified** fails it at the engine's overflow of `set v = excluded.v + v` given with the arguments `(1, 1)` (also without a conflict, for a constant, and in a read-only transaction). The driver's pair, in `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`: I planted the first and third faults (`want = r.err` in `checkRefused`, `return ""` at the start of `justifyUpsert`), and the old subtest of upserts passed under each. The second had nothing to plant: the driver's pair had no rule that a success was due no refusal, and left it to SQLite's outcome, which shows nothing where SQLite converts a value that s4ql refuses. I added that rule as `pair.dueRefusal`, called from `pair.compare` and, after the review below, from `pair.checkEvaluation`, and a subtest of `TestPair` that gives `pair.compare` wrong outcomes. Each of the three faults, and dropping `dueRefusal` from either caller, now fails it.
+4. A plain update gives the same refusal: `update t set v = 2 where 1 = 1`, `where ? = 1` with NULL, `where 1 = ?`, and `where 1 + 0 = 1` are all `value compared with a value`, as are a select and a delete, from the statement pass (`/internal/sql/stmt/recognize.go`). So DO UPDATE follows the update, and nothing is to fix. It is recorded in `/docs/todo/upserts.md`, and `TestCheck` in `/internal/sql/stmt/check_test.go` now pins `? = 1` and `1 + 0 = 1` in DO UPDATE beside `1 = 1`.
+
+### Why
+
+A test that a planted fault does not fail does not check the property; each point is closed by a test that fails under the fault and passes without it, against SQLite where SQLite has the answer.
+
+### What worked
+
+Every new case agreed with SQLite on the first run but for my expected strings. Planting by a small script (`plant.py` with the old and new text in a JSON file, and `try.sh` to plant, run, and restore) kept each fault out of the commits and the sandbox content.
+
+### What didn't work
+
+- `excluded.a + null` in SET: `Expected "19/1299: NOT NULL constraint failed: u.a", but got "not supported"`, since s4ql refuses NULL in arithmetic; the case binds two NULL arguments instead.
+- The counts of my first expected strings for the table `w` were 0; SQLite leaves `changes()` at 1 from the insert of the set-up after an error, and the engine matches it.
+- The first plant of the driver's first fault did not build: `drivercheck_test.go:2707:4: declared and not used: refusals`.
+- Shell commands with loops and here-documents into the worktree were refused by the sandbox as "too complex to verify"; the plant script and plain commands did the work.
+
+### What I learned
+
+SQLite's shell `.limit length 1000` does not refuse a long blob literal in arithmetic, which turns into a number; the error comes from binding an argument, which the Go oracle shows.
+
+### What was tricky
+
+Forging an evaluation error: the message carries the offset of the operator, so the self-tests take a real answer of the engine for one set of arguments and give it with another, with the text unchanged.
+
+### What warrants review
+
+`pair.dueRefusal` in the driver's pair, the one rule added to an oracle: it runs `upsertRefusals` (a prepare on SQLite) for each run of an upsert that succeeds. The full `go test ./drivercheck/` passed with it (about 60 s).
+
+Self-review (the code-review skill, medium, over `origin/upsert-engine...HEAD`): one important finding, that the new rule did not cover a run beside one with an evaluation error in a prepared statement, which `checkEvaluation` runs in SQLite. Fixed by calling `dueRefusal` there, with a case in the self-test that fails without it. Three nits, all fixed: the todo claimed a read-only case for the driver's pair (now it says only the engine's), and claimed `TestCheck` pinned three forms (now it does), and a comment said that the last cases run in SQLite, which they do only if the rule misses them.
+
+Checks: `make test` and `make lint` passed, as did `go test ./drivercheck/` from `/internal/sqlite/crosscheck`, and the new tests with `-count=50` and under `-race`.
+
+### Future work
+
+The driver's pair has no rule either that a success of arithmetic outside an upsert was due no refusal (it relies on SQLite's outcome there too); whether to add one is for the builder of the generated checks.
