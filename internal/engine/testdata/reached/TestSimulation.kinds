@@ -7,7 +7,7 @@
 # environments, of 50 seeds each, where each was a number for each seed.
 43	NULL values in the log
 2090	SQLite's error
-483	acknowledged writes
+483	committed writes
 32	close and open
 345	commits
 52	commits of more than one statement
@@ -158,8 +158,8 @@
 4	subqueries in a transaction: subquery with rows that tie for the first, whose value was that of another
 2	subqueries in a transaction: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of another
 # The aims of the review of the generated checks of slice 15, of 2026-11-24: a third of the total.
-7	selects with subqueries that the engine computed in a read-only transaction after a write was acknowledged
-1	selects with subqueries that gave rows in a read-only transaction after a write was acknowledged
+7	selects with subqueries that the engine computed in a read-only transaction after a write was committed
+1	selects with subqueries that gave rows in a read-only transaction after a write was committed
 2	statements with subqueries refused of their own whose values are checked against SQLite's
 2	statements with subqueries refused in a transaction whose values are checked against SQLite's
 # The generated checks of arithmetic, of 2026-11-25: a third of the total that day of the kinds of
@@ -188,3 +188,20 @@
 36	updates with arithmetic that succeeded in a transaction
 23	updates with arithmetic that succeeded of their own
 26	writes with arithmetic in the log
+1511	not run
+335	texts of several statements of their own
+568	texts of several statements in a transaction
+30	texts of several statements that ran to their end of their own
+85	texts of several statements that ran to their end in a transaction
+77	texts of several statements that failed after a statement succeeded of their own
+123	texts of several statements that failed after a statement succeeded in a transaction
+119	texts of several statements that failed after a statement succeeded, as SQLite's error
+21	texts of several statements that failed after a statement succeeded, as failed
+3	texts of several statements that failed after a statement succeeded, as unknown
+55	texts of several statements that failed after a statement succeeded, as skipped
+186	texts of several statements that failed at their first statement of their own
+310	texts of several statements that failed at their first statement in a transaction
+84	texts of several statements refused before any statement ran
+3	texts of several statements whose call did not return after a statement succeeded
+42	texts of several statements with one commit
+28	texts of several statements with a commit of each of two statements or more

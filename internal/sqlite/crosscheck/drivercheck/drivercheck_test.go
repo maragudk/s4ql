@@ -1543,6 +1543,10 @@ type pair struct {
 	pinned bool
 	// empty is SQLite on an empty database, on which a text that s4ql does not support is prepared.
 	empty *sql.DB
+	// supports is, for the text of several statements of a generated call that runs through Exec,
+	// whether each of its statements, as SQLite reads them, is one that s4ql supports, as
+	// [stmttest.Call.Supports] says, which [pair.severalWalk] judges each statement by; nil otherwise.
+	supports []bool
 	// created are the names of the tables that a text created, as their values, so that the
 	// comparison of the tables also asks for those that SQLite no longer has.
 	created map[string]bool
@@ -4987,10 +4991,12 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 			c = callExec
 		}
 		src, supported, runs := next.Src, next.Supported, [][]any{next.Args}
+		p.supports = nil
 		if next.Statements > 0 && c == callExec {
-			// Each statement of a text of several statements in one Exec is judged as a statement alone, as
-			// [pair.several] says, and every other call refuses the text for its second statement.
-			supported = next.Each
+			// Each statement of a text of several statements in one Exec is judged as a statement alone, by
+			// its own support, as [pair.several] says, and every other call refuses the text for its second
+			// statement.
+			supported, p.supports = next.Each, next.Supports
 		}
 		switch c {
 		case callBegin, callBeginReadOnly:
@@ -5006,7 +5012,9 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 			runs[i] = withNils(r, runs[i])
 		}
 		log = append(log, fmt.Sprintf("%v: %v -- with %#v", c, src, runs))
-		if _, failure := p.stepRuns(src, c, supported, runs); failure != "" {
+		_, failure := p.stepRuns(src, c, supported, runs)
+		p.supports = nil
+		if failure != "" {
 			fail(failure)
 		}
 	}
@@ -5593,7 +5601,15 @@ func (p *pair) severalWalk(src string, supported bool, parts []stmt.Part, failed
 		case ok && (at < span.Start || at >= span.End):
 			// The offset is in another part.
 		case ok || got.notSupported() || evaluated(got):
-			if failure := p.compare(text, callExec, supported && i < len(parts), [][]any{a}, part, o); failure == "" || ok {
+			alone := supported && i < len(parts)
+			if p.supports != nil && i < len(parts) {
+				if i >= len(p.supports) {
+					return i, outcome{}, fmt.Sprintf("s4ql gives %v, and the walk reaches its statement %v of %v, of which the generator wrote %v, so the oracle cannot tell whether s4ql supports it", got, i+1, len(parts), len(p.supports))
+				}
+				// Each statement is judged by whether it itself is one that s4ql supports.
+				alone = p.supports[i]
+			}
+			if failure := p.compare(text, callExec, alone, [][]any{a}, part, o); failure == "" || ok {
 				return i, outcome{}, failure
 			}
 		default:

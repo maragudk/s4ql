@@ -739,17 +739,6 @@ body { position: relative; isolation: isolate; }
 @keyframes sky-core { 0% { opacity: 0.45; } 90% { opacity: 0.7; } 96% { opacity: 0.45; } }
 @keyframes sky-arm1 { 0% { opacity: 0; } 90% { opacity: 0.45; } 96% { opacity: 0; } }
 @keyframes sky-arm2 { 0% { opacity: 0; } 92% { opacity: 0.3; } 94% { opacity: 0; } }
-/* Constellations: while a mouse moves over the page, the few stars nearest it are joined by lines of
-   pixels, dimmer than the stars, that keep clear of content as the stars do: see constellations.js.
-   Each is an SVG of its own, as large as its lines, whose opacity steps in and out in an animation
-   that the compositor runs. Without a mouse that hovers, and under reduced motion, there are none. */
-.sky .con { position: absolute; display: block; fill: var(--lumin); opacity: 0.2; animation: con-in 0.2s steps(3, jump-none) both; }
-.sky .con.out { animation: con-out 0.8s steps(4, jump-none) both; }
-@keyframes con-in { from { opacity: 0; } }
-@keyframes con-out { to { opacity: 0; } }
-@media (hover: none), (pointer: coarse), (pointer: none), (prefers-reduced-motion: reduce) {
-  .sky .con { display: none; }
-}
 @media print, (forced-colors: active) {
   .sky { display: none; }
   .dancer path { stroke: none; }
@@ -863,9 +852,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (below > 0) add(x - 1, r.bottom, x + 1, r.bottom + below);
     }
 
-    // stars are the centre and the reach of each star that is shown, in px from the sky's top left,
-    // which constellations.js joins into constellations.
-    const d = ["", "", ""], keep = new Map(), candidates = { blink: [], glint: [] }, stars = [];
+    const d = ["", "", ""], keep = new Map(), candidates = { blink: [], glint: [] };
     const pixel = (X, Y, level) => { d[level] += `M${X} ${Y}h${k}v${k}h${-k}z`; };
     for (let j = 0; j * CELL < H; j++) {
       for (let i = 0; i * CELL < W; i++) {
@@ -878,8 +865,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const before = (kind === "glint" ? 2 : kind === "plus" ? 1 : 0) * p, after = p + (kind === "dot" || kind === "blink" ? 0 : kind === "glint" ? 2 : 1) * p;
         const l = x - before, t = y - before, r = x + after, b = y + after;
         if (l < 0 || t < 0 || r > W || b > H || out.some((q) => r > q[0] && l < q[2] && b > q[1] && t < q[3])) continue;
-        const c = (kind === "block" ? k : k / 2) / dpr;
-        stars.push({ x: x + c, y: y + c, reach: Math.max(c + before, after - c) });
         const v = rnd(i, j, 4);
         if (kind === "dot") pixel(X, Y, v < 0.5 ? 0 : v < 0.85 ? 1 : 2);
         else if (kind === "block") for (const [a, c] of [[0, 0], [1, 0], [0, 1], [1, 1]]) pixel(X + a * k, Y + c * k, 1);
@@ -920,10 +905,6 @@ document.addEventListener("DOMContentLoaded", () => {
     set(svg, "height", H);
     set(svg, "viewBox", `0 0 ${W * dpr} ${H * dpr}`);
     paths.forEach((path, n) => set(path, "d", d[n]));
-    // The layout of the sky, for constellations.js: its stars, the rectangles out, where it is on the
-    // page, and its pixels. The event layout tells of a new one.
-    sky.layout = { stars, out, left: o.left + window.scrollX, top: o.top + window.scrollY, dpr, k };
-    sky.dispatchEvent(new Event("layout"));
   };
 
   // A ResizeObserver calls draw after layout and before paint, at once and whenever the page or one

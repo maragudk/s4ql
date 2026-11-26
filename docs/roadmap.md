@@ -12,7 +12,7 @@ A piece of work is named by its feature, such as "upserts", and no longer by a n
 | [Reading](#reading) | `select` from one table, with `where`, `order by`, `limit`, and a scalar subquery in the `where`. | Operators of s4ql's own for grouping and joining. |
 | [Writing](#writing) | `insert` of one row, `update`, `delete`, and `returning`. | `on conflict (key) do nothing` and `do update`. Several rows per `insert`. |
 | [Schema](#schema) | `strict, without rowid` tables with one key column, defaults, indexes, and `if not exists`. | `strict, without rowid` with a primary key stays required. |
-| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and several statements in one `Exec`, with hand-written tests, a generated workload, the driver's generated comparison with mattn, and the engine's differential tests. | The rest of the generated checks of several statements: the simulation's planted bugs and mutation testing. |
+| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and several statements in one `Exec`, with hand-written tests, a generated workload, the driver's generated comparison with mattn, the engine's differential tests, and the simulation with eight planted bugs. | Mutation testing of several statements. |
 | [Limits of the core](#limits-of-the-core) | A commit that is too large fails. The rows of a `returning` are held in memory without a bound. | A limit on the memory of an operator, with a clear error. Spooling later. |
 
 ## Principles
@@ -71,11 +71,11 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - Expressions are evaluated by an evaluator of s4ql's own, in Go, which is checked against SQLite with generated expressions. The cache's SQLite does not evaluate them. Agreed by Markus on 2026-11-24.
 - For every expression, s4ql gives SQLite's answer or an error, never a different answer. An integer with a real, such as `1 + 0.5`, works as in SQLite. So an application written for s4ql also runs unchanged on SQLite. Agreed by Markus on 2026-11-24.
 - Time and randomness come from the host. `'now'` is the host's clock, one value for each statement (also inside a transaction, where each statement reads the clock again), and random bytes come from the host's source. Agreed by Markus on 2026-11-24.
+- The annotation of a statement does not record the time that it read or the random bytes that it drew: it says what the client sent, and what a statement saw is in the rows. Agreed by Markus on 2026-11-26.
 - Which operators and functions come first is decided by what is needed next, and the others follow by need. Decided by the lead on 2026-11-24.
 
 **Undecided:**
 
-- Whether the annotation of a statement records the time that it read and the random bytes that it drew: all of them without a cap, or none (Markus on 2026-11-26: "Either all or nothing").
 - Other literals, such as `+1`, `0x10`, `1_000`, and `true`.
 
 **Rejected,** where SQLite's answer is a quirk (agreed by Markus on 2026-11-24): arithmetic on text, such as `'1' + 1` and `'abc' + 1`; an integer overflow, where SQLite silently gives a float; a division by zero, where SQLite gives null; and a comparison of values of different types by SQLite's order of types.
@@ -143,7 +143,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - A plain `?`, directly and through prepared statements (slice 2).
 - Arguments: Go integers, a `float64` or `float32`, a `string`, a `[]byte` that is not nil, and nil, also through a `driver.Valuer` (slices 2, 4, and 6).
 - Transactions with `db.BeginTx`: a write transaction, which waits for the single writer, and a read-only one, at `sql.LevelDefault` or `sql.LevelSerializable`. A statement outside a transaction is a transaction of its own (slice 3).
-- Several statements in one `Exec`, built on 2026-11-25, with the notes in [todo/several-statements.md](todo/several-statements.md): they mean the same as running them one after another, inside a transaction as part of it, and outside one each committing on its own, as in SQLite and mattn's driver (agreed by Markus on 2026-11-24). `Query` and `Prepare` take one statement. Checked with hand-written tests and a comparison with mattn's driver, and since 2026-11-26 with a generated workload of texts of several statements, which the driver's generated test runs in one `Exec` on both sides and compares with mattn's own `Exec`, and since 2026-11-26 the split is compared with SQLite by a differential test and a fuzz target, and the engine's differential tests run each text in one `ExecAll` and compare it with its statements run one after another (built 2026-11-26). Simulation with planted bugs and mutation testing are still to come.
+- Several statements in one `Exec`, built on 2026-11-25, with the notes in [todo/several-statements.md](todo/several-statements.md): they mean the same as running them one after another, inside a transaction as part of it, and outside one each committing on its own, as in SQLite and mattn's driver (agreed by Markus on 2026-11-24). `Query` and `Prepare` take one statement. Checked with hand-written tests and a comparison with mattn's driver, and since 2026-11-26 with a generated workload of texts of several statements, which the driver's generated test runs in one `Exec` on both sides and compares with mattn's own `Exec`, and since 2026-11-26 the split is compared with SQLite by a differential test and a fuzz target, and the engine's differential tests run each text in one `ExecAll` and compare it with its statements run one after another (built 2026-11-26), and the engine's simulation runs the texts through `ExecAll` with crashes between their statements and finds eight planted bugs of its loop and commit path (built 2026-11-26). Mutation testing is still to come.
 
 **Decided,** with the details in [todo/driver.md](todo/driver.md):
 

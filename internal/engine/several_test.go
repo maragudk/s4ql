@@ -635,6 +635,33 @@ func parameterNoun(n int) string {
 	return "parameters"
 }
 
+// refusedBefore is the answer of s4ql's rules that refuse the text src of several statements, whose
+// statements are parts, with n arguments, before any statement runs, in the order of
+// [engine.CheckAll], and why: "spaces", for its spaces, as [spaceRule] says; "none", for no
+// statement; and "arguments", for more arguments than parameters, if the rules of a statement alone
+// accept every statement. It gives the zero answer and "" for a text that they do not refuse.
+func refusedBefore(src string, n int, parts []sqlitePart) (answer, string) {
+	total, checked := 0, true
+	for _, part := range parts {
+		s, err := stmt.Check(src[part.statement.Start:part.statement.End])
+		if err != nil || s == nil {
+			checked = false
+			break
+		}
+		total += s.Parameters()
+	}
+	what, at := spaceRule(src, parts)
+	switch {
+	case what != "":
+		return answer{err: "not supported", message: fmt.Sprintf("s4ql: not supported: %v (at offset %v)", what, at)}, "spaces"
+	case len(parts) == 0:
+		return answer{err: "no statement", message: engine.ErrNoStatement.Error()}, "none"
+	case len(parts) > 1 && checked && n > total:
+		return answer{err: wrongArguments, message: fmt.Sprintf("s4ql: wrong number of arguments: %v for a text whose %v statements have %v %v", n, len(parts), total, parameterNoun(total))}, "arguments"
+	}
+	return answer{}, ""
+}
+
 // several runs the call c of a text of several statements through [engine.Conn.ExecAll] on the other
 // instance of the pair, and requires what running its statements one after another gives: the
 // statements of [sqliteParts], each with as many of the arguments as it has parameters, in order, run
@@ -664,31 +691,13 @@ func (p *pair) several(c stmttest.Call) string {
 	if logged {
 		iLog, otherLog = len(logChanges(t, i.store)), len(logChanges(t, other.store))
 	}
-	// The rules of s4ql that refuse the text before any statement runs, in the order of
-	// [engine.CheckAll]: its spaces, no statement, and more arguments than parameters.
-	var want answer
-	refused := true
-	total, checked := 0, true
-	for _, part := range parts {
-		s, err := stmt.Check(src[part.statement.Start:part.statement.End])
-		if err != nil || s == nil {
-			checked = false
-			break
-		}
-		total += s.Parameters()
-	}
-	what, at := spaceRule(src, parts)
-	switch {
-	case what != "":
-		want = answer{err: "not supported", message: fmt.Sprintf("s4ql: not supported: %v (at offset %v)", what, at)}
+	want, why := refusedBefore(src, len(c.Args), parts)
+	refused := why != ""
+	switch why {
+	case "spaces":
 		p.count("several statements: refused for a space that mattn trims")
-	case len(parts) == 0:
-		want = answer{err: "no statement", message: engine.ErrNoStatement.Error()}
-	case len(parts) > 1 && checked && len(c.Args) > total:
-		want = answer{err: wrongArguments, message: fmt.Sprintf("s4ql: wrong number of arguments: %v for a text whose %v statements have %v %v", len(c.Args), len(parts), total, parameterNoun(total))}
+	case "arguments":
 		p.count("several statements: more arguments than parameters")
-	default:
-		refused = false
 	}
 	// The walk: each statement alone on the instance and in SQLite, up to the first that fails.
 	stopped, ran := -1, 0

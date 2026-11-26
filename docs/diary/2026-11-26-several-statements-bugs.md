@@ -1,0 +1,197 @@
+# Diary: the engine's simulation of several statements in one `Exec`, with planted bugs
+
+The engine's simulation (`/internal/engine/simulation_test.go`) left the profile `several` out, and ran the texts of several statements of `mixed` through `engine.Conn.Exec`, which refuses them for their second statement. This task runs them through `engine.Conn.ExecAll`, in the default and the hammer environment, plants bugs in the loop of `ExecAll` and its commit path, and shows that the simulation finds each.
+
+## Step 1: texts of several statements in the simulation, and eight planted bugs
+
+**Author:** several-statements-bugs
+
+### Prompt Context
+
+**Verbatim prompt:** "Your ONE task: **the engine's simulation for several statements in one `Exec`, with planted bugs**. Mutation testing follows as a step of its own; do not start it. … 1. **The simulation runs the profile `several`** (and the texts of several statements that `mixed` writes) through `ExecAll`, in its default and its hammer environment, with crashes between and inside the statements of a text. What must hold: the statements of a text are in the log as running them one after another would leave them (outside a transaction one commit per statement that changed something, in order; a crash between two statements leaves exactly the earlier ones; the failed statement and those after it leave nothing), the annotations replay to the replayed rows, and callers were told what the log holds. Give `several` cells and take it out of the list of profiles without one. 2. **Planted bugs** in the loop and its commit path … at least these six … 3. **Accepted symptoms.** … 4. **A small fix in the driver check** … 5. **Night sizes before you hand in** …"
+**Interpretation:** model each statement of a text as an attempt of its own, so that every check of a statement alone applies to it, learn from the engine's events which statements ran, add the checks that only a text has, plant the six bugs and others, and derive each bug's symptoms from 1,000 seeds.
+**Inferred intent:** the simulation, with its crashes and faults of the store, judges `ExecAll` as it judges `Exec`, and a planted fault of the loop cannot pass it.
+
+### What I did
+
+- `run.statement` sends a call with `Statements` that is not a query to `run.several`. It reads the text's statements with the oracle's own `sqliteParts` (on SQLite's tokens), and the refusals before any statement with `refusedBefore`, which I took out of `pair.several` in `/internal/engine/several_test.go` so that both use one rule. Each statement becomes an attempt with the comment of its ID, its own arguments, and its part of the text (with the spaces, comments, and empty statements before it) as its text; a text that the rules refuse is one attempt. The text with the IDs is sent to `ExecAll` with a `severalKey` in its context.
+- The handler of the engine's events gives each event of a statement in a call to the attempt in its place (`run.logged`): its position, access, index, `nothing`, the values of its subqueries, and, if the event is ok and no earlier one failed, `succeeded`, its count of changes from `statement.rows`, and its acknowledgement for a write outside a transaction. So a statement whose event says ok is acknowledged even if the call never returns because its instance crashed: its commit has returned, as for a statement alone, whose event is logged after its commit.
+- `run.severalEnded` checks the events against the run of a text (no more events than statements, each event of a statement with an ID carries its ID, none after the first that failed, all ok if the call succeeded), the arguments of each statement that succeeded, the result of a call that succeeded against the event of its last insert, update, or delete, and classifies the statement that failed with `run.classify`, the switch of `run.statement` taken out, with the offsets of s4ql's own errors moved into the text of the statement (`unshifted`). A statement with fewer arguments than parameters is checked against ExecAll's rule message. Those after the failed one are `notRun`, a new state.
+- `run.verifyTexts`: outside a transaction, a statement of a text is in the log only after every statement before it in the text succeeded, and each in a commit after that of the one before.
+- `severalKinds` counts texts by how they ended, refused, crashed after a statement succeeded, with one commit or with a commit for each of several, and the statements that did not run.
+- Cells `{stmttest.Several, 10}` in the default environment and `{stmttest.Several, 12}` in the hammer one; the skip of the profile in `TestSimulation` is gone.
+- Planted bugs in `/internal/engine/bugs.go`, `/internal/engine/several.go`, `/internal/engine/engine.go`, `/internal/engine/tx.go`: `oneCommit`, `goOn`, `commitFailed`, `commitLater`, `annotateText`, `argsFromStart`, `undoInTx`, `firstResult`. Those that need the text in `Conn.write` get it through a context value (`textKey`), set only while one of them is planted.
+- The driver check (`/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`) keeps the `Supports` of a generated call on the pair, and `pair.severalWalk` judges each statement by its own entry.
+
+### Why
+
+Treating each statement as an attempt reuses every check of a statement alone: the log's commits and their parameters, the acknowledged writes, the replay in SQLite, the checks of transactions, of arithmetic, and of types.
+
+### What worked
+
+A probe test of my own (not committed) that ran N seeds of a profile with a bug and printed every violation showed after two fixes that 100 seeds of each environment find nothing without a bug, and gave the first rates of each bug.
+
+### What didn't work
+
+- The first probe failed every seed with `ExecAll logs the event of the statement 207 in the place of the statement 206`. The event of a statement that `stmt.Split` refuses has the rest of the text from that statement on as its text, which holds the IDs of the statements after it; and a refused first statement has the whole text. The check now applies only to an attempt whose text carries an ID.
+- Then `ExecAll logs the event of the statement 0 in the place of the statement 64`: an event above Debug (a commit of unknown outcome is Warn) has no text. The check now skips an event without `statement.sql`.
+- My first loop that ran the classification over 1,000 seeds, `for x in "hammer none" …; do set -- $x; …`, ran in zsh, which does not split `$x`, so every run was of the default environment without a bug. I wrote the runs out one per line in `/Volumes/990/s4ql/several-statements-bugs/all.sh`.
+
+### What I learned
+
+An event of a statement in the default environment shows a crash between two statements well: of 300 seeds of `several` with `commitLater`, 38 lose a statement whose event was ok when the instance crashed in the commit that the bug deferred.
+
+### What was tricky
+
+The positions of a text's events. A statement that s4ql does not support carries no ID, so its event is placed by its position only.
+
+### What warrants review
+
+`run.logged` and `run.severalEnded` in `/internal/engine/simulation_test.go`, in particular the choice that an ok event acknowledges a statement of a text.
+
+### Future work
+
+See the next steps.
+
+## Step 2: the symptoms of 1,000 seeds, a crash aimed between statements, and the self-review
+
+**Author:** several-statements-bugs
+
+### Prompt Context
+
+**Verbatim prompt:** "3. **Accepted symptoms.** For each bug, derive its list of accepted symptoms from what the bug can cause, by classifying every violation over 1,000 seeds (`S4QL_ENGINE_SIM_SEEDS=1000`, bug by bug, not all bugs in one process), and show that no seed fails with a symptom outside its list and that the rerun without the bug finds nothing. Say for each bug how many of the 1,000 seeds find it, and how many by the bug's own symptom."
+**Interpretation:** run each bug alone over the first 1,000 seeds of the profile `several`, record every violation of every seed, and build each bug's list from those, with an explanation of each entry.
+**Inferred intent:** no list wider than what the bug causes, and each entry explained.
+
+### What I did
+
+- A probe test, kept out of the repository, ran 1,000 seeds of a bug in one process from a test binary on `/Volumes/990/s4ql/several-statements-bugs/`, one bug after another (`all.sh` there), and printed every violation of each seed. `cover.py` there counts the seeds, those by the bug's own violation, and picks greedily from a list of phrases the fewest that cover every seed; I then read the classes of each bug to see that each entry follows from the bug. The lists and counts are in `/docs/todo/several-statements.md` and in the comments of `TestSimulation_plantedBugs`.
+- Without a bug, 1,000 seeds of each environment found nothing.
+- `TestSimulation` failed after the first recount: `no run reaches "texts of several statements whose call did not return after a statement succeeded", which is required, three times`. The crasher of the default environment hit a text between its statements in about 1 seed of 40. In the profile `several`, `run.crash` now waits up to ten seconds for an instance that runs a text after one of its statements succeeded, and then as before. The cells reach 4 such texts, and 1,000 seeds 271; with that, `commitLater` is found by 610 of 1,000 seeds (534 before), 296 of them by a statement lost in a crash after it. The other profiles crash as before, so no other count moved.
+- The kinds of texts are in `/internal/engine/testdata/reached/TestSimulation.kinds` at a third of their totals, and `TestSimulation.tsv` is recounted. I dropped a kind that counted the same as the state "not run".
+- The driver check's fix: a refusal planted in `ExecAll` for the first statement of a text with a later statement that `stmt.Split` refuses failed `TestGenerated` both with the old walk and the new (`s4ql gives exec: exec failed with s4ql: not supported: PLANTED (at offset 24), where the rule gives ""`). The entry of `Supports` only matters where `stmt.Check` refuses the text of a statement, so I found no small fault that only the fix finds; the reason is recorded.
+- The self-review (`code-review`, high) found four nits, all fixed: a text that is not valid UTF-8 or holds NUL had no rule (now an explicit violation, as in the differential tests; the generator writes none); `commitFailed` left the write transaction open when its annotation failed (now rolled back); the values of a statement's subqueries reached its attempt only with its event, so a crash after the commit and before the event lost them (the observer now writes them on the statement that runs, the first without an event); and every write looked up the text in the context before the flags of the bugs (the flags come first now).
+
+### Why
+
+A list taken from the bug's real violations, with each entry explained, is a list that a different fault cannot hide in.
+
+### What worked
+
+Reading the classes, not only the cover: they showed that every seed of `argsFromStart` and `commitLater` that a first cover counted outside the own violation had it, cut off by my probe's truncation of a violation at 600 bytes.
+
+### What didn't work
+
+- `for x in "hammer none" "default none" …; do set -- $x; …` in zsh: no word splitting, so ten runs of the default environment without a bug and `out-hammer goOn-.txt` as a file name.
+- `python3 cover.py out-hammer-commitFailed.txt …` failed with `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xed in position 5194`, because the probe cut violations inside a character; the scripts read with `errors='replace'`.
+- The first version of the aimed crash broke out of its second loop when it found no running node: `if live != nil { break }` after `live` had been set to every live node. A flag `aimed` fixed it.
+
+### What I learned
+
+`undoInTx` is found by its own violation in only half of its seeds: the roll back frees the place of the writer, so another caller's statement commits while the caller's transaction is still open as far as the caller knows, which `run.verifyOverlaps` sees first.
+
+### What was tricky
+
+Telling a real second symptom from a truncated own one, above.
+
+### What warrants review
+
+The aimed crash in `run.crash`, which only the profile `several` takes, and the lists of `oneCommit` and `undoInTx`, the longest.
+
+### Future work
+
+Mutation testing of the loop, as the brief says.
+
+## Step 3: the runs at the nightly's sizes
+
+**Author:** several-statements-bugs
+
+### Prompt Context
+
+**Verbatim prompt:** "5. **Night sizes before you hand in**, all passing, one at a time: … `go test -count=1 -p 3 -run '^TestDifferential$' -timeout 40m ./internal/engine/ -sequences 400` … `S4QL_ENGINE_SIM_SEEDS=100 go test -count=1 -p 3 -run '^TestSimulation$' -timeout 40m ./internal/engine/` … `S4QL_ENGINE_SIM_SEEDS=1000 go test -count=1 -p 3 -run '^TestSimulation_plantedBugs$' -timeout 300m -v ./internal/engine/` (all bugs; it took 56 minutes for 40 bugs) and, from the directory `internal/sqlite/crosscheck`, `go test -count=1 -p 3 -timeout 40m ./drivercheck/`."
+**Interpretation:** run the four, one after another, with `TMPDIR` and `GOTMPDIR` on `/Volumes/990/s4ql/several-statements-bugs/tmp`.
+**Inferred intent:** tonight's nightly has run here first.
+
+### What I did
+
+- `TestDifferential -sequences 400`: ok in 329 s (before the fixes of the self-review, which touch neither its code nor the engine without a planted bug).
+- `TestSimulation` with 100 seeds: ok in 154 s, before and after the fixes of the self-review.
+- `TestSimulation_plantedBugs` with 1,000 seeds, all 48 bugs: ok in 4,353 s. Each new bug found by exactly the counts of the classification.
+- The driver check: ok in 23 s.
+- The whole engine package without `-short`: ok in 144 s. The new tests under `-race -count=2` (`TestSimulation`, `TestSimulation_plantedBugs`, `TestConn_ExecAll`): ok in 134 s; the new planted bugs `-count=20`: ok in 45 s. `make lint`: 0 issues. `make test`: ok.
+
+### Why
+
+The rule of `AGENTS.md`: a change to the generated checks is run at the nightly's sizes before it lands.
+
+### What worked
+
+Running the planted bugs with all of them from one command after the per-bug classification: the counts came out the same, since a run is a function of its seed.
+
+### What didn't work
+
+`go test -race -count=20 -run '^(TestSimulation|TestSimulation_plantedBugs)$' ./internal/engine/` failed at 600.383 s on the default timeout of ten minutes, with no data race; `-count=2` under `-race` takes 134 s, so twenty would take about 22 minutes, which I left out for the nightly-sized runs.
+
+### What I learned
+
+The 48 bugs at 1,000 seeds take 73 minutes here, 17 more than the 40 bugs did; the eight new ones take about two minutes each.
+
+### What was tricky
+
+Nothing beyond the waits.
+
+### What warrants review
+
+Nothing new.
+
+### Future work
+
+None from this step.
+
+## Step 4: fixes after the review of the simulation
+
+**Author:** several-statements-bugs (finisher)
+
+### Prompt Context
+
+**Verbatim prompt:** "You finish and land a reviewed branch in s4ql (`maragu.dev/s4ql`, repository `maragudk/s4ql`): `several-statements-bugs`, the engine's simulation for several statements in one `Exec` with eight planted bugs. The task is small: four fixes from an independent review, the night-sized runs, the status texts, and the landing. Do nothing beyond it. … 1. **A thin margin.** … 2. **The result of a failed call is never checked.** … 3. **A wrong comment.** … 4. **A wrong word.** …"
+**Interpretation:** make the four fixes in `/internal/engine/simulation_test.go` (and the README of the engine and the files of `testdata/reached`), prove the second with a planted wrong result, run the four night-sized commands, update the roadmap, and land the branch.
+**Inferred intent:** the review's findings closed before the branch reaches `main`, without new scope.
+
+### What I did
+
+- Raised the cell `{stmttest.Several, 10}` of the default environment to 30 seeds, recounted with `S4QL_RECOUNT=1`, and set the kinds of texts of several statements in `/internal/engine/testdata/reached/TestSimulation.kinds` at a third of their new totals. "Whose call did not return after a statement succeeded" is now reached 10 times, with a floor of 3.
+- `run.severalEnded` checks the result of a failed call: that of the last statement before the failed one that sets the count of changes, by its event, or `{Changes: 0, SetsChanges: true}` where the failed statement is an insert, update, or delete that was not skipped.
+- Rewrote the comment of the planted bugs of several statements: a seed needs one violation of its list, and the violations that follow from another are not listed.
+- Renamed "acknowledged" to "committed" in the simulation's names (`run.committed`, `attempt.committed`, `txRecord.committed`), messages, kinds, and the engine's README, and the lists of `oneCommit` and `commitLater` with them.
+- The roadmap's line and table of the driver; the fixes and an open item in `/docs/todo/several-statements.md`.
+
+### Why
+
+The review found a floor that would fail at random, a claim of the README that no check enforced, a comment that said more than the test does, and a word that claimed the caller knew.
+
+### What worked
+
+The proof: `return Result{Changes: res.Changes + 7, SetsChanges: true}, err` in place of `return res, err` in the loop of `/internal/engine/several.go` failed `TestSimulation -short` at once (seed 3200032: `ExecAll of the text of the statements 29 gives the result {Changes:7 SetsChanges:true} and the error UNIQUE constraint failed: …`); reverted with `git checkout -- internal/engine/several.go`.
+
+Night sizes, one at a time: `TestDifferential -sequences 400` ok in 317 s; `TestSimulation` with 100 seeds ok in 152 s; `TestSimulation_plantedBugs` with 1,000 seeds ok in 4,355 s, with every count as before but `firstResult`, now 983 of 1,000 (976), each by its own violation, since a failed call's result is checked too; the driver check ok in 22 s.
+
+### What didn't work
+
+A compound shell command that rebuilt `TestSimulation.kinds` from the counts of the `.tsv` was refused by the worktree's guard as "too complex to verify that it stays inside the worktree"; I edited the 17 lines by hand.
+
+### What I learned
+
+The engine's result of a failed write is `Result{}` when it fails before its sink is built (a table that is not there, no lease) and `{0, true}` after; the simulation cannot tell those apart from the error alone, so it accepts either, and the differential tests, which run the statements alone, check which.
+
+### What was tricky
+
+The rename crosses the check of statements alone too, since `r.committed` is one list for both; "committed" is true for both, where "acknowledged" was true only for a statement whose call returned.
+
+### What warrants review
+
+The two accepted results of a failed call in `run.severalEnded`. The self-review (`code-review`, medium) found no bug and four nits, all fixed: the README and the comment of `succeeded` now say "outside a transaction", the comment of `attempt.committed` says what it holds for a statement of a transaction, and the comment of the result check says what it cannot tell.
+
+### Future work
+
+Recorded as open in `/docs/todo/several-statements.md`: a statement of a text whose commit was durable but whose event was not logged before a crash stays pending, and may be missing from the log. Mutation testing of the loop of `ExecAll`.
