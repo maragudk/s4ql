@@ -77,6 +77,13 @@ jobs:
       - name: Select the mutants
         id: select
         run: |
+          case "$MOST_SHARDS" in
+          '' | *[!0-9]*) echo "the input shards is not a number from 1 to 256: $MOST_SHARDS" >&2; exit 1 ;;
+          esac
+          if [ "$MOST_SHARDS" -lt 1 ] || [ "$MOST_SHARDS" -gt 256 ]; then
+            echo "the input shards is not a number from 1 to 256: $MOST_SHARDS" >&2
+            exit 1
+          fi
           case "$SINCE" in
           all) base= ;;
           round) base=$(sed -e '/^#/d' -e '/^[[:space:]]*$/d' internal/sql/mutation/round.txt | head -n 1) ;;
@@ -102,7 +109,9 @@ jobs:
           } | tee -a "$GITHUB_OUTPUT"
           cut -f 1 "$RUNNER_TEMP/mutants" | cut -d : -f 1 | sort | uniq -c
 
-  # Runs the share of one shard, with as many mutants at once as the runner has cores, and uploads
+  # Runs the share of one shard, with three mutants at once on the four cores and 16 GB of a runner,
+  # and a limit of 3 GiB on the memory of each test binary, so that three at their limit and the
+  # builds beside them fit; the planning fails if a stage needs more on the code as it is. It uploads
   # its results, also those of a shard that failed or ran out of time, whose other mutants then have
   # no result. The run's own limit comes before the job's, so that the upload still runs. The cache
   # is that of CI's job sql, which builds the same packages without the race detector, so SQLite is
@@ -132,7 +141,7 @@ jobs:
         env:
           BASE: ${{ needs.plan.outputs.base }}
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
-        run: go run ./internal/sql/mutation -out "$RUNNER_TEMP/mutation" -pkgs "$PKGS" -run "$RUN" -since "$BASE" -shard "$SHARD" -j "$(nproc)"
+        run: go run ./internal/sql/mutation -out "$RUNNER_TEMP/mutation" -pkgs "$PKGS" -run "$RUN" -since "$BASE" -shard "$SHARD" -j 3 -memory 3221225472
 
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
@@ -146,10 +155,12 @@ jobs:
           retention-days: 30
 
   # Merges the results of the shards, writes the report into the summary of the run, and opens or
-  # comments on the issue of the round, on main only, as the nightly does for its failures.
+  # comments on the issue of the round, on main only, as the nightly does for its failures. A run
+  # that is cancelled reports nothing; a shard that runs out of time fails, or ends as cancelled,
+  # and is reported.
   report:
     needs: [plan, shard]
-    if: ${{ always() && needs.plan.result == 'success' }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -180,7 +191,7 @@ jobs:
         run: go run ./internal/sql/mutation -out merged -merge 'shards/*' -pkgs "$PKGS" -run "$RUN" -since "$BASE"
 
       - uses: actions/upload-artifact@v7
-        if: ${{ always() && steps.merge.outcome != 'skipped' }}
+        if: ${{ !cancelled() && steps.merge.outcome != 'skipped' }}
         with:
           name: mutation-report
           path: merged/
@@ -189,7 +200,7 @@ jobs:
 
       - name: Write the report of the round
         id: report
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         env:
           SHA: ${{ github.sha }}
           BASE: ${{ needs.plan.outputs.base }}
@@ -206,7 +217,7 @@ jobs:
       # An issue's body holds at most 65,536 characters, so a longer report is left in the summary of
       # the run and in the artifact mutation-report.
       - name: Open or comment on the issue of mutation testing
-        if: ${{ always() && steps.report.outputs.issue == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.issue) }}
+        if: ${{ !cancelled() && steps.report.outputs.issue == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.issue) }}
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}

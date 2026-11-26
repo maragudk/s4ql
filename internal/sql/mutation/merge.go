@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -13,10 +14,14 @@ import (
 )
 
 // mergeShards merges the results of the shards in the directories that the pattern matches into the
-// results of out, whose fingerprint must be that of every shard. Each result must be of a mutant of
-// the selection mutants, and of one shard only. A shard without results counts: its mutants are
-// left without a result, which the report shows.
+// results of out, which has none yet and whose fingerprint must be that of every shard. Each result
+// must be of a mutant of the selection mutants, and of one shard only. A shard without results
+// counts: its mutants are left without a result, which the report shows, and so does the mutant of
+// a last line that a shard did not finish, when it was stopped while it wrote.
 func mergeShards(out, pattern string, mutants []mutant) error {
+	if _, err := os.Stat(filepath.Join(out, "results.jsonl")); err == nil {
+		return fmt.Errorf("%v holds results already; merge into a directory without them", out)
+	}
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return err
@@ -48,7 +53,7 @@ func mergeShards(out, pattern string, mutants []mutant) error {
 		if !bytes.Equal(bytes.TrimSpace(shardFP), bytes.TrimSpace(fp)) {
 			return fmt.Errorf("the shard in %v ran on other code or another SQLite or Go", d)
 		}
-		results, err := readResults(filepath.Join(d, "results.jsonl"))
+		results, err := readShardResults(filepath.Join(d, "results.jsonl"))
 		if err != nil {
 			return err
 		}
@@ -72,6 +77,23 @@ func mergeShards(out, pattern string, mutants []mutant) error {
 		b.Write(append(line, '\n'))
 	}
 	return os.WriteFile(filepath.Join(out, "results.jsonl"), b.Bytes(), 0o644)
+}
+
+// readShardResults reads the results of a shard at path, as [readResults] does, without its last
+// line if that does not end in a newline: a shard that was stopped while it wrote a result.
+func readShardResults(path string) (map[string]result, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]result{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	whole := data[:bytes.LastIndexByte(data, '\n')+1]
+	if len(whole) < len(data) {
+		fmt.Fprintf(os.Stderr, "%v: the last line is not finished, so its mutant has no result\n", path)
+	}
+	return parseResults(path, whole)
 }
 
 // summaryCounts of a report: the mutants of the selection, those without a result, the survivors

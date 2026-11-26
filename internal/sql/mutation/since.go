@@ -48,20 +48,25 @@ func (h hunk) touches(from, to int) bool {
 
 var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
-// parseDiff reads the output of git diff -U0, and gives the hunks of each file that is there now, by
-// its path relative to the root of the repository.
+// parseDiff reads the output of git diff -U0 with the prefixes a/ and b/, and gives the hunks of
+// each file that is there now, by its path relative to the root of the repository. A line of +++ is
+// the name of a file only in the header of the file's diff, before its first hunk, since an added
+// line that starts with ++ looks the same in a hunk.
 func parseDiff(diff string) (map[string][]hunk, error) {
 	hunks := map[string][]hunk{}
 	file := ""
+	header := false
 	for line := range strings.Lines(diff) {
 		line = strings.TrimRight(line, "\n")
 		switch {
-		case strings.HasPrefix(line, "+++ "):
-			file = ""
+		case strings.HasPrefix(line, "diff --git "):
+			file, header = "", true
+		case header && strings.HasPrefix(line, "+++ "):
 			if name, ok := strings.CutPrefix(line, "+++ b/"); ok {
 				file = name
 			}
 		case strings.HasPrefix(line, "@@ "):
+			header = false
 			m := hunkHeader.FindStringSubmatch(line)
 			if m == nil {
 				return nil, fmt.Errorf("the line %q of the diff is not a hunk header", line)
@@ -96,7 +101,7 @@ func changedSince(root, rev string, ms []mutant) ([]mutant, error) {
 		}
 		return string(out), nil
 	}
-	diff, err := git("diff", "-U0", "--relative", "--no-color", "--no-ext-diff", "--no-renames", rev+"^{commit}", "--", "*.go")
+	diff, err := git("diff", "-U0", "--relative", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", rev+"^{commit}", "--", "*.go")
 	if err != nil {
 		return nil, err
 	}

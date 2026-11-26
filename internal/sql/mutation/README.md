@@ -8,7 +8,7 @@ A copy of the code with one change is a mutant. The tests kill a mutant when one
 - It is in code that nothing needs. That code is removed.
 - It shows a gap in the tests. A new test closes the gap.
 
-Only code that is not a test is changed. The tests are those that `make test` runs: the tests of every package under `internal` that depend on the changed package. They run on the whole corpus. The package at the root, the driver, is not mutated by default; with `-pkgs .` it is, and its tests are its own, without `TestOpen_realBucket`, which needs a real bucket. The tests of `internal/store/s3store` and `internal/store/s3test` that need a real bucket are left out too, which matters for `-pkgs internal/core`: `TestClient_conformance`, `TestClient_realBucket`, `TestClient_core`, and `TestDeleteOld_realBucket`. The differential test of the driver is in another module, and does not run on its mutants. The list of equivalent mutants may name mutants of the evaluator in [`internal/expr`](../../expr/README.md), of the core, of the storage formats in `internal/format`, of the binding of SQLite in `internal/sqlite`, and of the root, which a run mutates only when `-pkgs` names them (`listedPkgs`). A mutant of the binding runs the tests of every package under `internal` that depends on it, which is nearly all of them. The generator reads every file of a package, whatever its build tags, so it also mutates the binding's `sqlite_browser.go`, for the browser, and `asan.go`, for the address sanitizer, which the build of the tests leaves out: their mutants survive, so a run of the binding leaves them out with `-run`.
+Only code that is not a test is changed. The tests are those that `make test` runs: the tests of every package under `internal` that depend on the changed package. They run on the whole corpus. The package at the root, the driver, is not mutated by default; with `-pkgs .` it is, and its tests are its own, without `TestOpen_realBucket`, which needs a real bucket. The tests of `internal/store/s3store` and `internal/store/s3test` that need a real bucket are left out too, which matters for `-pkgs internal/core`: `TestClient_conformance`, `TestClient_realBucket`, `TestClient_core`, and `TestDeleteOld_realBucket`. The differential test of the driver is in another module, and does not run on its mutants. The list of equivalent mutants may name mutants of the evaluator in [`internal/expr`](../../expr/README.md), of the core, of the storage formats in `internal/format`, of the binding of SQLite in `internal/sqlite`, and of the root, which a run mutates only when `-pkgs` names them or is `all` (`listedPkgs`). A mutant of the binding runs the tests of every package under `internal` that depends on it, which is nearly all of them. The generator reads every file of a package, whatever its build tags. A run leaves out the mutants of the files that the build of the tests does not compile on its machine, such as the binding's `sqlite_browser.go`, for the browser, and `asan.go`, for the address sanitizer, and the root's `filelimit_other.go`: no test runs them, so they would all survive.
 
 ## How to run
 
@@ -27,10 +27,13 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-out` | | The directory of the results. Required, except with `-list`. |
-| `-pkgs` | the five packages | The packages to change, separated by commas. |
+| `-pkgs` | the five packages | The packages to change, separated by commas. `all` is every package that the runner knows (`listedPkgs`). |
 | `-run` | | A regular expression. Only the mutants whose [key](#keys) or `file:line` matches it are run. |
+| `-since` | | A commit, or `round` for the commit in [`round.txt`](round.txt). Only the mutants of the declarations that changed since it are run. |
+| `-shard` | | `i/n`. Only the share of the i-th of n shards is run. |
 | `-list` | | Print the mutants and exit. |
 | `-report` | | Write the report of the results in `-out` again and exit. |
+| `-merge` | | A pattern of the directories of the results of shards, such as `'shards/*'`. Merge their results into `-out`, write the report, and exit. |
 | `-j` | the number of CPUs | The number of mutants that run at once. |
 | `-procs` | 2 | GOMAXPROCS of each test binary. 0 leaves it unset. |
 | `-factor` | 20 | The time limit of a stage, as a multiple of its time on the code as it is. |
@@ -40,12 +43,24 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 | `-equivalent` | `internal/sql/mutation/equivalent.txt` | The list of equivalent mutants. |
 | `-first` | | A regular expression. The hand-written tests of the mutated package that it names run first, in a stage of their own, before its other hand-written tests. |
 
+`-since` selects by declaration: a function, or a spec of a declaration at package level. A declaration changed if it holds a line that `git diff -U0` of the working tree against the commit adds or changes, or the place of a removal. A `.go` file that git does not track counts as wholly new.
+
+`-shard` and `-merge` split a run over machines. Each shard runs with an `-out` of its own, and `-merge` gets the same `-pkgs`, `-run`, and `-since` as the shards, without `-shard`:
+
+```
+go run ./internal/sql/mutation -out shards/1 -pkgs . -run filelimit_unix.go -shard 1/2
+go run ./internal/sql/mutation -out shards/2 -pkgs . -run filelimit_unix.go -shard 2/2
+go run ./internal/sql/mutation -out merged -pkgs . -run filelimit_unix.go -merge 'shards/*'
+```
+
+`-merge` refuses a shard of another fingerprint, a mutant with a result in two shards, and a result of a mutant outside the selection.
+
 Before you start a run, know these points:
 
 - **A run continues.** A run with the same `-out` skips the mutants that already have a result. A run that was stopped goes on where it stopped.
 - **Results belong to one state of the code.** The first run records a fingerprint of the files under `internal`, code and tests, without this directory, of `go.mod` and `go.sum`, and of the version of Go. A later run on anything else refuses the directory, and so does `-report`. Remove the directory or use another `-out` then.
 - **A run stops on a failure of its own.** If a test binary does not start, or a file changed since its mutants were made, the run stops without a result for that mutant.
-- **It is not part of `make test` or of CI.** A full run takes too long for that. See [Results](#results).
+- **Rounds run in CI, once a week.** The workflow `.github/workflows/mutation.yml` runs them: see [The weekly round in CI](#the-weekly-round-in-ci). `make test` and CI's checks of a pull request run no mutants. A feature counts as done before its mutation testing, which follows in the weekly round. A developer's machine runs no round as a step of a feature.
 - **The build cache grows.** Each mutant adds about 3 MB to the Go build cache, which is about 20 GB for a full run. `-gocache` gives the builds a cache of their own, which you can delete afterwards.
 - **The run reads the files while it runs.** For each mutant, it reads the file again from the module that it runs in. Do not edit `internal` during a run. To keep editing, run it on a copy of the tree.
 
@@ -93,7 +108,7 @@ The key holds the file under `internal/sql`, or its path from the root for a fil
 
 The tool never changes the repository. It writes the changed copy of the file into the directory of its worker, and the go command compiles that copy in place of the original through `-overlay`. Mutants therefore run in parallel.
 
-Before the first mutant, the tool builds the tests of the code as it is and times each stage. Every stage must pass there.
+Before the first mutant, the tool builds the tests of the code as it is and times each stage, for the packages that have mutants to run. Every stage must pass there.
 
 The tests run in stages, in this order. The first stage that fails kills the mutant, and the report counts the mutant for the layer of that stage.
 
@@ -123,6 +138,8 @@ The directory of the results holds:
 
 - `results.jsonl`, with one line for each mutant: its key, file, line, operator, the code before and after, the status, the layer, the test that failed with the start of its message, and the seconds it took. The status is `killed`, `survived`, `timeout`, or `uncompiled`.
 - `report.txt`, which the tool also prints.
+- `summary.md`, the report in Markdown, for the weekly round and its issue. It holds a table with a row for each package, the layers that killed first, and the number of mutants without a result. It shows each unexplained survivor with its `file:line`, declaration, operator, key, and the code before and after. It lists the mutants that timed out by `file:line`, with their keys, and the stale entries of the list: those that match no survivor.
+- `counts`, with a line `name=value` for each of `mutants`, `pending`, `unexplained`, `timeouts`, and `stale`. `pending` counts the mutants without a result.
 - `fingerprint`, `baseline`, and `work`, which the tool uses itself.
 
 The report has a row for each package, a row for each file, and a total. Its columns are:
@@ -171,7 +188,48 @@ The entries are of these classes:
 - **The end of input.** The guard in `Tokens` that the tokenizer never reaches, the value of `kindEOF`, the empty semicolon after a semicolon, the offsets of the two end tokens, and the tail that `run` returns with an error.
 - **The pass after the parser.** In `childAt`, the test that a child starts before the token: the children of an accepted node are in the order of the text.
 
+## The weekly round in CI
+
+The workflow [`.github/workflows/mutation.yml`](../../../.github/workflows/mutation.yml) runs a round on Saturdays at 06:43 UTC. Nothing else in CI waits on it. Started by hand, it takes these inputs:
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `since` | `round` | `round`, a commit, or `all` for every declaration. |
+| `pkgs` | `all` | The packages, as `-pkgs` takes them. |
+| `run` | | A regular expression, as `-run` takes it, such as `^internal/engine/several\.go` for a file. |
+| `shards` | 20 | The most shards. |
+| `issue` | true | Open or comment on the issue when the run leaves work. |
+
+By default, a round mutates every declaration that changed since the commit in [`round.txt`](round.txt), the last completed round, in every package that the runner knows. The file is in the repository because only a builder knows when a round is worked through: a run that ended may still leave work. A run with another `since`, `pkgs`, or `run` than the default completes no round, and `round.txt` stays as it is.
+
+The workflow has three jobs:
+
+- **`plan` selects the mutants once.** It gives one shard for each 10 mutants, up to the input `shards`.
+- **Each `shard` runs its share,** with three mutants at once on the four cores and 16 GB of a runner and a limit of 3 GiB on the memory of each test binary, and uploads its results as the artifact `mutation-shard-N`.
+- **`report` merges the results** with `-merge`. It writes the report into the summary of the run and uploads the merged results as the artifact `mutation-report`. On `main`, it opens an issue with the label `mutation` when the round leaves work, or comments on the one that is open. A round leaves work when it has an unexplained survivor, a stale entry, a mutant without a result, or a shard or a merge that failed. A round has one issue for all that it leaves.
+
+The runner deals the mutants out to the shards like cards, in the order of their keys, those that `equivalent.txt` lists first. The shards are therefore disjoint and together complete, and every shard computes the same split from the same tree and list. Each shard gets its share, within one, of the mutants of every file, and so of every package, and of the listed survivors. That balances the shards by expected cost without measuring it. Measured times cannot decide the split: each shard measures on its own runner, and runners differ. A shard runs the listed survivors first, because they run every stage and so take longest.
+
+Each shard plans on its own runner, as a local run does: it builds the tests of the code as it is and times each stage alone. The limit of a stage is 20 times that time, and at least one minute, the defaults of `-factor` and `-min-time`. A mutant that times out counts as killed. The summary lists the timeouts by `file:line`, so that each can run again with a longer limit, with `-run` and `-min-time`.
+
+A builder works through the issue of a round:
+
+1. Kill each unexplained survivor with a test, remove the code that nothing needs, or list the mutant in `equivalent.txt` with its reason.
+2. Remove or correct each stale entry.
+3. Run again what needs it. A few mutants run locally, with `go run ./internal/sql/mutation -out DIR -pkgs PKG -run 'FILE:LINE'`. A file runs in the workflow, started by hand with the input `run`. A mutant without a result means that a shard failed, so start the workflow again with the same inputs.
+4. In the same pull request, write the commit of the round, which the summary names, into `round.txt`. Then close the issue.
+
+A round that leaves no work opens no issue. Its summary names the commit to write into `round.txt` all the same, and whoever reads the weekly run writes it.
+
+The next round mutates what changed since.
+
+The first round mutates what changed since 8c53a53f (#156), the last commit that the rounds of arithmetic mutated: the several statements in one `Exec` (#157 to #168) in the engine, `stmt`, the parser, and the driver, and `||`, `lower`, and `hex` (#172) in `stmt` and the evaluator. On 2026-11-26, `-list -pkgs all -since 8c53a53f` gave 2,208 mutants.
+
+A local run checked the split and the merge at small size, on the 15 mutants of the root's `filelimit_unix.go`. It ran them once whole, with 2 workers, and once in 4 shards with one worker each, merged afterwards. Both gave the same `report.txt`, and the same status, layer, and message for every mutant, but for the paths of the workers' directories in the compiler's messages.
+
 ## Results
+
+The rounds from 2026-11-26 on run in CI. Their reports are in the summaries of the runs of the workflow and in the issues with the label `mutation`. The sections below are those of the rounds before.
 
 The final run of `token`, `ast`, and `parser`, on their code as it is now, made 7,029 mutants:
 

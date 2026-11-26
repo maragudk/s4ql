@@ -56,6 +56,33 @@ func TestMergeShards(t *testing.T) {
 		is.Equal(t, 1, len(results))
 	})
 
+	t.Run("should leave out a last line that a shard did not finish, whose mutant then has no result", func(t *testing.T) {
+		shards, out := t.TempDir(), t.TempDir()
+		is.NotError(t, os.WriteFile(filepath.Join(out, "fingerprint"), []byte("fp\n"), 0o644))
+		dir := filepath.Join(shards, "shard-1")
+		writeShard(t, dir, "fp", result{Key: "a", Status: statusKilled})
+		f, err := os.OpenFile(filepath.Join(dir, "results.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+		is.NotError(t, err)
+		_, err = f.WriteString(`{"Key":"b","Sta`)
+		is.NotError(t, err)
+		is.NotError(t, f.Close())
+
+		is.NotError(t, mergeShards(out, filepath.Join(shards, "*"), ms))
+		results, err := readResults(filepath.Join(out, "results.jsonl"))
+		is.NotError(t, err)
+		is.Equal(t, 1, len(results))
+		is.Equal(t, statusKilled, results["a"].Status)
+	})
+
+	t.Run("should refuse an output that holds results already, which the merge would replace", func(t *testing.T) {
+		shards, out := t.TempDir(), t.TempDir()
+		is.NotError(t, os.WriteFile(filepath.Join(out, "fingerprint"), []byte("fp\n"), 0o644))
+		is.NotError(t, os.WriteFile(filepath.Join(out, "results.jsonl"), nil, 0o644))
+		writeShard(t, filepath.Join(shards, "shard-1"), "fp", result{Key: "a", Status: statusKilled})
+		err := mergeShards(out, filepath.Join(shards, "*"), ms)
+		is.True(t, err != nil && strings.Contains(err.Error(), "holds results already"), "error: "+errString(err))
+	})
+
 	tests := []struct {
 		name   string
 		shards func(t *testing.T, dir string)
@@ -72,6 +99,10 @@ func TestMergeShards(t *testing.T) {
 			writeShard(t, filepath.Join(dir, "shard-1"), "fp", result{Key: "z", Status: statusKilled})
 		}},
 		{name: "should refuse a pattern that matches no shard", want: "no shard", shards: func(t *testing.T, dir string) {}},
+		{name: "should refuse a shard whose results are not JSON", want: "results.jsonl", shards: func(t *testing.T, dir string) {
+			writeShard(t, filepath.Join(dir, "shard-1"), "fp")
+			is.NotError(t, os.WriteFile(filepath.Join(dir, "shard-1", "results.jsonl"), []byte("{\"Key\": \"a\"\n"), 0o644))
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

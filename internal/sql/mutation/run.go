@@ -530,6 +530,12 @@ func readResults(path string) (map[string]result, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseResults(path, data)
+}
+
+// parseResults of the file of results at path, whose content is data.
+func parseResults(path string, data []byte) (map[string]result, error) {
+	results := map[string]result{}
 	for line := range strings.Lines(string(data)) {
 		var res result
 		if err := json.Unmarshal([]byte(line), &res); err != nil {

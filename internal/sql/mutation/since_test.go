@@ -14,7 +14,7 @@ import (
 )
 
 func TestParseDiff(t *testing.T) {
-	t.Run("should give the changed lines of each file, and the places of its removals", func(t *testing.T) {
+	t.Run("should give the changed lines of each file, and the places of its removals, also after an added line that starts with ++", func(t *testing.T) {
 		diff := `diff --git a/internal/engine/a.go b/internal/engine/a.go
 index 1111111..2222222 100644
 --- a/internal/engine/a.go
@@ -27,8 +27,11 @@ index 1111111..2222222 100644
 -	y++
 @@ -20,0 +19,3 @@ func h() {
 +	a()
-+	b()
++++ the text of a raw string
 +	c()
+@@ -30 +31 @@ func k() {
+-	x
++	y
 diff --git a/internal/engine/gone.go b/internal/engine/gone.go
 deleted file mode 100644
 --- a/internal/engine/gone.go
@@ -47,14 +50,14 @@ new file mode 100644
 `
 		got, err := parseDiff(diff)
 		is.NotError(t, err)
-		is.EqualSlice(t, []hunk{{line: 3, count: 1}, {line: 9, count: 0}, {line: 19, count: 3}}, got["internal/engine/a.go"])
+		is.EqualSlice(t, []hunk{{line: 3, count: 1}, {line: 9, count: 0}, {line: 19, count: 3}, {line: 31, count: 1}}, got["internal/engine/a.go"])
 		is.EqualSlice(t, []hunk{{line: 1, count: 2}}, got["internal/engine/new.go"])
 		_, ok := got["internal/engine/gone.go"]
 		is.True(t, !ok, "a removed file has changes")
 	})
 
 	t.Run("should refuse a hunk header that it cannot read", func(t *testing.T) {
-		_, err := parseDiff("+++ b/a.go\n@@ -1 +x @@\n")
+		_, err := parseDiff("diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +x @@\n")
 		is.True(t, err != nil, "no error")
 	})
 }
@@ -127,6 +130,15 @@ func TestChangedSince(t *testing.T) {
 			funcs[m.File+" "+m.Func] = true
 		}
 		is.EqualSlice(t, []string{"internal/sql/parser/p.go b", "internal/sql/parser/p.go d", "internal/sql/parser/q.go e"}, slices.Sorted(maps.Keys(funcs)))
+	})
+
+	t.Run("should read the diff whatever prefixes the configuration of git gives its paths", func(t *testing.T) {
+		t.Setenv("GIT_CONFIG_COUNT", "1")
+		t.Setenv("GIT_CONFIG_KEY_0", "diff.mnemonicPrefix")
+		t.Setenv("GIT_CONFIG_VALUE_0", "true")
+		got, err := changedSince(root, "HEAD", ms)
+		is.NotError(t, err)
+		is.True(t, len(got) > 0, "no mutants")
 	})
 
 	t.Run("should refuse a commit that the repository does not have", func(t *testing.T) {
