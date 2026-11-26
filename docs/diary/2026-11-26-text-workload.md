@@ -216,6 +216,7 @@ Each of the three rules names why the engine computed no text too long, not that
 ### What didn't work
 
 - The first planted engine fault, in `build.filter`, did nothing: a select builds its filter in `build.ordered`.
+- The first form of the new subtest of `TestSequence_text` took the edges from `edgeLength`, so it passed with the planted fault in `edgeLength`; it writes them out now, and fails with `text_internal_test.go:161: { 1000}`.
 - A first goqite fault of `hex` of random bytes as text made sequences fail with "s4ql: not supported: invalid UTF-8 (at offset 105)": an artifact of the fault, since the generator writes valid text.
 - The recount stopped at `no run reaches "reached: text: hex one byte short of the length limit, string or blob too big", which is required, three times: the runs reach it textfunctions 2 times; testdata/reached/TestDifferential.tsv is not written`, and the same of `lower` at 1; both kinds left the file.
 - Commands with heredocs or `cd` outside the worktree were refused by the isolation of the worktree ("this command is too complex to verify that it stays inside the worktree"); scripts went into files in `/Volumes/990/s4ql/text-workload-land/`.
