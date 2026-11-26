@@ -1443,6 +1443,9 @@ const (
 	// than its column, which SQLite converts, compares as it is, or refuses with an error of its own:
 	// it is checked against s4ql's rule by [pair.checkRefused], and not run in SQLite.
 	excusedType = "a value of another type than its column, checked against s4ql's rule"
+	// excusedUpsert is an insert with ON CONFLICT, which s4ql refuses from its text until it runs one:
+	// it is checked against [stmttest.UpsertRefusal] by [pair.checkNotSupported], and not run in SQLite.
+	excusedUpsert = "an insert with ON CONFLICT, which s4ql does not run yet, checked against s4ql's rule"
 	// excusedLevel is a begin with another isolation level than the default and serializable, which
 	// s4ql refuses by its rule, where mattn ignores the level: it is checked against the rule by
 	// [pair.begin], and nothing is begun in SQLite.
@@ -2621,6 +2624,14 @@ func (p *pair) checkNotSupported(src string, c call, supported bool, runs [][]an
 	tb.Helper()
 	s, err := stmt.Check(src)
 	if err == nil && s != nil {
+		if refusal := stmttest.UpsertRefusal(s); refusal != "" {
+			// An upsert is refused from its text, whatever the database holds, by Prepare or when it runs.
+			if got.err != refusal {
+				return fmt.Sprintf("%q: s4ql gives %v, where the rule gives %q", src, got, refusal)
+			}
+			p.y.excused(excusedUpsert)
+			return ""
+		}
 		return p.checkRefused(src, s, runs, got, o)
 	}
 	// The text alone decides "not supported", before the arguments, with the "not supported" of its
@@ -4689,6 +4700,26 @@ func TestPair(t *testing.T) {
 			}
 			p.close()
 		}
+	})
+
+	t.Run("should take the refusal of an insert with ON CONFLICT by the rule, through Exec, Query, and Prepare, and change nothing", func(t *testing.T) {
+		w := newWorld(t)
+		p := newPair(t, w, false, nil)
+		for _, src := range []string{t4, "insert into t4 values (1, 'a', 1.5, null)"} {
+			_, failure := p.step(src, callExec, false)
+			is.Equal(t, "", failure)
+		}
+		for _, c := range []call{callExec, callQuery, callPrepareExec} {
+			for _, src := range []string{
+				"insert into t4 values (1, 'b', 2.5, 1) on conflict (v1) do nothing",
+				"insert into t4 (v1, v2) values (1, 'b') on conflict (v1) do update set v2 = excluded.v2 returning *",
+			} {
+				got, failure := p.step(src, c, false)
+				is.Equal(t, "", failure, src)
+				is.True(t, strings.HasPrefix(got.err, "s4ql: not supported: ON CONFLICT clause (at offset "), src, got.err)
+			}
+		}
+		p.close()
 	})
 
 	t.Run("should run goqite's receive with its scalar subquery, through Query and a prepared statement run several times, with rows that tie broken by goqite's index, and none on an empty queue", func(t *testing.T) {

@@ -47,6 +47,10 @@ type recognizer struct {
 	inner ast.Token
 	// parentheses of an expression that the recognizer reads, which are open at the next token.
 	parentheses int
+	// doUpdate reports whether the recognizer reads the DO UPDATE of an ON CONFLICT clause, where a
+	// subquery is not supported, and excluded whether excluded.c names a column of the row that the
+	// insert proposes there, which it does unless the table of the insert is named excluded.
+	doUpdate, excluded bool
 }
 
 // stop is the panic with which the recognizer unwinds when the statement is not supported.
@@ -352,7 +356,7 @@ func isWord(t ast.Token, w string) bool {
 }
 
 // insert: INSERT INTO table, an optional list of columns, VALUES with one row of values, where each
-// value is a literal or a parameter, and an optional RETURNING.
+// value is a literal or a parameter, an optional ON CONFLICT, and an optional RETURNING.
 func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.accept(c)
 	if r.isNext(c.Insert) && c.Insert.Kind == token.Replace {
@@ -403,8 +407,130 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 		s.Values = append(s.Values, r.term(e))
 	}
 	r.take(row.RParen)
+	if c.Upserts != nil {
+		s.Conflict = r.conflict(s.Table, c.Upserts)
+	}
 	s.Returning = r.returning(c.Returning)
 	return s
+}
+
+// conflict: the ON CONFLICT clauses us of an insert into table, of which one is supported: ON
+// CONFLICT, its target, a list of one or more columns in parentheses, and DO NOTHING, or DO UPDATE
+// SET and one or more assignments, as of an update, with an optional WHERE, as of an update without
+// subqueries. In DO UPDATE, excluded.c names the column c of the row that the insert proposes.
+func (r *recognizer) conflict(table Name, us []*ast.Upsert) Conflict {
+	u := us[0]
+	r.accept(u)
+	start := r.take(u.On).Offset
+	r.take(u.Conflict)
+	if !u.LParen.Present() {
+		// SQLite takes a clause without a target for every constraint of uniqueness of the table, and
+		// only as the last clause. A target names the columns that the engine can check.
+		r.reject("ON CONFLICT without a target")
+	}
+	r.take(u.LParen)
+	c := Conflict{}
+	seen := map[string]bool{}
+	for i, o := range u.Target {
+		if i > 0 {
+			r.take(u.TargetCommas[i-1])
+		}
+		n := r.targetColumn(o, seen)
+		seen[n.Fold()] = true
+		c.Target = append(c.Target, n)
+	}
+	r.take(u.RParen)
+	if u.TargetWhere != nil && r.isNext(u.TargetWhere.Where) {
+		// SQLite matches the target to a partial index of the WHERE, or to an index that is not
+		// partial, such as the primary key.
+		r.reject("WHERE of a conflict target")
+	}
+	r.take(u.Do)
+	if u.Nothing.Present() {
+		r.take(u.Nothing)
+		c.Action = DoNothing
+	} else {
+		r.take(u.Update)
+		r.take(u.Set)
+		c.Action = DoUpdate
+		// SQLite reads excluded.c as the column c of the table when the table is named excluded.
+		r.doUpdate, r.excluded = true, table.Fold() != "excluded"
+		c.Set = r.assignments(u.Assignments, u.Commas, seen)
+		if u.Where != nil {
+			c.Where, _ = r.where(u.Where)
+		}
+		r.doUpdate, r.excluded = false, false
+	}
+	c.Span = Span{Start: start, End: r.tokens[r.next-1].End()}
+	if len(us) > 1 && r.isNext(us[1].On) {
+		// SQLite takes the first clause whose target the row of the insert meets.
+		r.reject("second ON CONFLICT clause")
+	}
+	return c
+}
+
+// targetColumn o of the target of an ON CONFLICT clause, after the columns of seen, by their folds:
+// the bare name of a column, or one in double quotes, that seen does not have, without ASC or DESC.
+// SQLite matches the target to the columns of an index, and so does not match an expression, a
+// literal, or a column with another collation than the index's; parentheses around a name and ASC or
+// DESC after it change nothing, and the pass supports neither.
+func (r *recognizer) targetColumn(o *ast.OrderingTerm, seen map[string]bool) Name {
+	r.accept(o)
+	switch x := o.X.(type) {
+	case *ast.ColumnRef:
+		switch {
+		case x.Table.Present():
+			r.reject("column with the name of a table")
+		case isTrueOrFalse(x):
+			// SQLite reads a bare TRUE or FALSE as 1 or 0 where the table has no column of that name.
+			r.reject("TRUE or FALSE")
+		case r.isNext(x.Column) && quotingName(x.Column) == "" && seen[asciiLower(dequote(x.Column))]:
+			// SQLite matches no index of the column twice.
+			r.reject("column named twice")
+		}
+		r.accept(x)
+	case *ast.Collate:
+		r.reject("COLLATE")
+	case *ast.Paren:
+		r.reject("parentheses")
+	default:
+		r.reject("conflict target other than a column")
+	}
+	n := r.name(o.X.(*ast.ColumnRef).Column)
+	if r.isNext(o.Order) {
+		r.reject("ASC or DESC")
+	}
+	return n
+}
+
+// isExcluded reports whether x is excluded.c in the DO UPDATE of an ON CONFLICT clause, where it
+// names the column c of the row that the insert proposes: a column with the name excluded before it,
+// in any case of its letters, bare or in double quotes, single quotes, brackets, or backticks, as
+// SQLite reads it, and without a schema. A name in quotes that the pass does not support is refused
+// when it is read, by its quotes.
+func (r *recognizer) isExcluded(x ast.Expr) bool {
+	ref, ok := x.(*ast.ColumnRef)
+	if !ok || !r.excluded || !ref.Table.Present() || ref.Schema.Present() {
+		return false
+	}
+	v := ref.Table.Text
+	switch v[0] {
+	case '[', '`', '\'':
+		v = v[1 : len(v)-1]
+	case '"':
+		v = dequote(ref.Table)
+	}
+	return asciiLower(v) == "excluded"
+}
+
+// excludedColumn x, which [recognizer.isExcluded] reports is excluded.c, 2 deep as SQLite counts it:
+// the dot is an operator over the two names.
+func (r *recognizer) excludedColumn(x ast.Expr) (Expression, int) {
+	ref := x.(*ast.ColumnRef)
+	r.accept(ref)
+	table := r.name(ref.Table)
+	r.take(ref.Dot2)
+	return Expression{Kind: ExprExcluded, Table: table, Column: r.name(ref.Column), Span: spanOf(x)}, 2
 }
 
 // returning: an optional RETURNING and its columns, the last clause of an insert, an update, or a
@@ -412,7 +538,7 @@ func (r *recognizer) insert(c *ast.Insert) *Insert {
 // commas, which may name a column more than once. SQLite takes any result column there, also an
 // expression, an alias, and a column with the name of its table; the pass supports what it supports
 // in a select list. A clause that the parser read before a token that the recognizer has not taken,
-// such as the ON of an upsert, stops at that token.
+// such as the FROM of an update, stops at that token.
 func (r *recognizer) returning(ret *ast.Returning) Returning {
 	if ret == nil {
 		return Returning{}
@@ -834,13 +960,29 @@ func (r *recognizer) update(c *ast.Update) *Update {
 	r.accept(c.Table)
 	s := &Update{Table: r.tableName(c.Table.Name)}
 	r.take(c.Set)
+	s.Set = r.assignments(c.Assignments, c.Commas, nil)
+	if c.Where != nil {
+		s.Where, s.Subqueries = r.statementWhere(c.Where)
+	}
+	s.Returning = r.returning(c.Returning)
+	return s
+}
+
+// assignments as of the SET of an update, or of the DO UPDATE of an ON CONFLICT clause with the
+// columns of its target, separated by commas: one or more, each a column = a value, where the value
+// is a literal, a parameter, or an expression, and no column is assigned twice or is one of target,
+// by their folds. An update has at most [maxColumns], and DO UPDATE has no limit.
+func (r *recognizer) assignments(as []*ast.Assignment, commas []ast.Token, target map[string]bool) []Assignment {
+	var set []Assignment
 	seen := map[string]bool{}
-	for i, a := range c.Assignments {
+	for i, a := range as {
 		if i > 0 {
-			r.take(c.Commas[i-1])
+			r.take(commas[i-1])
 		}
-		if i == maxColumns && r.at() == a.Bounds().Start {
-			// SQLite gives `too many columns in set list` while it parses, whatever the database holds.
+		if i == maxColumns && !r.doUpdate && r.at() == a.Bounds().Start {
+			// SQLite gives `too many columns in set list` for an update while it parses, whatever the
+			// database holds. It does not count those of DO UPDATE, whose columns, more than a table
+			// has, it looks for once it has found the table.
 			r.reject("SET beyond SQLite's limit")
 		}
 		r.accept(a)
@@ -848,20 +990,22 @@ func (r *recognizer) update(c *ast.Update) *Update {
 			// The assignment is to a list of columns in parentheses.
 			r.unexpected()
 		}
-		if r.isNext(a.Column) && quotingName(a.Column) == "" && seen[asciiLower(dequote(a.Column))] {
-			// SQLite gives the column the value of its last assignment, and leaves the others unused.
-			r.reject("column named twice")
+		if r.isNext(a.Column) && quotingName(a.Column) == "" {
+			switch f := asciiLower(dequote(a.Column)); {
+			case seen[f]:
+				// SQLite gives the column the value of its last assignment, and leaves the others unused.
+				r.reject("column named twice")
+			case target[f]:
+				// SQLite changes the key of the row, which can then meet the key of another row.
+				r.reject("assignment to a column of the conflict target")
+			}
 		}
 		n := r.name(a.Column)
 		seen[n.Fold()] = true
 		r.take(a.Eq)
-		s.Set = append(s.Set, Assignment{Column: n, Value: r.setValue(a.X)})
+		set = append(set, Assignment{Column: n, Value: r.setValue(a.X)})
 	}
-	if c.Where != nil {
-		s.Where, s.Subqueries = r.statementWhere(c.Where)
-	}
-	s.Returning = r.returning(c.Returning)
-	return s
+	return set
 }
 
 // delete: DELETE FROM table, an optional WHERE, and an optional RETURNING.
@@ -958,8 +1102,7 @@ var comparisons = map[token.Kind]Operator{
 func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	switch e := e.(type) {
 	case *ast.Is:
-		// The column and NULL are 1 deep, and IS one deeper.
-		return r.isCondition(e), 2
+		return r.isCondition(e)
 	case *ast.Unary:
 		if e.Op.Kind == token.Not {
 			r.reject("NOT operator")
@@ -1033,12 +1176,21 @@ func (c comparand) hasColumn() bool {
 // deep; a scalar subquery, as [recognizer.subquery] reads it, with its height; a literal or a
 // parameter, as [recognizer.term] reads it, 1 deep, or 2 with a sign; or an expression,
 // as [recognizer.expression] reads it. A subquery after a - is not supported, at the subquery; one
-// after a + is `+ sign`, as for a parameter.
+// after a + is `+ sign`, as for a parameter. In DO UPDATE, excluded.c is an expression, 2 deep, and
+// a subquery is not supported.
 func (r *recognizer) operand(e ast.Expr) comparand {
 	switch x := e.(type) {
 	case *ast.ColumnRef:
+		if r.isExcluded(x) {
+			ex, height := r.excludedColumn(x)
+			return comparand{term: Term{Expression: ex, Span: spanOf(e)}, height: height}
+		}
 		return comparand{column: true, name: r.conditionColumn(x, ""), height: 1}
 	case *ast.Subquery:
+		if r.doUpdate {
+			// SQLite takes a subquery there, which can name the columns of both rows.
+			r.reject("subquery")
+		}
 		t, height := r.subquery(x)
 		return comparand{term: t, height: height}
 	case *ast.Unary:
@@ -1193,6 +1345,8 @@ func (r *recognizer) expression(e ast.Expr, deep string, p place) (Expression, i
 		return r.call(x, deep, p)
 	case *ast.ColumnRef:
 		switch {
+		case r.isExcluded(x):
+			return r.excludedColumn(x)
 		case x.Table.Present():
 			r.reject("column with the name of a table")
 		case isTrueOrFalse(x):
@@ -1380,10 +1534,20 @@ func isZero(e Expression) bool {
 	return false
 }
 
-// isCondition: a column IS NULL or IS NOT NULL.
-func (r *recognizer) isCondition(e *ast.Is) Condition {
+// isCondition: a column IS NULL or IS NOT NULL, and its height as SQLite counts it: the column and
+// NULL are 1 deep, excluded.c 2, and IS one deeper. In DO UPDATE, the column can be excluded.c, which
+// is then the Expression of the condition.
+func (r *recognizer) isCondition(e *ast.Is) (Condition, int) {
 	r.accept(e)
-	c := Condition{Column: r.conditionColumn(e.X, "value before IS"), Operator: OpIsNull}
+	var c Condition
+	height := 2
+	if r.isExcluded(e.X) {
+		c.Expression, height = r.excludedColumn(e.X)
+		height++
+	} else {
+		c.Column = r.conditionColumn(e.X, "value before IS")
+	}
+	c.Operator = OpIsNull
 	r.take(e.Is)
 	if e.Not.Present() {
 		r.take(e.Not)
@@ -1400,7 +1564,7 @@ func (r *recognizer) isCondition(e *ast.Is) Condition {
 		r.unexpected()
 	}
 	r.take(e.Y.(*ast.Literal).Value)
-	return c
+	return c, height
 }
 
 // conditionColumn of a condition, the expression x on either side of its operator, which starts at the next
