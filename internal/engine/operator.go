@@ -1656,7 +1656,9 @@ func null() *s4qlpb.Value {
 // table of the name, then a column of its list that the table does not have, in the order of the
 // list, then another number of values than the columns of its list, or than the columns of the
 // table if it has no list, and then a column of its RETURNING that the table does not have, as
-// [buildReturning] says. For INSERT it then
+// [buildReturning] says; an upsert has the errors of the names of its clause before those of RETURNING,
+// as [conflictNames] says, and those of the lengths of DO UPDATE after those of its row, as
+// [build.doUpdate] says. For INSERT it then
 // makes the check that SQLite makes when it binds the arguments: a text or a blob that is longer
 // than limit bytes gets SQLite's `string or blob too big`. It checks a literal so too, which SQLite
 // meets in its text only with a limit below the length of the text: see the README. For UPDATE and
