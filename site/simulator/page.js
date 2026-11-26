@@ -920,8 +920,8 @@ async function reset() {
 // watch, of each figure and tick that plays and when it starts, and the figure takes the move of that
 // kind of sound as it starts to sound. It dances only while sound is on and the page plays. It
 // strolls whenever it does not dance: with sound off, paused, and before the first Play. Under
-// prefers-reduced-motion it stands still at its old place, 40 px from the right end of the line, and
-// once the page has halted it stands still where it is.
+// prefers-reduced-motion it stands still at its old place, 40 px from the right end of the line, or
+// where the visitor put it, and once the page has halted it stands still where it is.
 //
 // Turbo brings ticks every few tens of ms, so a pose holds at least HOLD: the figure follows the
 // sounds at most five poses a second. A sound that comes while a pose holds waits, unless one of a
@@ -944,6 +944,17 @@ async function reset() {
 // in until it fits, and it stays there. The SVG #dancer says its pose in data-pose, and in data-moves
 // how many dance poses it has taken, for a check of sound; the poses of the walk are walk0 to
 // walk11, mirrored when it walks to the left.
+//
+// The visitor can poke it, with a click, a tap, or Enter or Space on #figure, the element around the
+// SVG that is placed and moved. A poke stops what it does, dance or stroll, and it plays one of
+// POKES, by chance and never the one of the poke before; PESTERS pokes within PESTER ms make it sulk.
+// Then it stands, strolls on, and dances to the next sound. A press on it that moves TAP px picks it
+// up: it dangles from the pointer, its legs kicking, and when it is let go it falls onto the top
+// line of a frame of STAGES, the one it is in or over, or the nearest one. That frame holds it from
+// then on, and its line is the stretch of the top line with room above it for the figure: see
+// stretch. The frame of .logs always holds it. Under reduced motion a poke is one still pose for
+// STILL ms, and a drop lands at once, where it stays. Before the page's animation frame runs, as
+// while the engine loads, it takes no poke or drag.
 const DW = 15, DH = 18; // the grid of the figure, in its pixels; the feet are on its last row
 const PX = 2; // the size in px of a pixel of the grid, as the width of .dancer in index.html sets it
 const RIGHT = 40; // px from the right end of the line to the figure's old place, as .dancer's right sets it
@@ -952,6 +963,19 @@ const STALE = 300; // ms, how long after its sound a move may still start
 const REST = 450; // ms, how long the last pose of a move stays before the figure stands
 const PACE = 110; // ms, the time of a frame of the walk, in which it moves a pixel: 18 px a second
 const STRIDE = 6; // the pixels of a step of the walk, half its cycle of 12 frames
+const PESTER = 3000; // ms, the time in which PESTERS pokes make it sulk
+const PESTERS = 4;
+const STILL = 1200; // ms, how long the pose of a poke stays under reduced motion
+const TAP = 6; // px, how far a press moves before it picks the figure up and is no longer a poke
+const FLAIL = 130; // ms, each pose of the kicking while it is held
+const GRAVITY = 0.004; // px per ms², of the fall after a drop
+const LAND = 150; // ms, how long it crouches after the fall
+const GAP = 8; // px, the least room between the figure and words or a box beside it above a line
+// STAGES are the frames whose top line it can stand on. .requests is not one: the sticky bar stands
+// right above it. CROWD is what takes room above a line, besides the frames themselves; the lines
+// of the edges between the frames do not, and it walks in front of them.
+const STAGES = ".node, .box, .s3, .logs, .ask-box";
+const CROWD = STAGES + ", .requests, .link > .btn, .ask-head > *, #failure";
 
 // POSES by name: the head's centre h, the neck n, the pelvis p, the elbow and hand of each arm, la
 // and ra, and the knee and foot of each leg, ll and rl, on the grid, with the line under row 17. l is
@@ -989,7 +1013,37 @@ const POSES = {
   pump2: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[11, 7], [11, 3]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
   // A tap of the toe, for the blip of a control.
   tap: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 8], [10, 11]], ll: [[6, 14], [5, 17]], rl: [[9, 14], [11, 16]] },
+  // The poses of POKES and of a drag, of the figure facing right where it has a front.
+  // Down on its haunches, before a jump and after a landing.
+  crouch: { h: [7, 6], n: [7, 9], p: [7, 13], la: [[5, 11], [3, 13]], ra: [[9, 11], [11, 13]], ll: [[4, 15], [5, 17]], rl: [[10, 15], [9, 17]] },
+  // Startled: arms and legs flung out, in the air, and as it falls after a drop.
+  eek: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[4, 5], [2, 2]], ra: [[10, 5], [12, 2]], ll: [[4, 14], [3, 16]], rl: [[10, 14], [11, 16]] },
+  // Tripped, falling over backwards, a leg in the air, before it lies flat.
+  trip: { h: [5, 4], n: [6, 7], p: [8, 11], la: [[4, 5], [3, 2]], ra: [[9, 5], [12, 4]], ll: [[9, 14], [9, 17]], rl: [[11, 13], [13, 13]] },
+  // Sitting up after it, legs out, a hand to its head.
+  sit: { h: [4, 8], n: [4, 11], p: [5, 16], la: [[2, 13], [1, 16]], ra: [[6, 12], [7, 9]], ll: [[9, 16], [13, 17]], rl: [[9, 17], [13, 17]] },
+  // Dusting itself off, in two poses.
+  dust: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 9], [7, 11]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  dust2: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[9, 8], [6, 9]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  // A back flip: tucked into a ball, and upside down at the top.
+  ball: { h: [7, 7], n: [7, 9], p: [7, 13], la: [[4, 11], [6, 13]], ra: [[10, 11], [8, 13]], ll: [[5, 11], [5, 14]], rl: [[9, 11], [9, 14]] },
+  upside: { h: [7, 14], n: [7, 11], p: [7, 6], la: [[4, 10], [2, 8]], ra: [[10, 10], [12, 8]], ll: [[6, 3], [5, 0]], rl: [[8, 3], [9, 0]] },
+  // An arm swept out, and the deep bow after it.
+  flourish: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[5, 8], [4, 11]], ra: [[10, 6], [13, 4]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  bow: { h: [12, 10], n: [9, 9], p: [6, 12], la: [[7, 8], [4, 7]], ra: [[9, 12], [11, 13]], ll: [[5, 14], [5, 17]], rl: [[7, 14], [7, 17]] },
+  // Cowering, arms over its head; shiver, below, is the same a pixel to the right.
+  cower: { h: [7, 9], n: [7, 11], p: [7, 14], la: [[4, 8], [6, 6]], ra: [[10, 8], [8, 6]], ll: [[4, 15], [5, 17]], rl: [[10, 15], [9, 17]] },
+  // Poked once too often: arms crossed, and then it sits down and hugs its knees.
+  cross: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[4, 8], [9, 9]], ra: [[10, 8], [5, 9]], ll: [[6, 14], [5, 17]], rl: [[8, 14], [9, 17]] },
+  sulk: { h: [5, 9], n: [5, 12], p: [5, 16], la: [[7, 13], [9, 13]], ra: [[7, 14], [9, 14]], ll: [[9, 12], [11, 17]], rl: [[10, 13], [12, 17]] },
+  // Held up by the head, kicking, in two poses.
+  dangle: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[4, 7], [2, 5]], ra: [[10, 8], [12, 10]], ll: [[6, 14], [6, 17]], rl: [[9, 14], [10, 16]] },
+  dangle2: { h: [7, 3], n: [7, 6], p: [7, 11], la: [[4, 8], [2, 10]], ra: [[10, 7], [12, 5]], ll: [[5, 14], [4, 16]], rl: [[8, 14], [8, 17]] },
 };
+{
+  const c = POSES.cower, by = ([x, y]) => [x + 1, y];
+  POSES.shiver = { h: by(c.h), n: by(c.n), p: by(c.p), la: c.la.map(by), ra: c.ra.map(by), ll: c.ll.map(by), rl: c.rl.map(by) };
+}
 
 // MOVES by the kind of sound, of FIGURES and TICKS in sound.js: its rank, and its poses, each with
 // the least time in ms that it holds, at least HOLD.
@@ -1007,6 +1061,19 @@ const MOVES = {
   void: { rank: 1, poses: [["sweep", HOLD]] },
   select: { rank: 0, poses: [["nod", HOLD]] },
   miss: { rank: 0, poses: [["look", HOLD]] },
+};
+
+// POKES by name: its poses, each with the time in ms that it holds and the pixels of the grid that
+// the figure is up off the line, and still, the one pose that it takes instead under reduced motion.
+// One with a front faces the way the figure faces, or with a front of -1 away from it. sulk comes only
+// of PESTERS pokes, and the others by chance.
+const POKES = {
+  startle: { still: "eek", poses: [["crouch", 80], ["eek", 60, 3], ["eek", 60, 6], ["eek", 80, 7], ["eek", 60, 6], ["eek", 60, 3], ["crouch", 140]] },
+  flop: { still: "sit", front: 1, poses: [["trip", 160], ["flat", 700], ["sit", 600], ["crouch", 120], ["dust", 150], ["dust2", 150], ["dust", 150], ["dust2", 150]] },
+  flip: { still: "tada", poses: [["crouch", 90], ["ball", 70, 4], ["upside", 110, 8], ["ball", 70, 7], ["ball", 70, 3], ["crouch", 140], ["tada", 500]] },
+  bow: { still: "bow", front: 1, poses: [["flourish", 250], ["bow", 900], ["flourish", 200]] },
+  cower: { still: "cower", poses: [["cower", 70], ["shiver", 70], ["cower", 70], ["shiver", 70], ["cower", 70], ["shiver", 70], ["cower", 400], ["look", 500]] },
+  sulk: { still: "sulk", front: -1, poses: [["cross", 600], ["sulk", 2400]] },
 };
 
 // The walk to the right, in 12 frames, walk0 to walk11, from the pelvis at x 7. LEG gives, by the
@@ -1088,6 +1155,9 @@ function mirror(pose) {
 
 const dancer = {
   el: null, // the SVG #dancer
+  box: null, // #figure, around the SVG: it is placed, moved, poked, and dragged
+  home: null, // the frame of .logs, which always holds it
+  watch: null, // the ResizeObserver of the frame that holds it
   paths: new Map(), // the path of each pose, and of its mirror: {d, l, r}
   pose: "", // the pose it shows
   moves: 0, // the dance poses it has taken so far
@@ -1096,14 +1166,22 @@ const dancer = {
   next: null, // the move that waits for its turn: {kind, due}
   turns: {}, // by kind: how many moves of the kind it has started, for the mirror
   still: window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false },
+  live: false, // whether the page's animation frame runs it, which a poke and a drag need
+  poke: null, // the poke that it plays: {poses, i, until}
+  poked: "", // the name of the last poke, which the next one is not
+  pokes: [], // the times of the pokes of the last PESTER ms
+  lift: 0, // the pixels of its grid that it is up off the line
+  hold: null, // the press on it: {id, x, y, held}: its pointer, where it went down, and whether it has picked it up
+  fall: null, // the fall after a drop: {t, x, y, to}: its start, from where in px, and the x where it lands
 };
 
 // walker is the stroll: where the figure is, which way it faces, and what it does next.
 const walker = {
   x: 0, // the pixels of the grid from its old place to where it is, to the right
-  shown: 0, // the x that its transform shows
+  shown: "0 0", // the x and the lift that its transform shows
   dir: -1, // 1 when it faces right, -1 left
-  width: 0, // the width of the line in px, inside the frame's border, from a ResizeObserver
+  width: 0, // the width of the frame in px, inside its border, from a ResizeObserver
+  a: 0, b: 0, // the ends of the line, in px from the left of the frame inside its border: see stretch
   walking: false,
   k: 0, // the frame of the walk that it shows
   steps: 0, // the steps of the stretch still to go
@@ -1125,7 +1203,7 @@ function strollChance(after) {
 
 // span of the x at which the pixels of a pose, from column l to column r, lie on the line.
 function span(l, r) {
-  return [Math.ceil((RIGHT + PX * DW - walker.width) / PX - l), Math.floor(RIGHT / PX + DW - 1 - r)];
+  return [Math.ceil((RIGHT + PX * DW - walker.width + walker.a) / PX - l), Math.floor((RIGHT - walker.width + walker.b) / PX + DW - 1 - r)];
 }
 
 // room says whether the figure can go n pixels the way dir, at the span of the stroll.
@@ -1144,26 +1222,28 @@ function dancerPath(name) {
 }
 
 // dancerPlace moves the figure in until every pixel of its pose, and of any pose of its stroll, lies
-// on the line, and shows it where it is. Under reduced motion it stays at its old place.
+// on the line, and shows it where it is, up off the line by its lift. While it is held or falls, the
+// drag places it.
 function dancerPlace() {
-  if (!dancer.el || !dancer.pose) return;
-  if (dancer.still.matches) walker.x = 0;
-  else if (walker.width) {
+  if (!dancer.el || !dancer.pose || (dancer.hold && dancer.hold.held) || dancer.fall) return;
+  if (walker.width) {
     const p = dancerPath(dancer.pose), [lo, hi] = span(Math.min(p.l, walker.l), Math.max(p.r, walker.r));
     walker.x = Math.max(lo, Math.min(hi, walker.x));
   }
-  if (walker.shown === walker.x) return;
-  walker.shown = walker.x;
-  dancer.el.style.transform = walker.x ? `translateX(${PX * walker.x}px)` : "";
+  const lift = dancer.still.matches ? 0 : dancer.lift, shown = walker.x + " " + lift;
+  if (walker.shown === shown) return;
+  walker.shown = shown;
+  dancer.box.style.transform = walker.x || lift ? `translate(${PX * walker.x}px, ${-PX * lift}px)` : "";
 }
 
-// dancerPose shows the pose, by its name, at the time now.
-function dancerPose(name, now) {
+// dancerPose shows the pose, by its name, at the time now. A pose of the visitor's, of a poke or a
+// drag, is not a dance pose.
+function dancerPose(name, now, visitor = false) {
   if (!dancer.el) return;
   if (!strolls(name)) dancer.since = now;
   if (dancer.pose !== name) {
     dancer.el.firstElementChild.setAttribute("d", dancerPath(name).d);
-    if (!strolls(name)) dancer.moves++;
+    if (!strolls(name) && !visitor) dancer.moves++;
     dancer.pose = name;
     dancer.el.dataset.pose = name;
     dancer.el.dataset.moves = String(dancer.moves);
@@ -1171,9 +1251,11 @@ function dancerPose(name, now) {
   dancerPlace();
 }
 
-// dancerRest ends what the figure does, dance or walk, and makes it stand where it is at once. Its
-// stroll goes on from there with a decision after a rest.
+// dancerRest ends what the figure does, dance, walk, or poke, and makes it stand where it is at
+// once. Its stroll goes on from there with a decision after a rest.
 function dancerRest(now) {
+  dancer.poke = null;
+  dancer.lift = 0;
   dancer.move = null;
   dancer.next = null;
   walker.walking = false;
@@ -1184,9 +1266,10 @@ function dancerRest(now) {
 }
 
 // dancerHear is the watcher of sound.js: a sound of the kind starts in delay ms, or, with no kind,
-// sound is off, and a dance stops.
+// sound is off, and a dance stops. A poke or a drag goes on.
 function dancerHear(kind, delay) {
   if (!kind) {
+    if (dancer.poke || dancer.hold || dancer.fall) return;
     if (!strolls(dancer.pose) || dancer.move || dancer.next) dancerRest(performance.now());
     return;
   }
@@ -1196,9 +1279,14 @@ function dancerHear(kind, delay) {
   if (!dancer.next || m.rank >= MOVES[dancer.next.kind].rank || due > dancer.next.due + STALE) dancer.next = { kind, due };
 }
 
-// dance on at the time now, from the animation frame of the page: it dances while a move holds it,
-// and strolls otherwise. Under reduced motion, and once the page has halted, it stands still.
+// dance on at the time now, from the animation frame of the page: it kicks while it is held, falls
+// after a drop, plays a poke, dances while a move holds it, and strolls otherwise. Under reduced
+// motion, and once the page has halted, it stands still, but for what the visitor does.
 function dance(now) {
+  dancer.live = true;
+  if (dancer.hold && dancer.hold.held) return dancerPose(!dancer.still.matches && Math.floor(now / FLAIL) % 2 ? "dangle2" : "dangle", now, true);
+  if (dancer.fall) return falling(now);
+  if (dancer.poke) return poked(now);
   if (halted || dancer.still.matches) {
     if (dancer.pose !== "stand" || walker.walking || dancer.move || dancer.next) dancerRest(now);
     dancerPlace();
@@ -1264,11 +1352,194 @@ function stroll(now) {
   dancerPose((w.dir > 0 ? "" : "-") + "walk" + w.k, now);
 }
 
+// dancerPoke plays a poke at the time now: one by chance, not the one before, or sulk after PESTERS
+// pokes in PESTER ms, which starts the count again.
+function dancerPoke(now) {
+  if (!dancer.live || dancer.hold || dancer.fall) return;
+  dancer.pokes = dancer.pokes.filter((t) => now - t < PESTER);
+  dancer.pokes.push(now);
+  let name = "sulk";
+  if (dancer.pokes.length < PESTERS) {
+    const names = Object.keys(POKES).filter((n) => n !== "sulk" && n !== dancer.poked);
+    name = names[Math.floor(Math.random() * names.length)];
+  } else dancer.pokes = [];
+  dancer.poked = name;
+  const k = POKES[name], m = (k.front || 0) * walker.dir < 0 ? "-" : "";
+  dancerRest(now);
+  dancerPlay((dancer.still.matches ? [[k.still, STILL]] : k.poses).map(([n, ms, lift]) => [m + n, ms, lift]), now);
+}
+
+// dancerPlay starts the poses of a poke at the time now.
+function dancerPlay(poses, now) {
+  dancer.poke = { poses, i: -1, until: now };
+  poked(now);
+}
+
+// poked plays on the poke at the time now; after its last pose the figure stands where it is.
+function poked(now) {
+  const k = dancer.poke;
+  if (now < k.until) return;
+  if (++k.i === k.poses.length) return dancerRest(now);
+  const [name, ms, lift] = k.poses[k.i];
+  k.until = now + ms;
+  dancer.lift = lift || 0;
+  dancerPose(name, now, true);
+}
+
+// home of the frame: the left and the bottom of the figure at its old place on the frame's top line,
+// with no transform, in px of the viewport.
+function home(frame) {
+  const r = frame.getBoundingClientRect();
+  return { left: r.left + frame.clientLeft + frame.clientWidth - RIGHT - PX * DW, bottom: r.top };
+}
+
+// stretch of the frame: the line on which the figure can stand, {a, b} in px from the left of the
+// frame inside its border, or null. It is the longest stretch of the top line with nothing of CROWD
+// in the room above it, as high as the figure, and GAP px from anything there, if it is at least
+// three figures long. The frame of .logs always has its whole line.
+function stretch(frame) {
+  const r = frame.getBoundingClientRect(), left = r.left + frame.clientLeft, top = r.top;
+  if (frame === dancer.home) return { a: 0, b: frame.clientWidth };
+  if (!r.width || !r.height) return null;
+  let free = [[left, left + frame.clientWidth]];
+  for (const el of document.querySelectorAll(CROWD)) {
+    if (el === frame || el.contains(frame) || frame.contains(el)) continue;
+    const o = el.getBoundingClientRect();
+    if (!o.width || !o.height || o.bottom <= top - PX * DH || o.top >= top) continue;
+    free = free.flatMap(([a, b]) => [[a, Math.min(b, o.left - GAP)], [Math.max(a, o.right + GAP), b]]).filter(([a, b]) => b > a);
+  }
+  const [a, b] = free.reduce((w, s) => (s[1] - s[0] > w[1] - w[0] ? s : w), [0, 0]);
+  return b - a >= 3 * PX * DW ? { a: a - left, b: b - left } : null;
+}
+
+// dancerStage moves the figure into the frame, with its line s, and has it measure the frame.
+function dancerStage(frame, s) {
+  if (dancer.box.parentElement !== frame) {
+    frame.append(dancer.box);
+    if (dancer.watch) {
+      dancer.watch.disconnect();
+      dancer.watch.observe(frame);
+    }
+  }
+  walker.width = frame.clientWidth;
+  walker.a = s.a;
+  walker.b = s.b;
+}
+
+// dancerRestage measures the frame that holds the figure again, after a change of layout, and lands
+// it on the nearest frame if this one has no line any more.
+function dancerRestage() {
+  if (!dancer.box || (dancer.hold && dancer.hold.held) || dancer.fall) return;
+  const frame = dancer.box.parentElement, s = stretch(frame);
+  if (s) dancerStage(frame, s);
+  else {
+    const r = dancer.box.getBoundingClientRect();
+    dancerLand(r.left, r.bottom, false);
+  }
+  dancerPlace();
+}
+
+// dancerLand puts the figure, whose left and bottom are where they are in the viewport, onto the top
+// line of a frame: of the one whose line is under its feet, or that its feet are in, the highest, and
+// else the nearest. It falls there when fall is true, and is there at once otherwise.
+function dancerLand(left, bottom, fall) {
+  const now = performance.now(), feet = left + (PX * DW) / 2;
+  let best = null;
+  for (const frame of document.querySelectorAll(STAGES)) {
+    const s = stretch(frame);
+    if (!s) continue;
+    const r = frame.getBoundingClientRect(), a = r.left + frame.clientLeft + s.a, b = r.left + frame.clientLeft + s.b;
+    const dx = Math.max(0, a - feet, feet - b), dy = r.top - bottom;
+    // under: whether it is above the line or in the frame; far: how far it is from the line.
+    const under = dx === 0 && bottom <= r.bottom, far = under ? Math.max(0, dy) : Math.hypot(dx, dy);
+    if (!best || under > best.under || (under === best.under && far < best.far)) best = { frame, s, under, far };
+  }
+  if (!best) return;
+  dancerStage(best.frame, best.s);
+  const h = home(best.frame), x = left - h.left, y = bottom - h.bottom;
+  const p = dancerPath("stand"), [lo, hi] = span(Math.min(p.l, walker.l), Math.max(p.r, walker.r));
+  const to = Math.max(lo, Math.min(hi, Math.round(x / PX)));
+  dancerRest(now);
+  walker.shown = null;
+  if (!fall) {
+    walker.x = to;
+    return dancerPlace();
+  }
+  // From below the line, or on it, it hops up a little to fall.
+  dancer.fall = { t: now, x, y: Math.min(y, -4 * PX), to };
+  falling(now);
+}
+
+// falling goes on with the fall at the time now. It falls straight down at GRAVITY, and slides to the
+// x where it lands on the way, by whole pixels of the grid; it lands in a crouch.
+function falling(now) {
+  const f = dancer.fall, e = now - f.t, y = f.y + (GRAVITY * e * e) / 2;
+  if (y >= 0) {
+    dancer.fall = null;
+    delete dancer.box.dataset.aloft;
+    walker.x = f.to;
+    dancerRest(now);
+    return dancerPlay([["crouch", LAND]], now);
+  }
+  const x = f.x + (PX * f.to - f.x) * (1 - y / f.y), at = (v) => PX * Math.round(v / PX);
+  dancer.box.style.transform = `translate(${at(x)}px, ${at(y)}px)`;
+  dancerPose("eek", now, true);
+}
+
+// dancerGrab, dancerDrag, and dancerDrop are the press on the figure, by Pointer Events, so that a
+// mouse, a finger, and a pen work alike: a press that lets go before it moves TAP px is a poke, and
+// one that moves picks the figure up and carries it, by its head, until it lets go. The figure has
+// the pointer captured, so it hears of the pointer wherever it goes.
+function dancerGrab(e) {
+  if (!e.isPrimary || e.button !== 0 || !dancer.live || dancer.hold || dancer.fall) return;
+  e.preventDefault();
+  dancer.box.setPointerCapture(e.pointerId);
+  dancer.hold = { id: e.pointerId, x: e.clientX, y: e.clientY, held: false };
+}
+
+function dancerDrag(e) {
+  const h = dancer.hold;
+  if (!h || e.pointerId !== h.id) return;
+  if (!h.held) {
+    if (Math.hypot(e.clientX - h.x, e.clientY - h.y) < TAP) return;
+    dancerRest(performance.now());
+    h.held = true;
+    dancer.box.dataset.aloft = "";
+  }
+  const o = home(dancer.box.parentElement);
+  dancer.box.style.transform = `translate(${e.clientX - o.left - PX * DW / 2}px, ${e.clientY - o.bottom + PX * (DH - 1)}px)`;
+}
+
+function dancerDrop(e) {
+  const h = dancer.hold;
+  if (!h || e.pointerId !== h.id) return;
+  dancer.hold = null;
+  if (!h.held) {
+    if (e.type === "pointerup") dancerPoke(performance.now());
+    return;
+  }
+  const r = dancer.box.getBoundingClientRect();
+  if (dancer.still.matches) delete dancer.box.dataset.aloft;
+  dancerLand(r.left, r.bottom, !dancer.still.matches);
+}
+
 // dancerStart finds the figure and starts it standing at its old place, and has it measure the line,
 // on which it strolls, now and whenever the line changes width.
 function dancerStart() {
   dancer.el = $("dancer");
-  if (!dancer.el) return;
+  dancer.box = $("figure");
+  if (!dancer.el || !dancer.box) return;
+  dancer.home = dancer.box.parentElement;
+  dancer.box.addEventListener("pointerdown", dancerGrab);
+  dancer.box.addEventListener("pointermove", dancerDrag);
+  dancer.box.addEventListener("pointerup", dancerDrop);
+  dancer.box.addEventListener("pointercancel", dancerDrop);
+  dancer.box.addEventListener("contextmenu", (e) => e.preventDefault());
+  dancer.box.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    if (!e.repeat) dancerPoke(performance.now());
+  });
   for (const name of ["stand", ...Object.keys(POSES).filter((n) => n.startsWith("walk")).flatMap((n) => [n, "-" + n])]) {
     const p = dancerPath(name);
     walker.l = Math.min(walker.l, p.l);
@@ -1276,11 +1547,10 @@ function dancerStart() {
   }
   walker.after = "start";
   dancerPose("stand", performance.now());
+  window.addEventListener("resize", dancerRestage);
   if (typeof ResizeObserver !== "function") return;
-  new ResizeObserver((entries) => {
-    walker.width = entries[entries.length - 1].contentRect.width;
-    dancerPlace();
-  }).observe(dancer.el.parentElement);
+  dancer.watch = new ResizeObserver(dancerRestage);
+  dancer.watch.observe(dancer.home);
 }
 
 // start the page: load run.js, connect the page, and start the engine. An error on the way ends in

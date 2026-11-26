@@ -587,8 +587,16 @@ h2 {
 /* The dancer stands on the top line of the frame, in the margin above it, dances to the sounds, and
    strolls along the line: see page.js. This is its old place, near the right end, from which a
    transform moves it. It is drawn in pixels of 2 px. page.js has its right and its pixels as RIGHT
-   and PX, to keep it on the line: change them together. */
-.dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; pointer-events: none; }
+   and PX, to keep it on the line: change them together. A poke makes it react, and a drag carries it
+   to the top line of another frame, which then holds it: each frame that it can stand on is
+   positioned. Its ::before widens what a finger hits to 44 px each way, around and above it, and not
+   into the frame below; a touch on it drags it and does not scroll the page. */
+.dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+.dancer::before { content: ""; position: absolute; inset: -8px -7px 0; }
+.dancer svg { display: block; width: 100%; height: 100%; }
+.dancer:active, .dancer[data-aloft] { cursor: grabbing; }
+.dancer[data-aloft] { z-index: 10; }
+.node, .s3, .ask-box { position: relative; }
 .logs > section { min-width: 0; }
 .logs > .objects { border-left: var(--rule); }
 .log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 12px 20px; border-bottom: var(--rule); }
@@ -789,7 +797,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // heading's box is wider than its lines.
   // Content added to the page needs adding here, and to the elements that the ResizeObserver below
   // watches if its size can change alone. The stick figure #dancer is left out: it walks along the
-  // top line of .logs in front of the sky, by a transform that changes no layout.
+  // top line of .logs, or of the frame that the visitor carried it to, in front of the sky, by a
+  // transform that changes no layout.
   const BOXES = "#failure, .requests, .fork, .inst, .s3, .logs, .ask-box";
   const WORDS = ".ask-head > *, .about p, footer p, footer li";
   const HEADINGS = "h1, .about h2";
@@ -1088,7 +1097,7 @@ document.addEventListener("DOMContentLoaded", () => {
       </dl>
     </section>
     <div class="logs">
-      <svg class="dancer" id="dancer" viewBox="0 0 15 18" shape-rendering="crispEdges" aria-hidden="true" focusable="false" data-pose="" data-moves="0"><path fill="currentColor"/></svg>
+      <span class="dancer" id="figure" role="button" tabindex="0" aria-label="Poke the stick figure"><svg id="dancer" viewBox="0 0 15 18" shape-rendering="crispEdges" aria-hidden="true" focusable="false" data-pose="" data-moves="0"><path fill="currentColor"/></svg></span>
       <section class="log" aria-labelledby="log-h">
         <div class="log-head"><h2 id="log-h">Log</h2><span id="lines"></span></div>
         <div class="scroll" tabindex="0" aria-label="Log, newest first">
