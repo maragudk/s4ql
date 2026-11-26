@@ -123,8 +123,8 @@ type attemptState int
 const (
 	// pending is a statement whose call did not return, because its instance crashed.
 	pending attemptState = iota
-	// succeeded is a statement that succeeded: a write whose commit returned, or a query that gave its
-	// rows.
+	// succeeded is a statement that succeeded: a write that succeeded, whose commit returned outside a
+	// transaction that spans statements, or a query that gave its rows.
 	succeeded
 	// sqliteFailed is a statement that failed with SQLite's error.
 	sqliteFailed
@@ -174,7 +174,8 @@ type attempt struct {
 	// read by, or that a create index or a drop index names, from its event: see [engine.AttrAccess]
 	// and [engine.AttrIndex].
 	access, index string
-	// committed is the number of writes whose commit had returned when the statement started.
+	// committed is the number of writes whose commit had returned when the statement started, or, for a
+	// statement of a transaction that spans statements, when the begin of the transaction was called.
 	committed int
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
@@ -905,9 +906,11 @@ func (r *run) severalEnded(ctx context.Context, text *severalText, res engine.Re
 	}
 	// The result is that of the last statement that sets the count of changes, by the event of each
 	// that succeeded, also of a call that failed. An insert, update, or delete that failed after it
-	// began to write sets the count to 0, which the simulation cannot tell from SQLite's error or one
-	// of the core, so it may have; one that s4ql refused before it ran, as not supported, for its
-	// arguments, or for an evaluation error of arithmetic, which is skipped, leaves it.
+	// began to write sets the count to 0, and one that failed before, as for a table that is not there
+	// or without the lease, leaves it; the simulation cannot tell the two from SQLite's error or one of
+	// the core, so it takes either, and the differential tests check which. One that s4ql refused
+	// before it ran, as not supported, for its arguments, or for an evaluation error of arithmetic,
+	// which is skipped, leaves it.
 	ran := len(evs)
 	if err != nil {
 		ran = min(at, ran)
