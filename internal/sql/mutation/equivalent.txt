@@ -1654,3 +1654,55 @@ internal/engine/engine.go Conn.write remove statement: _ = tx.commit(ctx) =>
 	As for the removal of t.later: commitLater never commits a write that another statement follows, which its tests find.
 internal/engine/several.go Conn.ExecAll condition: c.tx == nil => true
 	In a transaction, oneCommit's begin fails with ErrTxOpen, and inOneCommit then runs the text as without the bug, so the bug stays outside a transaction.
+
+# Conn.execAll: the text of the planted bugs, and their hooks in the loop.
+internal/engine/several.go Conn.execAll condition: c.e.bugs.ofText() && !one => true
+	The text is then in the context of every text, also of one statement and with no bug planted; only the planted bugs read it, each behind its own flag, and its commit does nothing while no write is left open.
+internal/engine/several.go Conn.execAll condition: c.e.bugs.ofText() => true
+	As for the whole condition true: without a planted bug the text in the context is read by nothing.
+internal/engine/several.go Conn.execAll operator: c.e.bugs.ofText() && !one => c.e.bugs.ofText() || !one
+	Without a planted bug, as for the condition true. With a bug of the text, it also plants it in a text of one statement, another wrong answer that its tests find by the texts of several.
+internal/engine/several.go Conn.execAll condition: !one => true
+	Reached only with a planted bug of the text, which it then also plants in a text of one statement, another wrong answer that its tests find by the texts of several.
+internal/engine/several.go Conn.execAll remove statement: defer text.commit(ctx) =>
+	The write that commitLater leaves open is that of a statement that another follows, and the loop commits it when that statement starts, before any return; the deferred commit always finds nothing open.
+internal/engine/several.go Conn.execAll remove statement: text.commit(ctx) =>
+	commitLater then commits only the last write that it left open, at the end of the text, and loses those before it, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll operator: i < len(parts)-1 => i <= len(parts)-1
+	commitLater then leaves the last write of a text open too, for the deferred commit at the end of the text; its tests find the bug by the writes before.
+internal/engine/several.go Conn.execAll operator: i < len(parts)-1 => i >= len(parts)-1
+	commitLater then leaves only the last write of a text open, for the deferred commit at the end, which its tests find, as by every other write.
+internal/engine/several.go Conn.execAll operator: len(parts)-1 => len(parts)+1
+	As for i <= len(parts)-1: commitLater leaves the last write open too, and its tests find it by the writes before.
+internal/engine/several.go Conn.execAll constant: len(parts)-1 => len(parts)-2
+	commitLater then commits the write before the last at once, and leaves the others before open, which its tests find.
+internal/engine/several.go Conn.execAll constant: len(parts)-1 => len(parts)-0
+	As for i <= len(parts)-1: commitLater leaves the last write open too, and its tests find it by the writes before.
+internal/engine/several.go Conn.execAll swap arguments: min(len(args), used+n) => min(used+n, len(args))
+	min is commutative.
+internal/engine/several.go Conn.execAll condition: !res.SetsChanges => false
+	Without the planted bug firstResult the operand before it holds. With it, ExecAll never keeps a result, another wrong count that its tests find.
+internal/engine/several.go Conn.execAll negation: !res.SetsChanges => res.SetsChanges
+	As for false: without firstResult the operand before it holds, and with it no result is ever kept, which its tests find.
+internal/engine/several.go Conn.execAll condition: c.tx.write != nil => true
+	Reached only with undoInTx planted, which then undoes a read-only transaction too, by a roll back and the begin of a write transaction, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll condition: i > 0 => true #2
+	Reached only with undoInTx planted, which then undoes the transaction after a failure of the first statement too, which its tests find by the later ones.
+internal/engine/several.go Conn.execAll condition: err != nil => true #2
+	Reached only with undoInTx planted, which then undoes the transaction after every statement but the first, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll operator: err != nil => err == nil #2
+	Reached only with undoInTx planted, which then undoes the transaction after a statement that succeeds and not after one that fails, which its tests find.
+internal/engine/several.go Conn.execAll operator: i > 0 => i >= 0 #2
+	As for i > 0 true: undoInTx also undoes after a failure of the first statement, which its tests find by the later ones.
+internal/engine/several.go Conn.execAll operator: i > 0 => i <= 0 #2
+	Reached only with undoInTx planted, which then undoes only after a failure of the first statement, which undoes the statements before the text, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll condition: err != nil => true #3
+	With goOn planted, a statement that succeeds then continues the loop, as it would anyway, and sets first to its nil error only while first is nil; without goOn the condition is false as before.
+internal/engine/several.go Conn.execAll condition: first == nil => true
+	Reached only with goOn planted, which then gives the error of the last statement that failed, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll condition: first == nil => false
+	Reached only with goOn planted, which then gives no error of a statement, only that of a statement that Split refused, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll operator: first == nil => first != nil
+	As for false: first is never set, and goOn's tests find the call that succeeds where a statement failed.
+internal/engine/several.go Conn.execAll remove statement: first = err =>
+	As for false: first is never set, and goOn's tests find the call that succeeds where a statement failed.
