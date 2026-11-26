@@ -70,9 +70,15 @@ func (q *Sequence) textHooks() {
 		cs := where(table)
 		switch r := q.rTextFunctions; {
 		case r.IntN(3*q.profile.TextFunctions) == 0:
-			cs = q.textKeyWhere(table, cs)
+			// Where the conditions are replaced, those of arithmetic that fail for some rows are gone,
+			// and with them the reason for the LIMIT of [Sequence.order].
+			if key := q.textKeyWhere(table, cs); !sameSlice(key, cs) {
+				cs, q.failingRow = key, false
+			}
 		case r.IntN(2*q.profile.TextFunctions) == 0:
-			cs = q.textEdgeWhere(table, cs)
+			if edge := q.textEdgeWhere(table, cs); !sameSlice(edge, cs) {
+				cs, q.failingRow = edge, false
+			}
 		}
 		cs = q.textWhere(table, cs)
 		q.textInner()
@@ -89,6 +95,11 @@ func (q *Sequence) textHooks() {
 		q.textInner()
 		return cs
 	}
+}
+
+// sameSlice reports whether a and b are the same slice, of one length and one first element.
+func sameSlice(a, b []stmt.Condition) bool {
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
 }
 
 // textInner gives the WHERE of each subquery that the hooks of the statement gave text, as
@@ -611,7 +622,7 @@ func (q *Sequence) textSet(table stmt.Name, set []stmt.Assignment) []stmt.Assign
 }
 
 // textLike a, an argument of a text that runs again, drawn from r: for a text of more than 40 bytes,
-// which [Generator.textValue] writes as a ?, one byte shorter or longer, so that a text at the edge of
+// which [Generator.textValue] writes as a ?, one character shorter or one byte longer, so that a text at the edge of
 // the length limit crosses it, and otherwise another value of its Go type, as [Sequence.like] gives
 // it.
 func (q *Sequence) textLike(r Rand, a any) any {
@@ -619,7 +630,8 @@ func (q *Sequence) textLike(r Rand, a any) any {
 	case string:
 		if len(v) > 40 && utf8.ValidString(v) {
 			if r.IntN(2) == 0 {
-				return v[:len(v)-1]
+				_, size := utf8.DecodeLastRuneInString(v)
+				return v[:len(v)-size]
 			}
 			return v + "e"
 		}

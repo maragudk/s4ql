@@ -2305,8 +2305,27 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		// Which rows a select with text computes depends on its access too, and a text that is too
 		// long by one path may be on a row that the other does not read: a text too long of the other
 		// instance must be one that SQLite finds too long for a row that the rule may evaluate, as
-		// [pair.textTooLong] says, and one of the instance is judged by [pair.step].
+		// [pair.textTooLong] says, and one of the instance is judged by [pair.step], where the other
+		// instance must give no error and SQLite's rows without the limit.
 		if all.err != tooBig {
+			// The other instance read no row whose text is too long: it gives no error, and SQLite's
+			// answer without the length limit.
+			if all.err != "" {
+				return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, where it gives %q as the rules choose", c.Src, c.Args, path, all.message, got.message)
+			}
+			want := p.o.unlimited(p.t, c.Src, oracleArgs(c.Args)...)
+			bad := want.err != ""
+			if q := orderedOf(s.(*stmt.Select), oracleArgs(c.Args)); !bad && c.Query {
+				if q.plain() {
+					bad = all.String() != want.String()
+				} else {
+					bad = q.compare(p.t, p.o, all, want) != ""
+				}
+			}
+			if bad {
+				return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives\n%v\nand SQLite without the length limit\n%v", c.Src, c.Args, path, all, want)
+			}
+			p.count("text too long by one path and not by another")
 			return ""
 		}
 		if !p.textTooLong(s, oracleArgs(c.Args)) {

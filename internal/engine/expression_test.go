@@ -206,15 +206,10 @@ func (p *pair) computedTerms() []stmt.Term {
 }
 
 // rows reports whether SQLite gives a row for the query src with the arguments args, which must not
-// fail but with `string or blob too big`, for a text of its conditions that SQLite computes and finds
-// too long, which gives no row: the rules of text judge such a statement, as [pair.textDifference]
-// says.
+// fail.
 func (p *pair) rows(src string, args []any) bool {
 	p.t.Helper()
 	a := p.o.run(p.t, src, args...)
-	if a.err == tooBig {
-		return false
-	}
 	if a.err != "" {
 		p.t.Fatalf("%q: SQLite gives %v", src, a.err)
 	}
@@ -246,7 +241,16 @@ func (p *pair) quirkRows(s stmt.Statement, site stmttest.ArithmeticSite, n stmt.
 		}
 	}
 	guard = append(guard, stmttest.SiteGuard(s, site)...)
-	return p.rows(stmttest.QuirkQuery(s, site, n, kind, guard, p.computedTerms(), args))
+	src, bound := stmttest.QuirkQuery(s, site, n, kind, guard, p.computedTerms(), args)
+	if textIn(s) {
+		// A text of the conditions of the guard that SQLite finds too long shows the quirk for no row:
+		// such a statement fails in SQLite, and the rules of text judge it, as [pair.textDifference]
+		// says. An evaluation error that it would justify is then not justified, and fails.
+		if a := p.o.run(p.t, src, bound...); a.err == tooBig {
+			return false
+		}
+	}
+	return p.rows(src, bound)
 }
 
 // accessGuard of [pair.quirkRows]: whether a row must be one that the access reads, and, where
@@ -1222,7 +1226,7 @@ func (p *pair) reachServed(s *stmt.Select, args []any, columns []stmttest.TableC
 	}{{"arithmetic: constant expression", false}, {"text: constant text", true}} {
 		without, ok := p.reducedSelectOf(s, args, func(e stmt.Expression) bool { return isTextExpression(e) != served.text })
 		if !ok {
-			return
+			continue
 		}
 		if other, ok := stmttest.ChosenAccess(columns, indexes, without, nil); !ok || other.Same(want) {
 			continue
@@ -1847,6 +1851,14 @@ const (
 	// [excusedTextAccess]: the engine computes a text with a column on a row of its access in the
 	// order of the text, which SQLite does not read, or rules out first by a term that an index covers.
 	excusedTextOrder = "text with a column that SQLite finds too long on a row of the access of the engine, which SQLite reads otherwise and computes on no row"
+	// excusedTextLimit is the case of [excusedTextAccess] of a select with LIMIT, as for arithmetic, "a
+	// select with LIMIT whose direction decides" which rows it reads: the engine gives as many rows as
+	// its LIMIT before it reads a row whose text is too long, which SQLite reads before them.
+	excusedTextLimit = "select with LIMIT that gave its rows before a row whose text SQLite finds too long, which SQLite reads first"
+	// excusedTextLimitFirst is the other side of [excusedTextLimit], a case of [excusedTextOrder]: the
+	// engine reads a row whose text is too long before it gives as many rows as its LIMIT, where SQLite
+	// gives them before it reads that row.
+	excusedTextLimitFirst = "select with LIMIT that read a row whose text SQLite finds too long, where SQLite gives its rows first"
 	// excusedTextNull is the first of the cases where s4ql is laxer: "a condition with a value of NULL
 	// makes the access read nothing, so a condition before it in the text is never evaluated, where
 	// SQLite reads the rows and fails on the first".
@@ -1893,6 +1905,12 @@ const (
 //     SQLite finds too long alone: [excusedTextHoisted];
 //   - a text of the statement that SQLite finds too long only on rows that the access of the engine,
 //     as the model chooses it, does not read, as [pair.outsideAccess] says: [excusedTextAccess].
+//
+// Where SQLite fails and the engine gives rows, a select without ORDER BY must have given as many
+// rows as its LIMIT, each one of SQLite's without the limits, as [pair.limitedBefore] says:
+// [excusedTextLimit]. Where the engine fails and SQLite gives as many rows as the LIMIT of such a
+// select, a text must be too long on a row of the engine's access, as [pair.limitedAfter] says:
+// [excusedTextLimitFirst].
 func (p *pair) textDifference(c stmttest.Call, got, want answer) string {
 	t, o := p.t, p.o
 	t.Helper()
@@ -1906,6 +1924,8 @@ func (p *pair) textDifference(c stmttest.Call, got, want answer) string {
 	// A count of changes is that of the last write, so a select keeps it.
 	_, isSelect := s.(*stmt.Select)
 	switch {
+	case got.err == tooBig && want.err == "" && isSelect && p.limitedAfter(s.(*stmt.Select), args, want):
+		return excusedTextLimitFirst
 	case got.err == tooBig && want.err == "":
 		if changes, _ := o.changes(t); len(want.rows) > 0 || !isSelect && changes > 0 {
 			return ""
@@ -1980,21 +2000,76 @@ func (p *pair) textDifference(c stmttest.Call, got, want answer) string {
 		if p.outsideAccess(s, args) {
 			return excusedTextAccess
 		}
+	case want.err == tooBig && got.err == "" && isSelect && p.limitedBefore(s.(*stmt.Select), args, got):
+		return excusedTextLimit
 	}
 	return ""
 }
 
 // outsideAccess reports whether SQLite finds a text of the select, the update, or the delete s, with
 // the arguments args, too long only on rows that the access of the engine does not read: where the
-// model chooses the access, as [pair.modelGuard] and [pair.writeGuard] give the conditions of its
-// range, no text is too long for a row of that range that the rule may evaluate it on, and one is for
+// model chooses the access, as [pair.accessRange], for a select without subqueries, and
+// [pair.writeGuard] give the conditions of its range, no text is too long for a row of that range that the rule may evaluate it on, and one is for
 // a row outside it, as [pair.textTooLongWithin] says.
 func (p *pair) outsideAccess(s stmt.Statement, args []any) bool {
-	guard, ok := p.modelGuard(s, args)
-	if _, isSelect := s.(*stmt.Select); !isSelect {
+	var guard []stmt.Condition
+	ok := false
+	switch sel, isSelect := s.(*stmt.Select); {
+	case isSelect && sel.Subqueries == nil:
+		// A LIMIT reads fewer of the rows of the range, which holds them all.
+		guard, ok = p.accessRange(sel, args)
+	case !isSelect:
 		guard, ok = p.writeGuard(s, args)
 	}
 	return ok && guard != nil && !p.textTooLongWithin(s, args, guard) && p.textTooLong(s, args)
+}
+
+// limitedAfter reports whether the select s without ORDER BY, with the arguments args, whose answer of
+// SQLite want has as many rows as its LIMIT, has a text that SQLite finds too long for a row of the
+// access of the engine, as the model chooses it, that the rule may evaluate it on, as
+// [pair.textTooLongWithin] says: the engine read that row in its direction before it had as many
+// rows, and SQLite stopped before it.
+func (p *pair) limitedAfter(s *stmt.Select, args []any, want answer) bool {
+	if !s.Limited() || s.OrderBy != nil || s.Subqueries != nil || len(want.rows) == 0 {
+		return false
+	}
+	if n, ok := stmttest.BoundValue(s.Limit, args).(int64); !ok || int64(len(want.rows)) != n {
+		return false
+	}
+	access, ok := p.accessRange(s, args)
+	return ok && p.textTooLongWithin(s, args, access)
+}
+
+// limitedBefore reports whether the select s without ORDER BY, with the arguments args, whose answer of
+// the engine got has rows, gave as many rows as its LIMIT, each a row of SQLite's answer of s without
+// the LIMIT and without the length limit, and SQLite finds a text of s too long for a row that the
+// rule may evaluate, as [pair.textTooLong] says: the engine read up to its LIMIT in its direction and
+// stopped before a row whose text is too long, which SQLite read first.
+func (p *pair) limitedBefore(s *stmt.Select, args []any, got answer) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	if !s.Limited() || s.OrderBy != nil || len(got.rows) == 0 {
+		return false
+	}
+	if n, ok := stmttest.BoundValue(s.Limit, args).(int64); !ok || int64(len(got.rows)) != n {
+		return false
+	}
+	whole := *s
+	whole.Limit = stmt.Term{}
+	text, bound := stmttest.SelectText(&whole, args, "")
+	all := o.unlimited(t, text, bound...)
+	if all.err != "" {
+		return false
+	}
+	left := slices.Clone(all.rows)
+	for _, row := range got.rows {
+		i := slices.Index(left, row)
+		if i < 0 {
+			return false
+		}
+		left = slices.Delete(left, i, i+1)
+	}
+	return p.textTooLong(s, args)
 }
 
 // textTooLong reports whether SQLite finds a text of the select, the update, or the delete s, with the
@@ -2151,7 +2226,9 @@ func (p *pair) propagated(table stmt.Name, where []stmt.Condition, args []any) b
 		}
 		fold := eq.Column.Fold()
 		for j, other := range where {
-			if j == i || other.Operator == stmt.OpIsNull || other.Operator == stmt.OpIsNotNull || other.Value.Subquery > 0 {
+			// A subquery that is the value of the other condition has no column of the table, so it is a
+			// constant beside a side that has none.
+			if j == i || other.Operator == stmt.OpIsNull || other.Operator == stmt.OpIsNotNull {
 				continue
 			}
 			left := substituted(other.Expression, fold, value)
@@ -2286,6 +2363,24 @@ func TestPair_text(t *testing.T) {
 		is.Equal(t, excusedTextOrder, p.textDifference(stmttest.Call{Src: src, Args: []any{e}, Supported: true}, answer{err: tooBig}, answer{}))
 		src = "select k from t where k > 5 and lower(u || ?) = 'x'"
 		is.Equal(t, "", p.textDifference(stmttest.Call{Src: src, Args: []any{e}, Supported: true}, answer{err: tooBig}, answer{}))
+	})
+
+	t.Run("should excuse a select with LIMIT that gave its rows before a row whose text is too long, or read it first, only as many rows as its LIMIT", func(t *testing.T) {
+		p, _ := newSetUp(t)
+		for _, src := range []string{"insert into e values (1, 'a', '" + strings.Repeat("x", 990) + "', 'c')", "insert into e values (2, 'a', 'b', 'c')"} {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		call := stmttest.Call{Src: "select k from e where u || ? <= 'zz' limit 1", Args: []any{strings.Repeat("y", 20)}, Query: true, Supported: true}
+		want := p.o.run(t, call.Src, call.Args...)
+		is.Equal(t, tooBig, want.err)
+		is.Equal(t, excusedTextLimit, p.textDifference(call, answer{columns: "k INT", rows: []string{"2"}}, want))
+		is.Equal(t, "", p.textDifference(call, answer{columns: "k INT", rows: []string{"3"}}, want))
+		call.Src = "select k from e where u || ? <= 'zz' limit 2"
+		is.Equal(t, "", p.textDifference(call, answer{columns: "k INT", rows: []string{"2"}}, want))
+		// The other side: the engine read the row of k 1 first, and SQLite gave the row of k 2.
+		is.Equal(t, "", p.textDifference(call, answer{err: tooBig}, answer{columns: "k INT", rows: []string{"2"}}))
+		call.Src = "select k from e where u || ? <= 'zz' limit 1"
+		is.Equal(t, excusedTextLimitFirst, p.textDifference(call, answer{err: tooBig}, answer{columns: "k INT", rows: []string{"2"}}))
 	})
 
 	t.Run("should judge a text too long by another path by SQLite's text of a row that the rule evaluates", func(t *testing.T) {

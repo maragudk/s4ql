@@ -631,10 +631,19 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 		run = o.unlimited
 	}
 	alone := run(t, src[q.Span.Start:q.Span.End], bound...)
-	if alone.err == tooBig && q.OrderBy == nil && !long(q.Limit.Value) && !slices.ContainsFunc(bound, long) && !slices.ContainsFunc(q.Where, func(c stmt.Condition) bool { return long(c.Value.Value) }) {
-		// A text of the subquery that is too long for a row that SQLite reads before it finds its first
-		// row, which an engine that reads in another direction may not read: its candidates are those
-		// that SQLite gives without the limit.
+	constantTooLong := slices.ContainsFunc(q.Where, func(c stmt.Condition) bool {
+		e := c.Value.Expression
+		if e.Kind != stmt.ExprConcat && e.Kind != stmt.ExprCall || e.HasColumn() {
+			return false
+		}
+		text, textArgs := stmttest.ExpressionText(e, args)
+		return o.run(t, "select "+text, textArgs...).err == tooBig
+	})
+	if alone.err == tooBig && q.OrderBy == nil && !constantTooLong && !long(q.Limit.Value) && !slices.ContainsFunc(bound, long) && !slices.ContainsFunc(q.Where, func(c stmt.Condition) bool { return long(c.Value.Value) }) {
+		// A text with a column of the subquery that is too long for a row that SQLite reads before it
+		// finds its first row, which an engine that reads in another direction may not read: its
+		// candidates are those that SQLite gives without the limit. A text without a column that is
+		// too long fails on any row that reaches it, and so in every direction.
 		run = o.unlimited
 		alone = run(t, src[q.Span.Start:q.Span.End], bound...)
 	}
