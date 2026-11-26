@@ -228,6 +228,8 @@ var (
 		"drop table if exists \"t;1\"",
 		"create index i on t (v)",
 		"drop index if exists i",
+		// SQLite stops at the second v, and does not say where the statement ends.
+		"create table w (v int primary key, v int) strict, without rowid",
 	}
 	splitUnsupported = []string{
 		"create trigger tr after insert on t begin delete from t; select 1; end",
@@ -263,7 +265,8 @@ var (
 		"-- ; to the end",
 		"create trigger tr after insert on t begin delete from t;",
 	}
-	// splitSpaces are SQLite's spaces and closed comments, some with semicolons.
+	// splitSpaces are SQLite's spaces and closed comments, some with semicolons. A vertical tab after
+	// a space is part of SQLite's token of spaces, which Go's TrimSpace removes too.
 	splitSpaces = []string{" ", " ", " ", "  ", "\t", "\n", "\r\n", "\f", "-- c;\n", "/* ; */", "/**/", "--\n", " \v"}
 	// splitOddSpaces are the spaces of Go's TrimSpace that SQLite reads as part of a token, a byte
 	// order mark, control bytes, and comments without their end, which run to the end of the text.
@@ -514,9 +517,12 @@ const (
 //     before any later statement is read, so it holds also where a later statement fails before
 //     the end and the two readings agree. It refuses the start of a tail only where the readings
 //     differ at the statement after it, at the offset of [sqliteTrimmedStart].
-func checkSplit(t testing.TB, src string) string {
+//   - After a statement on which SQLite does not say, nothing is checked but the offset of a
+//     refusal of the end.
+//
+// parts and err are what Split gives for src.
+func checkSplit(t testing.TB, src string, parts []stmt.Part, err error) string {
 	t.Helper()
-	parts, err := stmt.Split(src)
 	at := 0
 	for i, p := range parts {
 		b := p.Statement.Bounds()
@@ -530,7 +536,7 @@ func checkSplit(t testing.TB, src string) string {
 	switch {
 	case errors.As(err, &ne) && ne.What == spaceAtEnd:
 		// The offset may be inside a token that the trim cuts, such as a string without its end.
-		if m := messageForm.FindStringSubmatch(err.Error()); !errors.Is(err, stmt.ErrNotSupported) || m == nil || m[1] != ne.What || !vocabulary(t)[ne.What] {
+		if m := messageForm.FindStringSubmatch(err.Error()); !errors.Is(err, stmt.ErrNotSupported) || m == nil || m[1] != ne.What || m[2] != fmt.Sprint(ne.Offset) || !vocabulary(t)[ne.What] {
 			t.Fatalf("%q: the error %q does not have the form of not supported", src, err)
 		}
 	case ne != nil:
@@ -562,11 +568,28 @@ func checkSplit(t testing.TB, src string) string {
 	alone := readText(src, false, judge)
 	mattn := readText(src, true, judge)
 	differ := firstDifference(alone, mattn)
+	steps := alone
+	if differ >= 0 {
+		steps = alone[:differ]
+	}
+	// notSaid is the first statement on which SQLite does not say, where both readings agree, after
+	// which they are not read; SQLite gives no tail of it, and nothing of the text after it.
+	notSaid := slices.IndexFunc(steps, func(s readStep) bool { return s.verdict == oracle.NotSaid })
 
 	// The end of the text is judged once a tail follows a first statement that s4ql supports, before
 	// any later statement is read, also one that fails before the end.
 	endAt, endDiffers := sqliteTrimmedEnd(src)
-	if endDiffers && len(alone) > 0 && alone[0].verdict == oracle.Parses && alone[0].tail < len(src) {
+	if notSaid == 0 {
+		// SQLite does not say where the first statement ends, so only the offset of a refusal of the
+		// end is checked.
+		if ne != nil && ne.What == spaceAtEnd {
+			if !endDiffers || ne.Offset != endAt || len(parts) > 0 {
+				t.Fatalf("%q: gives %v parts and %v, the end of the text differs in SQLite without the spaces of TrimSpace: %v, at %v", src, len(parts), err, endDiffers, endAt)
+			}
+			return splitNotSaid
+		}
+		endDiffers = false
+	} else if endDiffers && len(alone) > 0 && alone[0].verdict == oracle.Parses && alone[0].tail < len(src) {
 		first, err := stmt.Check(src[:alone[0].tail])
 		endDiffers = err == nil && first != nil
 	} else {
@@ -579,6 +602,10 @@ func checkSplit(t testing.TB, src string) string {
 		return spaceAtEnd
 	}
 	if ne != nil && ne.What == spaceAfter {
+		if notSaid >= 0 && len(parts) == 0 {
+			// The space is after the statement on which SQLite does not say, which ends the readings.
+			return splitNotSaid
+		}
 		if differ < 1 || len(parts) > 0 {
 			t.Fatalf("%q: gives %v parts and %v, but SQLite alone reads %+v and mattn %+v", src, len(parts), err, alone, mattn)
 		}
@@ -588,10 +615,6 @@ func checkSplit(t testing.TB, src string) string {
 		return spaceAfter
 	}
 
-	steps := alone
-	if differ >= 0 {
-		steps = alone[:differ]
-	}
 	for i, s := range steps {
 		start := 0
 		if i > 0 {
@@ -648,6 +671,13 @@ func checkSplit(t testing.TB, src string) string {
 	}
 }
 
+// splitNotSaidTexts begin with a CREATE TABLE that s4ql supports with the error of its columns, on
+// which SQLite stops early and does not say where it ends, before a refusal of spaces.
+var splitNotSaidTexts = []string{
+	"create table t (v int primary key, v int) strict, without rowid; drop table u\u00a0",
+	"create table t (v int primary key, v int) strict, without rowid;\u00a0drop table u",
+}
+
 // TestSplit_differential checks [stmt.Split] against SQLite with [checkSplit] on generated texts, and
 // requires every outcome but the one where SQLite does not say.
 func TestSplit_differential(t *testing.T) {
@@ -661,13 +691,19 @@ func TestSplit_differential(t *testing.T) {
 	cuts := 0
 	for range n {
 		src := splitText(r)
-		kind := checkSplit(t, src)
+		parts, err := stmt.Split(src)
+		kind := checkSplit(t, src, parts, err)
 		if kinds[kind] == 0 {
 			examples = append(examples, fmt.Sprintf("%v: %q", kind, src))
 		}
 		kinds[kind]++
-		parts, _ := stmt.Split(src)
 		cuts += len(parts)
+	}
+	for _, src := range splitNotSaidTexts {
+		parts, err := stmt.Split(src)
+		if kind := checkSplit(t, src, parts, err); kind != splitNotSaid {
+			t.Errorf("%q: gives %q, want %q", src, kind, splitNotSaid)
+		}
 	}
 	t.Logf("%v texts, with %v parts", n, cuts)
 	for _, k := range slices.Sorted(maps.Keys(kinds)) {
@@ -692,7 +728,11 @@ func FuzzSplit(f *testing.F) {
 	for range 200 {
 		f.Add(splitText(r))
 	}
+	for _, src := range splitNotSaidTexts {
+		f.Add(src)
+	}
 	f.Fuzz(func(t *testing.T, src string) {
-		checkSplit(t, src)
+		parts, err := stmt.Split(src)
+		checkSplit(t, src, parts, err)
 	})
 }

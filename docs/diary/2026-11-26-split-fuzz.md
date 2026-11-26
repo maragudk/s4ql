@@ -50,3 +50,48 @@ The end refusal is decided for the whole text up front, so it is broader than "t
 ### Future work
 
 None from this step.
+
+## Step 2: Planted faults, the fuzz run, the guard of the cost, and the self-review
+
+**Author:** builder (split-fuzz)
+
+### Prompt Context
+
+**Verbatim prompt:** "Proof by four planted faults in `split.go` or `parser.go`, one at a time, each reverted with `git checkout -- <file>`, each failing the differential test: the tail cut one byte late; a `--` comment after a `;` swallows the next statement; `;` inside a bracketed name ends the statement; the refusal for space turned off." And: "Run it locally for five minutes once and commit any input it finds as a regression seed." And the guard for the cost "if you find a clean one".
+**Interpretation:** prove the check sensitive, fuzz it, look for a guard, then review the branch.
+**Inferred intent:** the check must fail on the faults that matter, and must not fail on correct behaviour, since the nightly runs `FuzzSplit`.
+
+### What I did
+
+- Planted, one at a time, each reverted with `git checkout -- <file>`, each run with `go test -short -count=1 -run TestSplit_differential ./internal/sql/stmt/`: `tail = min(tail+1, len(src))` after `statementAt` in `/internal/sql/stmt/split.go`; a `--` after the spaces of a tail that ends the reading with the last part to the end of the text, in `split.go`; a token that starts with `[` cut at its first `;`, in `parser.read` of `/internal/sql/parser/parser.go`; `trimmedStart` and `trimmedEnd` returning nil, and `trimmedStart` alone. Each failed the test within the first few hundred texts. I planted them again after the fixes below; each still failed.
+- Ran `FuzzSplit` for 5 minutes with `GOTMPDIR` and `TMPDIR` in `/Volumes/990/s4ql/split-fuzz/tmp`, `-parallel 2`: 1,414,900 executions, nothing found, so no regression seed to commit.
+- Looked for a guard of the cost and found none clean; the item in `/docs/todo/driver.md` stays open with what was tried.
+- Ran the code-review skill on `main...split-fuzz` and fixed what it found.
+
+### Why
+
+The planted faults are the ways a split goes wrong in practice; the fuzz run and the review guard against the opposite, a check that fails on correct behaviour.
+
+### What worked
+
+Every planted fault failed the test at once, with a message that names the text, the part, and SQLite's reading.
+
+### What didn't work
+
+The review reproduced two false failures, both after a first statement on which SQLite does not say: `create table t (v int primary key, v int) strict, without rowid; drop table u` with a no-break space at the end failed with `gives 0 parts and s4ql: not supported: space at the end of the text ... (at offset 77), the end of the text differs ...: false, at 77`, and with the no-break space after the semicolon with `gives 0 parts and s4ql: not supported: space after a statement ... but SQLite alone reads [{verdict:3 message:duplicate column name: v ...}]`. SQLite stops at the duplicate column and gives no tail, so the check had no first statement to judge the end by, and no reading past it. Fixed: at a first statement on which SQLite does not say, a refusal of the end is checked by its offset only, and a refusal of the start of a tail after such a statement is accepted. The two texts are cases of the test and seeds of the fuzz target, and the generator writes such a CREATE TABLE now, which 5,859 of 100,000 texts stop at. The 5-minute run had not reached them. The review's nits were fixed too: the offset in the message of the end refusal is checked, and the test splits each text once.
+
+### What I learned
+
+The guard of the cost: `testing.AllocsPerRun` does not see a search with `strings.IndexByte`, a counting hook would have to sit in the tokenizer or the parser outside the tests and would not see such a search either, and a ratio of two timings moves with the load. A tokenizer hook would catch a different quadratic fault, `trimmedEnd` run after every statement instead of once, which gives the same answers and so passes the differential test.
+
+### What was tricky
+
+One nit of the review, that the space piece of a space and a vertical tab among SQLite's spaces is an odd space, is wrong: SQLite reads a vertical tab after a space as part of its token of spaces, and the trim removes it too, so it is in that list on purpose; the comment says so now.
+
+### What warrants review
+
+The handling of `notSaid` in `checkSplit`, `/internal/sql/stmt/split_test.go`: it is the one place where the check accepts a refusal without SQLite's reading of the statement after it.
+
+### Future work
+
+Narrowing the end refusal to texts whose readings reach the end is the lead's call; it is recorded in `/docs/todo/several-statements.md`.
