@@ -151,6 +151,8 @@ The stream of a statement gives the same numbers, whatever the earlier statement
 
 So a change to the inserts can change the text of a later select, although the select gets the same numbers. A text of `Others` in place of a statement changes later statements too, because the statement whose place it takes never stores its values.
 
+A call also says which edges of the length limit the generator wrote a text of its statement for, in `Call.TextEdges`, which `textEdges` gathers while the statement is written. It holds the length of each such text, so that a test counts an edge only where the generator meant it, and is empty for a call that runs an earlier text again. It is no state between calls, and the digests do not read it.
+
 `TestNewSequence` shows the stronger claim for two areas that store nothing, `exists` and `valuefirst`. Other numbers for such an area change no statement outside the area.
 
 ### An area that is off
