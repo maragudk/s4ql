@@ -68,6 +68,9 @@ func start() error {
 	gocache := flag.String("gocache", "", "GOCACHE for the builds of the mutants, or empty for the usual one; each mutant adds about 3 MB to it")
 	equivalent := flag.String("equivalent", "internal/sql/mutation/equivalent.txt", "the list of equivalent mutants")
 	first := flag.String("first", "", "a regular expression of the hand-written tests of the mutated package that run first, in a stage of their own")
+	since := flag.String("since", "", "run only the mutants of the declarations that changed since this commit, or since that of "+roundFile+" with round")
+	shard := flag.String("shard", "", "run only the share i/n of the mutants, the i-th of n shards")
+	merge := flag.String("merge", "", "a pattern of the directories of the results of shards to merge into -out, which then gets the report")
 	flag.Parse()
 
 	root, err := moduleRoot()
@@ -75,6 +78,9 @@ func start() error {
 		return err
 	}
 	dirs := strings.Split(*pkgs, ",")
+	if *pkgs == "all" {
+		dirs = listedPkgs
+	}
 	u, err := newUniverse(root, append(slices.Clone(listedPkgs), dirs...))
 	if err != nil {
 		return err
@@ -109,6 +115,13 @@ func start() error {
 			}
 		}
 	}
+	eq, err := readEquivalent(filepath.Join(root, *equivalent))
+	if err != nil {
+		return err
+	}
+	if mutants, err = narrow(root, mutants, eq, *since, *shard); err != nil {
+		return err
+	}
 	if *list {
 		for _, m := range mutants {
 			fmt.Printf("%v:%v\t%v\n", m.File, m.Line, m.Key)
@@ -125,12 +138,13 @@ func start() error {
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		return err
 	}
-	eq, err := readEquivalent(filepath.Join(root, *equivalent))
-	if err != nil {
-		return err
-	}
 	if err := checkFingerprint(root, *out); err != nil {
 		return err
+	}
+	if *merge != "" {
+		if err := mergeShards(*out, *merge, mutants); err != nil {
+			return err
+		}
 	}
 	resultsPath := filepath.Join(*out, "results.jsonl")
 	results, err := readResults(resultsPath)
@@ -147,9 +161,9 @@ func start() error {
 			return err
 		}
 		writeReport(os.Stdout, mutants, all, results, eq)
-		return nil
+		return writeSummaryFiles(*out, mutants, all, results, eq)
 	}
-	if *reportOnly {
+	if *reportOnly || *merge != "" {
 		return writeReportFile()
 	}
 
@@ -168,7 +182,7 @@ func start() error {
 		}
 	}
 	began := time.Now()
-	if err := r.plan(dirs); err != nil {
+	if err := r.plan(pkgsOf(todo)); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "planned in %v\n", time.Since(began).Round(time.Second))
