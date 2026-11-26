@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,34 +63,66 @@ func shardOf(ms []mutant, eq map[string]string, i, n int) []mutant {
 	return share
 }
 
+// selection of a run, for the report: the fraction of the sample, and the mutants that the sample
+// was drawn from.
+type selection struct {
+	sample float64
+	seed   uint64
+	of     int
+}
+
 // narrow the selection ms to the mutants of the files that the build of the tests compiles, then,
 // if since is not empty, to those of the declarations that changed since that commit, or since the
-// commit of [roundFile] if it is round, and then, if shard is not empty, to the share of that shard.
-func narrow(root string, ms []mutant, eq map[string]string, since, shard string) ([]mutant, error) {
+// commit of [roundFile] if it is round, then to the sample of the fraction sample drawn by seed,
+// and then, if shard is not empty, to the share of that shard.
+func narrow(root string, ms []mutant, eq map[string]string, since, shard string, sample float64, seed uint64) ([]mutant, selection, error) {
+	sel := selection{sample: sample, seed: seed}
+	if sample <= 0 || sample > 1 {
+		return nil, sel, fmt.Errorf("the sample %v is not a fraction above 0 and at most 1", sample)
+	}
 	ms, err := built(root, ms)
 	if err != nil {
-		return nil, err
+		return nil, sel, err
 	}
 	if since != "" {
 		rev := since
 		if since == "round" {
 			if rev, err = readRound(filepath.Join(root, roundFile)); err != nil {
-				return nil, err
+				return nil, sel, err
 			}
 		}
 		if ms, err = changedSince(root, rev, ms); err != nil {
-			return nil, err
+			return nil, sel, err
 		}
 		fmt.Fprintf(os.Stderr, "%v mutants in the declarations that changed since %v\n", len(ms), rev)
+	}
+	sel.of = len(ms)
+	if sample < 1 {
+		ms = sampleOf(ms, sample, seed)
+		fmt.Fprintf(os.Stderr, "%v mutants in the sample of %v of them\n", len(ms), sample)
 	}
 	if shard != "" {
 		i, n, err := parseShard(shard)
 		if err != nil {
-			return nil, err
+			return nil, sel, err
 		}
 		ms = shardOf(ms, eq, i, n)
 	}
-	return ms, nil
+	return ms, sel, nil
+}
+
+// sampleOf gives the mutants of ms that a draw keeps with the probability fraction: each is kept by
+// a hash of seed and its key, so the draw is the same in every shard and on every machine, and a
+// mutant that is in the sample of a fraction is in the sample of every larger one of the same seed.
+func sampleOf(ms []mutant, fraction float64, seed uint64) []mutant {
+	var kept []mutant
+	for _, m := range ms {
+		h := sha256.Sum256(fmt.Appendf(nil, "%v\x00%v", seed, m.Key))
+		if float64(binary.BigEndian.Uint64(h[:])>>11)/(1<<53) < fraction {
+			kept = append(kept, m)
+		}
+	}
+	return kept
 }
 
 // pkgsOf the mutants ms, sorted.

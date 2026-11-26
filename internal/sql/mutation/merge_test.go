@@ -132,11 +132,15 @@ func TestWriteSummary(t *testing.T) {
 		{Pkg: "internal/sql/stmt", File: "internal/sql/stmt/b.go", Key: "stmt/b.go h remove statement: x++ =>"},
 	}
 	results := map[string]result{
-		ms[0].Key: {Key: ms[0].Key, File: ms[0].File, Line: 7, Op: "operator", From: "x < 1", To: "x <= 1", Status: statusSurvived},
-		ms[1].Key: {Key: ms[1].Key, File: ms[1].File, Line: 9, Op: "boolean", From: "true", To: "false", Status: statusSurvived},
-		ms[2].Key: {Key: ms[2].Key, File: ms[2].File, Line: 12, Op: "negation", From: "!ok", To: "ok", Status: statusTimeout, Layer: layerHand, Detail: "over the time limit of 1m0s"},
-		ms[3].Key: {Key: ms[3].Key, File: ms[3].File, Line: 3, Op: "constant", From: "2", To: "3", Status: statusKilled, Layer: layerHand},
-		ms[4].Key: {Key: ms[4].Key, File: ms[4].File, Line: 3, Op: "constant", From: "2", To: "1", Status: statusUncompiled},
+		ms[0].Key: {Key: ms[0].Key, File: ms[0].File, Line: 7, Op: "operator", From: "x < 1", To: "x <= 1", Status: statusSurvived,
+			Seconds: 30, Build: 12, Stages: []stageSeconds{{Layer: layerHand, Seconds: 10}, {Layer: layerSim, Seconds: 8}}},
+		ms[1].Key: {Key: ms[1].Key, File: ms[1].File, Line: 9, Op: "boolean", From: "true", To: "false", Status: statusSurvived,
+			Seconds: 30, Build: 12, Stages: []stageSeconds{{Layer: layerHand, Seconds: 10}, {Layer: layerSim, Seconds: 8}}},
+		ms[2].Key: {Key: ms[2].Key, File: ms[2].File, Line: 12, Op: "negation", From: "!ok", To: "ok", Status: statusTimeout, Layer: layerHand, Detail: "over the time limit of 1m0s",
+			Seconds: 40, Build: 12, Stages: []stageSeconds{{Layer: layerHand, Seconds: 28}}},
+		ms[3].Key: {Key: ms[3].Key, File: ms[3].File, Line: 3, Op: "constant", From: "2", To: "3", Status: statusKilled, Layer: layerHand,
+			Seconds: 14, Build: 12, Stages: []stageSeconds{{Layer: layerHand, Seconds: 6}}},
+		ms[4].Key: {Key: ms[4].Key, File: ms[4].File, Line: 3, Op: "constant", From: "2", To: "1", Status: statusUncompiled, Seconds: 6, Build: 6},
 	}
 	all := map[string]bool{}
 	for _, m := range ms {
@@ -145,7 +149,7 @@ func TestWriteSummary(t *testing.T) {
 	eq := map[string]string{ms[1].Key: "because", ms[3].Key: "it was", "stmt/b.go gone constant: 1 => 2": "gone"}
 
 	var b bytes.Buffer
-	c := writeSummary(&b, ms, all, results, eq)
+	c := writeSummary(&b, ms, all, results, eq, selection{sample: 1})
 	got := b.String()
 
 	t.Run("should count the results", func(t *testing.T) {
@@ -171,6 +175,29 @@ func TestWriteSummary(t *testing.T) {
 
 	t.Run("should list the mutants that timed out, to run again", func(t *testing.T) {
 		is.True(t, strings.Contains(got, "`internal/engine/a.go:12` in hand-written, over the time limit of 1m0s"), got)
+	})
+
+	t.Run("should say where the time of the mutants went", func(t *testing.T) {
+		is.True(t, strings.Contains(got, "### Where the time went"), got)
+		is.True(t, strings.Contains(got, "| mutants that do not compile | 0.1 | 5.0% |"), got)
+		is.True(t, strings.Contains(got, "| builds of the mutants that compile | 0.8 | 40.0% |"), got)
+		is.True(t, strings.Contains(got, "| stages of the layer hand-written | 0.9 | 45.0% |"), got)
+		is.True(t, strings.Contains(got, "| of all that, the mutants that survive every stage | 1.0 | 50.0% |"), got)
+		is.Equal(t, 120.0, c.seconds)
+	})
+
+	t.Run("should extrapolate a sample, and say what it cannot claim", func(t *testing.T) {
+		var b bytes.Buffer
+		writeSummary(&b, ms, all, results, eq, selection{sample: 0.2, seed: 3, of: 30})
+		got := b.String()
+		is.True(t, strings.Contains(got, "drew 6 of the 30 mutants of the selection, a fraction of 0.2 by the seed 3"), got)
+		is.True(t, strings.Contains(got, "Its 1 unexplained survivors among 5 mutants with a result extrapolate to about 6 in the whole selection"), got)
+		is.True(t, strings.Contains(got, "cannot say which mutants outside it survive"), got)
+
+		b.Reset()
+		writeSummary(&b, ms[2:], all, results, eq, selection{sample: 0.2, seed: 3, of: 30})
+		got = b.String()
+		is.True(t, strings.Contains(got, "no unexplained survivor among 3 mutants with a result, so the share of unexplained survivors in the whole selection is below 100.0%"), got)
 	})
 
 	t.Run("should list the mutants without a result, and the entries of the list that match no survivor", func(t *testing.T) {

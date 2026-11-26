@@ -101,25 +101,28 @@ func readShardResults(path string) (map[string]result, error) {
 // of the list that match no surviving mutant.
 type summaryCounts struct {
 	mutants, pending, unexplained, timeouts, stale int
+	// seconds that the mutants took, summed over the workers.
+	seconds float64
 }
 
 // writeSummaryFiles writes the summary of the results in Markdown into out/summary.md, and its
 // counts into out/counts, one name=value a line, as GitHub Actions reads the outputs of a step.
-func writeSummaryFiles(out string, mutants []mutant, all map[string]bool, results map[string]result, eq map[string]string) error {
+func writeSummaryFiles(out string, mutants []mutant, all map[string]bool, results map[string]result, eq map[string]string, sel selection) error {
 	var b bytes.Buffer
-	c := writeSummary(&b, mutants, all, results, eq)
+	c := writeSummary(&b, mutants, all, results, eq, sel)
 	if err := os.WriteFile(filepath.Join(out, "summary.md"), b.Bytes(), 0o644); err != nil {
 		return err
 	}
-	counts := fmt.Sprintf("mutants=%v\npending=%v\nunexplained=%v\ntimeouts=%v\nstale=%v\n", c.mutants, c.pending, c.unexplained, c.timeouts, c.stale)
+	counts := fmt.Sprintf("mutants=%v\npending=%v\nunexplained=%v\ntimeouts=%v\nstale=%v\nseconds=%.0f\n", c.mutants, c.pending, c.unexplained, c.timeouts, c.stale, c.seconds)
 	return os.WriteFile(filepath.Join(out, "counts"), []byte(counts), 0o644)
 }
 
 // writeSummary of the results of the mutants to w in Markdown, for the summary of a run of GitHub
 // Actions and its issue: the counts per package, and what a builder acts on, with what it needs for
 // each: the unexplained survivors, the mutants that timed out, which count as killed and may run
-// again with a longer limit, the mutants without a result, and the stale entries of the list.
-func writeSummary(w io.Writer, mutants []mutant, all map[string]bool, results map[string]result, eq map[string]string) summaryCounts {
+// again with a longer limit, the mutants without a result, and the stale entries of the list; then,
+// for a sample, what it says about the whole selection, and where the time of the mutants went.
+func writeSummary(w io.Writer, mutants []mutant, all map[string]bool, results map[string]result, eq map[string]string, sel selection) summaryCounts {
 	byPkg := map[string]*counts{}
 	var total counts
 	var unexplained, timeouts []mutant
@@ -199,5 +202,60 @@ func writeSummary(w io.Writer, mutants []mutant, all map[string]bool, results ma
 		}
 		p("```\n")
 	}
+
+	if sel.sample < 1 {
+		p("\n### The sample\n\nThe run drew %v of the %v mutants of the selection, a fraction of %v by the seed %v. ", len(mutants), sel.of, sel.sample, sel.seed)
+		if run := len(mutants) - c.pending; run > 0 {
+			if c.unexplained > 0 {
+				p("Its %v unexplained survivors among %v mutants with a result extrapolate to about %.0f in the whole selection. ", c.unexplained, run, float64(c.unexplained)*float64(sel.of)/float64(run))
+			} else {
+				p("It found no unexplained survivor among %v mutants with a result, so the share of unexplained survivors in the whole selection is below %.1f%%, at 95%% confidence (the rule of three: 3 in %v). ", run, 300/float64(run), run)
+			}
+		}
+		p("A sample cannot say which mutants outside it survive, nor that a declaration without a mutant in it has no survivors; run the whole selection of the declarations where it finds some.\n")
+	}
+
+	c.seconds = writeCost(p, mutants, results)
 	return c
+}
+
+// writeCost of the mutants with a result through p: where their seconds went, summed over the
+// workers, which is the compute that they used, without the planning. It gives the total.
+func writeCost(p func(format string, args ...any), mutants []mutant, results map[string]result) float64 {
+	var total, uncompiled, build, survived float64
+	byLayer := map[string]float64{}
+	for _, m := range mutants {
+		res, ok := results[m.Key]
+		if !ok {
+			continue
+		}
+		total += res.Seconds
+		switch res.Status {
+		case statusUncompiled:
+			uncompiled += res.Seconds
+			continue
+		case statusSurvived:
+			survived += res.Seconds
+		}
+		build += res.Build
+		for _, s := range res.Stages {
+			byLayer[s.Layer] += s.Seconds
+		}
+	}
+	if total == 0 {
+		return 0
+	}
+	p("\n### Where the time went\n\nThe mutants took %.0f minutes of their workers in all, without the planning.\n\n| Spent on | Minutes | Share |\n| --- | --- | --- |\n", total/60)
+	row := func(name string, s float64) {
+		p("| %v | %.1f | %.1f%% |\n", name, s/60, 100*s/total)
+	}
+	row("mutants that do not compile", uncompiled)
+	row("builds of the mutants that compile", build)
+	for _, l := range layers {
+		if s, ok := byLayer[l]; ok {
+			row("stages of the layer "+l, s)
+		}
+	}
+	row("of all that, the mutants that survive every stage", survived)
+	return total
 }

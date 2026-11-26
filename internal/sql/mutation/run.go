@@ -128,6 +128,18 @@ type result struct {
 	// the compiler.
 	Detail  string `json:",omitempty"`
 	Seconds float64
+	// Build is the seconds spent building: the compile of the mutated package alone, and the test
+	// binaries of the stages that ran.
+	Build float64 `json:",omitempty"`
+	// Stages that ran, in order, with the seconds of each.
+	Stages []stageSeconds `json:",omitempty"`
+}
+
+// stageSeconds of one stage of a mutant.
+type stageSeconds struct {
+	Layer   string
+	Pkg     string
+	Seconds float64
 }
 
 const (
@@ -151,6 +163,8 @@ type runner struct {
 	gocache string
 	// first names the hand-written tests of the mutated package that run first, or is nil.
 	first *regexp.Regexp
+	// noPrecheck leaves out the compile of the mutated package alone before the first test binary.
+	noPrecheck bool
 	// stages of the tests for each mutated package, in order.
 	stages map[string][]stage
 }
@@ -381,6 +395,15 @@ func (r *runner) runIn(ctx context.Context, m mutant, dir string) result {
 	if err := os.WriteFile(overlay, data, 0o644); err != nil {
 		return result{Status: statusError, Detail: err.Error()}
 	}
+	var cost result
+	if !r.noPrecheck {
+		start := time.Now()
+		msg, err := r.compile(ctx, m.Pkg, overlay)
+		cost.Build += time.Since(start).Seconds()
+		if err != nil {
+			return result{Status: statusUncompiled, Detail: firstLines(msg, 3), Build: cost.Build}
+		}
+	}
 	built := map[string]string{}
 	defer func() {
 		for _, bin := range built {
@@ -391,16 +414,30 @@ func (r *runner) runIn(ctx context.Context, m mutant, dir string) result {
 		bin, ok := built[s.pkg]
 		if !ok {
 			bin = filepath.Join(dir, binName(s.pkg))
-			if msg, err := r.build(ctx, s.pkg, overlay, bin); err != nil {
-				return result{Status: statusUncompiled, Detail: firstLines(msg, 3)}
+			start := time.Now()
+			msg, err := r.build(ctx, s.pkg, overlay, bin)
+			cost.Build += time.Since(start).Seconds()
+			if err != nil {
+				return result{Status: statusUncompiled, Detail: firstLines(msg, 3), Build: cost.Build, Stages: cost.Stages}
 			}
 			built[s.pkg] = bin
 		}
-		if res := r.runStage(ctx, bin, s, s.timeout); res.Status != statusSurvived {
+		start := time.Now()
+		res := r.runStage(ctx, bin, s, s.timeout)
+		cost.Stages = append(cost.Stages, stageSeconds{Layer: s.layer, Pkg: s.pkg, Seconds: time.Since(start).Seconds()})
+		if res.Status != statusSurvived {
+			res.Build, res.Stages = cost.Build, cost.Stages
 			return res
 		}
 	}
-	return result{Status: statusSurvived}
+	return result{Status: statusSurvived, Build: cost.Build, Stages: cost.Stages}
+}
+
+// compile the package in pkg alone, with the overlay file, without building a test binary, and give
+// the output of the compiler: a mutant that does not compile is found for the cost of one package.
+func (r *runner) compile(ctx context.Context, pkg, overlay string) (string, error) {
+	out, err := r.goCmd(ctx, "build", "-overlay", overlay, "./"+pkg)
+	return string(out), err
 }
 
 var (

@@ -71,6 +71,9 @@ func start() error {
 	since := flag.String("since", "", "run only the mutants of the declarations that changed since this commit, or since that of "+roundFile+" with round")
 	shard := flag.String("shard", "", "run only the share i/n of the mutants, the i-th of n shards")
 	merge := flag.String("merge", "", "a pattern of the directories of the results of shards to merge into -out, which then gets the report")
+	sample := flag.Float64("sample", 1, "run only this fraction of the mutants, drawn by -seed")
+	seed := flag.Uint64("seed", 1, "the seed of the draw of -sample")
+	precheck := flag.Bool("precheck", true, "compile the mutated package alone before the first test binary of a mutant")
 	flag.Parse()
 
 	root, err := moduleRoot()
@@ -119,7 +122,8 @@ func start() error {
 	if err != nil {
 		return err
 	}
-	if mutants, err = narrow(root, mutants, eq, *since, *shard); err != nil {
+	var sel selection
+	if mutants, sel, err = narrow(root, mutants, eq, *since, *shard, *sample, *seed); err != nil {
 		return err
 	}
 	if *list {
@@ -161,7 +165,7 @@ func start() error {
 			return err
 		}
 		writeReport(os.Stdout, mutants, all, results, eq)
-		return writeSummaryFiles(*out, mutants, all, results, eq)
+		return writeSummaryFiles(*out, mutants, all, results, eq, sel)
 	}
 	if *reportOnly || *merge != "" {
 		return writeReportFile()
@@ -175,7 +179,7 @@ func start() error {
 	}
 	fmt.Fprintf(os.Stderr, "%v mutants, %v with a result already, %v to run with %v at once\n",
 		len(mutants), len(mutants)-len(todo), len(todo), *jobs)
-	r := &runner{root: root, out: *out, factor: *factor, minTime: *minTime, memory: *memory, procs: *procs, gocache: *gocache}
+	r := &runner{root: root, out: *out, factor: *factor, minTime: *minTime, memory: *memory, procs: *procs, gocache: *gocache, noPrecheck: !*precheck}
 	if *first != "" {
 		if r.first, err = regexp.Compile(*first); err != nil {
 			return err
@@ -185,7 +189,8 @@ func start() error {
 	if err := r.plan(pkgsOf(todo)); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "planned in %v\n", time.Since(began).Round(time.Second))
+	planned := time.Since(began)
+	fmt.Fprintf(os.Stderr, "planned in %v\n", planned.Round(time.Second))
 
 	rf, err := os.OpenFile(resultsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -236,6 +241,10 @@ func start() error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "ran %v mutants in %v\n", len(todo), time.Since(began).Round(time.Second))
+	timing := fmt.Sprintf("plan=%.0f\nrun=%.0f\nworkers=%v\n", planned.Seconds(), (time.Since(began) - planned).Seconds(), *jobs)
+	if err := os.WriteFile(filepath.Join(*out, "timing"), []byte(timing), 0o644); err != nil {
+		return err
+	}
 	return writeReportFile()
 }
 

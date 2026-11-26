@@ -40,6 +40,62 @@ func TestParseShard(t *testing.T) {
 	}
 }
 
+func TestSampleOf(t *testing.T) {
+	var ms []mutant
+	for i := range 5000 {
+		ms = append(ms, mutant{Key: fmt.Sprintf("internal/engine/a.go f constant: %v", i)})
+	}
+	keys := func(ms []mutant) map[string]bool {
+		k := map[string]bool{}
+		for _, m := range ms {
+			k[m.Key] = true
+		}
+		return k
+	}
+
+	t.Run("should keep about the fraction of the mutants", func(t *testing.T) {
+		n := len(sampleOf(ms, 0.2, 1))
+		is.True(t, n > 900 && n < 1100, fmt.Sprint(n))
+	})
+
+	t.Run("should draw the same sample for the same seed, whatever the order, and another for another seed", func(t *testing.T) {
+		shuffled := slices.Clone(ms)
+		rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		a, b, c := keys(sampleOf(ms, 0.2, 1)), keys(sampleOf(shuffled, 0.2, 1)), keys(sampleOf(ms, 0.2, 2))
+		is.Equal(t, len(a), len(b))
+		for k := range a {
+			is.True(t, b[k], k)
+		}
+		same := 0
+		for k := range a {
+			if c[k] {
+				same++
+			}
+		}
+		is.True(t, same < len(a)/2, fmt.Sprint(same))
+	})
+
+	t.Run("should keep the sample of a fraction in that of a larger one", func(t *testing.T) {
+		small, large := keys(sampleOf(ms, 0.1, 7)), keys(sampleOf(ms, 0.3, 7))
+		for k := range small {
+			is.True(t, large[k], k)
+		}
+	})
+
+	t.Run("should keep every mutant with the fraction 1", func(t *testing.T) {
+		is.Equal(t, len(ms), len(sampleOf(ms, 1, 3)))
+	})
+}
+
+func TestNarrow(t *testing.T) {
+	for _, f := range []float64{0, -0.5, 1.5} {
+		t.Run(fmt.Sprintf("should refuse the sample %v", f), func(t *testing.T) {
+			_, _, err := narrow(t.TempDir(), nil, nil, "", "", f, 1)
+			is.True(t, err != nil, "no error")
+		})
+	}
+}
+
 func TestShardOf(t *testing.T) {
 	// Mutants of three packages, in files of different sizes, of which some are listed as equivalent.
 	var ms []mutant
