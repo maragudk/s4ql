@@ -167,3 +167,64 @@ The `SQLITE_LOCKED` stop was a stop for good with the cause "local I/O failure" 
 ### Future work
 
 - The cost of `full` on Linux, and SQLite's checkpoint at the close after a stop, both open in `/docs/todo/cache-checkpoints.md`.
+
+## Step 4: five fixes after an independent review, and the landing
+
+**Author:** core-checkpoints landing builder
+
+### Prompt Context
+
+**Verbatim prompt:** "You finish and land a reviewed branch in s4ql (`maragu.dev/s4ql`, repository `maragudk/s4ql`): `core-checkpoints` (the core runs the cache's checkpoints itself and stops the instance when one fails; production runs `synchronous = full`). The task: five fixes from an independent review, the status texts, and the landing. Do nothing beyond it." (The brief then names the five fixes, the status line for the roadmap, and the steps of the landing.)
+**Interpretation:** close the review's five findings with tests that fail without them, record them under "Fixes after the review", add the roadmap line, then merge `main`, run the checks the change can affect, open the pull request, and merge it once every check passes.
+**Inferred intent:** land the branch without a known hole in the rule "a local I/O failure stops the instance, and nothing is tried again in place", and without making every test pay for syncs that check nothing.
+
+### What I did
+
+- `/internal/sqlite/sqlite.go` and `/internal/sqlite/sqlite_browser.go`: `Conn.NoCheckpointOnClose`, `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` through `sqlite3_db_config` in cgo and through the official build's `sqlite3__wasm_db_config_ip` in the browser, with tests in both test files (`TestConn_NoCheckpointOnClose`).
+- `/internal/core/core.go`, `/internal/core/cache.go`, `/internal/core/read.go`: `conn.close(keepLog)`, and `DB.keepLogLocked`, which reads `DB.failedLocally`, a flag that `stopLocked` sets for every cause that wraps `ErrLocal`, first or not, and that `Open` sets when it fails for one. Every close of a connection passes it.
+- `/internal/core/core_test.go`: `TestDB_Close_afterLocalFailure` (a stop for a failed sync of the log at a commit, one of the file at a checkpoint, a commit that goes on after `DB.Close` and then fails a sync, and a clean close that still checkpoints); `leftOpen` now opens, reads, and closes a connection of its own per cache with a log, and `/s4ql_test.go` does the same in the root package's `newWorld`.
+- `/internal/core/cache.go`, `/internal/core/README.md`, `/docs/todo/cache-checkpoints.md`: the comment on what a failed sync fails, corrected for the file of the cache.
+- `/internal/core/checkpoint_cgo_test.go`: `TestDB_checkpoint_busy`, a checkpoint that cannot start because a third connection holds the lock of the checkpoint in a full checkpoint that waits in its busy handler.
+- `/internal/core/checkpoint.go`: the outcome `locked` beside `busy`.
+- Syncs off in tests: `Options.syncs` (default, full, off), `core.SyncOff(o, testonly.Key{})` with the key in `/internal/core/internal/testonly`, `/internal/core/coretest`, a depguard rule `coretest` in `/.golangci.yml`, `SyncOffByDefault` in `world.openWith`, `syncing` and `checkpointFaults` with `SyncOn`, and `coretest.SyncOff` in the engine's tests and the root package's. Production-path tests: a subtest of `TestOpen` in the core reads `pragma synchronous` (2), and `TestOpen_sync` in `/s4ql_test.go` shows both stops with the core's default syncs.
+- `/docs/roadmap.md`: one line under "Limits of the core".
+- Two reviewers on the most capable model over `git diff 3ceb9d6a..HEAD`, then the fixes of what they found.
+
+### Why
+
+The close after a stop was the one finding that broke the spec's rule; the rest made the record and the tests say what the code does, and took the cost of syncs off the tests that cannot see them.
+
+### What worked
+
+- Each fix has a red run: with `keepLogLocked` returning false, the two stop cases of `TestDB_Close_afterLocalFailure` fail with "core_test.go:629: Expected "1", but got "2" (type int)"; with it reading only the cause of the stop, the case after `DB.Close` fails with "core_test.go:699: Expected "1", but got "2" (type int)"; with `case after.busy:` turned into a failure, `TestDB_checkpoint_busy` fails with "checkpoint_test.go:269: Not true".
+- Times on this machine, `go test -p 4 -count=1`, at a load of 20 to 25: the core package 94.2 s before fix 5 and 94.5 s after; the engine package 295.6 s before and 288.2 s after. macOS's `fsync` does not flush the drive, so the gain on this machine is small; CI on Linux is where it shows.
+- The new and changed tests pass with `-count=20` (34 s) and with `-race -count=20` (318 s), and in headless Chromium (`make test-browser BROWSERPKGS=./internal/core` with a `-run` of the touched tests, 4.6 s).
+- Two reviewers agreed on the two holes that mattered, each with a reproduction through `go test -overlay`: the local failure that is not the first cause of the stop, and the key `struct{}` that `struct{}{}` forges (`var _ = core.SyncOff(core.Options{}, struct{}{})` built in the root package). With `type Key struct{ _ struct{} }` that line fails with "cannot use struct{}{} (value of type struct{}) as testonly.Key value in argument to core.SyncOff", and so does a literal of the same struct type.
+
+### What didn't work
+
+- The first version of the busy test hung for good when it failed: `is` failed the test, the deferred `other.Close()` waited on the connection whose checkpoint sat in its busy handler for an hour, and the read that it waited for was closed only after it. Found with `go test -run 'TestDB_checkpoint/should_not_stop_when_another' -timeout 60s`, "panic: test timed out after 1m0s", and `_Cfunc_sqlite3_close` in the dump. A deferred cleanup now rolls back the write transaction and the read and waits for the checkpoint before the connections close.
+- In headless Chromium the busy test hung for ten minutes: "panic: test timed out after 10m0s", with the test's goroutine in `syscall.fsCall` under `os.CreateTemp` from `DB.newSpool`. Go's file calls in js/wasm go through the JavaScript event loop, which cannot run while the third connection's busy handler holds the one thread. My first guess, that timers cannot fire there, was wrong (`TestDB_Begin` waits on `time.After` in the same position, as a reviewer pointed out). The test moved to `checkpoint_cgo_test.go`, built with cgo only, as `index_cgo_test.go` is.
+- The first production-path subtest of `TestOpen` hung for minutes: it closed an instance that never served and then served a second one in the same world, which waited for a lease. Each instance now has a world of its own and waits until it serves before it reads the setting, which also closes a race on the write connection with the lease task that a reviewer found under `-race` with a pause swept through the window.
+- `git checkout -- internal/core/core.go` to undo a planted change before the work was committed was refused by the permission classifier, rightly, since it would have reverted the uncommitted fix too. I committed first and planted after.
+
+### What I learned
+
+- SQLite's close of the last connection checkpoints only if it gets the exclusive lock of the database file, and a connection in WAL mode holds a shared lock from its first read to its close, so a probe connection of a test's own deletes the log exactly when it is the last one; that is what `leftOpen` relies on now.
+- A full checkpoint takes the lock of the checkpoint first, without the busy handler, and then waits for the lock of the writer and for the readers with it, so it holds the lock of the checkpoint through both waits: a test can hold that lock for as long as it holds a read open.
+- `stopLocked` keeps only the first cause, so a rule that depends on "has a local failure happened" needs a flag of its own.
+
+### What was tricky
+
+- Getting a checkpoint lock held by another connection without timing: the third connection must wait on the lock of the writer, held by an open write transaction of the instance, so that its sleep, which `faultvfs` counts, proves it holds the lock of the checkpoint before the commit's checkpoint runs.
+- A hook that production cannot reach: an exported function with a parameter whose type lives under `internal/core/internal`, and whose type has an unexported field, plus a lint rule on the one package that can make it.
+
+### What warrants review
+
+- `DB.failedLocally` and where it is set: `stopLocked` for every cause and the deferred close of a failed `Open`.
+- `leftOpen` and the root package's `newWorld`: a probe that reads and closes, which must not hide a connection that was left open.
+- The tri-state `Options.syncs`: the reviewers would rather have a bool; the third state is what lets `world.openWith` default to off while a test asks for syncs.
+
+### Future work
+
+- OPEN for the product owner, in `/docs/todo/cache-checkpoints.md`: another instance that shares the cache can still checkpoint and reset the log after the first one stopped.
