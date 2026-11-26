@@ -203,3 +203,65 @@ The planted bugs at 1,000 seeds ran at `55e37d07`, not after the last merge of m
 ### Future work
 
 None of my own.
+
+## Step 5: an adversarial reading, the stale docs, and the landing
+
+**Author:** builder (annotation-text-land)
+
+### Prompt Context
+
+**Verbatim prompt:** You come fresh to a finished branch that changes the commit format: first read it as an adversary, then tidy what it left stale, then land it. [...] 1. **Read it as an adversary**, the checks first, since a weaker oracle hides faults [...] plant at least five others of your own choosing in the engine's write path and in the annotation path, one at a time, never committed [...] Check two of the eight by running a few seeds each. [...] One outside opinion from agy [...] 2. **Tidy what is stale** [...] 4. **Land.** Merge `origin/main` [...]
+
+**Interpretation:** Try to break the new checks with faults of my own, confirm two widened lists of planted bugs, get one outside view of the format, fix the stale docs, merge main, run the long checks once, and merge the pull request.
+
+**Inferred intent:** That the commit format loses its parameters without the tests losing any power to find a wrong commit.
+
+### What I did
+
+- **Faults of my own**, each planted in the worktree or in a copy of it at `/Volumes/990/s4ql/annotation-text-land/copy`, run with `go test -short -count=1 -run '^(TestSimulation|TestDifferential)$' ./internal/engine/`, and reverted:
+  1. Each text argument of a statement of its own ran with an `x` appended (`Conn.write`): `TestSimulation` failed first by `commitRows` ("it upserts the row null,\"Ax\" of the table NO, and SQLite holds ... rows [] for its key after the statements of the commit"), and `TestDifferential` failed too.
+  2. `coreTx.annotate` dropped the annotation of every statement whose text holds `delete`: `TestSimulation` failed by "commit 6 holds the statements [68 69] of the transaction 10, whose statements that succeeded and write are [66 68 69]". `TestDifferential` passed, as expected: both of its instances run the same engine.
+  3. `coreTx.annotate` cut the `/* id N */` comment out of the text: `TestSimulation` panicked, `index out of range [0] with length 0` in `stmttest.LimitRefusal`, from `arithmeticRefusals` in `run.verify`. The check of the IDs had reported "commit 1 holds the statement ..., of no attempt", but the replay of the log went on and judged the arithmetic of a statement with parameters with no arguments. Before the branch the arguments came from the annotation, so this could not happen. Fixed, see below; the fault now fails by "of no attempt".
+  4. The core's spool of a touched table left out the second row of the commit object while the cache kept it (`spoolTouched` in `/internal/core/tx.go`): "the replay of the log holds" in every environment, and `TestDifferential`. `commitRows` does not see a missing row, only a wrong one; the old checks did not either.
+  5. A delete in a transaction ran with each integer argument minus one (`writeIn`): `TestSimulation` failed in the default and hammer environments.
+  6. An update in a transaction annotated its text twice: "commit 8 holds the statements [82 82] of the transaction 11 ..." and "the statement 82 is in commit 8 and commit 8".
+  7. Each statement of a text of several took its arguments from the start of the text (`execAll`): `TestConn_ExecAll`, `TestDifferential`, `TestSimulation`, and three planted bugs' runs failed.
+- **Two widened lists:** with a temporary log of each seed found only by the commit's rows, `S4QL_ENGINE_SIM_SEEDS=1000 go test -count=1 -v -run '^TestSimulation_plantedBugs$/^(keepOldKey|nullCompares)$' ./internal/engine/` (238 s): `keepOldKey` 435 of 1,000, five seeds found by `commitRows` alone; `nullCompares` 486 of 1,000, four. Seeds 15299 (`keepOldKey`, "it upserts the row -1 of the table pragma_x, and SQLite holds ... rows []") and 23853 (`nullCompares`, "it deletes the key [text:\"é\"] of the table ReinDex, and SQLite holds ... [\"\\\"it's\\\",\\\"é\\\",3\"]") replayed with `-replay <seed> -workload <w> -bug <bug>` give that violation, and pass without `-bug`.
+- **The format:** a test in `/internal/format/reader_test.go` that a statement whose field 2 holds bytes that are no value, or a value of text that is not valid UTF-8, reads with its text: version 0 refused both before, since it decoded the field. A comment on `reserved 2` in `/proto/s4ql/v1/commit.proto` says what the number held. The old shape reads and the writer refuses it, as the branch's tests show.
+- **agy** (Gemini, default model) read the diff of `internal/format`, `internal/core`, and the proto from a clean directory: no definite problem; the one change of behaviour it named is the one the new test pins.
+- **The fix of fault 3**, in `run.verify` of `/internal/engine/simulation_test.go`: the check of arithmetic of a note runs only where the note has as many arguments as parameters, as `typeRule` and `run.flattened` already require; a note of no attempt otherwise runs in SQLite as it is, as before the branch.
+- **Docs:** `/docs/roadmap.md` (seven planted bugs of several statements, the annotation and the simulation's check in slices 2 and 3), `/internal/sql/mutation/README.md` (the equivalent mutants of `annotateNext`), and the notes of `/docs/todo/` that described the annotation's arguments (`slice-02.md`, `slice-03.md`, `arithmetic.md`, `several-statements.md`, whose table lost `argsFromStart` and has `annotateText`'s new counts).
+- **The merge of `origin/main` at 6653a01e:** one conflict, in `/internal/engine/README.md`, main's sentence with `update.runIn` and `annotateNext` where the branch had `argsNext`; I took main's and put `argsNext` in. `TestEquivalent` of `internal/sql/mutation` passed without a change of names. `make test` and `make lint` passed.
+- **The long runs after the merge**, one at a time from `/Volumes/990/s4ql/annotation-text-land/runs.sh`, all green: `TestDifferential -sequences 400` with `-p 3` (834 s, at the merge `5b84cd7b`), and at `c3284686` `S4QL_ENGINE_SIM_SEEDS=100` `TestSimulation` (434 s), `argsNext` at 1,000 seeds (105 s: 439 seeds find it, 432 by "for its key after the statements of the commit"), `annotateText` at 1,000 seeds (329 s: 999, each by "whose own text is"), and `go test ./drivercheck/` of `internal/sqlite/crosscheck` (68 s). The machine ran mutation testing and another branch's planted bugs beside them.
+
+### Why
+
+The new oracle, `commitRows`, replaced a direct comparison of each annotation's arguments with the caller's, so faults that make a commit wrong had to be tried against it one by one.
+
+### What worked
+
+The planted-bug harness itself proved the widened lists: it runs each seed that finds a bug again without it, so a seed found only by `commitRows` is a symptom of the bug.
+
+### What didn't work
+
+- Fault 3 at first: `panic: runtime error: index out of range [0] with length 0` from `stmttest.LimitRefusal`.
+- My first fix skipped a note of no attempt in the replay. Both reviewers found that it put SQLite behind the log, so later checks would report the skip as faults, and that a note of an attempt with fewer arguments than parameters still panicked. I replaced it with the guard by the count of the arguments.
+- The harness refused Bash calls that held `git` with other commands or a heredoc into Python with `date`: "this command names git in a form too complex to verify". Plain separate calls and scripts in a file worked.
+
+### What I learned
+
+`commitRows` checks each row a commit holds against SQLite, and not the other way round: a commit that leaves out a row that its statements changed in SQLite is found by the replay of the log and by later answers, not at its commit.
+
+### What was tricky
+
+Planting a fault in the worktree while a long run of the same package was about to compile its next step would have put the fault into that run, so the later faults went into a copy of the tree.
+
+### What warrants review
+
+- The guard `len(given) == s.Parameters()` before `arithmeticRefusals` in `run.verify`.
+- The long runs after the merge, below.
+
+### Future work
+
+- `commitRows` could also require that every key whose row the commit's statements changed in SQLite is in the commit, which would find fault 4 at its commit; the replay finds it now.
+- `internal/simulator` still has `Statement.Args` in `trace.go`, which is always empty, its README (the `args` of a commit's statements), and the fixtures of `sitecheck/check.html`; its owner removes them with the site's display.
