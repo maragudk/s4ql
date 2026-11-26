@@ -42,3 +42,4 @@ The list is in the directory [todo](todo), one file per area, one per slice of s
 - [upserts.md](todo/upserts.md): the piece of work upserts, `insert ... on conflict (key) do nothing` and `do update`.
 - [cache-checkpoints.md](todo/cache-checkpoints.md): the piece of work checkpoints and syncs of the cache, `synchronous = full`.
 - [hegel.md](todo/hegel.md): the property-based tests with Hegel, beside the seeded checks.
+- [update-order.md](todo/update-order.md): the piece of work the order in which an update changes its rows, which decides its error.
