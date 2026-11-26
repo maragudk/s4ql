@@ -81,7 +81,7 @@ func TestSubqueries(t *testing.T) {
 			internal(t, c.want, err)
 		}
 		internal(t, "the subquery 2 of a statement with 1", s.lengths(build{}, &Subquery{Number: 2}))
-		internal(t, "the subquery 2 of a statement with 1", s.types(build{}, &Subquery{Number: 2}, outer, 0, nil))
+		internal(t, "the subquery 2 of a statement with 1", s.types(build{}, &Subquery{Number: 2}, outer, 0, false, classAny))
 		f := &Filter{Conditions: []Condition{{Column: stmt.Name{Value: "k"}, Operator: stmt.OpEqual, Value: &Subquery{Number: 2}}}}
 		internal(t, "the subquery 2 of a statement with 1", build{r: fakeTx{newTables()}, subs: s}.compute(t.Context(), f, &scan{table: outer}, make([]condition, 1), false))
 	})
@@ -144,17 +144,17 @@ func TestSubqueries(t *testing.T) {
 		in := s.list[0]
 		is.NotError(t, s.names(t.Context(), build{r: fakeTx{f}, subs: s}, in))
 		outer := f.tables["t"].ct
-		is.NotError(t, s.types(build{}, &Subquery{Number: 1}, outer, 1, nil))
+		is.NotError(t, s.types(build{}, &Subquery{Number: 1}, outer, 1, false, classAny))
 		for _, c := range []struct{ inside, outside int }{{-1, 0}, {2, 0}, {0, -1}, {0, 2}} {
 			in.position = c.inside
-			internal(t, fmt.Sprintf("a subquery of the column at %v compared with the column at %v", c.inside, c.outside), s.types(build{}, &Subquery{Number: 1}, outer, c.outside, nil))
+			internal(t, fmt.Sprintf("a subquery of the column at %v compared with the column at %v", c.inside, c.outside), s.types(build{}, &Subquery{Number: 1}, outer, c.outside, false, classAny))
 		}
 		// The same compared with an expression that the condition tests, k + 1.
-		test, err := bindArithmetic(outer, stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "k"}}, {Kind: stmt.ExprValue, Value: stmt.Integer(1)}}}, nil)
+		_, err := bindExpression(outer, stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "k"}}, {Kind: stmt.ExprValue, Value: stmt.Integer(1)}}}, nil, 1000)
 		is.NotError(t, err)
 		for _, position := range []int{-1, 2} {
 			in.position = position
-			internal(t, fmt.Sprintf("a subquery of the column at %v compared with an expression", position), s.types(build{}, &Subquery{Number: 1}, outer, -1, test))
+			internal(t, fmt.Sprintf("a subquery of the column at %v compared with an expression", position), s.types(build{}, &Subquery{Number: 1}, outer, -1, true, classInteger))
 		}
 		for _, position := range []int{-1, 2} {
 			in.position = position

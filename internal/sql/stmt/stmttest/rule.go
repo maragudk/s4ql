@@ -103,9 +103,13 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 // names. SQLite looks the select list up first, in its order, and then the conditions, in the order
 // of the text: the first comparison of a column that the table does not have gives the error. A test
 // for NULL of such a column does not stop SQLite, which goes on with the error of that column: a
-// later such test replaces it, and the next comparison ends the walk with it. A comparison with
-// arithmetic or a column alone looks its names up in the order of the text. Then come the columns
-// of the ORDER BY, of slice 13, in their order.
+// later such test replaces it, and the next comparison ends the walk with it. A comparison with an
+// expression or a column alone looks its names up in the order of the text, as SQLite walks the tree
+// of each side, whose every node it reaches before the nodes under it: a missing column inside the
+// argument of a call does not stop the walk either, as for a test for NULL, and a later missing
+// column replaces it, but any node other than a column or a call ends the walk with it, and a
+// literal, a parameter, or a subquery after it too. Then come the columns of the ORDER BY, of slice
+// 13, in their order.
 func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 	for _, name := range s.Columns {
 		if ColumnOf(columns, name) < 0 {
@@ -113,19 +117,56 @@ func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 		}
 	}
 	var missing *stmt.Name
-	for i, c := range s.Where {
-		names := conditionNames(c)
-		slices.SortStableFunc(names, func(a, b stmt.Name) int { return a.Offset - b.Offset })
-		at := slices.IndexFunc(names, func(n stmt.Name) bool { return ColumnOf(columns, n) < 0 })
+	// walk the expression e, a side of a comparison: the name that ends the walk, and true.
+	var walk func(e stmt.Expression) (stmt.Name, bool)
+	walk = func(e stmt.Expression) (stmt.Name, bool) {
 		switch {
-		case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+		case e.Kind == stmt.ExprColumn:
+			return e.Column, ColumnOf(columns, e.Column) < 0
+		case e.Kind == stmt.ExprCall:
+			if name, stop := walk(e.Operands[0]); stop {
+				missing = &name
+			}
+			return stmt.Name{}, false
+		case missing != nil:
+			return *missing, true
+		}
+		for _, o := range e.Operands {
+			if name, stop := walk(o); stop {
+				return name, true
+			}
+		}
+		return stmt.Name{}, false
+	}
+	for i, c := range s.Where {
+		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
 			if ColumnOf(columns, c.Column) < 0 {
 				missing = &s.Where[i].Column
 			}
-		case missing != nil:
+			continue
+		}
+		if missing != nil {
 			return *missing, true
-		case at >= 0:
-			return names[at], true
+		}
+		tested := c.Expression
+		if !tested.Present() {
+			tested = stmt.Expression{Kind: stmt.ExprColumn, Column: c.Column}
+		}
+		sides := []stmt.Expression{tested, c.Value.Expression}
+		if c.ValueFirst {
+			sides[0], sides[1] = sides[1], sides[0]
+		}
+		for _, e := range sides {
+			if !e.Present() {
+				if missing != nil {
+					// A literal, a parameter, or a subquery.
+					return *missing, true
+				}
+				continue
+			}
+			if name, stop := walk(e); stop {
+				return name, true
+			}
 		}
 	}
 	if missing != nil {

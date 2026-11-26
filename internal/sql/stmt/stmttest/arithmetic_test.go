@@ -65,12 +65,33 @@ func TestArithmeticRefusals(t *testing.T) {
 		{"select * from t where s = ? + 1", []any{nil}, false, []string{"s4ql: not supported: an expression of type null compared with the column t.s of type TEXT"}},
 		{"update t set b = ? + 1", []any{nil}, false, []string{"s4ql: not supported: an expression of type null for the column t.b of type BLOB"}},
 		{"update t set r = ? + 1", []any{nil}, false, nil},
-		// Text has the one refusal of its root, and no class.
-		{"update t set s = lower(s)", nil, false, []string{"s4ql: not supported: call of lower (at offset 17)"}},
-		{"update t set k = 'a' || hex(b)", nil, false, []string{"s4ql: not supported: concatenation (at offset 17)"}},
-		{"update t set s = lower(s)", nil, true, []string{"s4ql: not supported: call of lower (at offset 17)"}},
-		{"select * from t where k = hex(?)", []any{"a"}, false, []string{"s4ql: not supported: call of hex (at offset 26)"}},
-		{"select * from t where s || 'a' < r * 2", nil, false, []string{"s4ql: not supported: concatenation (at offset 22)"}},
+		// Text is of the class text, also with an argument that is NULL, and refuses a number, and a
+		// blob but in hex, inside it.
+		{"update t set s = lower(s)", nil, false, nil},
+		{"update t set s = lower(s)", nil, true, nil},
+		{"update t set k = 'a' || hex(b)", nil, false, []string{"s4ql: not supported: an expression of type text for the column t.k of type INT"}},
+		{"update t set b = hex(b)", nil, false, []string{"s4ql: not supported: an expression of type text for the column t.b of type BLOB"}},
+		{"update t set s = ? || s", []any{nil}, false, nil},
+		{"update t set i = lower(?)", []any{nil}, false, []string{"s4ql: not supported: an expression of type text for the column t.i of type INTEGER"}},
+		{"select * from t where k = hex(?)", []any{"a"}, false, []string{"s4ql: not supported: an expression of type text compared with the column t.k of type INT"}},
+		{"select * from t where k = lower(?)", []any{nil}, false, []string{"s4ql: not supported: an expression of type text compared with the column t.k of type INT"}},
+		{"select * from t where s || 'a' < r * 2", nil, false, []string{"s4ql: not supported: an expression of type real compared with an expression of type text"}},
+		{"select * from t where lower(s) = ? + 1", []any{nil}, false, []string{"s4ql: not supported: an expression of type null compared with an expression of type text"}},
+		{"select * from t where lower(s) = 1", nil, false, []string{"s4ql: not supported: an integer literal compared with an expression of type text"}},
+		{"select * from t where lower(s) = ?", []any{nil}, false, nil},
+		{"select * from t where lower(s) = s", nil, false, nil},
+		{"select * from t where lower(s) = (select k from u)", nil, false, []string{"s4ql: not supported: subquery 1, of the column u.k of type INT, compared with an expression of type text"}},
+		{"select * from t where k = (select k from u where lower(s) = 1)", nil, false, []string{"s4ql: not supported: an integer literal compared with an expression of type text"}},
+		{"select * from t where lower(i) = 'a'", nil, false, []string{"s4ql: not supported: column of type INTEGER in a call of lower (at offset 28)"}},
+		{"select * from t where hex(b) || lower(b) = s", nil, false, []string{"s4ql: not supported: column of type BLOB in a call of lower (at offset 38)"}},
+		{"select * from t where hex(b) = ?", []any{nil}, false, nil},
+		{"select * from t where hex(?) = s", []any{[]byte{1}}, false, nil},
+		{"select * from t where hex(?) = s", []any{int64(1)}, false, []string{"s4ql: not supported: argument 1 in a call of hex, which is an integer (at offset 26)"}},
+		{"select * from t where s || ? = s", []any{[]byte{1}}, false, []string{"s4ql: not supported: argument 1 in a concatenation, which is a blob (at offset 27)"}},
+		{"select * from t where r || ? = s", []any{1.5}, false, []string{"s4ql: not supported: column of type REAL in a concatenation (at offset 22)", "s4ql: not supported: argument 1 in a concatenation, which is a real (at offset 27)"}},
+		// A column beside an expression is the column of the condition, on either side.
+		{"select * from t where k + 1 = s", nil, false, []string{"s4ql: not supported: an expression of type integer compared with the column t.s of type TEXT"}},
+		{"select * from t where k + 1 = i", nil, false, nil},
 	}
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("should give %q for %q with %v", test.want, test.src, test.args), func(t *testing.T) {
