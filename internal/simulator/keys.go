@@ -14,9 +14,8 @@ import (
 type knownKeys struct {
 	mu sync.Mutex
 	// known holds the keys whose rows the application knows are in the store, in the order in which
-	// it learned them: from an acknowledged insert, or from a delete
-	// that ended without an unknown outcome and without being acknowledged. A key leaves it when a
-	// delete picks it.
+	// it learned them: from an acknowledged insert, or from a delete that ended without an unknown
+	// outcome and without being acknowledged. A key leaves it when a delete picks it.
 	known []int64
 	// deletable holds the keys of known that a delete can pick: those that no delete has picked.
 	deletable []int64
