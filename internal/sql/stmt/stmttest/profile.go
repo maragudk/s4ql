@@ -141,6 +141,21 @@ type Profile struct {
 	// Several, if not 0, makes one call in Several a text of several statements, as
 	// [Sequence.several] writes it; the area of several statements is off with 0.
 	Several int
+	// TextFunctions, if not 0, makes one comparison in TextFunctions of a WHERE, of a select, an
+	// update, a delete, and a subquery, and one assignment in TextFunctions of the SET of an update,
+	// have the text of the piece of work text functions, ||, lower, and hex, as [Sequence.textWhere]
+	// and [Sequence.textSet] draw it, one select in 3*TextFunctions a WHERE of its key equal to or
+	// between texts without a column, as [Sequence.textKeyWhere] draws it, and one call in
+	// 8*TextFunctions a text of [TextRefused], which the statement pass refuses for its text; the area
+	// of the text functions is off with 0.
+	TextFunctions int
+	// TextAgain, if not 0 and with TextFunctions, makes one call in TextAgain the text of the last
+	// select, update, or delete with text again, as a prepared statement runs it, with each argument
+	// the same one time in two and otherwise another, as [Sequence.textLike] gives it.
+	TextAgain int
+	// TextShapes, if not 0, gives one table in TextShapes a key of type TEXT and each other column of
+	// type TEXT one time in two, so that text meets the key, the indexes, and a column beside it.
+	TextShapes int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
@@ -153,7 +168,8 @@ const Slots = 32
 var (
 	// Mixed has every area on, with the odds of each as a statement of several features meets them.
 	Mixed = &Profile{Name: "mixed", Faults: allFaults, Weights: weights(4, 10, 5, 1, 3, 2, 3, 1), Others: 12, Where: 2, Indexes: 1, Exists: 3, Defaults: 1,
-		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4, Returning: 5, Subquery: 8, Arithmetic: 8, Several: 32}
+		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4, Returning: 5, Subquery: 8, Arithmetic: 8, Several: 32,
+		TextFunctions: 8, TextAgain: 40}
 	// Tables weighs the tables themselves, of slices 1, 4, 5, and 6: their columns, types, and keys,
 	// the columns that take NULL, the lists and the faults of an insert, whole reals for a column of
 	// integers, and a select of all rows.
@@ -232,15 +248,32 @@ var (
 	// leaves those before it.
 	Several = &Profile{Name: "several", Faults: []string{areaSeveral}, Aim: 4, Weights: weights(3, 12, 6, 1, 5, 3, 2, 1),
 		Where: 2, Indexes: 1, Exists: 3, Parameters: 3, Around: [2]int{8, 16}, Transactions: 3, Returning: 4, Arithmetic: 3, Several: 2}
+	// TextFunctions weighs the text of the piece of work text functions: ||, lower, and hex, nested,
+	// over literals, parameters, and columns, with NULL in every place, empty text, text that is not
+	// ASCII, and blobs in hex. It is in the SET of an update, also of the column that it sets, and on
+	// either side of a comparison of a WHERE of a select, an update, a delete, and a scalar subquery:
+	// a text without a column that serves the key or an index as a ? does, an expression of a column
+	// that serves nothing, a column compared with a text of another column, and goqite's id, 'm_' ||
+	// lower(hex(?)). Its tables have keys and columns of type TEXT, which its indexes hold. Its values
+	// make texts of the length limit, one byte shorter, and one byte longer, of a constant and of a
+	// row. Its faults are the refusals of the types: a number in a concatenation, in lower, and in hex,
+	// a blob in a concatenation and in lower, as a column and as an argument, text compared with or
+	// set for a column of a number or a blob, and a plain value or a subquery of another type than
+	// the text that it is compared with. Also arithmetic in the same statements, its texts run again
+	// with other arguments, as a prepared statement runs them, and the texts of [TextRefused], which
+	// the statement pass refuses. Its test begins transactions more often.
+	TextFunctions = &Profile{Name: "textfunctions", Faults: []string{areaTextFunctions}, Aim: 3, Weights: weights(3, 12, 12, 1, 11, 4, 4, 1), Where: 3, Indexes: 2,
+		Columns: 3, Parameters: 3, Transactions: 3, Order: 1, Limit: 3, Keys: 2, Returning: 4, ByKey: 4, EveryRow: 3, Subquery: 5, Arithmetic: 6,
+		TextFunctions: 2, TextAgain: 10, TextShapes: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].
-var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder, areaReturning, areaSubquery, areaArithmetic, areaSeveral}
+var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder, areaReturning, areaSubquery, areaArithmetic, areaSeveral, areaTextFunctions}
 
 // Profiles, each at the slot of its place in the list. A profile is added at the end, and none is
 // taken out or moved, since the seeds of each profile are those of its slot: see [Profile.Seed].
 var Profiles = func() []*Profile {
-	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order, Returning, Subquery, Arithmetic, Several}
+	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order, Returning, Subquery, Arithmetic, Several, TextFunctions}
 	if len(ps) > Slots {
 		panic("stmttest: more profiles than slots")
 	}
@@ -316,6 +349,9 @@ const (
 	// areaSeveral draws whether a call is a text of several statements, how many, which, and what
 	// stands before, between, and after them.
 	areaSeveral = "several"
+	// areaTextFunctions draws whether a comparison of a WHERE or an assignment of SET has text of ||,
+	// lower, and hex, its expressions, a text that runs again, and the texts of [TextRefused].
+	areaTextFunctions = "textfunctions"
 	// areaOthers draws the texts of [Others].
 	areaOthers = "others"
 	// areaText draws how a statement is written: its gaps, the case of its keywords, the spelling of
@@ -354,6 +390,8 @@ func (p *Profile) on(area string) bool {
 		return p.Arithmetic > 0
 	case areaSeveral:
 		return p.Several > 0
+	case areaTextFunctions:
+		return p.TextFunctions > 0
 	}
 	return true
 }
