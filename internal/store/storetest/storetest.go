@@ -87,6 +87,7 @@ func Cases() []Case {
 		{Name: "should let exactly one of many racing creates of one key succeed", Run: raceCreate},
 		{Name: "should let at most one of many racing swaps from one version succeed", Run: raceSwap},
 		{Name: "should lose no increment of a counter that racing clients swap", Run: raceCounter},
+		{Name: "should not wrap the cause of the end of a context in the error of a call or of a read of its content", Run: endedCause},
 	}
 }
 
@@ -616,6 +617,50 @@ func raceCounter(t T, ctx context.Context, env Env) {
 	if _, err := fmt.Sscan(string(data), &count); err != nil || count < applied || count > applied+unknown {
 		t.Errorf("the counter is %q after %v swaps that succeeded and %v whose outcome is unknown", data, applied, unknown)
 	}
+}
+
+func endedCause(t T, ctx context.Context, env Env) {
+	c := env.Client("a")
+	v, ok := create(t, ctx, c, "k", "content")
+	if !ok {
+		return
+	}
+	// The cause matches every error that means "not applied", as an error of the caller's that
+	// wraps them would.
+	cause := fmt.Errorf("another call: %w, %w, %w, %w, %w", store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum, store.ErrTooLarge)
+	check := func(op string, err error) {
+		t.Helper()
+		if errors.Is(err, cause) {
+			t.Errorf("%v with a context that ended with a cause: the error %v wraps the cause", op, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "another call") {
+			t.Errorf("%v with a context that ended with a cause: the error %v holds the text of the cause", op, err)
+		}
+	}
+
+	// The content of a read whose context ends after the read has returned.
+	readCtx, cancelRead := context.WithCancelCause(ctx)
+	body, _, err := c.Get(readCtx, "k")
+	if err != nil {
+		t.Errorf("get %q: %v", "k", err)
+		cancelRead(nil)
+		return
+	}
+	cancelRead(cause)
+	_, err = io.ReadAll(body)
+	_ = body.Close()
+	check("a read of the content", err)
+
+	ended, cancel := context.WithCancelCause(ctx)
+	cancel(cause)
+	_, _, err = get(ended, c, "k")
+	check("a get", err)
+	_, _, err = get(ended, c, "missing")
+	check("a get of a key with no object", err)
+	_, err = c.Create(ended, "new", content("content"), nil)
+	check("a create", err)
+	_, err = c.Swap(ended, "k", v, content("other"), nil)
+	check("a swap", err)
 }
 
 // get the content and version of the object at key, as [read] does, but with the error returned.

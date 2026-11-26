@@ -46,8 +46,9 @@ func (g *guard) close() {
 }
 
 // body of an object that a read returned. It fails with [io.ErrUnexpectedEOF] if the content ends
-// before the length that the answer gave, wraps the error of the context of the read in a failure
-// after the context ended, as [ended] does, and logs the event of the read when it is closed.
+// before the length that the answer gave, while the context of the read has not ended. A failure
+// after the context ended wraps only the error of the context, as [ended] gives it. It logs the
+// event of the read when it is closed.
 type body struct {
 	r    *request
 	body io.ReadCloser

@@ -844,3 +844,118 @@
 109	reached: several statements: a statement that ran on a table whose rows an earlier statement of the text changed
 68	reached: several statements: a last statement with RETURNING that ran
 45	reached: several statements: a last statement with RETURNING that ran, after another count of changes
+# The workload of text, of 2026-11-26: a third of the total that day of every kind of text that a run
+# reaches three times, by where a text is, whether it has a column, and the outcome; each refusal of
+# the types of text; each operator at the edge of the length limit, one byte short of it, and one byte
+# over it, by the outcome; and the constants of text that serve the access, and the cases of
+# pair.reachOfText. An edge counts only a length that the generator wrote a text for
+# (stmttest.Call.TextEdges), and goqite's id only its own form, of a blob of 16 bytes; their numbers
+# are a third of their totals after that change, of the same day.
+1	reached: text with a column in SET of a update, NOT NULL constraint failed
+2	reached: text with a column in SET of a update, UNIQUE constraint failed
+5	reached: text with a column in SET of a update, no such column
+8	reached: text with a column in SET of a update, no such table
+19	reached: text with a column in SET of a update, not supported
+48	reached: text with a column in SET of a update, ok
+4	reached: text with a column in SET of a update, string or blob too big
+1	reached: text with a column in SET of a update, wrong number of arguments
+2	reached: text with a column in WHERE of a delete, no such column
+11	reached: text with a column in WHERE of a delete, no such table
+21	reached: text with a column in WHERE of a delete, not supported
+28	reached: text with a column in WHERE of a delete, ok
+1	reached: text with a column in WHERE of a delete, string or blob too big
+2	reached: text with a column in WHERE of a delete, wrong number of arguments
+2	reached: text with a column in WHERE of a select, 1/1: row value misused
+15	reached: text with a column in WHERE of a select, no such column
+32	reached: text with a column in WHERE of a select, no such table
+66	reached: text with a column in WHERE of a select, not supported
+86	reached: text with a column in WHERE of a select, ok
+16	reached: text with a column in WHERE of a select, string or blob too big
+5	reached: text with a column in WHERE of a select, wrong number of arguments
+3	reached: text with a column in WHERE of a update, 1/1: sub-select returns 3 columns - expected 1
+8	reached: text with a column in WHERE of a update, no such column
+17	reached: text with a column in WHERE of a update, no such table
+43	reached: text with a column in WHERE of a update, not supported
+53	reached: text with a column in WHERE of a update, ok
+8	reached: text with a column in WHERE of a update, string or blob too big
+2	reached: text with a column in WHERE of a update, wrong number of arguments
+2	reached: text with a column in a subquery of a delete, not supported
+1	reached: text with a column in a subquery of a delete, ok
+3	reached: text with a column in a subquery of a select, no such column
+2	reached: text with a column in a subquery of a select, no such table
+5	reached: text with a column in a subquery of a select, not supported
+8	reached: text with a column in a subquery of a select, ok
+1	reached: text with a column in a subquery of a select, string or blob too big
+2	reached: text with a column in a subquery of a update, no such column
+4	reached: text with a column in a subquery of a update, no such table
+11	reached: text with a column in a subquery of a update, not supported
+3	reached: text with a column in a subquery of a update, ok
+5	reached: text with a column in a subquery of a update, string or blob too big
+1	reached: text without a column in SET of a update, UNIQUE constraint failed
+3	reached: text without a column in SET of a update, no such column
+8	reached: text without a column in SET of a update, no such table
+44	reached: text without a column in SET of a update, not supported
+12	reached: text without a column in SET of a update, ok
+4	reached: text without a column in SET of a update, string or blob too big
+1	reached: text without a column in WHERE of a delete, no such column
+5	reached: text without a column in WHERE of a delete, no such table
+5	reached: text without a column in WHERE of a delete, not supported
+23	reached: text without a column in WHERE of a delete, ok
+9	reached: text without a column in WHERE of a select, no such column
+19	reached: text without a column in WHERE of a select, no such table
+20	reached: text without a column in WHERE of a select, not supported
+98	reached: text without a column in WHERE of a select, ok
+9	reached: text without a column in WHERE of a select, string or blob too big
+3	reached: text without a column in WHERE of a select, wrong number of arguments
+1	reached: text without a column in WHERE of a update, UNIQUE constraint failed
+3	reached: text without a column in WHERE of a update, no such column
+4	reached: text without a column in WHERE of a update, no such table
+14	reached: text without a column in WHERE of a update, not supported
+25	reached: text without a column in WHERE of a update, ok
+6	reached: text without a column in WHERE of a update, string or blob too big
+1	reached: text without a column in a subquery of a delete, ok
+1	reached: text without a column in a subquery of a select, no such table
+4	reached: text without a column in a subquery of a select, not supported
+4	reached: text without a column in a subquery of a select, ok
+2	reached: text without a column in a subquery of a update, no such table
+7	reached: text without a column in a subquery of a update, not supported
+5	reached: text without a column in a subquery of a update, ok
+3	reached: text without a column in a subquery of a update, string or blob too big
+19	reached: text: NULL as an argument in a text, ok
+37	reached: text: a blob in hex, ok
+61	reached: text: a text that is not ASCII in a text, ok
+57	reached: text: a text that runs again, ok
+5	reached: text: constant text that makes the access read no row
+3	reached: text: constant text that serves a bound of an index
+12	reached: text: constant text that serves a bound of the key
+21	reached: text: constant text that serves a get of one key
+5	reached: text: goqite's id, 'm_' || lower(hex(?)), ok
+2	reached: text: hex at the length limit, ok
+2	reached: text: hex one byte over the length limit, string or blob too big
+1	reached: text: hex one byte short of the length limit, ok
+2	reached: text: lower at the length limit, ok
+1	reached: text: lower at the length limit, string or blob too big
+3	reached: text: lower one byte over the length limit, string or blob too big
+2	reached: text: lower one byte short of the length limit, ok
+10	reached: text: refused a BLOB column in a concatenation
+4	reached: text: refused a BLOB column in lower
+23	reached: text: refused a column of a number in a concatenation
+31	reached: text: refused a column of a number in hex
+1	reached: text: refused a column of a number in lower
+2	reached: text: refused a plain value of another type compared with text
+6	reached: text: refused a subquery of another type compared with text
+2	reached: text: refused an argument that is a blob in a concatenation
+3	reached: text: refused an argument that is a blob in lower
+2	reached: text: refused an argument that is a number in a concatenation
+1	reached: text: refused an argument that is a number in hex
+3	reached: text: refused an argument that is a number in lower
+17	reached: text: refused text compared with a column of a number or a blob
+29	reached: text: refused text set for a column of a number or a blob
+11	reached: text: text beside arithmetic in one statement, ok
+92	reached: text: the empty text in a text, ok
+82	reached: text: the key compared with a text, ok
+2	reached: text: || at the length limit, ok
+1	reached: text: || at the length limit, string or blob too big
+3	reached: text: || one byte over the length limit, string or blob too big
+3	reached: text: || one byte short of the length limit, ok
+2	reached: text: || one byte short of the length limit, string or blob too big

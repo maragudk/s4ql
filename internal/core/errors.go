@@ -205,6 +205,19 @@ func (c *conn) harmless(ctx context.Context, open bool, err error) (bool, error)
 	return ended(ctx, err), err
 }
 
+// endedError is the error of ctx, which has ended: [context.Canceled] or [context.DeadlineExceeded],
+// as ctx.Err gives them, and [context.DeadlineExceeded] for a context that was canceled with exactly
+// that cause, which is how a timeout can end a context derived from it. Any other cause of the end is neither wrapped nor
+// named: a context can be ended with any error, such as one that an earlier call of this package
+// returned, and an error of a call must not match it, nor read as if it said what the cause says.
+func endedError(ctx context.Context) error {
+	err := ctx.Err()
+	if errors.Is(err, context.Canceled) && context.Cause(ctx) == context.DeadlineExceeded {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
 // isTooBig reports whether err is SQLite's SQLITE_TOOBIG, "string or blob too big".
 func isTooBig(err error) bool {
 	var sqliteErr *sqlite.Error

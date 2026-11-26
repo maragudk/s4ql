@@ -196,7 +196,7 @@ func readContent(content io.ReadSeeker) ([]byte, error) {
 func (c *Client) send(ctx context.Context, r *request) error {
 	s := c.s
 	// A request whose context is done is never sent, as an HTTP client sends none.
-	if err := context.Cause(ctx); err != nil {
+	if err := ended(ctx); err != nil {
 		return err
 	}
 	// A sender that has crashed sends nothing, also from code that runs on after the crash until it
@@ -500,7 +500,7 @@ func (b *body) Read(p []byte) (int, error) {
 	if b.closed {
 		return 0, errors.New("simstore: read of content that is closed")
 	}
-	if err := context.Cause(b.ctx); err != nil {
+	if err := ended(b.ctx); err != nil {
 		return 0, fmt.Errorf("simstore: read of the content of request %v: %w", b.request, err)
 	}
 	if b.c.s.unreachable(b.c) {
