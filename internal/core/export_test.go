@@ -62,12 +62,34 @@ func (o Options) Unplanted() Options {
 
 // SyncOff stops SQLite from syncing the cache to disk.
 func (o *Options) SyncOff() {
-	o.syncOff = true
+	o.syncs = syncsOff
 }
 
-// SyncOn lets SQLite sync the cache to disk, as it does by default: it undoes [Options.SyncOff].
+// SyncOn lets SQLite sync the cache to disk with synchronous = full, as it does by default, also
+// where [Options.SyncOffByDefault] follows: it undoes [Options.SyncOff].
 func (o *Options) SyncOn() {
-	o.syncOff = false
+	o.syncs = syncsFull
+}
+
+// SyncOffByDefault stops SQLite from syncing the cache to disk, unless [Options.SyncOn] or
+// [Options.SyncOff] has said how it syncs.
+func (o *Options) SyncOffByDefault() {
+	if o.syncs == syncsDefault {
+		o.syncs = syncsOff
+	}
+}
+
+// Synchronous is SQLite's setting synchronous of the write connection: 0 for off, 2 for full. It
+// requires that no call uses the instance.
+func (d *DB) Synchronous() (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var setting int64
+	err := d.w.query("pragma synchronous", func(s *sqlite.Stmt) error {
+		setting = s.ColumnInt64(0)
+		return nil
+	})
+	return setting, err
 }
 
 // CheckpointAfter sets the number of frames in the write-ahead log from which the writer

@@ -123,9 +123,12 @@ func (w *world) openOn(t *testing.T, cache string, s store.Store, options core.O
 	return w.openWith(t, cache, w.host, s, options)
 }
 
-// openWith opens an instance on the host h that reaches the store through s.
+// openWith opens an instance on the host h that reaches the store through s. SQLite does not sync
+// its cache to disk, unless the options say so with [core.Options.SyncOn]: a test that neither
+// fails a sync nor crashes the operating system cannot tell syncs from none.
 func (w *world) openWith(t *testing.T, cache string, h host.Host, s store.Store, options core.Options) *core.DB {
 	t.Helper()
+	options.SyncOffByDefault()
 	d, err := core.Open(t.Context(), h, s, filepath.Join(w.dir, cache+".db"), "db", options)
 	is.NotError(t, err)
 	t.Cleanup(func() {
@@ -424,6 +427,36 @@ func TestOpen(t *testing.T) {
 
 		empty := w.serve(t, "b", core.Options{})
 		is.Equal(t, "t1(k*0,v?): 1,null | 3,30", read(t, empty))
+	})
+
+	t.Run("should sync the cache with synchronous = full by default, and not with syncs off", func(t *testing.T) {
+		// The setting is that of the write connection from the open on, so no instance needs to
+		// serve, and each is a spare of its own world's database.
+		synchronous := func(d *core.DB) int64 {
+			t.Helper()
+			setting, err := d.Synchronous()
+			is.NotError(t, err)
+			return setting
+		}
+		w := newWorld(t)
+		d, err := core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "a.db"), "db", core.Options{})
+		is.NotError(t, err)
+		is.Equal(t, int64(2), synchronous(d))
+		is.NotError(t, d.Close(t.Context()))
+
+		w = newWorld(t)
+		var off core.Options
+		off.SyncOff()
+		d, err = core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "a.db"), "db", off)
+		is.NotError(t, err)
+		is.Equal(t, int64(0), synchronous(d))
+		is.NotError(t, d.Close(t.Context()))
+
+		// The scenario tests open their instances with syncs off, unless they turn them on.
+		is.Equal(t, int64(0), synchronous(newWorld(t).open(t, "a", core.Options{})))
+		var on core.Options
+		on.SyncOn()
+		is.Equal(t, int64(2), synchronous(newWorld(t).open(t, "a", on)))
 	})
 }
 

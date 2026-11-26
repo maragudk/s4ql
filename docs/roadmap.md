@@ -163,6 +163,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - A sort that no index gives runs in the cache's SQLite, which spills to a temporary file ([research/memory-bounds.md](research/memory-bounds.md)).
 - The rows of a `returning` are held in memory without a bound ([todo/operators.md](todo/operators.md)).
 - A stop of the instance does not stop a sort that runs ([todo/storage-core.md](todo/storage-core.md)), and the first phase of `db.Close()` has no bound ([todo/driver.md](todo/driver.md)).
+- The core runs the cache's checkpoints itself, a failed sync or checkpoint stops the instance, which then closes without SQLite's checkpoint, and production runs `synchronous = full` (2026-11-26, [todo/cache-checkpoints.md](todo/cache-checkpoints.md)).
 
 **Decided,** with the details in [todo/operators.md](todo/operators.md): an operator that holds rows gets a limit with a clear error first, so that a statement that would hold more than a set amount fails and changes nothing. Spooling to the cache comes later, one operator at a time, starting with the rows of a `returning`. A spool that fills the disk stops the whole instance ([research/memory-bounds.md](research/memory-bounds.md)). Agreed by Markus on 2026-11-24.
 

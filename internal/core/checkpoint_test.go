@@ -45,6 +45,13 @@ func rows(first, n int) []step {
 	return steps
 }
 
+// syncing is options with syncs on, as an instance has them by default, also where a test helper
+// would turn them off.
+func syncing(options core.Options) core.Options {
+	options.SyncOn()
+	return options
+}
+
 // checkpointFaults opens a VFS of faultvfs, which a cleanup registered before those of the
 // instances closes after them, and options that open the cache through it, with syncs on, as an
 // instance has them by default, and a checkpoint after pages of the write-ahead log.
@@ -53,8 +60,7 @@ func checkpointFaults(t *testing.T, pages int) (*faultvfs.VFS, core.Options) {
 	vfs, err := faultvfs.New()
 	is.NotError(t, err)
 	t.Cleanup(func() { is.NotError(t, vfs.Close()) })
-	var options core.Options
-	options.VFS = vfs.Name()
+	options := syncing(core.Options{VFS: vfs.Name()})
 	options.CheckpointAfter(pages)
 	return vfs, options
 }
@@ -72,7 +78,7 @@ func keyed(n int) string {
 func TestDB_checkpoint(t *testing.T) {
 	t.Run("should turn SQLite's automatic checkpoint off on the write connection and on every reader", func(t *testing.T) {
 		w := newWorld(t)
-		d := w.serve(t, "a", core.Options{})
+		d := w.serve(t, "a", syncing(core.Options{}))
 		newReader(t, d)
 		newReader(t, d)
 		settings, err := d.AutoCheckpoint()
@@ -83,7 +89,7 @@ func TestDB_checkpoint(t *testing.T) {
 	t.Run("should checkpoint after a commit once the write-ahead log holds enough pages, and start the log again at the next commit", func(t *testing.T) {
 		w := newWorld(t)
 		rec := &recorder{}
-		options := core.Options{Logger: rec.logger()}
+		options := syncing(core.Options{Logger: rec.logger()})
 		options.CheckpointAfter(8)
 		d := w.serve(t, "a", options)
 		transact(t, d, create("t1", 1, "k", "v"))
@@ -194,7 +200,7 @@ func TestDB_checkpoint(t *testing.T) {
 	t.Run("should not stop when a commit from the loop of a scan cannot checkpoint because the scan's statement is open, and checkpoint at the next commit", func(t *testing.T) {
 		w := newWorld(t)
 		rec := &recorder{}
-		options := core.Options{Logger: rec.logger()}
+		options := syncing(core.Options{Logger: rec.logger()})
 		options.CheckpointAfter(1)
 		d := w.serve(t, "a", options)
 		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 1))
@@ -222,7 +228,7 @@ func TestDB_checkpoint(t *testing.T) {
 	t.Run("should not stop when another connection holds the lock of the checkpoint, and checkpoint at the next commit after that connection's checkpoint", func(t *testing.T) {
 		w := newWorld(t)
 		rec := &recorder{}
-		options := core.Options{Logger: rec.logger()}
+		options := syncing(core.Options{Logger: rec.logger()})
 		options.CheckpointAfter(1)
 		d := w.serve(t, "a", options)
 		transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 1))
@@ -288,7 +294,7 @@ func TestDB_checkpoint(t *testing.T) {
 	t.Run("should checkpoint at 1000 frames by default", func(t *testing.T) {
 		w := newWorld(t)
 		rec := &recorder{}
-		d := w.serve(t, "a", core.Options{Logger: rec.logger()})
+		d := w.serve(t, "a", syncing(core.Options{Logger: rec.logger()}))
 		transact(t, d, create("t1", 1, "k", "v"))
 		path := filepath.Join(w.dir, "a.db")
 		for i := 0; len(rec.named(core.EventCheckpoint)) == 0; i++ {
@@ -305,7 +311,7 @@ func TestDB_checkpoint(t *testing.T) {
 	t.Run("should not stop while a read transaction holds the checkpoints back, and start the write-ahead log again once it has ended", func(t *testing.T) {
 		w := newWorld(t)
 		rec := &recorder{}
-		options := core.Options{Logger: rec.logger()}
+		options := syncing(core.Options{Logger: rec.logger()})
 		options.CheckpointAfter(8)
 		d := w.serve(t, "a", options)
 		transact(t, d, create("t1", 1, "k", "v"))
@@ -358,7 +364,7 @@ func TestDB_checkpoint(t *testing.T) {
 		is.NotError(t, first.Close(t.Context()))
 
 		rec := &recorder{}
-		options := core.Options{Logger: rec.logger()}
+		options := syncing(core.Options{Logger: rec.logger()})
 		options.CheckpointAfter(8)
 		d := w.serve(t, "a", options)
 		is.Equal(t, want, read(t, d))

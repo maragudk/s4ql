@@ -33,6 +33,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"maragu.dev/s4ql/internal/core/internal/testonly"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/sqlite"
@@ -78,8 +79,8 @@ type Options struct {
 	// than 1000.
 	LengthLimit int
 
-	// syncOff stops SQLite from syncing the cache to disk, for tests.
-	syncOff bool
+	// syncs says how SQLite syncs the cache to disk. Only tests set it: see [SyncOff].
+	syncs syncs
 	// checkpointAfter is the number of frames in the write-ahead log from which the writer
 	// checkpoints the cache after a commit: see [DB.checkpoint]. The default is 1000.
 	checkpointAfter int
@@ -87,6 +88,25 @@ type Options struct {
 	bugs bugs
 	// local is how the instance reaches its local files, which tests change to make them fail.
 	local local
+}
+
+// syncs is how SQLite syncs the cache to disk: with synchronous = full, unless a test turned syncs
+// off. A test that tests syncing sets [syncsFull], so that a default of its own to turn them off
+// leaves them on.
+type syncs int
+
+const (
+	syncsDefault syncs = iota
+	syncsFull
+	syncsOff
+)
+
+// SyncOff is o with SQLite's syncs of the cache to disk off: pragma synchronous = off. A crash of
+// the operating system can then lose or tear commits of the cache, so it is for tests that do not
+// test syncing, and only a package that can import the package of the key can call it.
+func SyncOff(o Options, _ testonly.Key) Options {
+	o.syncs = syncsOff
+	return o
 }
 
 // local is how an instance reaches its spool files. The zero value is the files of the operating
@@ -330,7 +350,7 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	if d.w, err = openConn(sqlite.OpenVFS, path, options); err != nil {
 		return nil, openError(err)
 	}
-	if err := d.w.setUp(options.syncOff, options.Identity); err != nil {
+	if err := d.w.setUp(options.syncs == syncsOff, options.Identity); err != nil {
 		return nil, openError(err)
 	}
 

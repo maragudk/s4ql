@@ -17,6 +17,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/core/coretest"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
@@ -1175,7 +1176,7 @@ func TestConn_stop(t *testing.T) {
 				s := simstore.New(h, simstore.Options{})
 				dir := t.TempDir()
 				open := func(name string, client *simstore.Client) (*core.DB, *engine.Conn) {
-					d, err := core.Open(t.Context(), h, client, filepath.Join(dir, name+".db"), "db", core.Options{})
+					d, err := core.Open(t.Context(), h, client, filepath.Join(dir, name+".db"), "db", coretest.SyncOff(core.Options{}))
 					is.NotError(t, err)
 					c := engine.New(d, h, engine.Options{}).Conn()
 					t.Cleanup(func() {
@@ -1235,7 +1236,7 @@ func leaseLost(t *testing.T, f func(t *testing.T, ca *simstore.Client, a, b func
 		logged := &events{}
 		open := func(name string, client *simstore.Client, log *events) func() (*core.DB, *engine.Conn) {
 			return func() (*core.DB, *engine.Conn) {
-				d, err := core.Open(t.Context(), h, client, filepath.Join(dir, name+".db"), "db", core.Options{})
+				d, err := core.Open(t.Context(), h, client, filepath.Join(dir, name+".db"), "db", coretest.SyncOff(core.Options{}))
 				is.NotError(t, err)
 				options := forward()
 				if log != nil {
@@ -1322,7 +1323,7 @@ func TestConn_leaseLost(t *testing.T) {
 			s := simstore.New(h, simstore.Options{})
 			ca := s.Client("a", nil)
 			start := time.Now()
-			d, err := core.Open(t.Context(), h, ca, filepath.Join(t.TempDir(), "a.db"), "db", core.Options{})
+			d, err := core.Open(t.Context(), h, ca, filepath.Join(t.TempDir(), "a.db"), "db", coretest.SyncOff(core.Options{}))
 			is.NotError(t, err)
 			// Forward, so that the last select gives the two rows in the order of the key.
 			c := engine.New(d, h, forward()).Conn()
