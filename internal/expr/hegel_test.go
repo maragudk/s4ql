@@ -186,13 +186,14 @@ func drawColumnValue(tc hegel.TestCase, typ s4qlpb.Type, limit int) *s4qlpb.Valu
 	case s4qlpb.Type_TYPE_REAL:
 		return float(drawReal(tc))
 	case s4qlpb.Type_TYPE_TEXT:
-		return text(drawText(tc, limit))
+		return text(drawText(tc, limit, false))
 	}
-	return blob([]byte(drawBlob(tc, limit)))
+	return blob([]byte(drawBlob(tc, limit, false)))
 }
 
 // drawValue draws a value of the place p, an integer or a real for a number, and NULL one time in
-// seven if nullable.
+// seven if nullable, for an argument. A value that is not nullable is a literal, which may be
+// longer than the limit.
 func drawValue(tc hegel.TestCase, p place, nullable bool, limit int) *s4qlpb.Value {
 	if nullable && hegel.Draw(tc, hegel.WeightedBooleans(1.0/7)) {
 		return null()
@@ -204,9 +205,9 @@ func drawValue(tc hegel.TestCase, p place, nullable bool, limit int) *s4qlpb.Val
 		}
 		return integer(drawInteger(tc))
 	case placeText:
-		return text(drawText(tc, limit))
+		return text(drawText(tc, limit, !nullable))
 	}
-	return blob([]byte(drawBlob(tc, limit)))
+	return blob([]byte(drawBlob(tc, limit, !nullable)))
 }
 
 // drawInteger draws a small integer, any integer, or one at an edge of 64 bits or of the reals.
@@ -227,13 +228,13 @@ func drawReal(tc hegel.TestCase) float64 {
 }
 
 // drawText draws a text without NUL: a short one, or one repeated up to 4,000 bytes, or with a limit,
-// one time in three a text of a length at an edge of the limit, padded with capital letters, which
-// lower changes.
-func drawText(tc hegel.TestCase, limit int) string {
+// one time in three a text of a length at an edge of the limit, longer than it only if over, padded
+// with capital letters, which lower changes.
+func drawText(tc hegel.TestCase, limit int, over bool) string {
 	s := hegel.Draw(tc, hegel.Text().ExcludeCharacters("\x00").MaxSize(6))
 	switch {
 	case limit > 0 && hegel.Draw(tc, hegel.WeightedBooleans(1.0/3)):
-		n := drawEdge(tc, limit)
+		n := drawEdge(tc, limit, over)
 		for len(s) > n {
 			_, size := utf8.DecodeLastRuneInString(s)
 			s = s[:len(s)-size]
@@ -246,11 +247,11 @@ func drawText(tc hegel.TestCase, limit int) string {
 }
 
 // drawBlob draws a blob as [drawText] draws a text, padded with the byte 0xab.
-func drawBlob(tc hegel.TestCase, limit int) string {
+func drawBlob(tc hegel.TestCase, limit int, over bool) string {
 	b := string(hegel.Draw(tc, hegel.Binary(0, 6)))
 	switch {
 	case limit > 0 && hegel.Draw(tc, hegel.WeightedBooleans(1.0/3)):
-		n := drawEdge(tc, limit)
+		n := drawEdge(tc, limit, over)
 		b = b[:min(len(b), n)] + strings.Repeat("\xab", max(0, n-len(b)))
 	case b != "" && hegel.Draw(tc, hegel.WeightedBooleans(0.2)):
 		b = strings.Repeat(b, hegel.Draw(tc, hegel.Integers(1, 2000/len(b))))
@@ -258,11 +259,16 @@ func drawBlob(tc hegel.TestCase, limit int) string {
 	return b
 }
 
-// drawEdge draws a length at an edge of the length limit: one byte below, at, or above the limit or
-// half of it, where an operation of the evaluator makes a text that is just short enough or just too
-// long.
-func drawEdge(tc hegel.TestCase, limit int) int {
-	return hegel.Draw(tc, hegel.SampledFrom([]int{limit - 1, limit, limit + 1, limit/2 - 1, limit / 2, limit/2 + 1}))
+// drawEdge draws a length at an edge of the length limit: one byte below, at, or, if over, above the
+// limit, or about half of it, where an operation of the evaluator makes a text that is just short
+// enough or just too long. A row or an argument longer than the limit is no case, since SQLite
+// refuses to bind it, so only a literal is ever over.
+func drawEdge(tc hegel.TestCase, limit int, over bool) int {
+	edges := []int{limit - 1, limit, limit/2 - 1, limit / 2, limit/2 + 1}
+	if over {
+		edges = append(edges, limit+1)
+	}
+	return hegel.Draw(tc, hegel.SampledFrom(edges))
 }
 
 // literalOf v, an integer, a real, a text, or a blob, as SQLite reads it back to v, with the sign as

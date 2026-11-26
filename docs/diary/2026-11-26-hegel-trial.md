@@ -32,7 +32,7 @@ Hegel's shrinking. Every fault that its generator found was shrunk to two to ele
 
 The first generator wrote `-(c)` and `(-5)`, which the pass refuses ("not supported: parentheses"), so most negations were rejected as no case. Hegel's statistics leave rejected cases out, so this showed only in a probe of the checker with those texts. Fixed by writing the operand of a negation without parentheses and never as a literal, and a negative literal without parentheses.
 
-`TestHegel_generator` first failed with `FailedHealthCheck: LargeInitialTestCase`: the existing generator, fed draws that shrink toward 0, takes its rare branches at 0 (`g.r.IntN(30) == 0` is the deep tree of 900 operators). With the check suppressed it runs, but it found none of the ten faults in 1,000 cases: Hegel's draws of a uint64 are far from uniform, so the generator's odds are lost.
+`TestHegel_generator` first failed with `FailedHealthCheck: LargeInitialTestCase`: the existing generator, fed draws that shrink toward 0, takes its rare branches at 0 (`g.r.IntN(30) == 0` is the deep tree of 900 operators). With the check suppressed it runs, but it found none of the ten faults in 1,000 cases: Hegel's draws of a uint64 are far from uniform, so the generator's odds are lost. It was removed in commit `926d01bc`; only `TestHegel_cases` stays.
 
 `FuzzExpr` found the faults only through its seed corpus, which is the generator's cases, and reported them unminimized: `failure while testing seed corpus entry: FuzzExpr/seed#75`.
 
@@ -51,3 +51,95 @@ The generator `drawCase` and its comments in `/internal/expr/hegel_test.go`; the
 ### Future work
 
 None beyond the note.
+
+## Step 2: Series of statements on the engine, and the planted bugs
+
+**Author:** builder (hegel-trial)
+
+### Prompt Context
+
+**Verbatim prompt:** as in step 1.
+**Interpretation:** the stateful half of the trial: a Hegel test where today's failures arrive as long seeded sequences.
+**Inferred intent:** see whether Hegel's shrinking turns those sequences into something a person reads at a glance.
+
+### What I did
+
+Wrote `/internal/engine/hegel_test.go`: `TestHegel_series` draws 1 to 30 statements on two tables with Hegel's generators (`series`), runs each through the existing `pair.step` of `/internal/engine/differential_test.go`, and compares the tables at the end, with restarts of the instance as `differentialFind` has them. Ran it at `main`, where it first failed on the generator's own mistakes, then passed. Measured eleven planted bugs of the engine with a throwaway test (kept in `/Volumes/990/s4ql/hegel-trial/`, never committed): `differentialFind` on the profile of each bug until the first sequence that finds it, beside the committed Hegel test, and `oldValues` on three more seeds.
+
+### Why
+
+A failure of `TestDifferential` or of the simulation is a seed and every statement before it, in the generator's odd spellings; that is the place the brief named as most likely to gain.
+
+### What worked
+
+Shrinking. Nine of the eleven bugs came out as two to four plain statements, where the seeded check reported 16 to 38. `starKeyFirst`: `create table t(c0 int, k int primary key) strict, without rowid` and `delete from t returning *`, where the engine gives the columns as `k INT, c0 INT`.
+
+Hegel's first failure at `main` was itself a two-statement case: `create index i1 on t(k, k)`, which s4ql refuses with `not supported: column named twice`, and the series called supported. The same followed for `order by k, k`. Both were mistakes of the generator, fixed by drawing the columns of an index and of an ORDER BY without repeats.
+
+### What didn't work
+
+The first run at `main` was not deterministic: `newInstanceLimited` draws the directions of the scans from a random seed unless the flag `-directions` gives one, and logs it at a failure, which printed thousands of lines `an instance of the engine drew the directions of its scans from the seed ...`. Fixed by drawing the directions from Hegel and setting the flag for the series.
+
+`limitFirst` was not found in 200 series: it needs more rows than the LIMIT, sorted by no index, which a short series rarely builds.
+
+Shrinking is slow on a busy machine: 2,700 to 12,700 more series and 16 seconds to 4.5 minutes for one failure, against 7 seconds for a clean run of 200.
+
+A `zsh` parse error (`(eval):36: parse error near 'time'`) from a command that began with an edit by `python3` and ended with `time go test` meant the edit never ran, and the dead loop over `rand.Perm(0)` and a wrong comment stayed in the first commit; the review below found them.
+
+### What I learned
+
+The oracle of `TestDifferential` lifts out cleanly: `pair.step` takes a `stmttest.Call`, so a new generator needs no new rules. The helpers take `testing.TB`, which is what made a test-case-scoped `testing.TB` possible later.
+
+### What was tricky
+
+`pair` and `instance` register cleanups, temporary directories, and fatal errors on the `testing.TB` that they are given. Given the test that runs Hegel, every series of a shrinking keeps its instances until the end of the test, and a fatal error calls `Goexit` from inside Hegel's callback.
+
+### What warrants review
+
+`runSeries` and `seriesT` in `/internal/engine/hegel_test.go`, and the model of the shapes in `series.createTable`.
+
+### Future work
+
+The next places for Hegel are listed in `/docs/research/hegel-trial.md`.
+
+## Step 3: Self-review, and the fixes
+
+**Author:** builder (hegel-trial)
+
+### Prompt Context
+
+**Verbatim prompt:** as in step 1.
+**Interpretation:** review the diff, fix what matters, and measure the tests as they would land.
+**Inferred intent:** that the numbers in the note are those of the committed tests.
+
+### What I did
+
+Ran the review skill over `main...hegel-trial`, the checklist of `hegel-review`, and an adversarial sub-agent that read only `/internal/expr/README.md` and `/internal/expr/expr.go`. Then: gave each series a `testing.TB` of its own (`seriesT`), whose cleanups and temporary directories end with the series and whose fatal errors panic, which Hegel takes as a failure and shrinks; kept a `-directions` that the person gives; noted restarts for Hegel's report; fixed the model of the shapes (a create table of a table that is there no longer replaces its shape, which had sent later statements to columns that did not exist); removed the dead loop; drew values from the whole type one time in four and the length limit of `TestDifferential` one series in four; and in the evaluator's test, kept rows and arguments within the limit, since a longer one is no case. Measured both tests again as committed.
+
+### Why
+
+The review's first three findings were real: a helper's `Fatalf` would end the whole run with nothing shrunk, a shrinking of 12,000 series would keep 24,000 temporary directories and connections open, and every instance would log a wrong replay hint. The checklist of `hegel-review` flagged the narrowed domains of the engine's values and the fixed length limit.
+
+### What worked
+
+After the fixes both tests pass at `main`, with `-race` (about 15 seconds each) and under `-short` (10 cases each), and leave no temporary directory behind. `golangci-lint run` reports 0 issues on both packages, `go vet ./...` passes, `go mod tidy` changes nothing, and the browser packages still vet for `GOOS=js GOARCH=wasm`.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The adversarial review listed what the measurements showed: an independent draw seldom makes related values, such as the smallest integer and -1, or a length exactly at the limit. It also listed laws that need no SQLite, which are in the note as a next place.
+
+### What was tricky
+
+Hegel prints each draw with the source line of its call, which reads poorly for a line with two draws or a draw in a condition; the notes of the series carry the readable report.
+
+### What warrants review
+
+That the numbers of the tables in `/docs/research/hegel-trial.md` are those of the measurements after the fixes, where it says so.
+
+### Future work
+
+The proposal in the note; nothing else.

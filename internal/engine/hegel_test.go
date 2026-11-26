@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,8 +34,8 @@ func hegelOptions(cases int) []hegel.Option {
 	}
 }
 
-// TestHegel_series checks the engine against SQLite with the series of statements that
-// [drawSeries] draws.
+// TestHegel_series checks the engine against SQLite with the series of statements that [runSeries]
+// draws.
 func TestHegel_series(t *testing.T) {
 	hegel.Test(t, func(ht *hegel.T) {
 		if failure := runSeries(t, ht, engine.Options{}); failure != "" {
@@ -44,22 +45,34 @@ func TestHegel_series(t *testing.T) {
 }
 
 // runSeries draws a series of statements and runs it on a pair of the engine with options and SQLite,
-// with the restarts of the instance that it draws, and gives the first difference, with the
-// statements before it, or "". The instances and the oracles are of t, the test that runs Hegel, and
-// each series closes those of its own.
-func runSeries(t *testing.T, tc hegel.TestCase, options engine.Options) string {
+// with the length limit and the restarts of the instance that it draws, and gives the first difference,
+// with the statements before it, or "". The instances and the oracles are of a [seriesT] of the
+// series, which closes them at its end.
+func runSeries(t *testing.T, tc hegel.TestCase, options engine.Options) (failure string) {
+	ct := &seriesT{T: t, tc: tc}
+	defer func() {
+		ct.close()
+		if failure == "" && len(ct.errors) > 0 {
+			failure = strings.Join(ct.errors, "\n")
+		}
+	}()
 	// The directions in which the queries of both instances read, which the flag -directions sets for
-	// every instance, are drawn too, so that the series is the same each time that Hegel runs it.
-	defer func(d uint64) { *directions = d }(*directions)
-	*directions = hegel.Draw(tc, hegel.Integers[uint64](1, math.MaxUint64))
-	i := newInstanceLimited(t, options, nil, 0)
+	// every instance, are drawn too, unless the flag gives them, so that a series is the same each time
+	// that Hegel runs it.
+	if *directions == 0 {
+		defer func() { *directions = 0 }()
+		*directions = hegel.Draw(tc, hegel.Integers[uint64](1, math.MaxUint64))
+	}
+	// The length limit of the cache and of SQLite, SQLite's default or [stmttest.LengthLimit], as
+	// [variantOf] gives it to the sequences of TestDifferential.
+	limit := 0
+	if hegel.Draw(tc, hegel.WeightedBooleans(0.25)) {
+		limit = stmttest.LengthLimit
+	}
+	i := newInstanceLimited(ct, options, nil, limit)
 	i.planted = options != engine.Options{}
-	defer i.close()
-	p := newPairWith(t, i, nil, options)
+	p := newPairWith(ct, i, nil, options)
 	p.rnd = rand.New(rand.NewPCG(1, 0x9a7))
-	defer p.other.close()
-	defer p.o.close()
-	defer p.empty.close()
 	s := &series{tc: tc, shapes: map[string][]seriesColumn{}}
 	var log []string
 	fail := func(format string, args ...any) string {
@@ -69,8 +82,9 @@ func runSeries(t *testing.T, tc hegel.TestCase, options engine.Options) string {
 		if hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {
 			empty := hegel.Draw(tc, hegel.Booleans())
 			log = append(log, fmt.Sprint("-- restart, with an empty cache: ", empty))
+			tc.Note(log[len(log)-1])
 			i.restart(empty, options)
-			if got, want := i.state(), p.o.state(t); got != want {
+			if got, want := i.state(), p.o.state(ct); got != want {
 				return fail("after the restart the engine holds\n%v\nand SQLite\n%v", got, want)
 			}
 			continue
@@ -83,7 +97,7 @@ func runSeries(t *testing.T, tc hegel.TestCase, options engine.Options) string {
 		}
 		tc.Event(seriesOutcome(c.Src, p.last))
 	}
-	want := p.o.state(t)
+	want := p.o.state(ct)
 	if got := i.state(); got != want {
 		return fail("at the end the engine holds\n%v\nand SQLite\n%v", got, want)
 	}
@@ -91,6 +105,70 @@ func runSeries(t *testing.T, tc hegel.TestCase, options engine.Options) string {
 		return fail("at the end the other engine, which reads the rows the other way, holds\n%v\nand SQLite\n%v", got, want)
 	}
 	return ""
+}
+
+// seriesT is the [testing.TB] of a series: the test that runs Hegel, with the cleanups and the
+// temporary directories of the series alone, which [seriesT.close] runs and removes at its end, so
+// that thousands of series in a run, or in a shrinking, do not keep their instances open. A fatal
+// error of a helper panics, which ends the series as a failure that Hegel shrinks, where Goexit on
+// the test would end the run; an error that is not fatal is kept and fails the series at its end. The
+// logs of the helpers are notes, which Hegel prints for the shrunk series alone.
+type seriesT struct {
+	*testing.T
+	tc       hegel.TestCase
+	cleanups []func()
+	dirs     []string
+	errors   []string
+	failed   bool
+}
+
+func (c *seriesT) Cleanup(f func()) { c.cleanups = append(c.cleanups, f) }
+
+func (c *seriesT) Error(args ...any) {
+	c.failed = true
+	c.errors = append(c.errors, fmt.Sprint(args...))
+}
+
+func (c *seriesT) Errorf(format string, args ...any) { c.Error(fmt.Sprintf(format, args...)) }
+
+func (c *seriesT) Fail() { c.failed = true }
+
+func (c *seriesT) FailNow() { c.Fatal("FailNow") }
+
+func (c *seriesT) Failed() bool { return c.failed }
+
+func (c *seriesT) Fatal(args ...any) {
+	c.failed = true
+	panic(fmt.Sprint(args...))
+}
+
+func (c *seriesT) Fatalf(format string, args ...any) { c.Fatal(fmt.Sprintf(format, args...)) }
+
+func (c *seriesT) Log(args ...any) { c.tc.Note(fmt.Sprint(args...)) }
+
+func (c *seriesT) Logf(format string, args ...any) { c.Log(fmt.Sprintf(format, args...)) }
+
+func (c *seriesT) TempDir() string {
+	dir, err := os.MkdirTemp("", "series")
+	if err != nil {
+		c.Fatal(err)
+	}
+	c.dirs = append(c.dirs, dir)
+	return dir
+}
+
+// close runs the cleanups of the series, the last first, and removes its temporary directories.
+func (c *seriesT) close() {
+	defer func() {
+		for _, dir := range c.dirs {
+			if err := os.RemoveAll(dir); err != nil {
+				c.Error(err)
+			}
+		}
+	}()
+	for i := len(c.cleanups) - 1; i >= 0; i-- {
+		c.cleanups[i]()
+	}
 }
 
 // seriesOutcome of the statement src with the engine's answer a, for the statistics of a run: the kind of
@@ -183,8 +261,7 @@ func (s *series) table() string {
 	return hegel.Draw(s.tc, hegel.SampledFrom(live))
 }
 
-// columns of the table, which are those of a table that is not there one time in two, as the series
-// knows them.
+// columns of the table, as the series knows them, or nil for a table that is not there.
 func (s *series) columns(table string) []seriesColumn {
 	return s.shapes[table]
 }
@@ -219,9 +296,8 @@ func (s *series) createTable() {
 	s.b.WriteString("create table ")
 	if hegel.Draw(s.tc, hegel.WeightedBooleans(0.2)) {
 		s.b.WriteString("if not exists ")
-	} else {
-		s.shapes[table] = columns
 	}
+	// A table that is there keeps its shape: SQLite refuses the statement, or does nothing.
 	if s.shapes[table] == nil {
 		s.shapes[table] = columns
 	}
@@ -278,9 +354,6 @@ func (s *series) insert(table string) bool {
 	listed := columns
 	if hegel.Draw(s.tc, hegel.Booleans()) {
 		listed = nil
-		for _, i := range rand.Perm(0) {
-			_ = i
-		}
 		order := hegel.Draw(s.tc, hegel.UniqueLists(hegel.Integers(0, len(columns)-1)).MinSize(1).MaxSize(len(columns)))
 		var names []string
 		for _, i := range order {
@@ -418,18 +491,32 @@ func (s *series) value(typ string, nullable bool) string {
 	return s.literal(typ)
 }
 
-// argument of the type typ: an int64, a float64, a string, or a []byte, from a few values each, so
-// that keys and values meet.
+// argument of the type typ: an int64, a float64, a string, or a []byte, three times in four from a
+// few values each, so that keys and values meet, and otherwise any value that a column of the type
+// holds: a finite real, and a text without NUL.
 func (s *series) argument(typ string) any {
+	few := hegel.Draw(s.tc, hegel.WeightedBooleans(0.75))
 	switch typ {
 	case "int", "integer":
-		return hegel.Draw(s.tc, hegel.OneOf(hegel.Integers[int64](-2, 3), hegel.SampledFrom([]int64{math.MinInt64, math.MaxInt64})))
+		if few {
+			return hegel.Draw(s.tc, hegel.OneOf(hegel.Integers[int64](-2, 3), hegel.SampledFrom([]int64{math.MinInt64, math.MaxInt64})))
+		}
+		return hegel.Draw(s.tc, hegel.Integers[int64](math.MinInt64, math.MaxInt64))
 	case "real":
-		return hegel.Draw(s.tc, hegel.SampledFrom([]float64{0, math.Copysign(0, -1), 0.5, -1.5, 2, 1e300}))
+		if few {
+			return hegel.Draw(s.tc, hegel.SampledFrom([]float64{0, math.Copysign(0, -1), 0.5, -1.5, 2, 1e300}))
+		}
+		return hegel.Draw(s.tc, hegel.Floats[float64]().AllowNaN(false).AllowInfinity(false))
 	case "text":
-		return hegel.Draw(s.tc, hegel.SampledFrom([]string{"", "a", "b", "B", "ab", "é"}))
+		if few {
+			return hegel.Draw(s.tc, hegel.SampledFrom([]string{"", "a", "b", "B", "ab", "é"}))
+		}
+		return hegel.Draw(s.tc, hegel.Text().ExcludeCharacters("\x00").MaxSize(8))
 	}
-	return hegel.Draw(s.tc, hegel.SampledFrom([][]byte{{}, {0}, {1}, {0xff}, {0, 1}}))
+	if few {
+		return hegel.Draw(s.tc, hegel.SampledFrom([][]byte{{}, {0}, {1}, {0xff}, {0, 1}}))
+	}
+	return hegel.Draw(s.tc, hegel.Binary(0, 8))
 }
 
 // literal of a value of the type typ, as [series.argument] draws it.
