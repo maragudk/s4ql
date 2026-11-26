@@ -1,7 +1,7 @@
 // Package s3test holds what the tests against a real bucket share: their settings, a prefix of each
 // test's own that is deleted with everything under it when the test ends, and the deletion of the
-// prefixes that runs which were killed left behind. It also holds [Isolate], which keeps a test,
-// against a real bucket or a fake server, from the AWS configuration of the machine.
+// prefixes that runs which were killed left behind. It also holds [Isolate], which keeps the AWS
+// configuration of the machine out of a test, against a real bucket or a fake server.
 //
 // Every key that a test writes is under [Root], in a prefix of the form
 // s4ql-test/<suite>/<UTC time>-<8 random characters>/, which [NewPrefix] gives. Nothing deletes
