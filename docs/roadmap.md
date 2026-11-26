@@ -8,7 +8,7 @@ A piece of work is named by its feature, such as "upserts", and no longer by a n
 
 | Area | Supported now | Decided next |
 | --- | --- | --- |
-| [Expressions and functions](#expressions-and-functions) | Literals, `null`, and `?`. Arithmetic: `+`, `-`, `*`, `/`, and a unary `-` on integers and reals, in `set` and in `where`, with generated checks, seven planted bugs, and a driver test (mutation testing to come). | More operators and functions, and expressions in more places. The evaluator is s4ql's own, in Go. SQLite's answer or an error. Time and randomness from the host. |
+| [Expressions and functions](#expressions-and-functions) | Literals, `null`, and `?`. Arithmetic: `+`, `-`, `*`, `/`, and a unary `-` on integers and reals, in `set` and in `where`, with generated checks, seven planted bugs, and a driver test and mutation testing of the statement pass and the evaluator (the engine's round is still running). | More operators and functions, and expressions in more places. The evaluator is s4ql's own, in Go. SQLite's answer or an error. Time and randomness from the host. |
 | [Reading](#reading) | `select` from one table, with `where`, `order by`, `limit`, and a scalar subquery in the `where`. | Operators of s4ql's own for grouping and joining. |
 | [Writing](#writing) | `insert` of one row, `update`, `delete`, and `returning`. | `on conflict (key) do nothing` and `do update`. Several rows per `insert`. |
 | [Schema](#schema) | `strict, without rowid` tables with one key column, defaults, indexes, and `if not exists`. | `strict, without rowid` with a primary key stays required. |
@@ -63,7 +63,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
   - An integer overflow, a division by zero, and a real result that is not finite are errors, and the statement then changes nothing. In the driver they match `s4ql.ErrEvaluation`, with `s4ql.ErrOverflow`, `s4ql.ErrDivisionByZero`, or `s4ql.ErrNotFinite`.
   - Text and blobs never meet arithmetic. An integer against a real across a comparison or a `set` is refused.
   - A column may be compared with, or copied from, a column of the same type.
-  - Checked with the evaluator against SQLite with generated expressions and a fuzz test, the engine's differential tests, and independent reviews. Its generated workload, simulation with planted bugs (seven), and driver test are built (2026-11-25); mutation testing of the arithmetic code is still to come.
+  - Checked with the evaluator against SQLite with generated expressions and a fuzz test, the engine's differential tests, and independent reviews. Its generated workload, simulation with planted bugs (seven), and driver test are built (2026-11-25); the statement pass and the evaluator are mutation-tested (2026-11-26: 645 and 649 mutants, none unexplained), and the engine's round is still running.
 - No function. A `where` compares values and expressions; see [Reading](#reading).
 
 **Decided,** with the details in [todo/expressions.md](todo/expressions.md):

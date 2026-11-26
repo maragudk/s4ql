@@ -89,7 +89,15 @@ const (
 	shapePkg  = "internal/sql/shapetest"
 	stmtPkg   = "internal/sql/stmt"
 	enginePkg = "internal/engine"
+	exprPkg   = "internal/expr"
 )
+
+// exprLayers of the tests of package expr that are not hand-written, when expr is the mutated
+// package.
+var exprLayers = map[string]string{
+	"TestDifferential": layerGenerator,
+	"FuzzExpr":         layerFuzzSeeds,
+}
 
 // stage of the run of a mutant: the tests of one layer in one test binary.
 type stage struct {
@@ -242,6 +250,11 @@ func (r *runner) plan(pkgs []string) error {
 					l = layerHand
 					if el, ok := engineLayers[t]; ok {
 						l = el
+					}
+				case tp == pkg && pkg == exprPkg:
+					l = layerHand
+					if xl, ok := exprLayers[t]; ok {
+						l = xl
 					}
 				case tp == pkg:
 					l = layerHand
