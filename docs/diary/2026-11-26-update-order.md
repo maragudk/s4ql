@@ -86,6 +86,12 @@ A call with subqueries runs in SQLite flattened, with the values in place of the
 
 `changeRows`'s deferral of a WHERE error under a forced path, documented as path-dependent; `core.Tx.KeysBy`'s use of `conn.unlimited` for a statement that writes (the keys it writes are no longer than the rows they come from); and `pair.changeOrderOf`'s matching of the SET's columns by fold.
 
+### Self-review
+
+`make lint` passed. `make test` failed once, in `internal/sql/mutation`: `no such mutant: internal/core/tx.go Tx.dropKeys element: , k.next =>`, and then `Tx.Keys swap arguments: ...`, because `/internal/sql/mutation/equivalent.txt` names mutants by their function and text: the body of `Tx.Keys` moved into `Tx.keys`, and `Tx.dropKeys` finalizes `k.sort` too. Renamed the entries and added `element: , k.sort =>` with the same reason. The new tests pass with `-count=50` and with `-race`.
+
+The code-review skill's reviewers found, and I fixed: `pair.sqliteOrder` took the first SCAN or SEARCH row of the plan, which for a WHERE with a subquery can be the subquery's, and would then stop the test with `Fatalf` (now only the row of the updated table, and a statement with subqueries is two passes without a plan); `pair.recordSlips` ran the rows of a flattened statement in the order of the index, where the engine runs the statement with subqueries in the order of the key (now a flag, as in `checkUpdateOrder`); `createKeyTable` left the first temporary table when the second failed (now dropped); the doc comment of `TestPair_recordSlips` had slid onto the new test; Step 1 of the todo said `changes()` keeps the count before a failed statement (it is 0); and the replays ran for every failing update (now only where SQLite's order is not the key's, or the answers differ).
+
 ### Future work
 
 A generator of its own that reaches "update whose first row to fail is another in SQLite's order than in the order of the key", then the kind made required; see `/docs/todo/update-order.md`.
