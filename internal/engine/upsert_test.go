@@ -781,6 +781,15 @@ func TestEngine_upsert(t *testing.T) {
 		got := runUpserts(t, newInstanceLimited(t, forward(), nil, limit), newOracleLimited(t, limit),
 			[]string{"create table q (id text primary key, a text, b text) strict, without rowid", "create index q_b on q (b)", "insert into q values ('1', 'x', 'y')"}, steps)
 		is.EqualSlice(t, want, got)
+
+		// Stricter than SQLite, as for an update: a literal longer than the limit inside a call fails
+		// when it is bound, also without a conflict, where SQLite computes it with the call on the row
+		// of the conflict and inserts the row.
+		i := newInstanceLimited(t, forward(), nil, limit)
+		is.Equal(t, "", i.exec("create table q (id text primary key, a text) strict, without rowid").err)
+		a := i.exec("insert into q values ('9', 'p') on conflict (id) do update set a = lower('" + long + "')")
+		is.Equal(t, "string or blob too big", a.message)
+		is.Equal(t, 0, len(i.queryValues("select id from q", nil).rows))
 	})
 
 	t.Run("should plan an upsert with its clause, and print it", func(t *testing.T) {
