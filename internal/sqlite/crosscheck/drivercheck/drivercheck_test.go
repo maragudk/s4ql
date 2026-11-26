@@ -1446,10 +1446,10 @@ const (
 	// it is checked against s4ql's rule by [pair.checkRefused], and not run in SQLite.
 	excusedType = "a value of another type than its column, checked against s4ql's rule"
 	// excusedUpsert is an upsert that s4ql refuses by the rule of exact types, of its proposed row or of
-	// DO UPDATE, where SQLite converts by affinity, or for its text, which the engine does not compute
-	// yet: it is checked against s4ql's rules by [pair.checkRefused], as [stmttest.UpsertRefusals]
+	// DO UPDATE, also of its arithmetic and its text, where SQLite converts by affinity or orders by
+	// type: it is checked against s4ql's rules by [pair.checkRefused], as [stmttest.UpsertRefusals]
 	// gives them, and not run in SQLite.
-	excusedUpsert = "an upsert refused by the rules of its types or for its text, checked against s4ql's rules"
+	excusedUpsert = "an upsert refused by the rules of its types, checked against s4ql's rules"
 	// excusedLevel is a begin with another isolation level than the default and serializable, which
 	// s4ql refuses by its rule, where mattn ignores the level: it is checked against the rule by
 	// [pair.begin], and nothing is begun in SQLite.
@@ -4891,14 +4891,24 @@ func TestPair(t *testing.T) {
 			}{
 				{"insert into t4 values (3, 'c', 3.5, 3) on conflict (v1) do nothing", callExec, nil, "exec: 1 affected, last insert id 0"},
 				{"insert into t4 values (3, 'd', 4.5, 4) on conflict (v1) do nothing", callExec, nil, "exec: 0 affected, last insert id 0"},
-				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = excluded.v2 || '', v4 = 1 returning *", callQuery, nil, "query: query failed with s4ql: not supported: concatenation (at offset 76)"},
+				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = excluded.v2 || '', v4 = 1 returning *", callQuery, nil, `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:1" "<nil>:<nil>" "float64:1.5" "int64:1"]`},
+				{"insert into t4 (v1, v2, v3) values (1, 'B', 0.5) on conflict (v1) do update set v2 = lower(excluded.v2) || v2 returning v2", callQuery, nil, `query: columns "v2" of types "TEXT", rows ["<nil>:<nil>"]`},
+				{"insert into t4 (v1, v2, v3) values (1, 'B', 0.5) on conflict (v1) do update set v2 = lower(excluded.v2) returning v2", callQuery, nil, `query: columns "v2" of types "TEXT", rows ["string:b"]`},
 				{"insert into t4 (v1, v2, v3) values (1, 'b', 0.5) on conflict (v1) do update set v2 = excluded.v2, v4 = 1 returning *", callQuery, nil, `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:1" "string:b" "float64:1.5" "int64:1"]`},
 				{"insert into t4 (v1, v3, v4) values (?, ?, ?) on conflict (v1) do update set v4 = v4 + excluded.v4 where v4 < ? returning v1, v4", callPrepareQuery, [][]any{{int64(2), 0.5, int64(10), int64(100)}}, `prepare, query: columns "v1,v4" of types "INT,INT", rows ["int64:2" "int64:17"]`},
 				{"insert into t4 (v1, v3, v4) values (?, ?, ?) on conflict (v1) do update set v4 = v4 + excluded.v4 where v4 < ?", callPrepareExecRuns, [][]any{{int64(2), 0.5, int64(10), int64(100)}, {int64(2), 0.5, int64(10), int64(20)}, {int64(5), 0.5, int64(1), int64(0)}, {int64(2), 0.5, int64(9223372036854775807), int64(100)}},
 					"prepare, exec several times: 1 affected, last insert id 0; then: 0 affected, last insert id 0; then: 1 affected, last insert id 0; then: exec failed with s4ql: integer overflow in + (at offset 81)"},
 				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = excluded.v3", callExec, nil, "exec: exec failed with s4ql: not supported: the column excluded.v3 of type REAL for the column t4.v4 of type INT"},
-				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = lower(excluded.v2)", callPrepareExec, nil, "prepare, exec: prepare failed with s4ql: not supported: call of lower (at offset 76)"},
-				{"insert into t4 (v1, v3) values (?, ?) on conflict (v1) do update set v2 = lower(excluded.v2)", callPrepareExec, [][]any{{int64(1), math.NaN()}}, "prepare, exec: prepare failed with s4ql: not supported: call of lower (at offset 74)"},
+				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = lower(excluded.v2)", callPrepareExec, nil, "prepare, exec: 1 affected, last insert id 0"},
+				{"insert into t4 (v1, v3) values (?, ?) on conflict (v1) do update set v2 = lower(excluded.v2)", callPrepareExec, [][]any{{int64(1), math.NaN()}}, "prepare, exec: exec failed with s4ql: not supported: argument 2, which is a real that is not a number"},
+				// Text of both rows, prepared and run several times, with NULL, and its refusals.
+				{"insert into t4 (v1, v2, v3) values (?, ?, 0.5) on conflict (v1) do update set v2 = 'm_' || lower(hex(?)) || v2 where excluded.v2 || '' = ? returning v2", callPrepareQuery, [][]any{{int64(2), "q", []byte{0xab}, "q"}}, `prepare, query: columns "v2" of types "TEXT", rows ["string:m_abb"]`},
+				{"insert into t4 (v1, v2, v3) values (?, ?, 0.5) on conflict (v1) do update set v2 = v2 || excluded.v2", callPrepareExecRuns, [][]any{{int64(2), "c"}, {int64(2), nil}, {int64(1), "d"}, {int64(2), "e"}},
+					"prepare, exec several times: 1 affected, last insert id 0; then: 1 affected, last insert id 0; then: 1 affected, last insert id 0; then: 1 affected, last insert id 0"},
+				{"insert into t4 (v1, v3) values (2, 0.5) on conflict (v1) do update set v4 = lower(excluded.v2)", callExec, nil, "exec: exec failed with s4ql: not supported: an expression of type text for the column t4.v4 of type INT"},
+				{"insert into t4 (v1, v3) values (2, 0.5) on conflict (v1) do update set v2 = 'a' where lower(v2) = excluded.v3", callExec, nil, "exec: exec failed with s4ql: not supported: an expression of type real compared with an expression of type text"},
+				{"insert into t4 (v1, v3) values (2, 0.5) on conflict (v1) do update set v2 = ? || v2", callPrepareExecRuns, [][]any{{int64(1)}, {2.5}},
+					"prepare, exec several times: exec failed with s4ql: not supported: argument 1 in a concatenation, which is an integer (at offset 76); then: exec failed with s4ql: not supported: argument 1 in a concatenation, which is a real (at offset 76)"},
 				{"insert into t4 (v1, v3) values (?, ?) on conflict (v1) do update set v2 = lower(excluded.v2)", callExec, [][]any{{int64(1), math.NaN()}}, "exec: exec failed with s4ql: not supported: argument 2, which is a real that is not a number"},
 				{"insert into t4 (v1) values (1) on conflict (v1) do update set v4 = 9223372036854775807 + 1, v3 = v3 * 2.0", callExec, nil, "exec: exec failed with s4ql: integer overflow in + (at offset 67)"},
 				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v2) do nothing", callExec, nil, "exec: exec failed with 1/1: ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint"},
@@ -4911,7 +4921,7 @@ func TestPair(t *testing.T) {
 				{"", callBeginReadOnly, nil, ""},
 				{"insert into t4 (v1, v2, v3) values (1, 'q', 0.5) on conflict (v1) do nothing", callExec, nil, "exec: exec failed with 8/8: attempt to write a readonly database"},
 				{"", callRollback, nil, ""},
-				{"insert into t4 (v1, v2, v3) values (1, 'r', 0.5) on conflict (v1) do nothing; insert into t4 (v1, v2, v3) values (1, 's', 0.5) on conflict (v1) do update set v2 = excluded.v2 || excluded.v2", callExec, nil, "exec: exec failed with s4ql: not supported: concatenation (at offset 163)"},
+				{"insert into t4 (v1, v2, v3) values (1, 'r', 0.5) on conflict (v1) do nothing; insert into t4 (v1, v2, v3) values (1, 's', 0.5) on conflict (v1) do update set v2 = excluded.v2 || excluded.v2", callExec, nil, "exec: 1 affected, last insert id 0"},
 				{"insert into t4 (v1, v2, v3) values (1, 'r', 0.5) on conflict (v1) do nothing; insert into t4 (v1, v2, v3) values (1, 's', 0.5) on conflict (v1) do update set v2 = excluded.v2; insert into t4 (v1, v2, v3) values (8, 't', 0.5) on conflict (v1) do nothing", callExec, nil, "exec: 1 affected, last insert id 0"},
 			} {
 				runs := c.runs
@@ -4969,10 +4979,22 @@ func TestPair(t *testing.T) {
 		check(constant, [][]any{{int64(math.MaxInt64)}}, overflow, false)
 		check(constant, [][]any{{int64(1)}}, overflow, true)
 
+		// A refusal of text, by the rules of text in an update, and one that the rules do not give.
+		const text = "insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = excluded.v4 || v2"
+		refusal = run(t, p.s, callExec, text, [][]any{nil}, s4qlText)
+		is.Equal(t, "exec: exec failed with s4ql: not supported: column of type INT in a concatenation (at offset 76)", refusal.String())
+		check(text, [][]any{nil}, refusal, false)
+		wrong = refusal
+		wrong.err = "s4ql: not supported: an expression of type text for the column t4.v2 of type TEXT"
+		check(text, [][]any{nil}, wrong, true)
+
 		// No error where a refusal was due, where SQLite converts the value that s4ql refuses, of DO
 		// UPDATE and of the proposed row, also in a run of a prepared statement after one with an
 		// evaluation error. They come last, since a rule that missed them would run them in SQLite.
 		done := outcome{call: callExec, affected: "1", lastID: "0"}
+		check(text, [][]any{nil}, done, true)
+		check("insert into t4 (v1, v3) values (9, 0.5) on conflict (v1) do update set v4 = lower(excluded.v2)", [][]any{nil}, done, true)
+		check("insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = 'a' where lower(v2) = ?", [][]any{{int64(1)}}, done, true)
 		check("insert into t4 (v1, v3) values (1, 2.0) on conflict (v1) do update set v4 = excluded.v3", [][]any{nil}, done, true)
 		check("insert into t4 (v1, v3, v4) values (9, 0.5, 2.0) on conflict (v1) do nothing", [][]any{nil}, done, true)
 		const runsOf = "insert into t4 (v1, v3, v4) values (?, ?, ?) on conflict (v1) do update set v4 = v4 + excluded.v4"

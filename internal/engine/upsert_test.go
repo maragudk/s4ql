@@ -813,6 +813,16 @@ var upsertCases = []stmttest.Call{
 	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.s * 2"},
 	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = 1 where excluded.s = 2"},
 	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set s = lower(excluded.s)"},
+	// Text of both rows, with NULL, and its refusals, as in an update.
+	{Src: "insert into t (k, s, n) values (2, 'z', 1) on conflict (k) do update set s = s || excluded.s returning s"},
+	{Src: "insert into t (k, n) values (3, 1) on conflict (k) do update set s = lower(excluded.s) || hex(b) where s is null returning s"},
+	{Src: "insert into t (k, s, b, n) values (?, ?, ?, 1) on conflict (k) do update set s = 'm_' || lower(hex(excluded.b)) where excluded.s || '' = ? and lower(s) = s returning s", Args: []any{int64(2), "q", []byte{0xab}, "q"}},
+	{Src: "insert into t (k, s, b, n) values (?, ?, ?, 1) on conflict (k) do update set s = 'm_' || lower(hex(excluded.b)) returning s", Args: []any{int64(10), "q", []byte{0xab}}},
+	{Src: "insert into t (k, n) values (2, 1) on conflict (k) do update set v = lower(excluded.s)"},
+	{Src: "insert into t (k, n) values (9, 1) on conflict (k) do update set s = excluded.v || 'a'"},
+	{Src: "insert into t (k, n) values (2, 1) on conflict (k) do update set s = 'a' where lower(excluded.s) = 1"},
+	{Src: "insert into t (k, n) values (2, 1) on conflict (k) do update set s = ? || s", Args: []any{int64(1)}},
+	{Src: "insert into t (k, n) values (2, 1) on conflict (k) do update set s = 'a' where hex(?) = s", Args: []any{1.5}},
 	// Evaluation errors, of a constant and on the row of the conflict, and none where the rule
 	// evaluates nothing.
 	{Src: "insert into t (k, n) values (9, 1) on conflict (k) do update set v = 9223372036854775807 + 1"},
@@ -838,6 +848,7 @@ var upsertCases = []stmttest.Call{
 	{Src: "begin read only"},
 	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do nothing"},
 	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.s"},
+	{Src: "insert into t (k, n) values (1, 1) on conflict (k) do update set s = s || excluded.s where lower(s) = ?", Args: []any{int64(1)}},
 	{Src: "insert into t (k, n) values (1, 1) on conflict (zz) do nothing"},
 	{Src: "rollback"},
 	{Src: "begin"},
@@ -900,6 +911,31 @@ func TestPair_upsert(t *testing.T) {
 		}
 	})
 
+	t.Run("should give SQLite's answer for a text of DO UPDATE longer than the length limit, with a conflict and without one", func(t *testing.T) {
+		const limit = 1000
+		x, y := strings.Repeat("x", 600), strings.Repeat("y", 600)
+		y2 := tally{}
+		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, limit), y2)
+		for _, src := range []string{"create table q (id text primary key, a text, b text) strict, without rowid", "create index q_b on q (b)", "insert into q values ('1', 'x', 'y')"} {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		for _, key := range []string{"1", "9"} {
+			for _, c := range []stmttest.Call{
+				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = ? || ? || a", Args: []any{key, x, y}},
+				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = 'q' where excluded.a = ? || ?", Args: []any{key, x, y}},
+				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = lower(? || ?)", Args: []any{key, x, y}},
+				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = 'q' where b = lower(? || ?)", Args: []any{key, x, y}},
+				{Src: "insert into q (id, a, b) values (?, 'p', ?) on conflict (id) do update set a = excluded.b || excluded.b", Args: []any{key, x}},
+				{Src: "insert into q (id, a) values (?, 'p') on conflict (id) do update set a = excluded.a || ? returning *", Args: []any{key, x}},
+				{Src: "delete from q where id = '9'"},
+			} {
+				c.Query = strings.Contains(c.Src, "returning")
+				is.Equal(t, "", p.step(c), c.Src)
+			}
+		}
+		is.True(t, y2[comparedWithSQLite] > 0)
+	})
+
 	t.Run("should fail a refusal that is none of the rules', a refusal that was due and not given, and an evaluation error that SQLite does not justify", func(t *testing.T) {
 		i := newMemoryInstance(t)
 		p := newPair(t, i, tally{})
@@ -954,5 +990,24 @@ func TestPair_upsert(t *testing.T) {
 		p.readOnly = true
 		check(onRow, []any{int64(1), int64(math.MaxInt64)}, i.execValues(onRow, values([]any{int64(1), int64(math.MaxInt64)})), true)
 		p.readOnly = false
+
+		// Text, by the rules of text in an update: a refusal that the rules give is taken, one that they
+		// do not give is not, and a success where a refusal of the class of text, or of a number inside
+		// it, was due fails, also where the table has no row of the key.
+		const text = "insert into t (k, n) values (1, 1) on conflict (k) do update set v = lower(excluded.s)"
+		refusal = i.execValues(text, nil)
+		is.Equal(t, "s4ql: not supported: an expression of type text for the column t.v of type INT", refusal.message)
+		check(text, nil, refusal, false)
+		check(text, nil, answer{err: "not supported", message: "s4ql: not supported: column of type TEXT in a call of lower (at offset 75)"}, true)
+		check(text, nil, answer{}, true)
+		check("insert into t (k, n) values (9, 1) on conflict (k) do update set v = lower(excluded.s)", nil, answer{}, true)
+		const inside = "insert into t (k, n) values (9, 1) on conflict (k) do update set s = 'a' where excluded.v || s = 'b'"
+		refusal = i.execValues(inside, nil)
+		is.Equal(t, "s4ql: not supported: column of type INT in a concatenation (at offset 79)", refusal.message)
+		check(inside, nil, refusal, false)
+		check(inside, nil, answer{}, true)
+		check("insert into t (k, n) values (1, 1) on conflict (k) do update set s = s || ?", []any{int64(1)}, answer{}, true)
+		check("insert into t (k, n) values (1, 1) on conflict (k) do update set s = s || ?", []any{"a"}, refusal, true)
+		check("insert into t (k, n) values (1, 1) on conflict (k) do update set s = s || ?", []any{"a"}, answer{}, false)
 	})
 }
