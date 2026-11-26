@@ -56,3 +56,47 @@ The core's first check, which looked at autocommit after the context's error, re
 ### Future work
 
 - The simulation cannot produce this fault: it has no read faults of the cache, and its contexts end by timeouts. Recorded as open in `/docs/todo/storage-core-tests.md`.
+
+## Step 2: Two comments from the review, the merge of main, and the landing
+
+**Author:** builder (step-context-land)
+
+### Prompt Context
+
+**Verbatim prompt:** "Two small things from the review: in `internal/sqlite/sqlite_test.go` (about line 2332) the comment `// memory database for a test, ...` got detached from `memory` when `failedContext` was inserted below it: put it back where it belongs. And say in the comment of `StepContext` that it is meant for statements that read: on a COMMIT that meets SQLITE_BUSY it would give the context's error instead of BUSY, which has no consequence today because the core calls it only on reads. [...] Merge `origin/main`. [...] Resolve conflicts by keeping both sides' intent [...]" (abridged; the full brief is the lead's.)
+**Interpretation:** fix two comments, merge `main` with #187 in it, run the agreed checks, and take the branch through its pull request.
+**Inferred intent:** land the reviewed fix without changing what it does.
+
+### What I did
+
+- Moved the doc comment of `memory` back above `memory` in `/internal/sqlite/sqlite_test.go`, and added to the doc comment of `Stmt.StepContext` in `/internal/sqlite/sqlite.go` that a COMMIT that meets SQLITE_BUSY still runs when it returns, so it would fail with the error of ctx in place of SQLITE_BUSY with its transaction open, and that a COMMIT goes through `Stmt.Step`.
+- Merged `origin/main` (at ff5142f9). The one conflict was in `/internal/core/errors.go`, where this branch added `conn.harmless` and #187 added `endedError` at the same spot. They are independent, so both stay. `endedError` is used only on the paths of a commit in `/internal/core/tx.go`, and `harmless` gives either the step's own error, which for a stop is `ctx.Err()` from `StepContext` and never the cause, or one that wraps `errTxEnded`. `/internal/sqlite/sqlite_test.go` merged by itself with main's tests that `StepContext` gives `ctx.Err()`.
+- Checks: `make test`, `make lint`, the new tests of both packages (`TestStmt_StepContext`, `TestConn_Autocommit`, `TestConn_SetProgressPeriod`, `TestScanIndex_context`, `TestScanIndex_interrupt`) at `-count=20` and under `-race`, `go test ./internal/core/` without `-short` once, and `make asan-test ASANPKGS=maragu.dev/s4ql/internal/sqlite` in the Linux container that `make test-asan` uses. All passed.
+
+### Why
+
+The review asked for the two comments, and the branch had to sit on today's `main` before it could land.
+
+### What worked
+
+The conflict was textual only: two new functions written at the same place.
+
+### What didn't work
+
+Nothing failed. `gofmt -l` lists `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`, but the file is the same as on `main` and `make lint` passes, so it is left alone.
+
+### What I learned
+
+A COMMIT that returns SQLITE_BUSY early leaves its statement in the run state, which is why the progress handler's last look would still stop it: the same property that keeps a row's step stoppable.
+
+### What was tricky
+
+Nothing in this step.
+
+### What warrants review
+
+The resolution in `/internal/core/errors.go`, and the added sentences of the doc comment of `Stmt.StepContext`.
+
+### Future work
+
+None from this step.
