@@ -20,6 +20,18 @@ func TestError(t *testing.T) {
 		is.Equal(t, "s4ql: real result that is not finite in * (at offset 0)", err.Error())
 	})
 
+	t.Run("should name the function of a call, and || for a concatenation", func(t *testing.T) {
+		err := &expr.Error{Kind: expr.ErrTooLong, Op: stmt.ExprCall, Function: stmt.FuncHex, Span: stmt.Span{Start: 17, End: 23}}
+		is.Equal(t, "s4ql: text longer than the length limit in hex (at offset 17)", err.Error())
+		err = &expr.Error{Kind: expr.ErrTooLong, Op: stmt.ExprCall, Function: stmt.FuncLower, Span: stmt.Span{Start: 4, End: 12}}
+		is.Equal(t, "s4ql: text longer than the length limit in lower (at offset 4)", err.Error())
+		err = &expr.Error{Kind: expr.ErrTooLong, Op: stmt.ExprConcat, Span: stmt.Span{Start: 0, End: 6}}
+		is.Equal(t, "s4ql: text longer than the length limit in || (at offset 0)", err.Error())
+		is.True(t, errors.Is(err, expr.ErrTooLong))
+		is.True(t, errors.Is(err, expr.ErrEvaluation))
+		is.True(t, !errors.Is(err, expr.ErrOverflow))
+	})
+
 	t.Run("should match its kind and the evaluation error, and no other kind", func(t *testing.T) {
 		var err error = &expr.Error{Kind: expr.ErrNotFinite, Op: stmt.ExprMultiply}
 		is.True(t, errors.Is(err, expr.ErrNotFinite))

@@ -326,7 +326,7 @@ func (x *Program) Type() (Type, bool) {
 // value; that of a negation that of its operand; that of an operator of arithmetic [TypeNull] if an
 // operand is NULL, which only an argument is for every row, or else [TypeReal] if an operand is a
 // real, and [TypeInteger] otherwise; that of a concatenation and of lower [TypeNull] if an operand
-// is NULL, and [TypeText] otherwise; and that of hex [TypeText], since hex(NULL) is ''. The error is
+// is NULL, and [TypeText] otherwise; and that of hex [TypeText], since hex(NULL) is the empty text. The error is
 // a refusal for the first parameter, in the order of the text, whose argument is of a type that its
 // place does not take.
 func (x *Program) typeOf(args []*s4qlpb.Value) (Type, error) {
@@ -442,7 +442,7 @@ func (b Bound) Type() Type {
 //
 // || joins the bytes of its operands; lower changes the ASCII letters A to Z to a to z and leaves
 // every other byte as it is, as SQLite does without ICU; and hex writes each byte of a blob, or of
-// the UTF-8 of a text, as two upper-case hexadecimal digits, and is '' for NULL. Each is an
+// the UTF-8 of a text, as two upper-case hexadecimal digits, and is the empty text for NULL. Each is an
 // [ErrTooLong] where SQLite gives `string or blob too big`: a concatenation longer than the limit,
 // lower of a text as long as the limit or longer, and hex of a text or a blob at least half as long
 // as the limit, since SQLite allocates one byte more than the result.
