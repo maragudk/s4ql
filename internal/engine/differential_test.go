@@ -4629,6 +4629,9 @@ func TestPair_updateOrder(t *testing.T) {
 		is.True(t, p.checkUpdateOrder(s.(*stmt.Update), nil, false, got, want), "the engine's error is that of its first row")
 		want.err, got.err = "19/1299: NOT NULL constraint failed: t.x", "19/1299: NOT NULL constraint failed: t.y"
 		is.True(t, !p.checkUpdateOrder(s.(*stmt.Update), nil, false, got, want), "SQLite's error is not that of its first row")
+		// Another error of a row, which the first row to fail gives in neither order.
+		want.err, got.err = "19/1299: NOT NULL constraint failed: t.y", tooBig
+		is.True(t, !p.checkUpdateOrder(s.(*stmt.Update), nil, false, got, want), "the engine's error is of a row, but of no first row")
 	})
 }
 
