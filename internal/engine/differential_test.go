@@ -4722,7 +4722,7 @@ func FuzzSQL_core(f *testing.F) {
 
 // fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of a sequence of
 // the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], every 500th text of the corpus,
-// and texts with arithmetic.
+// and texts with arithmetic and with text.
 func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 	add := shardedAdd(f)
 	q := newSequence(f, stmttest.Mixed.Seed(1))
@@ -4755,6 +4755,11 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		"update t1 set v1 = v1",
 		"delete from t1 where v1 / (v1 - v1) = 1",
 		`select * from "foo BAR" where "bar""X" - 7 = 0`,
+		// Text, which the engine refuses as it binds the expression.
+		"update t1 set v1 = 'a' || lower(hex(v1)) returning *",
+		"select * from t1 where v1 = (select v1 from t1 where lower(v1) = 'a')",
+		"delete from t1 where hex(nosuch) = ?",
+		"select * from t1 where v1 || ? = 'x'",
 	} {
 		add(src, i%2 == 1)
 	}

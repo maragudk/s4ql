@@ -94,6 +94,9 @@ func plainName(t stmt.Term, args []any) string {
 // SQLite does not have. A condition of a subquery with a column that its table does not have, which
 // is correlated, has no refusal of its types.
 func ArithmeticRefusals(table string, columns []TableColumn, s stmt.Statement, args []any, readOnly bool, columnsOf func(name string) (string, []TableColumn)) []string {
+	if refusal := TextRefusal(s); refusal != "" {
+		return []string{refusal}
+	}
 	where, subs := whereOf(s)
 	refusals := whereRefusals(table, columns, where, subs, args, columnsOf)
 	for _, q := range subs {
@@ -117,6 +120,47 @@ func ArithmeticRefusals(table string, columns []TableColumn, s stmt.Statement, a
 		}
 	}
 	return refusals
+}
+
+// TextRefusal of the select, the update, or the delete s: s4ql's "not supported" of its first
+// concatenation or call of a function, in the order of the text, the outer one of two at one offset,
+// which s4ql gives for the whole statement whatever the database holds, as `concatenation`, `call of
+// lower`, or `call of hex`; or "" for a statement without one. Every other refusal of
+// [ArithmeticRefusals] is then none.
+func TextRefusal(s stmt.Statement) string {
+	where, subs := whereOf(s)
+	var roots []stmt.Expression
+	if u, ok := s.(*stmt.Update); ok {
+		for _, a := range u.Set {
+			roots = append(roots, a.Value.Expression)
+		}
+	}
+	for _, q := range subs {
+		where = append(where[:len(where):len(where)], q.Where...)
+	}
+	for _, c := range where {
+		roots = append(roots, c.Expression, c.Value.Expression)
+	}
+	var first stmt.Expression
+	var walk func(e stmt.Expression)
+	walk = func(e stmt.Expression) {
+		if (e.Kind == stmt.ExprConcat || e.Kind == stmt.ExprCall) && (!first.Present() || e.Span.Start < first.Span.Start) {
+			first = e
+		}
+		for _, o := range e.Operands {
+			walk(o)
+		}
+	}
+	for _, e := range roots {
+		walk(e)
+	}
+	switch first.Kind {
+	case stmt.ExprConcat:
+		return fmt.Sprintf("s4ql: not supported: concatenation (at offset %v)", first.Span.Start)
+	case stmt.ExprCall:
+		return fmt.Sprintf("s4ql: not supported: call of %v (at offset %v)", first.Function, first.Span.Start)
+	}
+	return ""
 }
 
 // CorrelatedRefusal of the conditions where of a statement whose scalar subqueries are subs: s4ql's
@@ -292,9 +336,14 @@ func setRefusals(name string, columns []TableColumn, set []stmt.Assignment, args
 // class of its values, "integer", "real", or "null" where an argument that is NULL makes every value
 // NULL, as the documents of the evaluator type it, and the refusals of its operands: each column of
 // type TEXT or BLOB, and each argument that is text or a blob, at its offset. Where there are
-// refusals, the expression has no class, and the class is "".
+// refusals, the expression has no class, and the class is "". An expression of text, a
+// concatenation or a call at its root, has the one refusal of its root.
 func expressionClass(e stmt.Expression, columns []TableColumn, args []any) (string, []string) {
 	switch e.Kind {
+	case stmt.ExprConcat:
+		return "", []string{fmt.Sprintf("s4ql: not supported: concatenation (at offset %v)", e.Span.Start)}
+	case stmt.ExprCall:
+		return "", []string{fmt.Sprintf("s4ql: not supported: call of %v (at offset %v)", e.Function, e.Span.Start)}
 	case stmt.ExprValue:
 		return ArgumentClass(BoundValue(stmt.Term{Value: e.Value}, args)), nil
 	case stmt.ExprParameter:
@@ -351,10 +400,12 @@ func expressionNames(e stmt.Expression) []stmt.Name {
 }
 
 // ArithmeticRefusal reports whether message is of a kind of refusal that [ArithmeticRefusals] may
-// give: of an operand of arithmetic, of a class, of a correlated subquery, or of an argument of LIMIT.
+// give: of an operand of arithmetic, of a class, of a correlated subquery, of an argument of LIMIT,
+// or of text.
 func ArithmeticRefusal(message string) bool {
 	for _, part := range []string{" in arithmetic (at offset ", " in arithmetic, which is ", " compared with an expression of type ", "s4ql: not supported: an expression of type ",
-		" compared with the column ", " for the column ", "s4ql: not supported: correlated subquery (at offset ", ", for LIMIT, which takes an integer from 0"} {
+		" compared with the column ", " for the column ", "s4ql: not supported: correlated subquery (at offset ", ", for LIMIT, which takes an integer from 0",
+		"s4ql: not supported: concatenation (at offset ", "s4ql: not supported: call of "} {
 		if strings.Contains(message, part) {
 			return true
 		}
@@ -401,8 +452,8 @@ func ArithmeticSites(s stmt.Statement) []ArithmeticSite {
 	return sites
 }
 
-// Operators of the expression e: its nodes that compute, the negations and the binary operators, from
-// the root, in the order of a walk that visits a node before its operands.
+// Operators of the expression e: its nodes that compute, the negations, the binary operators, and the
+// calls, from the root, in the order of a walk that visits a node before its operands.
 func Operators(e stmt.Expression) []stmt.Expression {
 	var ops []stmt.Expression
 	if len(e.Operands) > 0 {

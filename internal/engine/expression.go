@@ -26,6 +26,56 @@ import (
 //     the key or a bound of an index as an argument does. An expression with a column is computed for
 //     each row that the statement reads or changes, and never serves the access.
 
+// textRefusal of the statement s: for a select, an update, or a delete with a concatenation or a
+// call of a function in an expression, which the evaluator does not compute yet, the "not supported"
+// of the first such node in the order of the text, the outer one of two at one offset, as
+// `concatenation`, `call of lower`, or `call of hex`; and nil for any other statement. It comes after
+// the checks of the text and of the arguments, and before the database is read, so its answer does
+// not depend on what the database holds: SQLite looks the names inside a call up in an order of its
+// own, which the engine does not copy.
+func textRefusal(s stmt.Statement) error {
+	var roots []stmt.Expression
+	var where []stmt.Condition
+	var subqueries []stmt.Select
+	switch s := s.(type) {
+	case *stmt.Select:
+		where, subqueries = s.Where, s.Subqueries
+	case *stmt.Update:
+		where, subqueries = s.Where, s.Subqueries
+		for _, a := range s.Set {
+			roots = append(roots, a.Value.Expression)
+		}
+	case *stmt.Delete:
+		where, subqueries = s.Where, s.Subqueries
+	}
+	for _, q := range subqueries {
+		where = append(where[:len(where):len(where)], q.Where...)
+	}
+	for _, c := range where {
+		roots = append(roots, c.Expression, c.Value.Expression)
+	}
+	var first *stmt.Expression
+	var walk func(e *stmt.Expression)
+	walk = func(e *stmt.Expression) {
+		if (e.Kind == stmt.ExprConcat || e.Kind == stmt.ExprCall) && (first == nil || e.Span.Start < first.Span.Start) {
+			first = e
+		}
+		for i := range e.Operands {
+			walk(&e.Operands[i])
+		}
+	}
+	for i := range roots {
+		walk(&roots[i])
+	}
+	switch {
+	case first == nil:
+		return nil
+	case first.Kind == stmt.ExprConcat:
+		return &stmt.NotSupportedError{What: "concatenation", Offset: first.Span.Start}
+	}
+	return &stmt.NotSupportedError{What: "call of " + first.Function.String(), Offset: first.Span.Start}
+}
+
 // missingName of the expression e: the first column, in the order of the text, for which found
 // reports false, and true; or the zero Name and false if it finds every one.
 func missingName(e stmt.Expression, found func(stmt.Name) bool) (stmt.Name, bool) {
@@ -43,9 +93,10 @@ func missingName(e stmt.Expression, found func(stmt.Name) bool) (stmt.Name, bool
 // leftmostOffset of the expression e: the offset of its first leaf in the text, where SQLite gives
 // the offset of an error of a comparison whose left side is e. A negative literal starts at its sign,
 // and SQLite gives the offset of the number after it, which is one more where the sign and the number
-// have no space between them, as they mostly have.
+// have no space between them, as they mostly have. A call is a node with an offset of its own, its
+// name, where SQLite stops.
 func leftmostOffset(e stmt.Expression) int {
-	for len(e.Operands) > 0 {
+	for len(e.Operands) > 0 && e.Kind != stmt.ExprCall {
 		e = e.Operands[0]
 	}
 	switch v := e.Value.(type) {
