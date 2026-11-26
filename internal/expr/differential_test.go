@@ -36,6 +36,10 @@ var schema = []struct {
 	{"s", s4qlpb.Type_TYPE_TEXT}, {"x", s4qlpb.Type_TYPE_BLOB},
 }
 
+// maxLength is SQLite's default length limit, which the engine's databases have unless they are
+// given a lower one.
+const maxLength = 1_000_000_000
+
 // prefix of the statement that holds an expression of the tests, as the value of its assignment.
 const prefix = "update t set k = "
 
@@ -163,17 +167,31 @@ func newOracle(t testing.TB) *oracle {
 	return &oracle{conn: conn}
 }
 
+// errTooBig is the error of [oracle.value] where SQLite fails with SQLITE_TOOBIG, `string or blob
+// too big`.
+var errTooBig = errors.New("string or blob too big")
+
 // value that SQLite gives the expression of the text src over the row of the columns of [schema],
-// with args bound to its parameters, in the order of the text: an integer, a real, which may be
-// infinite, or NULL. The columns are those of a common table expression, which have no affinity,
-// so that each has the value of the row as it is.
-func (o *oracle) value(src string, row, args []*s4qlpb.Value) (expr.Value, error) {
+// with args bound to its parameters, in the order of the text, under the length limit: an integer, a
+// real, which may be infinite, text, a blob, or NULL; or [errTooBig] where SQLite fails with
+// SQLITE_TOOBIG. The columns are those of a common table expression, which have no affinity, so that
+// each has the value of the row as it is.
+func (o *oracle) value(src string, row, args []*s4qlpb.Value, limit int) (expr.Value, error) {
 	names := make([]string, len(schema))
 	params := make([]string, len(schema))
 	for i, c := range schema {
 		names[i], params[i] = c.name, fmt.Sprint("?", i+1)
 	}
 	q := fmt.Sprintf("with v(%v) as (select %v) select %v from v", strings.Join(names, ", "), strings.Join(params, ", "), src)
+	if len(q) > limit {
+		return expr.Value{}, fmt.Errorf("%q is longer than the limit %v, which SQLite refuses", q, limit)
+	}
+	if err := o.conn.SetLengthLimit(limit); err != nil {
+		return expr.Value{}, err
+	}
+	defer func() {
+		_ = o.conn.SetLengthLimit(maxLength)
+	}()
 	s, err := o.conn.Prepare(q)
 	if err != nil {
 		return expr.Value{}, fmt.Errorf("prepare %q: %w", q, err)
@@ -187,6 +205,9 @@ func (o *oracle) value(src string, row, args []*s4qlpb.Value) (expr.Value, error
 		}
 	}
 	ok, err := s.Step()
+	if se, isSQLite := errors.AsType[*sqlite.Error](err); isSQLite && se.Code == 18 {
+		return expr.Value{}, errTooBig
+	}
 	if err != nil || !ok {
 		return expr.Value{}, fmt.Errorf("step %q: %v, %w", q, ok, err)
 	}
@@ -195,6 +216,10 @@ func (o *oracle) value(src string, row, args []*s4qlpb.Value) (expr.Value, error
 		return expr.IntegerValue(s.ColumnInt64(0)), nil
 	case sqlite.TypeFloat:
 		return expr.RealValue(s.ColumnDouble(0)), nil
+	case sqlite.TypeText:
+		return expr.TextValue(s.ColumnText(0)), nil
+	case sqlite.TypeBlob:
+		return expr.BlobValue(s.ColumnBlob(0)), nil
 	case sqlite.TypeNull:
 		return expr.Value{}, nil
 	}
@@ -553,7 +578,7 @@ func (k *checker) check(c exprCase) string {
 	if err != nil {
 		return fmt.Sprintf("%v: the check gives %v", c, err)
 	}
-	b, err := x.Bind(c.args)
+	b, err := x.Bind(c.args, maxLength)
 	if refusal != nil {
 		var ns *stmt.NotSupportedError
 		if !errors.As(err, &ns) || *ns != *refusal || !errors.Is(err, stmt.ErrNotSupported) {
@@ -582,7 +607,7 @@ func (k *checker) check(c exprCase) string {
 		// SQLite's answer for the operation that fails shows the quirk that s4ql refuses: a real
 		// from integer operands for an overflow, NULL from operands that are not NULL for a
 		// division by zero, and an infinity for a real result that is not finite.
-		quirk, err := k.o.value(full[node.Span.Start:node.Span.End], c.row, argumentsOf(node, c.args))
+		quirk, err := k.o.value(full[node.Span.Start:node.Span.End], c.row, argumentsOf(node, c.args), maxLength)
 		if err != nil {
 			return fmt.Sprintf("%v: %v", c, err)
 		}
@@ -602,7 +627,7 @@ func (k *checker) check(c exprCase) string {
 		k.tally[fmt.Sprintf("case: %v", strings.TrimPrefix(wantErr.kind.Error(), "s4ql: "))]++
 		return ""
 	}
-	sqliteValue, err := k.o.value(full[e.Span.Start:e.Span.End], c.row, argumentsOf(e, c.args))
+	sqliteValue, err := k.o.value(full[e.Span.Start:e.Span.End], c.row, argumentsOf(e, c.args), maxLength)
 	if err != nil {
 		return fmt.Sprintf("%v: %v", c, err)
 	}

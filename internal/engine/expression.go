@@ -148,7 +148,9 @@ func bindArithmetic(t *s4qlpb.CreateTable, e stmt.Expression, args []*s4qlpb.Val
 	if err != nil {
 		return nil, fromExpr(err)
 	}
-	bound, err := program.Bind(args)
+	// The engine refuses text before it binds an expression, and arithmetic makes no text, which is
+	// all that the length limit bounds.
+	bound, err := program.Bind(args, math.MaxInt)
 	if err != nil {
 		return nil, fromExpr(err)
 	}
