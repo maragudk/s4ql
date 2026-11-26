@@ -906,7 +906,7 @@ func (tx *Tx) dropKeys(ctx context.Context, temp string, k *KeySet) error {
 	}
 	defer tx.leave(ctx)
 	for _, sql := range []string{k.add, k.first, k.next, k.sort} {
-		if s, ok := tx.c.stmts[sql]; ok && sql != "" {
+		if s, ok := tx.c.stmts[sql]; ok {
 			delete(tx.c.stmts, sql)
 			if err := s.Finalize(); err != nil {
 				return tx.fail(ctx, operation, err)
