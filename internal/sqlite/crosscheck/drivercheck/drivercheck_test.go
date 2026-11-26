@@ -5281,7 +5281,7 @@ func (p *pair) several(src string, c call, supported bool, runs [][]any) (outcom
 		o = conn
 	}
 	var failure string
-	stopped := len(parts)
+	var stopped int
 	switch total := parameters(parts); {
 	case failed == nil && len(args) > total:
 		failure = p.severalArguments(src, got, fmt.Sprintf("%v%v for a text whose %v statements have %v %v", wrongArguments, len(args), len(parts), total, parameterNoun(total)))
