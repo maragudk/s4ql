@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -489,6 +490,32 @@ func TestEngine_upsert(t *testing.T) {
 			"18/18: string or blob too big; 0",
 			`1,"c","y"; 1`,
 		}, got)
+
+		// An argument of arithmetic, in SET and in WHERE, which SQLite measures when it binds it, also
+		// without a conflict, and where the expression has a column.
+		blob := []byte(long)
+		steps = []upsertStep{
+			{"insert into w values (1, 2, 0.5) on conflict (k) do update set v = v + ?", []any{blob}},
+			{"insert into w values (9, 2, 0.5) on conflict (k) do update set v = v + ?", []any{blob}},
+			{"insert into w values (1, 2, 0.5) on conflict (k) do update set r = excluded.r * ?", []any{long}},
+			{"insert into w values (1, 2, 0.5) on conflict (k) do update set v = 1, r = 1 + ?", []any{blob}},
+			{"insert into w values (1, 2, 0.5) on conflict (k) do update set v = 1 where v + ? = 1", []any{blob}},
+			{"insert into w values (1, 2, 0.5) on conflict (k) do update set v = 1 where 1 < excluded.v * ?", []any{long}},
+			{"insert into w values (1, 2, 0.5) on conflict (k) do update set v = 1 where v = excluded.v + ?", []any{blob}},
+			{"insert into w values (1, 2, 0.5) on conflict (k) do update set v = v + ? returning *", []any{int64(1)}},
+		}
+		got = runUpserts(t, newInstanceLimited(t, forward(), nil, limit), newOracleLimited(t, limit),
+			[]string{"create table w (k int primary key, v int, r real) strict, without rowid", "insert into w values (1, 1, 1.5)"}, steps)
+		is.EqualSlice(t, []string{
+			"18/18: string or blob too big; 1",
+			"18/18: string or blob too big; 1",
+			"18/18: string or blob too big; 1",
+			"18/18: string or blob too big; 1",
+			"18/18: string or blob too big; 1",
+			"18/18: string or blob too big; 1",
+			"18/18: string or blob too big; 1",
+			"1,2,real 1.5; 1",
+		}, got)
 	})
 
 	t.Run("should refuse by the rule of exact types, for excluded.c as for a column of its type, and give the evaluation errors of arithmetic, whether the key exists or not, and change nothing", func(t *testing.T) {
@@ -669,5 +696,61 @@ func TestPair_upsert(t *testing.T) {
 				is.True(t, y[kind] > 0, kind)
 			}
 		}
+	})
+
+	t.Run("should fail a refusal that is none of the rules', a refusal that was due and not given, and an evaluation error that SQLite does not justify", func(t *testing.T) {
+		i := newMemoryInstance(t)
+		p := newPair(t, i, tally{})
+		for _, src := range upsertSetUp {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		// check runs checkUpsert of the call of src with the arguments, whose answer of the engine is got,
+		// and requires that it fails where fails, and that it decides the call.
+		check := func(src string, args []any, got answer, fails bool) {
+			t.Helper()
+			s, err := stmt.Check(src)
+			is.NotError(t, err, src)
+			excuse, failure := p.checkUpsert(stmttest.Call{Src: src, Args: args}, s.(*stmt.Insert), oracleArgs(args), got)
+			is.Equal(t, fails, failure != "", fmt.Sprint(src, " with the arguments ", args, " and the answer ", got, " ", got.message, ": ", failure))
+			if !fails && got.err != "" {
+				is.True(t, excuse != "", src)
+			}
+		}
+		const refused = "insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.w"
+		refusal := i.execValues(refused, nil)
+		is.Equal(t, "s4ql: not supported: the column excluded.w of type REAL for the column t.v of type INT", refusal.message)
+		check(refused, nil, refusal, false)
+
+		// A refusal that is none of the rules', of a statement that the rules refuse, and of one that
+		// they take.
+		check(refused, nil, answer{err: "not supported", message: "s4ql: not supported: the column excluded.s of type TEXT for the column t.v of type INT"}, true)
+		check("insert into t (k, n) values (1, 1) on conflict (k) do update set v = excluded.v", nil, refusal, true)
+
+		// No error where a refusal was due, also where the table has no row of the key.
+		check(refused, nil, answer{}, true)
+		check("insert into t (k, n) values (9, 1) on conflict (k) do update set v = excluded.w", nil, answer{}, true)
+		check("insert into t (k, n, v) values (9, 1, 'x') on conflict (k) do nothing", nil, answer{}, true)
+
+		// An evaluation error of an expression with a column, which SQLite justifies on the row of the
+		// conflict and not for another value or where the table has no row of the key, and of a constant.
+		const onRow = "insert into t (k, v, n) values (?, ?, 1) on conflict (k) do update set v = excluded.v + v"
+		overflow := i.execValues(onRow, values([]any{int64(1), int64(math.MaxInt64)}))
+		is.Equal(t, "s4ql: integer overflow in + (at offset 75)", overflow.message)
+		check(onRow, []any{int64(1), int64(math.MaxInt64)}, overflow, false)
+		check(onRow, []any{int64(1), int64(1)}, overflow, true)
+		check(onRow, []any{int64(9), int64(math.MaxInt64)}, overflow, true)
+		const constant = "insert into t (k, v, n) values (9, 1, 1) on conflict (k) do update set v = ? + 1"
+		overflow = i.execValues(constant, values([]any{int64(math.MaxInt64)}))
+		is.Equal(t, evaluationError, overflow.err)
+		check(constant, []any{int64(math.MaxInt64)}, overflow, false)
+		check(constant, []any{int64(1)}, overflow, true)
+
+		// No error where an evaluation error was due.
+		check(onRow, []any{int64(1), int64(math.MaxInt64)}, answer{}, true)
+
+		// An evaluation error in a read-only transaction, which computes nothing.
+		p.readOnly = true
+		check(onRow, []any{int64(1), int64(math.MaxInt64)}, i.execValues(onRow, values([]any{int64(1), int64(math.MaxInt64)})), true)
+		p.readOnly = false
 	})
 }
