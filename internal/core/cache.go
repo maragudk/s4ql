@@ -56,7 +56,8 @@ type conn struct {
 
 // openConn to the cache at path with open, [sqlite.OpenVFS] or [sqlite.OpenExistingVFS], through
 // the SQLite VFS of [Options.VFS], with the busy timeout of [Options.BusyTimeout], after which
-// SQLite reports a lock that it waited for as "busy", and the length limit of the options.
+// SQLite reports a lock that it waited for as "busy", the length limit of the options, and without
+// SQLite's automatic checkpoint.
 func openConn(open func(path, vfs string) (*sqlite.Conn, error), path string, options Options) (*conn, error) {
 	c, err := open(path, options.VFS)
 	if err != nil {
@@ -68,6 +69,13 @@ func openConn(open func(path, vfs string) (*sqlite.Conn, error), path string, op
 		return nil, err
 	}
 	if err := cn.exec(fmt.Sprint("pragma busy_timeout = ", options.BusyTimeout.Milliseconds())); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	// SQLite's automatic checkpoint drops its error, so the core runs every checkpoint itself:
+	// see [DB.checkpoint]. Only a connection that commits a write can run the automatic one, and the
+	// setting is per connection, so it is off on every connection, also on a reader.
+	if err := cn.exec("pragma wal_autocheckpoint = 0"); err != nil {
 		_ = c.Close()
 		return nil, err
 	}

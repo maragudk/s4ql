@@ -80,6 +80,10 @@ type Options struct {
 
 	// syncOff stops SQLite from syncing the cache to disk, for tests.
 	syncOff bool
+	// checkpointAfter is the number of pages in the write-ahead log from which the writer
+	// checkpoints the cache after a commit: see [DB.checkpoint]. The default is [checkpointAfter];
+	// tests lower it.
+	checkpointAfter int
 	// bugs that tests plant.
 	bugs bugs
 	// local is how the instance reaches its local files, which tests change to make them fail.
@@ -119,6 +123,9 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.LengthLimit == 0 {
 		o.LengthLimit = maxLength
+	}
+	if o.checkpointAfter == 0 {
+		o.checkpointAfter = checkpointAfter
 	}
 	switch {
 	case o.Lease > 365*24*time.Hour:

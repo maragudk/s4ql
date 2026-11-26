@@ -20,32 +20,33 @@ func (o *Options) Plant(name string) {
 
 // plantable bugs, by the names of the fields of [bugs].
 var plantable = map[string]func(b *bugs){
-	"renewOutsideLock":     func(b *bugs) { b.renewOutsideLock = true },
-	"cacheFirst":           func(b *bugs) { b.cacheFirst = true },
-	"wallOnly":             func(b *bugs) { b.wallOnly = true },
-	"monotonicOnly":        func(b *bugs) { b.monotonicOnly = true },
-	"takeoverAfterRelease": func(b *bugs) { b.takeoverAfterRelease = true },
-	"keepSalt":             func(b *bugs) { b.keepSalt = true },
-	"ownDuration":          func(b *bugs) { b.ownDuration = true },
-	"lateVersion":          func(b *bugs) { b.lateVersion = true },
-	"leaseFromAnswer":      func(b *bugs) { b.leaseFromAnswer = true },
-	"ignoreCacheError":     func(b *bugs) { b.ignoreCacheError = true },
-	"ackUnknown":           func(b *bugs) { b.ackUnknown = true },
-	"settleByRead":         func(b *bugs) { b.settleByRead = true },
-	"serveUnknown":         func(b *bugs) { b.serveUnknown = true },
-	"lostMeansFailed":      func(b *bugs) { b.lostMeansFailed = true },
-	"replayCommitsEarly":   func(b *bugs) { b.replayCommitsEarly = true },
-	"keyTwice":             func(b *bugs) { b.keyTwice = true },
-	"forgetDelete":         func(b *bugs) { b.forgetDelete = true },
-	"blobCut":              func(b *bugs) { b.blobCut = true },
-	"nullZero":             func(b *bugs) { b.nullZero = true },
-	"skipUnreadable":       func(b *bugs) { b.skipUnreadable = true },
-	"resendTake":           func(b *bugs) { b.resendTake = true },
-	"renewWaitsForWriter":  func(b *bugs) { b.renewWaitsForWriter = true },
-	"keepIdleTx":           func(b *bugs) { b.keepIdleTx = true },
-	"turnDescBound":        func(b *bugs) { b.turnDescBound = true },
-	"shortKey":             func(b *bugs) { b.shortKey = true },
-	"unlockedCounter":      func(b *bugs) { b.unlockedCounter = true },
+	"renewOutsideLock":      func(b *bugs) { b.renewOutsideLock = true },
+	"cacheFirst":            func(b *bugs) { b.cacheFirst = true },
+	"wallOnly":              func(b *bugs) { b.wallOnly = true },
+	"monotonicOnly":         func(b *bugs) { b.monotonicOnly = true },
+	"takeoverAfterRelease":  func(b *bugs) { b.takeoverAfterRelease = true },
+	"keepSalt":              func(b *bugs) { b.keepSalt = true },
+	"ownDuration":           func(b *bugs) { b.ownDuration = true },
+	"lateVersion":           func(b *bugs) { b.lateVersion = true },
+	"leaseFromAnswer":       func(b *bugs) { b.leaseFromAnswer = true },
+	"ignoreCacheError":      func(b *bugs) { b.ignoreCacheError = true },
+	"ignoreCheckpointError": func(b *bugs) { b.ignoreCheckpointError = true },
+	"ackUnknown":            func(b *bugs) { b.ackUnknown = true },
+	"settleByRead":          func(b *bugs) { b.settleByRead = true },
+	"serveUnknown":          func(b *bugs) { b.serveUnknown = true },
+	"lostMeansFailed":       func(b *bugs) { b.lostMeansFailed = true },
+	"replayCommitsEarly":    func(b *bugs) { b.replayCommitsEarly = true },
+	"keyTwice":              func(b *bugs) { b.keyTwice = true },
+	"forgetDelete":          func(b *bugs) { b.forgetDelete = true },
+	"blobCut":               func(b *bugs) { b.blobCut = true },
+	"nullZero":              func(b *bugs) { b.nullZero = true },
+	"skipUnreadable":        func(b *bugs) { b.skipUnreadable = true },
+	"resendTake":            func(b *bugs) { b.resendTake = true },
+	"renewWaitsForWriter":   func(b *bugs) { b.renewWaitsForWriter = true },
+	"keepIdleTx":            func(b *bugs) { b.keepIdleTx = true },
+	"turnDescBound":         func(b *bugs) { b.turnDescBound = true },
+	"shortKey":              func(b *bugs) { b.shortKey = true },
+	"unlockedCounter":       func(b *bugs) { b.unlockedCounter = true },
 }
 
 // Planted reports whether o has a planted bug.
@@ -62,6 +63,36 @@ func (o Options) Unplanted() Options {
 // SyncOff stops SQLite from syncing the cache to disk.
 func (o *Options) SyncOff() {
 	o.syncOff = true
+}
+
+// SyncOn lets SQLite sync the cache to disk, as it does by default: it undoes [Options.SyncOff].
+func (o *Options) SyncOn() {
+	o.syncOff = false
+}
+
+// CheckpointAfter sets the number of pages in the write-ahead log from which the writer
+// checkpoints the cache after a commit.
+func (o *Options) CheckpointAfter(pages int) {
+	o.checkpointAfter = pages
+}
+
+// AutoCheckpoint is SQLite's setting wal_autocheckpoint of the write connection and of the
+// connection of each reader that is not closed, the write connection first. It requires that no call
+// uses the instance.
+func (d *DB) AutoCheckpoint() ([]int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var settings []int64
+	for _, c := range append([]*conn{d.w}, d.readers...) {
+		err := c.query("pragma wal_autocheckpoint", func(s *sqlite.Stmt) error {
+			settings = append(settings, s.ColumnInt64(0))
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return settings, nil
 }
 
 // SpoolFile is the file of a spool, which [Options.WrapSpools] wraps.
@@ -138,26 +169,29 @@ func Classify(err error) string {
 
 // The names of the attributes and events, for the tests of the telemetry.
 const (
-	EventCommit  = eventCommit
-	EventLease   = eventLease
-	EventCatchUp = eventCatchUp
-	EventRefusal = eventRefusal
-	EventUnknown = eventUnknown
-	EventBusy    = eventBusy
-	EventStop    = eventStop
-	EventTxEnded = eventTxEnded
+	EventCommit     = eventCommit
+	EventLease      = eventLease
+	EventCatchUp    = eventCatchUp
+	EventRefusal    = eventRefusal
+	EventUnknown    = eventUnknown
+	EventBusy       = eventBusy
+	EventStop       = eventStop
+	EventTxEnded    = eventTxEnded
+	EventCheckpoint = eventCheckpoint
 
-	AttrOutcome     = attrOutcome
-	AttrTransition  = attrTransition
-	AttrPrefix      = attrPrefix
-	AttrInstance    = attrInstance
-	AttrOperation   = attrOperation
-	AttrReason      = attrReason
-	AttrCommit      = attrCommit
-	AttrBytes       = attrBytes
-	AttrUnknownKind = attrUnknownKind
-	AttrParent      = attrParent
-	AttrTxWaited    = attrTxWaited
+	AttrOutcome         = attrOutcome
+	AttrTransition      = attrTransition
+	AttrPrefix          = attrPrefix
+	AttrInstance        = attrInstance
+	AttrOperation       = attrOperation
+	AttrReason          = attrReason
+	AttrCommit          = attrCommit
+	AttrBytes           = attrBytes
+	AttrUnknownKind     = attrUnknownKind
+	AttrParent          = attrParent
+	AttrTxWaited        = attrTxWaited
+	AttrCheckpointLog   = attrCheckpointLog
+	AttrCheckpointMoved = attrCheckpointMoved
 )
 
 // CacheVersion that this package makes.

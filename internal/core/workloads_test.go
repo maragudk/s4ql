@@ -942,6 +942,26 @@ var plantedBugs = []plantedBug{
 		symptoms: []string{stale, "a read saw at commit", "the cache of", "began at the position", "on top of", "the instance stopped"},
 	},
 	{
+		// A sync of the cache fails only where the workload makes it fail, and with synchronous =
+		// normal SQLite syncs at a checkpoint, and at the first commit after the write-ahead log starts
+		// again, whose error the bug leaves alone. The VFS of faultvfs fails the sync and changes
+		// nothing else, so the bug leaves no wrong page behind, and the one thing that it changes is
+		// that the instance does not stop. The control has syncs and no faults.
+		bug:  "ignoreCheckpointError",
+		name: "a checkpoint whose error is ignored, as SQLite's automatic checkpoint ignores it",
+		workload: plant(func() workload {
+			w := singleWorkload
+			w.syncs, w.syncFaults = true, 2
+			return w
+		}(), "ignoreCheckpointError"),
+		control: new(plant(func() workload {
+			w := singleWorkload
+			w.syncs = true
+			return w
+		}(), "ignoreCheckpointError")),
+		symptoms: []string{"syncs, and the instance did not stop"},
+	},
+	{
 		// A swap has an unknown outcome only if the store or the network fails.
 		bug:      "ackUnknown",
 		name:     "a commit that is acknowledged before the outcome of its swap is known",

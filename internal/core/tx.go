@@ -1431,6 +1431,11 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 			}
 		}
 		report.phase(clock.phase(attrDurationCache))
+		// The transaction is committed in the log and in the cache, so a checkpoint that fails stops
+		// the instance and still leaves the commit acknowledged.
+		if outcome == "committed" && d.checkpoint(ctx) != nil {
+			outcome = "committed_and_stopped"
+		}
 		return nil
 
 	case unknown:
