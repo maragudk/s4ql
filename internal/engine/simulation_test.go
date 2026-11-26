@@ -123,7 +123,7 @@ type attemptState int
 const (
 	// pending is a statement whose call did not return, because its instance crashed.
 	pending attemptState = iota
-	// succeeded is a statement that succeeded: a write that is acknowledged, or a query that gave its
+	// succeeded is a statement that succeeded: a write whose commit returned, or a query that gave its
 	// rows.
 	succeeded
 	// sqliteFailed is a statement that failed with SQLite's error.
@@ -174,8 +174,8 @@ type attempt struct {
 	// read by, or that a create index or a drop index names, from its event: see [engine.AttrAccess]
 	// and [engine.AttrIndex].
 	access, index string
-	// acked is the number of writes that were acknowledged when the statement started.
-	acked int
+	// committed is the number of writes whose commit had returned when the statement started.
+	committed int
 	// partial is set for a query whose rows were not read to their end.
 	partial bool
 	// typeRefused is set for an insert, or a select with WHERE, that the engine refused as "not
@@ -196,7 +196,7 @@ type attempt struct {
 	// gives the run (see [run.open]), or nil for a statement whose subqueries it did not compute.
 	subqueries []*s4qlpb.Value
 	// newer is set for a statement of a transaction that spans statements that started after a write
-	// was acknowledged since the begin of the transaction, which it must not see.
+	// was committed since the begin of the transaction, which it must not see.
 	newer bool
 	// text is the text of several statements that the statement is of, or nil for a statement that
 	// ran alone: see [run.several].
@@ -211,8 +211,8 @@ type txRecord struct {
 	readOnly bool
 	// stmts of the transaction, in their order.
 	stmts []*attempt
-	// acked is the number of writes that were acknowledged when the begin was called.
-	acked int
+	// committed is the number of writes whose commit had returned when the begin was called.
+	committed int
 	// start, began, ending, and stop are the numbers of the run's clock of events when the begin was
 	// called, the begin returned, the commit or roll back was called, and it returned; 0 for what did
 	// not happen.
@@ -359,7 +359,7 @@ type run struct {
 	nodes      []*node
 	attempts   map[uint64]*attempt
 	order      []*attempt
-	acked      []uint64
+	committed  []uint64
 	violations []string
 	nextID     uint64
 	// txs are the transactions that span statements, in the order of their begins.
@@ -726,10 +726,11 @@ type severalEvent struct {
 // rules refuse before any statement runs, as [refusedBefore] says, is one attempt, which must be
 // refused so. The events that the engine logs for the statements tell which ran, in order: each
 // event is of the statement in its place, every statement before the first whose event is not ok
-// succeeded, and it is acknowledged then, by its event, as a statement of its own whose commit
-// returned, also if the call does not return because its instance crashed; the statement of that
-// event ended with the error of the call; and the statements after it did not run. It gives the
-// attempt of the statement that failed, or of the last.
+// succeeded, and outside a transaction it is committed then, by its event, which the engine logs
+// after its commit returned, as for a statement of its own, also if the call does not return because
+// its instance crashed and its caller never learns of it; the statement of that event ended with the
+// error of the call; and the statements after it did not run. It gives the attempt of the statement
+// that failed, or of the last.
 func (r *run) several(ctx context.Context, n *node, c *engine.Conn, gen int, call stmttest.Call, tx *txRecord) *attempt {
 	parts := sqliteParts(call.Src)
 	want, why := refusedBefore(call.Src, len(call.Args), parts)
@@ -821,7 +822,7 @@ func (r *run) logged(text *severalText, ev severalEvent, position, access, index
 		a.changes, a.unchanged = ev.rows, ev.rows == 0
 	}
 	if a.write && !a.nothing && a.tx == nil {
-		r.acked = append(r.acked, a.id)
+		r.committed = append(r.committed, a.id)
 	}
 	if k+1 < len(text.attempts) && !text.between {
 		text.between = true
@@ -831,16 +832,16 @@ func (r *run) logged(text *severalText, ev severalEvent, position, access, index
 		next := text.attempts[k+1]
 		next.start = r.tick()
 		if next.tx == nil {
-			next.acked = len(r.acked)
+			next.committed = len(r.committed)
 		} else {
-			next.newer = len(r.acked) > next.tx.acked
+			next.newer = len(r.committed) > next.tx.committed
 		}
 	}
 }
 
 // severalEnded is the end of the call of ExecAll of the text, which returned res and err: it checks
-// the events of the call against how a text runs, as [run.several] says, and the result of a call
-// that succeeded, which is that of the last statement that sets the count of changes, by its event;
+// the events of the call against how a text runs, as [run.several] says, and its result, which is
+// that of the last statement that sets the count of changes, by its event, also when it fails;
 // classifies the statement that failed with err; and marks the statements after it as not run. It
 // gives the attempt of the statement that failed, or of the last. The caller holds r.mu.
 func (r *run) severalEnded(ctx context.Context, text *severalText, res engine.Result, err error) *attempt {
@@ -876,18 +877,6 @@ func (r *run) severalEnded(ctx context.Context, text *severalText, res engine.Re
 			failures = append(failures, fmt.Sprintf("the statement %v succeeded: %v", a.id, failure))
 		}
 	}
-	if err == nil {
-		var want engine.Result
-		for j, a := range as {
-			s, _ := stmt.Check(a.src)
-			if _, insert := s.(*stmt.Insert); j < len(evs) && (isChange(s) || insert) {
-				want = engine.Result{Changes: evs[j].rows, SetsChanges: true}
-			}
-		}
-		if res != want {
-			failures = append(failures, fmt.Sprintf("ExecAll of the text of the statements %v gives the result %+v, and the events of its statements %+v", as[0].id, res, want))
-		}
-	}
 	var failedOne *attempt
 	if err != nil && at < len(as) {
 		a := as[at]
@@ -914,6 +903,32 @@ func (r *run) severalEnded(ctx context.Context, text *severalText, res engine.Re
 			r.classify(ctx, a, text.calls[at], engine.Result{}, answer{}, err, text.base[at])
 		}
 	}
+	// The result is that of the last statement that sets the count of changes, by the event of each
+	// that succeeded, also of a call that failed. An insert, update, or delete that failed after it
+	// began to write sets the count to 0, which the simulation cannot tell from SQLite's error or one
+	// of the core, so it may have; one that s4ql refused before it ran, as not supported, for its
+	// arguments, or for an evaluation error of arithmetic, which is skipped, leaves it.
+	ran := len(evs)
+	if err != nil {
+		ran = min(at, ran)
+	}
+	var want engine.Result
+	for j, a := range as[:min(ran, len(as))] {
+		s, _ := stmt.Check(a.src)
+		if _, insert := s.(*stmt.Insert); isChange(s) || insert {
+			want = engine.Result{Changes: evs[j].rows, SetsChanges: true}
+		}
+	}
+	wants := []engine.Result{want}
+	if failedOne != nil && failedOne.state != skipped {
+		s, _ := stmt.Check(failedOne.src)
+		if _, insert := s.(*stmt.Insert); isChange(s) || insert {
+			wants = append(wants, engine.Result{SetsChanges: true})
+		}
+	}
+	if !slices.Contains(wants, res) {
+		failures = append(failures, fmt.Sprintf("ExecAll of the text of the statements %v gives the result %+v and the error %v, and the events of its statements give one of %+v", as[0].id, res, err, wants))
+	}
 	for j, a := range as {
 		if a.state == pending && (err == nil || j > at) {
 			a.state, a.stop = notRun, r.tick()
@@ -936,10 +951,10 @@ func (r *run) severalEnded(ctx context.Context, text *severalText, res engine.Re
 // [withID] puts it there. The caller holds r.mu.
 func (r *run) newAttempt(n *node, gen int, src string, args []*s4qlpb.Value, query bool, tx *txRecord) *attempt {
 	r.nextID++
-	a := &attempt{id: r.nextID, node: n.name, query: query, acked: len(r.acked), args: args, tx: tx, gen: gen, start: r.tick()}
+	a := &attempt{id: r.nextID, node: n.name, query: query, committed: len(r.committed), args: args, tx: tx, gen: gen, start: r.tick()}
 	if tx != nil {
-		// A statement of a transaction must see what was acknowledged before the transaction began.
-		a.acked, a.newer = tx.acked, len(r.acked) > tx.acked
+		// A statement of a transaction must see what was committed before the transaction began.
+		a.committed, a.newer = tx.committed, len(r.committed) > tx.committed
 		tx.stmts = append(tx.stmts, a)
 	}
 	a.src = withID(src, a.id)
@@ -966,10 +981,10 @@ func (r *run) classify(ctx context.Context, a *attempt, call stmttest.Call, res 
 		if s, _ := stmt.Check(a.src); res.SetsChanges && isChange(s) {
 			a.changes, a.unchanged = res.Changes, res.Changes == 0
 		}
-		// A write of a transaction is acknowledged by its commit, and a statement that did nothing wrote
+		// A write of a transaction is committed with its transaction, and a statement that did nothing wrote
 		// nothing.
 		if a.write && !a.nothing && tx == nil {
-			r.acked = append(r.acked, a.id)
+			r.committed = append(r.committed, a.id)
 		}
 		// A call that the rule for arguments refuses must not succeed. One with a value of another
 		// type than its column must not either, which [run.verify] checks on the log.
@@ -1096,11 +1111,11 @@ func subqueryKinds(a *attempt, s stmt.Statement, kind string) []string {
 			kinds = append(kinds, kind+" with subqueries that gave rows")
 		}
 		if a.tx != nil && a.tx.readOnly && a.subqueries != nil && a.newer {
-			// A write was acknowledged after the begin of the read-only transaction and before the
+			// A write was committed after the begin of the read-only transaction and before the
 			// statement, so that the newest state is not the one that its subqueries must read.
-			kinds = append(kinds, kind+" with subqueries that the engine computed in a read-only transaction after a write was acknowledged")
+			kinds = append(kinds, kind+" with subqueries that the engine computed in a read-only transaction after a write was committed")
 			if a.query && len(a.answer.rows) > 0 {
-				kinds = append(kinds, kind+" with subqueries that gave rows in a read-only transaction after a write was acknowledged")
+				kinds = append(kinds, kind+" with subqueries that gave rows in a read-only transaction after a write was committed")
 			}
 		}
 	case sqliteFailed:
@@ -1276,7 +1291,7 @@ func (r *run) transactionOf(ctx context.Context, n *node, c *engine.Conn, gen in
 	}
 	r.mu.Lock()
 	r.nextTx++
-	tx := &txRecord{id: r.nextTx, node: n.name, gen: gen, readOnly: !idle && rnd.IntN(4) == 0, acked: len(r.acked), start: r.tick()}
+	tx := &txRecord{id: r.nextTx, node: n.name, gen: gen, readOnly: !idle && rnd.IntN(4) == 0, committed: len(r.committed), start: r.tick()}
 	r.txs = append(r.txs, tx)
 	r.mu.Unlock()
 	kind := map[bool]string{false: "write", true: "read-only"}[tx.readOnly]
@@ -1366,7 +1381,7 @@ func (r *run) transactionOf(ctx context.Context, n *node, c *engine.Conn, gen in
 	case err == nil:
 		tx.end = "committed"
 		for _, a := range tx.writes() {
-			r.acked = append(r.acked, a.id)
+			r.committed = append(r.committed, a.id)
 		}
 	case errors.Is(err, core.ErrOutcomeUnknown):
 		tx.end = "unknown"
@@ -2031,7 +2046,7 @@ func fold(name string) string {
 //     succeeded and that write, in order, and its parent is the state that the transaction began
 //     from, so no commit landed while it was open. No attempt and no transaction is in the log
 //     twice. The parameters of each statement are exactly the arguments that the caller gave.
-//   - Every write that was acknowledged is in the log: a statement of its own when it succeeded,
+//   - Every write that was committed is in the log: a statement of its own when it succeeded,
 //     and the writes of a transaction when its commit succeeded.
 //   - The statements of the log, run in SQLite in their order with their parameters, each succeed,
 //     and the value of each insert has the type of its column there, which SQLite would convert or
@@ -2040,10 +2055,10 @@ func fold(name string) string {
 //     [typeRule] in SQLite on the state that it saw.
 //   - Each statement of its own that failed with SQLite's error gives that error in SQLite on the
 //     state that it saw, and each query that succeeded gives its rows there: the state after a
-//     commit of the log, which holds every write that was acknowledged before the statement
+//     commit of the log, which holds every write that was committed before the statement
 //     started.
 //   - Each statement of a transaction that spans statements gives in SQLite what it gave, on the
-//     state that the transaction began from, which holds every write that was acknowledged before
+//     state that the transaction began from, which holds every write that was committed before
 //     the begin, after the statements of the transaction before it, and under `pragma query_only =
 //     1` for a read-only transaction: see [run.verifyTxs]. So no statement sees a write that is
 //     not committed, of its own transaction excepted.
@@ -2180,9 +2195,9 @@ func (r *run) verify(ctx context.Context) {
 			r.violate(ctx, "the statement %v saw the state %q, which the log does not have", a.id, a.position)
 			continue
 		}
-		for _, id := range r.acked[:a.acked] {
+		for _, id := range r.committed[:a.committed] {
 			if inLog[id] > at {
-				r.violate(ctx, "the statement %v saw commit %v, and the statement %v, in commit %v, was acknowledged before it started", a.id, at, id, inLog[id])
+				r.violate(ctx, "the statement %v saw commit %v, and the statement %v, in commit %v, was committed before it started", a.id, at, id, inLog[id])
 			}
 		}
 		seen[at] = append(seen[at], a)
@@ -2298,11 +2313,11 @@ func (r *run) verify(ctx context.Context) {
 		}
 	}
 	nothing := r.verifyTxs(ctx, log, index, inLog)
-	for _, id := range r.acked {
+	for _, id := range r.committed {
 		// An update or a delete that found no row changes nothing, and is in the log only if the
 		// transaction that ran it changed something else.
 		if inLog[id] == 0 && !nothing[id] && !r.attempts[id].unchanged {
-			r.violate(ctx, "the acknowledged statement %v, %q, is not in the log", id, r.attempts[id].src)
+			r.violate(ctx, "the committed statement %v, %q, is not in the log", id, r.attempts[id].src)
 		}
 	}
 	r.verifyOverlaps(ctx)
@@ -2340,7 +2355,7 @@ func (r *run) verify(ctx context.Context) {
 // log, whose commit of each statement inLog gives: they are there as running them one after another
 // leaves them, each in a commit of its own, in their order, and a statement is there only if every
 // statement before it in the text succeeded, so that a crash or a failure between two statements
-// leaves the earlier ones alone. [run.verify] checks that each statement that was acknowledged is
+// leaves the earlier ones alone. [run.verify] checks that each statement that was committed is
 // there, and that one that failed or did not run is not. Those of a transaction are in its commit
 // object, which it checks as it checks every transaction.
 func (r *run) verifyTexts(ctx context.Context, inLog map[uint64]int) {
@@ -2367,7 +2382,7 @@ func (r *run) verifyTexts(ctx context.Context, inLog map[uint64]int) {
 
 // verifyTxs checks what each statement of a transaction that spans statements gave. The statements
 // of a transaction must all have seen one state, the one that it began from, which must be a state
-// of the log that holds every write that was acknowledged before the begin. SQLite then runs the
+// of the log that holds every write that was committed before the begin. SQLite then runs the
 // log up to that state, under `pragma query_only = 1` for a read-only transaction, and each
 // statement of the transaction that succeeded or failed with SQLite's error, in their order, and
 // must give what the engine gave: for a write transaction, the state of its beginning and its own
@@ -2381,7 +2396,7 @@ func (r *run) verifyTexts(ctx context.Context, inLog map[uint64]int) {
 // writes must not be in the log. One whose rows SQLite has at its end as at its beginning may write
 // none either, as one that inserted a row and deleted it. The count of changes of each update and
 // delete that succeeded must be SQLite's. verifyTxs gives the IDs of the writes of such
-// transactions, which are acknowledged and need not be in the log.
+// transactions, which are committed and need not be in the log.
 func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]int, inLog map[uint64]int) (nothing map[uint64]bool) {
 	nothing = map[uint64]bool{}
 	for _, tx := range r.txs {
@@ -2405,9 +2420,9 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			r.violate(ctx, "the transaction %v saw the state %q, which the log does not have", tx.id, position)
 			continue
 		}
-		for _, id := range r.acked[:tx.acked] {
+		for _, id := range r.committed[:tx.committed] {
 			if inLog[id] > at {
-				r.violate(ctx, "the transaction %v saw commit %v, and the statement %v, in commit %v, was acknowledged before it began", tx.id, at, id, inLog[id])
+				r.violate(ctx, "the transaction %v saw commit %v, and the statement %v, in commit %v, was committed before it began", tx.id, at, id, inLog[id])
 			}
 		}
 		o := newOracle(r.t)
@@ -2987,7 +3002,7 @@ var storeFaults = map[string]string{
 // of a write that was stuck in the network.
 var storeLine = regexp.MustCompile(`^\S+ store request \d+(, stuck)? store: `)
 
-// tallyOf the simulation s: its statements, by how they ended, its writes that were acknowledged,
+// tallyOf the simulation s: its statements, by how they ended, its writes that were committed,
 // its queries that were not read to their end, its inserts and selects refused for the type of a
 // value, its create indexes and drop indexes by outcome, its statements of IF NOT EXISTS or IF EXISTS
 // by whether they did nothing, did their work, or failed with SQLite's error, its selects, updates,
@@ -3125,7 +3140,7 @@ func tallyOf(s simulation) map[string]int {
 		}
 	}
 	counts["indexes dropped while the rows of a query that read by them were open"] = r.droppedUnder()
-	counts["acknowledged writes"] = len(r.acked)
+	counts["committed writes"] = len(r.committed)
 	for _, tx := range r.txs {
 		counts[map[bool]string{false: "write transactions", true: "read-only transactions"}[tx.readOnly]]++
 		if tx.end != "" {
@@ -3298,7 +3313,7 @@ type simEnvironment struct {
 var simEnvironments = []simEnvironment{
 	{"default", defaultWorkload, 100_000, []simCell{{stmttest.Mixed, 34}, {stmttest.Tables, 6}, {stmttest.Where, 6}, {stmttest.Changes, 8}, {stmttest.Indexes, 10},
 		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 6}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 6}, {stmttest.Subquery, 8},
-		{stmttest.Arithmetic, 8}, {stmttest.Several, 10}}, 0.07},
+		{stmttest.Arithmetic, 8}, {stmttest.Several, 30}}, 0.07},
 	{"idle", idleWorkload, 200_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Changes, 8}, {stmttest.Indexes, 10}, {stmttest.Exists, 6}, {stmttest.Transactions, 12}}, 0.2},
 	{"hammer", hammerWorkload, 300_000, []simCell{{stmttest.Mixed, 33}, {stmttest.Tables, 8}, {stmttest.Where, 10}, {stmttest.Changes, 6}, {stmttest.Indexes, 10},
 		{stmttest.Exists, 6}, {stmttest.Defaults, 6}, {stmttest.ValueFirst, 10}, {stmttest.Transactions, 6}, {stmttest.Arguments, 6}, {stmttest.Order, 6}, {stmttest.Returning, 16}, {stmttest.Subquery, 20},
@@ -3486,8 +3501,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// tables weighs the inserts, whose keys repeat: 180 of 200 seeds find the bug, 178 of them by
 		// its own violation.
 		{"skipUnique", defaultWorkload, "default", stmttest.Tables, []string{"fails in SQLite: 19/1555: UNIQUE constraint failed", "(write), which began at commit"}},
-		// A statement that succeeds while its commit did not land is acknowledged, and is not in the
-		// log. The profile of the tables weighs the inserts, and so the commits: 48 of 200 seeds find
+		// A statement that succeeds while its commit did not land counts as committed, and is not in
+		// the log. The profile of the tables weighs the inserts, and so the commits: 48 of 200 seeds find
 		// the bug, each by its own violation, where 39 do on the mixed profile.
 		{"ackUnknown", defaultWorkload, "default", stmttest.Tables, []string{"is not in the log"}},
 		// The check of an insert in a read transaction of its own lets two inserts of one key both
@@ -3718,15 +3733,20 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		{"copySelf", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
 		// The bugs of the loop of ExecAll and its commit path, on the profile of several statements, of
 		// 1000 seeds on 2026-11-26, each bug in a process of its own, in the hammer environment, which
-		// runs more statements on one instance than the default one, but for commitLater. Every violation
-		// of the seeds that find a bug is in its list.
+		// runs more statements on one instance than the default one, but for commitLater. As for every
+		// bug, a seed that finds one must have a violation in its list, and need not have each of them
+		// there: a list holds the violations that the bug causes itself, and leaves out those that
+		// follow from one of them, as the commit of oneCommit that holds a statement after another of
+		// its text also gives the violation of verifyTexts "is in commit N, and the statement M before
+		// it in the text in commit N", and a call of a transaction after the begin of undoInTx failed
+		// gives "no transaction is open".
 		//
 		// All statements of a text outside a transaction in one commit: 999 seeds, 976 of them by their
-		// own violation. The bug acknowledges each statement by its event before the commit at the end,
+		// own violation. The bug logs an ok event for each statement before the commit at the end,
 		// so a statement that started after one of them saw a state without it, of its own or in a
 		// transaction, and the values of its subqueries were not SQLite's on that state; and the commit
-		// at the end can fail, which loses statements that were acknowledged.
-		{"oneCommit", hammerWorkload, "hammer", stmttest.Several, []string{"is a statement of its own", "was acknowledged before it started", "is not in the log", "was acknowledged before it began", "and SQLite gives"}},
+		// at the end can fail, which loses statements whose events said they committed.
+		{"oneCommit", hammerWorkload, "hammer", stmttest.Several, []string{"is a statement of its own", "was committed before it started", "is not in the log", "was committed before it began", "and SQLite gives"}},
 		// The statements after a failed one run: 1000 seeds, all by their own violation.
 		{"goOn", hammerWorkload, "hammer", stmttest.Several, []string{"which failed"}},
 		// A statement that fails while it runs commits what it changed before it failed, which needs an
@@ -3739,7 +3759,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// it, and a statement that started after its event saw a state without it. 610 seeds, 602 of them
 		// by their own violation; in 296 of them, a statement is lost whose call never returned because
 		// its instance crashed after it, as the crash of [run.crash] aims at such a text.
-		{"commitLater", defaultWorkload, "default", stmttest.Several, []string{"is not in the log", "was acknowledged before it began", "was acknowledged before it started"}},
+		{"commitLater", defaultWorkload, "default", stmttest.Several, []string{"is not in the log", "was committed before it began", "was committed before it started"}},
 		// The annotation of each statement holds the whole text, whose first ID is that of the first
 		// statement: 995 seeds, 992 of them by their own violation, and the others by a statement that
 		// is then in no commit.
