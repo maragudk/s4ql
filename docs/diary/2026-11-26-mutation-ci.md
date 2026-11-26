@@ -95,3 +95,48 @@ The self-review's other findings and what came of them: a cancelled run no longe
 ### Future work
 
 The two runs in CI after the merge: one small, one real, with their numbers.
+
+## Step 3: by hand, not weekly, and for value per unit of compute
+
+**Author:** mutation-ci builder
+
+### Prompt Context
+
+**Verbatim prompt:** First: "A change to your task: schedule the mutation workflow every night, not once a week." Then, replacing it, from the product owner: "It costs energy and resources, I care about that too, not just my monetary cost. So we should take care to use our resources wisely, and make sure it's warranted by the provided value." With: "(1) **No blind schedule.** ... (2) **Measure where a mutant's compute goes** ... (3) **Cut waste before scale** ... (4) **A sample first** ... (5) **Report the cost of every round** in its summary ... Pick the number of shards for little total compute, not for the shortest wall-clock time".
+**Interpretation:** The workflow starts by hand only; a round records itself when it leaves no work, so that the next does not redo it; each run says what it cost; a seeded sample gives a cheap first pass; shards are few; and every idea for saving compute is measured before it is kept.
+**Inferred intent:** Spend runner time only where it buys trust in the tests, and make the cost visible so the lead can judge each round.
+
+### What I did
+
+- `/.github/workflows/mutation.yml`: no schedule. Inputs `sample` and `seed`; `shards` defaults to 6, with one shard for each 150 mutants. The plan job takes as the base the commit of `round.txt`, or the newest `mutation-round` artifact of a run on `main` that lies between that commit and its own (read through the API with `actions: read`); the report job uploads that artifact when a whole default round left no work. One open issue with the label `mutation` gets its body replaced by the latest report and a comment per run; its title names the commit the round counts from.
+- `/.github/scripts/mutation-report.sh`: the cost of the round from the jobs API (runner-minutes of `plan` and `shard`, mutants a runner-minute, unexplained survivors, and each shard's setup before its run and its planning from the new `timing` file the runner writes), and `complete=true` for the self-record.
+- The runner: `result` has `Build` and `Stages` (seconds per stage, by layer); the summary has "Where the time went" (mutants that do not compile, builds, each layer's stages, and the survivors' share) and, for a sample, an extrapolation and the rule of three; `-sample` and `-seed` draw by a SHA-256 of the seed and the key.
+- Concurrency: GitHub's documentation (docs.github.com/en/actions/reference/limits) gives 60 concurrent jobs for standard hosted runners on Team, which `gh api orgs/maragudk` shows is the plan, 20 on Free, 256 jobs in a matrix, and 6 hours a job; a public repository's `ubuntu-latest` has 4 CPUs, 16 GB, and 14 GB of disk. CI of one pull request runs up to 29 jobs and the nightly 15, so 6 shards leave room for both.
+
+### Why
+
+A schedule spends compute on half-finished work and on survivors that an open issue already lists, so the lead starts a round when a piece of work is complete. A round that left no work is as complete as one a builder recorded, so it records itself and the next round does not mutate the same declarations again. Every shard repeats the checkout, the restore of the cache, and the planning of every package of its share, so few shards use less in all.
+
+### What worked
+
+Measured on the 15 mutants of `/filelimit_unix.go` with 2 workers: without a compile of the package first 140.5 s in all, with it 164.7 s, and the 4 mutants that do not compile cost 0.9 s and 1.2 s; the compile first saves nothing, since `go test -c` already stops at the package, so it is gone again. Builds were 26.1 of the 41.2 s of the 4 killed mutants and 43.9 of the 98.4 s of the 7 survivors.
+
+### What didn't work
+
+There is no data of the last recorded round in the repository: `results.jsonl` was never committed, and the rounds' directories were on the Mac Mini outside this worktree, so the breakdown of the engine's compute must come from the first rounds in CI. A local sample of the next round (`-pkgs all -since round -sample 0.03 -seed 1 -j 4`, 64 mutants) planned the engine's hand-written stage at 5 min 40 s under a load of 32 on 10 cores, with a time limit of 1 h 53 min; it was stopped, since its numbers would have measured the machine's load and it competed with another builder's round. The first try of the sample with FNV-1a kept 600 of 5,000 keys for a fraction of 0.2 (`TestSampleOf`), since the high bits of FNV are poorly spread over keys that differ in their last characters; SHA-256 keeps about 1,000.
+
+### What I learned
+
+In GitHub's expressions `inputs.x` of a scheduled run is null, and `null != false` is false; with the schedule gone the issue step simply reads `inputs.issue`.
+
+### What was tricky
+
+The self-record must never skip work: the artifact is uploaded only for the default selection (`since` round, `pkgs` all, no `run`, `sample` 1), on `main`, with every shard and the merge successful and no unexplained survivor, stale entry, or mutant without a result; and the plan job accepts it only if `round.txt`'s commit is its ancestor and it is an ancestor of the run's own commit.
+
+### What warrants review
+
+The base chosen by the plan job (shell in `/.github/workflows/mutation.yml`), and `mutation-report.sh`, which runs only on Linux (`date -d`) and is first exercised by the runs after the merge.
+
+### Future work
+
+The runs in CI after the merge: a small one, then a sample of 0.2 of the round, whose summary gives the breakdown by layer that decides coverage-based skipping and the order of the stages (both open in `/docs/todo/ci.md`), and the measured setup per shard, which may move the 150 mutants a shard.
