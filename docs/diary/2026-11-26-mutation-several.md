@@ -47,3 +47,51 @@ The brief asks for the scope of the earlier rounds, by whole declaration, and th
 ### Future work
 
 - The survivors of the run.
+
+## Step 2: The run, its survivors, and the merge of `main`
+
+**Author:** mutation-several builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Every surviving mutant gets one of two ends: a test that kills it (prefer the place where such behaviour is already tested; a generated or differential check before a hand-written pin where one fits), or an entry in `equivalent.txt` with the reason why no test can tell it from the original. No survivor stays unexplained."
+**Interpretation:** Classify the survivors as they come, with a test or a reason each, and run every survivor and timeout again on the final code.
+**Inferred intent:** A round with nothing left open.
+
+### What I did
+
+- The run took 8 h 41 min with 4 workers, planning 12 min 35 s of it, at a load of 8 to 20 on 10 cores beside other builders. 1,125 mutants: 235 not compiled, 756 killed (629 first by the hand-written tests, 127 by the simulation), 27 timed out, 107 survived. Of the 107, 26 were in `equivalent.txt` before (all of the driver's two, those of `Conn.write` and `Conn.writeIn` from earlier rounds), 4 are killed by new tests, and 77 are new entries.
+- New tests, each checked against its survivor with `scripts/mut.sh`: `TestConn_ExecAll_panic` in `/internal/engine/several_internal_test.go` (a statement of a text that panics in the engine logs its event with `internal_error`, after the events of the statements before it), which kills the removal of `defer r.panicked(ctx)` in `Conn.execPart`; and two cases of the subtest of `CheckAll` in `/internal/engine/several_test.go`, a text of two statements with the right number of arguments and a text of one statement before a syntax error, with one argument, which kill the three mutants of the condition of a text of one statement in `CheckAll`.
+- Two entries of `equivalent.txt` had moved with #168: the branch of `commitLater` in `Conn.write` came before that of `rowsOfFailed`, so the entries `r.rows = n => #2` and `SetsChanges: setsChanges(p) =>` of `rowsOfFailed` are `#3` and `#2` now; the run shows the new keys survive and the old ones are killed.
+- Merged `main` (144 commits, among them the upserts, text in expressions, and the round of mutation testing in CI). It changed `Conn.write` and `Conn.writeIn` (an upsert takes no `checkOutside`, and a failed build gives `built(p, err)`), which changes no key of a survivor and adds 18 mutants; and `stmt.Split`, `ExecAll`, and the other declarations not at all.
+- The rerun on `tree2/`, a copy of the merged code with the new tests, takes every survivor, every timeout, and the 18 new mutants, 152 in all, with `-min-time 5m` (`scripts/run2.sh`, `rerun.re`).
+
+### Why
+
+The brief's lessons: a timeout counts only after a run alone, and every survivor runs again on the final code.
+
+### What worked
+
+- Classifying the survivors by the file in which they came: almost all of `bugs.go` and of the loop of `execAll` are variants of the planted bugs, which only run with a bug planted.
+
+### What didn't work
+
+- `pgrep -f "mutation-several/out1"` in a wait loop matched the wait loop's own command line, which named the results file; the loop now looks for `mutation -out /Volumes/990/s4ql/mutation-several/`.
+- A command that set a shell variable from `jq` and then appended a here-doc in the worktree was refused: "this command is too complex to verify that it stays inside the worktree". The key went in by hand.
+
+### What I learned
+
+- The new rule of `AGENTS.md` on `main`, "Do not start a mutation round on a developer's machine", came in while this run was under way; the run had started under the brief before, and only the rerun of its survivors and timeouts follows it.
+- Issue #179, the sample of the round in CI since 8c53a53f, lists 13 survivors of the engine among them, of `bugs.go` and `several.go`, which this round explains.
+
+### What was tricky
+
+- The order of the numbers `#n` of equal keys in a function is that of the walk of the generator, not of the lines: the last `r.rows = n` of `Conn.write` has no number, and the one of `commitLater` is `#2`.
+
+### What warrants review
+
+- The reasons of the entries in the section of several statements at the end of `/internal/sql/mutation/equivalent.txt`, in particular those of `staysComment` and of `Conn.split`.
+
+### Future work
+
+- The rerun's results.
