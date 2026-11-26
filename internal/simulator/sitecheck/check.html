@@ -284,30 +284,6 @@ async function unit() {
   expect(JSON.stringify(resets) === JSON.stringify(["You reset the clocks of a.", "", "You reset the clocks of a. Ignored: the process of the instance has crashed."]), `the steps of a reset of the clocks say the reset once, and a step that does not happen (${resets.join(" | ")})`);
   expect(JSON.stringify(["a", "a2", "b13", ""].map(R.instanceOf)) === JSON.stringify(["a", "a", "b", ""]), "the instance of a process is its name without the number of its restart");
 
-  // The line of a start on the stored database says that an instance that starts waits for a lease
-  // from before the reload, with the lease's own length, and says nothing of a wait when there is
-  // none: no lease, or one under the holder ID of the instance itself, which takes it at once. An
-  // instance that waits for a to serve before it starts does not wait for the lease.
-  const leaseOf = (holder, duration) => ({ head: "ab".repeat(32), lease: { holder, duration } });
-  const starting = [{ instance: "a", state: "starting", holder: "" }, { instance: "b", state: "waiting", holder: "" }];
-  const storedLines = [
-    R.storedLine("db-k7m2qa", 1234, leaseOf("h0", 30000), starting),
-    R.storedLine("db-k7m2qa", 1, leaseOf("h0", 12500), starting),
-    R.storedLine("db-k7m2qa", 72, { head: "ab".repeat(32) }, starting),
-    R.storedLine("db-k7m2qa", 72, null, starting),
-    R.storedLine("db-k7m2qa", 72, leaseOf("h1", 30000), [{ instance: "a", state: "running", holder: "h1" }, starting[1]]),
-    R.storedLine("db-k7m2qa", 72, leaseOf("h0", 30000), [{ instance: "a", state: "starting", holder: "" }, { instance: "b", state: "starting", holder: "" }]),
-  ];
-  const wantStored = [
-    "S3 still holds db-k7m2qa: 1,234 commit objects. a waits out the 30 s lease from before the reload.",
-    "S3 still holds db-k7m2qa: 1 commit object. a waits out the 12.5 s lease from before the reload.",
-    "S3 still holds db-k7m2qa: 72 commit objects.",
-    "S3 still holds db-k7m2qa: 72 commit objects.",
-    "S3 still holds db-k7m2qa: 72 commit objects.",
-    "S3 still holds db-k7m2qa: 72 commit objects. a and b wait out the 30 s lease from before the reload.",
-  ];
-  expect(JSON.stringify(storedLines) === JSON.stringify(wantStored), `the line of a start on the stored database says who waits for a lease from before the reload, and for how long (${storedLines.join(" | ")})`);
-
   // The sound of the page: each important event has one figure, the visitor's Stop, Start, and
   // Restart sound once, at the action, and the requests sound when their status changes, not at
   // each request. Every note is short.
@@ -754,7 +730,7 @@ async function check() {
 
   p.win.frameElement.remove();
   forget();
-  await persistence(address);
+  await database(address);
   await kept();
   await broken();
 }
@@ -1038,83 +1014,31 @@ async function sqlBox(p) {
   expect(!p.win.s4qlPage.playing && line === "a serves 1 row.", `a statement sent while playing and paused at once is answered: ${line}`);
 }
 
-// persistence checks that S3 outlives a reload of the tab and that Reset empties it: the tab's
-// database in sessionStorage, which the frames of this page share with it, as the frames of one tab
-// do. A reload keeps the database, its name, and the time of the history, and the instance a gets its
-// data from S3 before it serves. Reset empties it and keeps the name. The page stops cleanly at the
-// cap, and Reset starts over from there. A write that fails leaves nothing half-written, and a stored
-// database that is damaged or of another version is dropped, with a line in the log.
-async function persistence(address) {
-  const stored = () => Object.keys(sessionStorage).filter((k) => k.startsWith("s4ql:") && k !== "s4ql:box").sort();
-  const objects = () => stored().filter((k) => k === "s4ql:m" || k.startsWith("s4ql:c:")).length;
-  const logHas = (p, re) => [...p.$("#log").children].some((li) => re.test(li.textContent));
-  // reload the page in a new frame.
-  const reload = async (p) => {
-    if (p) p.win.frameElement.remove();
-    return open(address);
-  };
-
-  let p = await reload(null);
+// database checks that S3 lives in the page's memory only: the page stores nothing of it in the
+// browser, not even the text of the box, so a reload starts on an empty S3 and the box as it was at the
+// first visit. Reset empties it too. The page stops cleanly at the cap of commit objects, and Reset
+// starts over from there. sessionStorage is the one that the frames of this page share with it, as
+// the frames of one tab do.
+async function database(address) {
+  sessionStorage.clear();
+  let p = await open(address);
   const name = p.$("#s3-path").textContent;
-  const before = { commits: p.commits, history: p.win.s4qlPage.history, objects: objects() };
-  expect(/^s4ql-sim\/db-[a-z0-9]{6}\/$/.test(name) && before.commits > 0 && before.objects === before.commits + 1,
-    `S3 holds the database ${name} of the tab after a reload, with ${before.commits} commit objects, ${before.objects} objects in sessionStorage`);
-  // The stored manifest is its time, a comma, and its JSON. Whether it names a lease, and its length,
-  // decide what the line of the reload says of a wait, not the time that the page played.
-  const manifest = sessionStorage.getItem("s4ql:m");
-  const storedLease = JSON.parse(manifest.slice(manifest.indexOf(",") + 1)).lease;
-  const leaseSeconds = storedLease && /^(\d+(?:\.\d+)?)s$/.exec(storedLease.duration);
-  p = await reload(p);
-  const reloadLine = [...p.$("#log").children].map((li) => li.textContent).find((text) => /S3 still holds db-/.test(text)) || "";
-  const waitWords = leaseSeconds ? ` a waits out the ${Number(leaseSeconds[1])} s lease from before the reload.` : "";
-  expect(storedLease && leaseSeconds && reloadLine.endsWith(`S3 still holds ${name.slice("s4ql-sim/".length, -1)}: ${before.commits.toLocaleString("en")} commit object${before.commits === 1 ? "" : "s"}.${waitWords}`),
-    `the line of the reload says that a waits for the lease from before the reload, of ${storedLease && storedLease.duration} in the stored manifest: ${reloadLine}`);
-  // The time of the history after the reload is the offset of the seed plus the time of the session,
-  // a sum of floats that can come out a rounding below the sum that was stored, as 660017.381003
-  // against 660017.3810030001.
-  expect(p.$("#s3-path").textContent === name && p.commits === before.commits && p.win.s4qlPage.history >= before.history - 1e-6 && logHas(p, /S3 still holds db-/),
-    `a reload keeps the database, its name, and its ${p.commits} commit objects, and the time goes on from ${p.$("#clock").textContent}` +
-    ` (${p.$("#s3-path").textContent}, ${before.commits} commit objects, ${before.history} to ${p.win.s4qlPage.history} ms of history, the log: ${[...p.$("#log").children].slice(-3).map((li) => li.textContent).join(" | ")})`);
-  const took = await p.skipUntil(() => logHas(p, /^\S+a catches up: \d+ commit objects? from S3\.$/) && p.inst("a").dataset.role === "serves");
-  // The catch-up downloads commit objects that S3 held before the reload, and no more than it held.
-  const caughtUp = [...p.$("#log").children].map((li) => /a catches up: (\d+) commit objects? from S3\.$/.exec(li.textContent)).find(Boolean);
-  const caught = caughtUp ? Number(caughtUp[1]) : 0;
-  expect(caught > 0 && caught <= before.commits, `a catches up from S3 with ${caught} of the ${before.commits} commit objects from before the reload, and serves ${took / 1000} s of fake time after it`);
-  // The visitor's table is in S3 after the reload, and the box has the text that it had.
-  const text = p.$("#sql-text").value;
-  const line = await p.sql("select v from mine where k = 1");
-  expect(text === "select v from mine where k = 1" && line === "a serves 1 row." && p.$("#sql-rows tbody td").textContent === "'one'",
-    `after the reload, the box has its text again (${text}), and the visitor's table is there: ${line}`);
-
-  // A stored object that is missing, and a stored version of other formats: the page starts empty.
-  sessionStorage.removeItem(stored().find((k) => k.startsWith("s4ql:c:")));
-  p = await reload(p);
-  expect(p.commits === 0 && logHas(p, /could not be read/) && p.$("#s3-path").textContent === name, `a stored database without one of its objects is dropped, and S3 starts empty`);
+  const example = p.$("#sql-text").value;
+  const area = p.$("#sql-text");
+  area.value = "select 1";
+  area.dispatchEvent(new p.win.Event("input", { bubbles: true }));
   await p.skipUntil(() => p.commits > 2);
-  const meta = JSON.parse(sessionStorage.getItem("s4ql:meta"));
-  sessionStorage.setItem("s4ql:meta", JSON.stringify({ ...meta, version: "0-0" }));
-  p = await reload(p);
-  expect(p.commits === 0 && logHas(p, /could not be read/), `a stored database of another version is dropped, and S3 starts empty`);
+  expect(/^s4ql-sim\/[a-z0-9-]+\/$/.test(name) && Object.keys(sessionStorage).length === 0,
+    `the page stores nothing in sessionStorage after ${p.commits} commit objects and a text in the box (${name}; ${Object.keys(sessionStorage).join(", ") || "empty"})`);
 
-  // A write that the browser's storage refuses, as when large values of the box fill it: nothing
-  // half-written stays, and the page stops, as S3 is full, until Reset.
+  // A reload starts on an empty S3, and the box as at the first visit.
+  p.win.frameElement.remove();
+  p = await open(address);
+  expect(p.commits === 0 && p.t < 1000 && !p.win.s4qlPage.playing && p.$("#s3-path").textContent === name && p.$("#log").textContent === "Nothing yet." && p.$("#sql-text").value === example,
+    `a reload starts on an empty S3, at ${p.$("#clock").textContent}, and the box has its first text again (${p.commits} commit objects, ${p.$("#log").textContent})`);
+
+  // Reset empties the database, and the page waits.
   await p.skipUntil(() => p.commits > 2);
-  const proto = p.win.Storage.prototype, setItem = proto.setItem;
-  proto.setItem = function (k, v) {
-    if (k.startsWith("s4ql:c:")) throw new p.win.DOMException("The quota has been exceeded.", "QuotaExceededError");
-    return setItem.call(this, k, v);
-  };
-  const failure = p.$("#failure");
-  while (failure.hidden) {
-    const to = Math.floor(p.win.s4qlPage.t) + 1000 - 1;
-    p.win.s4qlPage.skip(1000);
-    await until(() => !failure.hidden || (p.t >= to && p.idle()));
-  }
-  proto.setItem = setItem;
-  expect(/^S3 is full\..*Reset to start over\.$/.test(failure.textContent) && stored().join() === "s4ql:name" && p.$("#sql-run").disabled && !p.$("#reset").disabled,
-    `a write that the storage refuses drops the stored database, and the page stops (${failure.textContent}; ${stored().join(", ")})`);
-
-  // Reset empties the database, keeps its name, and stores again.
   p.$("#reset").click();
   await until(() => p.html.dataset.engine === "ready" && !p.$("#reset").disabled && p.win.s4qlPage.state);
   expect(p.commits === 0 && p.t < 1000 && !p.win.s4qlPage.playing && p.$("#s3-path").textContent === name && p.$("#log").textContent === "Nothing yet.",
@@ -1127,21 +1051,12 @@ async function persistence(address) {
     await until(() => !box.hidden || (p.t >= to && p.idle()));
   }
   const full = p.commits;
-  expect(/S3 is full/.test(box.textContent) && full >= 2000 && objects() === full + 1 && !p.$("#reset").disabled,
-    `at ${full} commit objects the page stops, says that S3 is full, keeps them in sessionStorage, and offers Reset (${box.textContent})`);
+  expect(/S3 is full/.test(box.textContent) && full >= 2000 && !p.$("#reset").disabled,
+    `at ${full} commit objects the page stops, says that S3 is full, and offers Reset (${box.textContent})`);
   p.$("#reset").click();
   await until(() => p.html.dataset.engine === "ready" && !p.$("#reset").disabled && p.win.s4qlPage.state && box.hidden);
-  expect(p.commits === 0 && objects() === 0, "Reset after the stop starts over");
-  p.win.frameElement.remove();
-
-  // A tab that the browser gives no storage, and a new tab, whose sessionStorage is empty.
-  const blocked = await load("/__check/broken/no-storage/simulator/");
-  expect(blocked.html.dataset.engine === "ready" && /^s4ql-sim\/db-[a-z0-9]{6}\/$/.test(blocked.win.document.getElementById("s3-path").textContent) &&
-    blocked.win.document.getElementById("log").textContent.includes("does not store S3"), "a tab without storage runs in memory, with a database of its own name");
-  blocked.frame.remove();
-  sessionStorage.clear();
-  p = await reload(null);
-  expect(p.$("#s3-path").textContent !== name && p.commits === 0, `a new tab, with an empty sessionStorage, gets a database of its own (${p.$("#s3-path").textContent})`);
+  expect(p.commits === 0, "Reset after the stop starts over");
+  expect(Object.keys(sessionStorage).length === 0, `nothing is in sessionStorage after the cap and the Reset (${Object.keys(sessionStorage).join(", ") || "empty"})`);
   p.win.frameElement.remove();
 }
 
