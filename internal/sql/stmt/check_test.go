@@ -3344,6 +3344,22 @@ func TestCheck(t *testing.T) {
 		is.Equal(t, fmt.Sprintf("s4ql: not supported: SET beyond SQLite's limit (at offset %v)", strings.LastIndex(src, "c2000")), err.Error())
 		is.Equal(t, "too many columns in set list", oracle.Judge(src).Message)
 		verify(t, src)
+
+		// SQLite does not count the assignments of DO UPDATE while it parses. No table has more columns
+		// than 2,000, so it refuses more once it has found the table, by the name of a column that the
+		// table does not have.
+		upsert := func(n int) string {
+			return strings.Replace(update(n), "update t set ", "insert into t values (?) on conflict (k) do update set ", 1)
+		}
+		src = upsert(2001)
+		s, err = stmt.Check(src)
+		is.NotError(t, err)
+		is.Equal(t, 2003, s.Parameters())
+		is.Equal(t, 2003, s.(*stmt.Insert).Conflict.Where[0].Value.Parameter)
+		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+		d := open(t)
+		d.must("create table t (k int primary key) strict, without rowid")
+		sqliteError(t, "the upsert of 2,001 assignments", d.exec(src), 1, "no such column: c0")
 	})
 
 	t.Run("should take conditions of an update and a delete as deep as SQLite allows, and not one deeper", func(t *testing.T) {
@@ -3551,6 +3567,14 @@ func TestCheck(t *testing.T) {
 			{"of concatenations on the right of a comparison", "select * from t where v = w", "", 998, "WHERE", func(src string) int { return len(src) }, " || ?"},
 			{"of concatenations in a call in set", "update t set v = lower(w", ")", 998, "expression", func(src string) int { return len(src) }, " || 'a'"},
 			{"of concatenations in a call on the left of a comparison", "select * from t where hex(v", ") = 'x'", 997, "WHERE", func(src string) int { return len(src) }, " || 'a'"},
+			// Each value of DO UPDATE SET and its WHERE have the limits of those of an update, and
+			// excluded.c is 2 deep, the dot an operator over two names.
+			{"in do update", "insert into t values (1) on conflict (k) do update set v = 1", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in do update after excluded", "insert into t values (1) on conflict (k) do update set v = excluded.v", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in do update with a where", "insert into t values (1) on conflict (k) do update set v = 1", " where v = 1", 999, "expression", func(src string) int { return len(src) - len("+ 1 where v = 1") }, ""},
+			{"in the where of do update", "insert into t values (1) on conflict (k) do update set v = 1 where v = 1", "", 998, "WHERE", func(src string) int { return len(src) }, ""},
+			{"after excluded in the where of do update", "insert into t values (1) on conflict (k) do update set v = 1 where v = excluded.v", "", 997, "WHERE", func(src string) int { return len(src) }, ""},
+			{"after an and in the where of do update", "insert into t values (1) on conflict (k) do update set v = 1 where excluded.v is null and v = 1", "", 997, "WHERE", func(src string) int { return len(src) }, ""},
 		} {
 			link := c.link
 			if link == "" {

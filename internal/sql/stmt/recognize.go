@@ -967,9 +967,10 @@ func (r *recognizer) update(c *ast.Update) *Update {
 	return s
 }
 
-// assignments as of the SET of an update or of the DO UPDATE of an ON CONFLICT clause, separated by
-// commas: one or more, each a column = a value, where the value is a literal, a parameter, or an
-// expression, and no column is assigned twice or is one of target, by their folds.
+// assignments as of the SET of an update, or of the DO UPDATE of an ON CONFLICT clause with the
+// columns of its target, separated by commas: one or more, each a column = a value, where the value
+// is a literal, a parameter, or an expression, and no column is assigned twice or is one of target,
+// by their folds. An update has at most [maxColumns].
 func (r *recognizer) assignments(as []*ast.Assignment, commas []ast.Token, target map[string]bool) []Assignment {
 	var set []Assignment
 	seen := map[string]bool{}
@@ -977,8 +978,10 @@ func (r *recognizer) assignments(as []*ast.Assignment, commas []ast.Token, targe
 		if i > 0 {
 			r.take(commas[i-1])
 		}
-		if i == maxColumns && r.at() == a.Bounds().Start {
-			// SQLite gives `too many columns in set list` while it parses, whatever the database holds.
+		if i == maxColumns && target == nil && r.at() == a.Bounds().Start {
+			// SQLite gives `too many columns in set list` for an update while it parses, whatever the
+			// database holds. It does not count those of DO UPDATE, whose columns, more than a table
+			// has, it looks for once it has found the table.
 			r.reject("SET beyond SQLite's limit")
 		}
 		r.accept(a)
