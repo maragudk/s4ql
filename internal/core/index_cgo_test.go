@@ -8,9 +8,11 @@ package core_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +26,46 @@ import (
 // [sqlite.Stmt.StepContext] every 10,000 instructions of SQLite, as [ctxtest.Context.EndedBy]
 // names it.
 const progressHandler = "maragu.dev/s4ql/internal/sqlite.s4qlInterrupted"
+
+// armedContext ends at the given call of its Err, counted from 1, after its arm: every call before
+// the arm, and before that call, gives nil.
+type armedContext struct {
+	context.Context
+	done chan struct{}
+
+	// mu guards the fields after it.
+	mu    sync.Mutex
+	armed bool
+	left  int
+	err   error
+}
+
+func newArmedContext(parent context.Context, n int) *armedContext {
+	return &armedContext{Context: parent, done: make(chan struct{}), left: n}
+}
+
+// arm the context.
+func (c *armedContext) arm() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed = true
+}
+
+func (c *armedContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *armedContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.armed && c.err == nil {
+		if c.left--; c.left <= 0 {
+			c.err = context.Canceled
+			close(c.done)
+		}
+	}
+	return c.err
+}
 
 // scanBig with [bigSorted] to its end, check that the rows come in the order of the scan, and give
 // their number and the number of looks at the context up to the first row: in the first step of
@@ -197,5 +239,67 @@ func TestScanIndex_interrupt(t *testing.T) {
 			// 40,000. The cache itself looks at the context once or twice after the first row.
 			is.True(t, probe.Calls()-looks <= 2, fmt.Sprint("SQLite looked at the context ", probe.Calls()-looks, " times after the first row"))
 		})
+
+		t.Run(fmt.Sprint("should stop the instance as for a local failure, and not give the error of the context, for a scan that SQLite stopped for the context after the transaction of the cache had ended under it, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fillBig(t, d, "x")
+			s, tx, _ := beginBig(t, d, read)
+			loseCacheTx(t, s)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			n := 0
+			for row, err := range s.ScanIndex(ctx, "big", bigSorted) {
+				n++
+				is.True(t, row == nil)
+				is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+				is.True(t, !errors.Is(err, context.Canceled), fmt.Sprint(err))
+			}
+			is.Equal(t, 1, n)
+			is.True(t, isDone(d), "the instance stopped")
+			if tx != nil {
+				err := tx.Upsert(t.Context(), "big", row(bigRows+1, -2, "tx", ""))
+				is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+				is.True(t, tx.Commit(t.Context()) != nil)
+			}
+		})
+
+		t.Run(fmt.Sprint("should stop the instance as for a local failure for a count of the rows that a sort read and did not give, which SQLite stopped for the context after the transaction of the cache had ended under it, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fillBig(t, d, "x")
+			s, tx, _ := beginBig(t, d, read)
+
+			// The cache looks at the context once between the first row and the count, and SQLite's
+			// progress handler then looks in the count, which reads 10,000 rows.
+			ctx := newArmedContext(t.Context(), 2)
+			for _, err := range s.ScanIndex(ctx, "big", bigSorted) {
+				is.NotError(t, err)
+				loseCacheTx(t, s)
+				ctx.arm()
+				break
+			}
+			is.Error(t, context.Canceled, ctx.Err())
+			is.True(t, isDone(d), "the instance stopped")
+			if tx != nil {
+				err := tx.Upsert(t.Context(), "big", row(bigRows+1, -2, "tx", ""))
+				is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+			}
+		})
+	}
+}
+
+// loseCacheTx rolls back the transaction of the cache under the read transaction or the write
+// transaction s, without the core knowing.
+func loseCacheTx(t *testing.T, s bigScanner) {
+	t.Helper()
+	switch s := s.(type) {
+	case *core.Tx:
+		is.NotError(t, s.LoseCacheTx())
+	case *core.ReadTx:
+		is.NotError(t, s.LoseCacheTx())
+	default:
+		t.Fatalf("no transaction: %T", s)
 	}
 }

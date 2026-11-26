@@ -1005,7 +1005,10 @@ func scanned(t *table, scan IndexScan, limit int, bugs bugs) (*index, error) {
 //
 // SQLite stops the sort once ctx has ended, within 10,000 instructions of its virtual machine,
 // however many rows it sorts, and the sequence then ends with the error of ctx, [context.Canceled]
-// or [context.DeadlineExceeded], and no row. The transaction goes on.
+// or [context.DeadlineExceeded], and no row. The transaction goes on. A stop after which the
+// transaction of the cache has ended, which only an error that SQLite rolled it back for does, is a
+// local failure instead: the sequence ends with an error that wraps [ErrLocal], and the instance
+// stops.
 func (r *ReadTx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return r.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
 		ix, err := scanned(t, scan, r.c.limit, r.c.bugs)
@@ -1070,6 +1073,9 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 				// A read that is running when the instance stops is aborted.
 				err = r.d.stoppedError()
 			}
+			// A stop for the context leaves the transaction as it was, unless the transaction has
+			// ended under it.
+			_, err = r.c.harmless(ctx, err)
 			if err != nil {
 				yield(nil, r.d.cacheError(ctx, operation, err))
 				return
@@ -1086,6 +1092,7 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 			// failure stops the instance all the same.
 			unread, err := r.c.unread(ctx, t, ix, scan, given)
 			r.read += unread
+			_, err = r.c.harmless(ctx, err)
 			_ = r.d.cacheError(ctx, operation, err)
 		}
 	}
@@ -1119,7 +1126,8 @@ func (r *ReadTx) RowsRead() int64 {
 // the rows, and as [ReadTx.ScanIndex] reads and fails, also where SQLite sorts the rows and so
 // reads every row within the bounds before it gives the first, and as it stops the sort when ctx
 // ends: the sequence then ends with the error of ctx, which does not fail the transaction, and the
-// transaction's writes stay. The transaction must not create or drop an index or a table while it
+// transaction's writes stay, unless the transaction of the cache has ended under the stop, which
+// stops the instance and fails the transaction. The transaction must not create or drop an index or a table while it
 // scans. A loop over a scan with Order that writes rows of the
 // table and then stops early makes [Tx.RowsRead] count the rows as they are when it stops.
 func (tx *Tx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
@@ -1152,8 +1160,9 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 		var given int64
 		stopped := false
 		for row, err := range tx.c.scanIndex(ctx, t, ix, scan, &tx.read) {
-			if ended(ctx, err) {
-				// SQLite stopped a read for the context, which leaves the transaction as it was.
+			ok, err := tx.c.harmless(ctx, err)
+			if ok {
+				// SQLite stopped a read for the context, which left the transaction as it was.
 				yield(nil, err)
 				return
 			}
@@ -1180,7 +1189,7 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 			// it does not for the scan.
 			unread, err := tx.c.unread(ctx, t, ix, scan, given)
 			tx.read += unread
-			if !ended(ctx, err) {
+			if ok, err := tx.c.harmless(ctx, err); !ok {
 				_ = tx.fail(ctx, operation, err)
 			}
 		}

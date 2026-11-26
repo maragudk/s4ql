@@ -13,7 +13,8 @@ The binding covers only what slice 1 of [docs/roadmap.md](../../docs/roadmap.md)
 - add stubs of the functions `regexp` and `match`, and of `glob` with ESCAPE, to a connection with `AddTestFunctions`, which the shape check in `internal/sql/shapetest` needs because SQLite has no function of its own that runs for REGEXP, MATCH, and GLOB ... ESCAPE. The stubs give the operators a meaning that SQLite does not give them, so they are for the connections of tests only
 - bind and read 64-bit integers, reals, text, and blobs, which slice 4 needs, and bind NULL
 - read the column count, the column names, and the type of each value
-- step, reset, and finalize, and step with a context that stops the step when it ends (`StepContext`), through a progress handler that calls Go every 10,000 instructions of the virtual machine, which the storage core needs to stop a sort of a scan whose context has ended
+- step, reset, and finalize, and step with a context that stops the step when it ends (`StepContext`), through a progress handler that calls Go every 10,000 instructions of the virtual machine, which the storage core needs to stop a sort of a scan whose context has ended; the handler stops a step only while its statement runs, so a step that has failed keeps its error, and a test can set the period with `SetProgressPeriod`
+- report whether a connection is in a transaction (`Autocommit`, `sqlite3_get_autocommit`), which the storage core needs to tell a stop for a context from a transaction that SQLite rolled back
 - run a statement with `Exec`
 - return errors with SQLite's extended result code, its message, and the byte offset of the error in the SQL text (`sqlite3_error_offset`)
 
