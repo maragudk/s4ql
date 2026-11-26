@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/store"
@@ -795,12 +796,14 @@ func TestClient_endedContext(t *testing.T) {
 			is.Equal(t, 1, strings.Count(err.Error(), context.Canceled.Error()), err.Error())
 		}
 
-		// The content of a read that fails after the end of the context.
+		// The content of a read that fails after the end of the context, whose error says how it
+		// failed and wraps only the error of the context.
 		body, _, err := c.Get(d.ctx(t), "cut-body")
 		is.NotError(t, err)
 		_, err = io.ReadAll(body)
 		_ = body.Close()
-		is.True(t, errors.Is(err, io.ErrUnexpectedEOF) && errors.Is(err, context.Canceled), fmt.Sprint(err))
+		is.True(t, !errors.Is(err, io.ErrUnexpectedEOF) && errors.Is(err, context.Canceled), fmt.Sprint(err))
+		is.True(t, strings.Contains(err.Error(), io.ErrUnexpectedEOF.Error()), err.Error())
 
 		// An answer that shows what happened is the outcome, also after the end of the context.
 		version, err := c.Create(d.ctx(t), "applied", data(), nil)
@@ -834,5 +837,46 @@ func TestClient_endedContext(t *testing.T) {
 		// A 404 without the code of S3 is not taken for a missing object.
 		_, _, err = c.Get(d.ctx(t), "empty-missing")
 		is.True(t, !errors.Is(err, store.ErrNotFound) && errors.Is(err, context.Canceled), fmt.Sprint(err))
+	})
+
+	t.Run("should not take the status or the code of an answer from the cause of a context that ended with a cause while the answer came in", func(t *testing.T) {
+		// The body of an error answer breaks off with the cause, as net/http's read of it does once
+		// the context has ended. The causes are what another goroutine's call of the SDK gives, with
+		// the codes that the client takes as a refusal or as a missing object.
+		for _, test := range []struct {
+			status int
+			code   string
+			call   func(c *Client, ctx context.Context) error
+		}{
+			{status: http.StatusBadRequest, code: "EntityTooLarge", call: func(c *Client, ctx context.Context) error {
+				_, err := c.Create(ctx, "k", bytes.NewReader([]byte("data")), nil)
+				return err
+			}},
+			{status: http.StatusPreconditionFailed, code: "PreconditionFailed", call: func(c *Client, ctx context.Context) error {
+				_, err := c.Swap(ctx, "k", `"v"`, bytes.NewReader([]byte("data")), nil)
+				return err
+			}},
+			{status: http.StatusNotFound, code: "NoSuchKey", call: func(c *Client, ctx context.Context) error {
+				_, _, err := c.Get(ctx, "k")
+				return err
+			}},
+		} {
+			cause := fmt.Errorf("another goroutine: %w", &smithy.GenericAPIError{Code: test.code, Message: test.code})
+			ctx, cancel := context.WithCancelCause(t.Context())
+			d := &canned{
+				answer: func(r *http.Request) *http.Response {
+					res := cutAnswer(test.status, "", s3Error(test.code), 0)
+					res.Body = io.NopCloser(errReader{cause})
+					return res
+				},
+				cancel: func() { cancel(cause) },
+			}
+			err := test.call(d.client(), ctx)
+			is.True(t, errors.Is(err, context.Canceled) && !errors.Is(err, cause), test.code, fmt.Sprint(err))
+			is.True(t, !strings.Contains(err.Error(), "another goroutine"), test.code, fmt.Sprint(err))
+			for _, refusal := range []error{store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum, store.ErrTooLarge} {
+				is.True(t, !errors.Is(err, refusal), test.code, fmt.Sprint(err))
+			}
+		}
 	})
 }

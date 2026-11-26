@@ -1593,7 +1593,7 @@ func (tx *Tx) publish(ctx context.Context, name format.Name, attempts *int) (pub
 		if ctx.Err() != nil {
 			if !f.unknown {
 				// Every attempt was refused, or none was sent.
-				return unpublished, after(context.Cause(ctx), last)
+				return unpublished, after(endedError(ctx), last)
 			}
 			if d.bugs.ackUnknown {
 				// The planted bug.
@@ -1608,7 +1608,7 @@ func (tx *Tx) publish(ctx context.Context, name format.Name, attempts *int) (pub
 			}
 			d.wakeLocked()
 			d.mu.Unlock()
-			return unknown, after(context.Cause(ctx), last)
+			return unknown, after(endedError(ctx), last)
 		}
 
 		*attempts++
@@ -1691,7 +1691,7 @@ func (tx *Tx) inLog(ctx context.Context, head, name format.Name) (publishing, er
 			d.mu.Lock()
 			d.unresolved = true
 			d.mu.Unlock()
-			return unknown, after(context.Cause(ctx), err)
+			return unknown, after(endedError(ctx), err)
 		}
 		_ = d.host.Sleep(ctx, wait)
 		wait = min(2*wait, retryAfter)
