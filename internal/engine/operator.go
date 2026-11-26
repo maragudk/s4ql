@@ -14,6 +14,7 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
@@ -58,6 +59,23 @@ type sink interface {
 	check(ctx context.Context) error
 	// run the statement, and give the number of rows that it changed.
 	run(ctx context.Context) (int64, error)
+}
+
+// replayer is a sink whose run may change its rows in another order than SQLite, where the order
+// decides nothing but which error the statement gives when more than one of its rows fails. A run
+// that fails with an error for which replays reports true is taken back to the state before the
+// statement, and replay runs the statement again on that state in SQLite's order, for SQLite's
+// error, as [runSink] says. So the order costs nothing unless a row fails.
+type replayer interface {
+	sink
+	// mayReplay reports, before the run, whether a run that fails may need a replay, so that the
+	// state before the statement can be kept for it.
+	mayReplay() bool
+	// replays reports whether a run that failed with err needs a replay.
+	replays(err error) bool
+	// replay the statement in SQLite's order, on the state before its run, and give the error of the
+	// row that SQLite changes first and that fails, or an internal error if no row fails.
+	replay(ctx context.Context) (int64, error)
 }
 
 // scan gives the rows of a table as its access reads them: every row in the order of the primary
@@ -654,11 +672,12 @@ func (r *replaceTable) run(ctx context.Context) (int64, error) {
 
 // update sets columns of each row of its source: the rows that the statement finds, by a scan of a
 // table whose primary key is one column, below a filter if the statement has a WHERE. It changes them
-// as [changeRows] says, in SQLite's order, as [changeOrder] says, and fails, as SQLite fails the row
-// that it changes,
-// with `string or blob too big` for a row whose record is too long, and with SQLite's error of a key
-// that exists for a row whose new key another row has, also one that an earlier row of the statement
-// wrote.
+// as [changeRows] says, and fails, as SQLite fails the row that it changes, with `string or blob too
+// big` for a row whose record is too long, and with SQLite's error of a key that exists for a row
+// whose new key another row has, also one that an earlier row of the statement wrote. Where SQLite
+// changes the rows in the order of an index, as [changeOrder] says, the update changes them in the
+// order of the key, and replays a run that fails for a row in SQLite's order, as [replayer] says, for
+// SQLite's error.
 type update struct {
 	w     writer
 	table *s4qlpb.CreateTable
@@ -809,9 +828,51 @@ func (u *update) newRow(old []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	return row, nil
 }
 
+// run the update in the order of the key, or in SQLite's order where that is the order of the key
+// too. Which rows fail does not depend on the order, so a run that changes every row is SQLite's,
+// and one that fails for a row is replayed in SQLite's order, as [update.replays] says.
 func (u *update) run(ctx context.Context) (int64, error) {
+	o := u.changes
+	if o.by != nil {
+		o = changeOrder{}
+	}
+	return u.runIn(ctx, o)
+}
+
+func (u *update) mayReplay() bool { return u.changes.by != nil }
+
+// replays reports whether the update, whose run failed with err, changes its rows in SQLite's order
+// in another order than its run, and whether err is that of a row, as [failsRow] says: then another
+// row may fail before it in SQLite's order, or that row may fail in its SET before the conditions
+// of a later one fail. An error of anything else, such as the cache or the context, is not replayed.
+func (u *update) replays(err error) bool { return u.mayReplay() && failsRow(err) }
+
+// replay the update in SQLite's order, on the state before its run. It does not succeed: the rows of
+// the run are those of the replay, the rows that the update finds do not depend on the order in
+// which it changes them, and whether a row fails depends on that row alone, as SQLite reads it
+// before the update, since an update in the order of an index sets no column of the key or of the
+// index, and has no subquery: see [changeOrder]. So a replay without an error is a fault of the
+// engine, and gives an internal error.
+func (u *update) replay(ctx context.Context) (int64, error) {
+	n, err := u.runIn(ctx, u.changes)
+	if err == nil {
+		return n, internalError("the replay of an update that failed for a row changed its %v rows in SQLite's order without an error", n)
+	}
+	return n, err
+}
+
+// failsRow reports whether err is an error that a row of an update gives, which SQLite gives for
+// the first row that fails in its order: one of the conditions of the row, as [ofRow] says, or a
+// constraint, a record that is too long, or an evaluation error of its SET.
+func failsRow(err error) bool {
+	var e *sqlerr.Error
+	return ofRow(err) || errors.As(err, &e) && (e.Code == sqlerr.CodeConstraint || e.Code == sqlerr.CodeTooBig)
+}
+
+// runIn changes the rows of the update in the order o, as [changeRows] says.
+func (u *update) runIn(ctx context.Context, o changeOrder) (int64, error) {
 	name := u.table.GetTable()
-	n, err := changeRows(ctx, u.w, name, u.key, u.src, u.changes, u.bugs, func(key []*s4qlpb.Value) error {
+	n, err := changeRows(ctx, u.w, name, u.key, u.src, o, u.bugs, func(key []*s4qlpb.Value) error {
 		old, err := u.w.get(ctx, name, key)
 		if err != nil {
 			return err
@@ -980,8 +1041,9 @@ func changeRows(ctx context.Context, w writer, name string, key int, src source,
 	return n, err
 }
 
-// changeOrder is the order in which an update changes the rows that it finds, which is SQLite's:
-// SQLite changes each row as its access finds it, in one pass, unless the update sets a column of
+// changeOrder is the order in which SQLite changes the rows that an update finds, which an update
+// follows where it is the order of the key, and otherwise in a replay, as [update.run] says. SQLite
+// changes each row as its access finds it, in one pass, unless the update sets a column of
 // the primary key or of the index that the access reads by, its WHERE has a subquery, or it has
 // RETURNING; and otherwise it collects the keys of the rows first and changes the rows in the order
 // of the primary key. The access is the one that the rules choose, [chooseAccess], whatever path

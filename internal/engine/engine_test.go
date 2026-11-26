@@ -2809,6 +2809,69 @@ func TestEngine_updateOrder(t *testing.T) {
 		w.run("update t set x = nx, c = ? where a > 0", strings.Repeat("c", 600))
 	})
 
+	t.Run("should change the rows that an equality of an index pins in the order of the key, where the index has no other column", func(t *testing.T) {
+		// Both rows hold the same b, so only the primary key orders them in ib: the row of the key 1,
+		// which gives NULL to x, comes first.
+		w := newChangeTrio(t, 0,
+			"create table t (k int primary key, b int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+			"create index ib on t (b)",
+			"insert into t values (1, 5, 1, 1, null, 1)",
+			"insert into t values (2, 5, 1, 1, 1, null)")
+
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", w.run("update t set x = nx, y = ny where b = 5").err)
+	})
+
+	t.Run("should take back what an update changed before a row failed, before it changes the rows in SQLite's order", func(t *testing.T) {
+		// In the order of the key, the row of the key 1 changes, and takes NULL into nx, before the row
+		// of the key 2 fails; in that of ia, the row of the key 3 comes first, then that of the key 1,
+		// which gives NULL to x if it reads the nx that the first change left.
+		w := newChangeTrio(t, 0,
+			"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, 1, 1)",
+			"insert into t values (2, 30, 1, 1, 1, null)",
+			"insert into t values (3, 10, 1, 1, 1, 1)")
+
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.y", w.run("update t set x = nx, nx = null, y = ny where a > 0").err)
+	})
+
+	t.Run("should give SQLite's error in a transaction, keep what the statements before it did, and count the rows that its first run read", func(t *testing.T) {
+		// The update changes the rows in the order of the key, fails on the row of the key 1, and is
+		// replayed in the order of ia, in which the row of the key 2 fails first.
+		h := &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
+		for _, src := range []string{
+			"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, null, 1)",
+			"insert into t values (2, 10, 1, 1, 1, null)",
+		} {
+			is.Equal(t, "", i.exec(src).err, src)
+		}
+		for _, inTx := range []bool{false, true} {
+			if inTx {
+				is.NotError(t, i.c.Begin(t.Context()))
+				is.Equal(t, "", i.exec("insert into t values (3, 30, 1, 1, 1, 1)").err)
+			}
+			is.Equal(t, "19/1299: NOT NULL constraint failed: t.y", i.exec("update t set x = nx, y = ny where a > 0").err)
+			is.Equal(t, int64(0), i.changes, "the count of changes of a failed update")
+			e, _ := h.last(t)
+			// The scan by ia reads the rows that it finds, and the run in the order of the key the row of
+			// the key 1, which fails; the replay reads them again, which the event does not count.
+			found := map[bool]int{false: 2, true: 3}[inTx]
+			is.Equal(t, fmt.Sprint(found+1), e[engine.AttrRowsRead], fmt.Sprint("in a transaction: ", inTx))
+			is.Equal(t, "index", e[engine.AttrAccess])
+			if inTx {
+				is.NotError(t, i.c.Commit(t.Context()))
+			}
+			want := "1,20,1,1,null,1 2,10,1,1,1,null"
+			if inTx {
+				want += " 3,30,1,1,1,1"
+			}
+			is.Equal(t, want, strings.Join(i.queryValues("select * from t order by k", nil).rows, " "), fmt.Sprint("in a transaction: ", inTx))
+		}
+	})
+
 	// Each row of t gives NULL to a column of its own, which does not take it: the row of the key 1
 	// to x, 2 to y, and 3 to z. In the order of the key the rows are 1, 2, 3; in that of ia and of
 	// iab, which holds the same b in every row, 2, 1, 3; and in that of iad, in place of both, 3, 1,

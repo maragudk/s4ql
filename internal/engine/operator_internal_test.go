@@ -502,7 +502,8 @@ func (x fakeTx) rollback(context.Context) error {
 	return nil
 }
 
-// The calls of a transaction that spans statements, which no statement of its own makes.
+// The calls of a transaction that spans statements, which a statement of its own makes only for an
+// update that may replay, as [runSavepointed] says.
 func (x fakeTx) serving(context.Context) error    { return nil }
 func (x fakeTx) savepoint(context.Context) error  { return nil }
 func (x fakeTx) release(context.Context) error    { return nil }

@@ -654,6 +654,102 @@ func TestEngine_write(t *testing.T) {
 	})
 }
 
+// replaying is a [replayer] on the transaction tx whose run reads a row, writes the table "run", and
+// fails with err, and whose replay reads two rows, sees whether the table "run" is there, and gives
+// replayed. It replays an error that matches errReplayed, if may.
+type replaying struct {
+	tx            *memTx
+	may           bool
+	err, replayed error
+	// saved reports whether a savepoint was open during the run, and sawRun whether the replay saw the
+	// change of the run.
+	saved, sawRun bool
+	replayCount   int
+}
+
+var errReplayed = errors.New("a row fails")
+
+func (s *replaying) check(context.Context) error { return nil }
+func (s *replaying) mayReplay() bool             { return s.may }
+func (s *replaying) replays(err error) bool      { return errors.Is(err, errReplayed) }
+
+func (s *replaying) run(context.Context) (int64, error) {
+	s.saved = s.tx.saved != nil
+	s.tx.read++
+	s.tx.tables["run"] = &memTable{}
+	return 1, s.err
+}
+
+func (s *replaying) replay(context.Context) (int64, error) {
+	s.replayCount++
+	s.tx.read += 2
+	_, s.sawRun = s.tx.tables["run"]
+	return 2, s.replayed
+}
+
+func TestRunSink(t *testing.T) {
+	// newReplaying on a transaction of a new memory, and a report of what it reads, in the
+	// transaction of its own if own, and otherwise in one with a savepoint open.
+	newReplaying := func(t *testing.T, own bool, err, replayed error) (*replaying, *report, int64, error) {
+		t.Helper()
+		m := &memory{tables: map[string]*memTable{}}
+		w, begun := m.begin(t.Context())
+		is.NotError(t, begun)
+		tx := w.(*memTx)
+		s := &replaying{tx: tx, may: true, err: err, replayed: replayed}
+		r := &report{}
+		r.reader, r.before = tx, tx.rowsRead()
+		if own {
+			n, err := runSavepointed(t.Context(), r, tx, s)
+			return s, r, n, err
+		}
+		is.NotError(t, tx.savepoint(t.Context()))
+		n, err := runSink(t.Context(), r, tx, s)
+		return s, r, n, err
+	}
+
+	for _, own := range []bool{false, true} {
+		t.Run(fmt.Sprint("should give the error of a replay on the state before the run, and leave its reads out of the report, of its own: ", own), func(t *testing.T) {
+			sqlites := errors.New("SQLite's error")
+			s, r, _, err := newReplaying(t, own, errReplayed, sqlites)
+			is.Equal(t, sqlites, err)
+			is.Equal(t, 1, s.replayCount)
+			is.True(t, s.saved, "a savepoint during the run")
+			is.True(t, !s.sawRun, "the replay sees the change of the run")
+			is.Equal(t, int64(1), r.reader.rowsRead()-r.before, "the rows read")
+			// A savepoint is open after the replay in a transaction, whose statement then rolls back to
+			// it, and none after a statement of its own.
+			is.Equal(t, !own, s.tx.saved != nil, "a savepoint after the replay")
+		})
+
+		t.Run(fmt.Sprint("should give an internal error for a replay that succeeds, of its own: ", own), func(t *testing.T) {
+			_, _, _, err := newReplaying(t, own, errReplayed, nil)
+			is.True(t, errors.Is(err, ErrInternal), fmt.Sprint(err))
+		})
+
+		t.Run(fmt.Sprint("should not replay a run that succeeds, or that fails with an error that it does not replay, of its own: ", own), func(t *testing.T) {
+			s, _, n, err := newReplaying(t, own, nil, nil)
+			is.NotError(t, err)
+			is.Equal(t, int64(1), n)
+			other := errors.New("the cache fails")
+			s2, _, _, err := newReplaying(t, own, other, nil)
+			is.Equal(t, other, err)
+			is.Equal(t, 0, s.replayCount+s2.replayCount)
+		})
+	}
+
+	t.Run("should take no savepoint for a statement of its own that may not replay", func(t *testing.T) {
+		m := &memory{tables: map[string]*memTable{}}
+		w, err := m.begin(t.Context())
+		is.NotError(t, err)
+		s := &replaying{tx: w.(*memTx), err: errReplayed}
+		_, err = runSavepointed(t.Context(), &report{}, w, s)
+		is.Equal(t, errReplayed, err)
+		is.True(t, !s.saved, "a savepoint during the run")
+		is.Equal(t, 0, s.replayCount)
+	})
+}
+
 func TestEngine_query(t *testing.T) {
 	t.Run("should end the read transaction when building the query panics", func(t *testing.T) {
 		f := newFake()

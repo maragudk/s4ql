@@ -550,7 +550,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	if err := s.check(ctx); err != nil {
 		return checked(failed, err), nil, err
 	}
-	n, err := s.run(ctx)
+	n, err := runSavepointed(ctx, r, tx, s)
 	if err != nil {
 		// The planted bug commitFailed commits what the statement changed.
 		ended = c.commitFailed(ctx, tx, sql, args)
@@ -594,6 +594,54 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	r.rows = n
 	return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
+}
+
+// runSavepointed runs the sink s of a statement of its own in the write transaction w, as [runSink]
+// says. Where s may replay, it marks the state of w before the run with a savepoint, which it
+// releases after the run, so that the transaction commits or rolls back as without it; otherwise it
+// runs s alone, and a statement that fails is taken back with the transaction.
+func runSavepointed(ctx context.Context, r *report, w writeTx, s sink) (int64, error) {
+	if rp, ok := s.(replayer); !ok || !rp.mayReplay() {
+		return s.run(ctx)
+	}
+	if err := w.savepoint(ctx); err != nil {
+		return 0, err
+	}
+	n, err := runSink(ctx, r, w, s)
+	if released := w.release(ctx); err == nil {
+		err = released
+	}
+	return n, err
+}
+
+// runSink runs the sink s of a statement in the write transaction w, which has a savepoint open from
+// before the statement where s may replay, as [replayer] says. Where the run fails with an error
+// that s replays, runSink rolls w back to the savepoint, which it opens again, and gives what the
+// replay gives: an error, SQLite's. The event of the statement counts the rows that the run read,
+// and not those that the replay read again, which the report r leaves out. A failed statement sets
+// the count of changes to 0, whatever the replay changed, and w is taken back after it, as after
+// any statement that fails.
+func runSink(ctx context.Context, r *report, w writeTx, s sink) (int64, error) {
+	n, err := s.run(ctx)
+	rp, ok := s.(replayer)
+	if err == nil || !ok || !rp.replays(err) {
+		return n, err
+	}
+	if err := w.rollbackTo(ctx); err != nil {
+		return 0, err
+	}
+	if err := w.savepoint(ctx); err != nil {
+		return 0, err
+	}
+	read := w.rowsRead()
+	n, err = rp.replay(ctx)
+	if r.reader != nil {
+		r.before += w.rowsRead() - read
+	}
+	if err == nil {
+		return n, internalError("the replay of a statement that failed succeeded")
+	}
+	return n, err
 }
 
 // order of the rows of the RETURNING of the plan p, as [Engine.reading] draws it for a query: the
