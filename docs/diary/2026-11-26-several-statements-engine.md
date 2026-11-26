@@ -98,3 +98,53 @@ The names that `pair.tablesAfter` reads in a transaction: those of SQLite's tabl
 ### Future work
 
 As in step 1.
+
+## Step 3: the fixes after the independent review, and the landing
+
+**Author:** builder (several-statements-engine, landing)
+
+### Prompt Context
+
+**Verbatim prompt:** "You finish and land a reviewed branch in s4ql (`maragu.dev/s4ql`, repository `maragudk/s4ql`): `several-statements-engine`, the engine's differential tests for several statements in one `Exec`. The task is small: three fixes from an independent review, the status texts, and the landing. Do nothing beyond it." The fixes: nothing checks how many times a statement of a text runs when a second run changes nothing; the driver check's excuse for a last statement with `returning` does not check mattn's number; `Supported` is judged for a whole text.
+**Interpretation:** tighten `pair.several` to compare the events and the transaction's count of statements, pin mattn's number for the RETURNING excuse, and pass each statement of the walk its own support; then the roadmap lines, the merge of main, the checks, and the pull request.
+**Inferred intent:** the engine's differential tests catch a loop that runs a statement twice, and every excuse covers exactly its known difference, before the branch lands.
+
+### What I did
+
+- `/internal/engine/several_test.go`: `recorder`, a logger of the events of statements that is enabled only while on; `pair.several` records the instance's events during the walk and the other instance's during `ExecAll`, and compares them (kind, outcome, transaction kind) and the change of `engine.Conn.TxStatements` on each; a text refused before any statement runs must log one event without a kind (`outcomeOf`, `pair.txKind`). The walk passes `c.Supports[j]` to each statement.
+- `/internal/engine/differential_test.go`: `instance.events`, attached by `instance.directed` to every engine whose options have no logger.
+- `/internal/engine/tx_export_test.go`: `Conn.TxStatements`.
+- `/internal/sql/stmt/stmttest/sequence.go`, `several.go`, `several_internal_test.go`: `Call.Supports`, one bool per joined text; `Each` is now their conjunction, with the same draws.
+- `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`: `severalBeforeLast`, and the RETURNING excuse requires mattn's number to be it; a `TestSeveral` case where no statement before the last sets a count.
+- Merged main (the split's differential test and fuzz target, a site change); resolved the conflict in `/docs/todo/several-statements.md`; updated `/docs/roadmap.md` (the area "The driver" and the table "At a glance").
+
+### Why
+
+The review's planted fault (each select run twice in a read-only transaction) changes no table, error, result, or commit; only the events and the transaction's count show it. The excuse accepted any number of mattn's, so a regression in either side's count for such texts could hide behind it.
+
+### What worked
+
+The planted fault fails `TestConn_differential` with `ExecAll logs the events of statements ["select" ok "read_only" "select" ok "read_only" "delete" sqlite_error "read_only"] and the statements one after another ["select" ok "read_only" "delete" sqlite_error "read_only"]`. An extra `c.tx.statements++` in `execPart` fails it under `-short` with `ExecAll counts 2 statements in the transaction, and the statements one after another 1`. A probe of mattn (a temporary test, deleted) showed its result is SQLite's count before the last statement, also from an earlier call (`create table u ...; insert into t values (6, 6) returning k` gave 1, the count of the call before), and that `savepoint`, `rollback to`, and `release` keep SQLite's count. The planted expectation of one more than that number fails `TestGenerated` in 1.4 s (`mattn's result has 0 rows affected, and SQLite's count of changes after the text is 1`). No `.kinds` or `.tsv` count changed.
+
+### What didn't work
+
+- `go test ./internal/sqlite/crosscheck/drivercheck` from the root failed with `main module (maragu.dev/s4ql) does not contain package maragu.dev/s4ql/internal/sqlite/crosscheck/drivercheck`; the crosscheck is a module of its own, so it runs from `/internal/sqlite/crosscheck`.
+- The worktree harness refused a command with two here-docs ("this command is too complex to verify"); I split it.
+- A first probe of savepoints was not decisive, as the count was 1 before and after; a delete of 3 rows in the savepoint showed it.
+
+### What I learned
+
+A second run that reuses a statement's report logs nothing and counts nothing, since the report ends once; a real double run makes a new report, which is what both checks see. mattn's result for a last statement with RETURNING that gives a row is the connection's count before it, not "the count of the statement before" in the text.
+
+### What was tricky
+
+Aligning the walk's parts with the generator's texts for `Supports`: they are one to one only up to the first text that s4ql does not support, where the walk always stops, so a walk past them fails the test instead of guessing.
+
+### What warrants review
+
+- The recorder on every instance without a logger of its own: it is disabled outside `pair.several`, so the engine builds no record then.
+- `severalBeforeLast` runs the statements before the last a second time in mattn, in a savepoint; a failure there returns "" so that the whole Exec reports it.
+
+### Future work
+
+The driver check still passes `Each` for a whole text to the statements of its walk (`supported = next.Each`); `Supports` would serve it too. The simulation's planted bugs and mutation testing stay open.
