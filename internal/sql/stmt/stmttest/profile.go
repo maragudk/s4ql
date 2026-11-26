@@ -138,6 +138,9 @@ type Profile struct {
 	// [Sequence.arithmeticSet] draw it, and one call in 8*Arithmetic a text of [ArithmeticRefused],
 	// which the statement pass refuses for its arithmetic; the area of the arithmetic is off with 0.
 	Arithmetic int
+	// Several, if not 0, makes one call in Several a text of several statements, as
+	// [Sequence.several] writes it; the area of several statements is off with 0.
+	Several int
 }
 
 // Slots is the number of seeds after which the profiles repeat: the profile of a seed is the one at
@@ -150,7 +153,7 @@ const Slots = 32
 var (
 	// Mixed has every area on, with the odds of each as a statement of several features meets them.
 	Mixed = &Profile{Name: "mixed", Faults: allFaults, Weights: weights(4, 10, 5, 1, 3, 2, 3, 1), Others: 12, Where: 2, Indexes: 1, Exists: 3, Defaults: 1,
-		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4, Returning: 5, Subquery: 8, Arithmetic: 8}
+		ValueFirst: 3, Parameters: 3, Around: [2]int{4, 20}, Transactions: 4, Order: 1, Limit: 4, Returning: 5, Subquery: 8, Arithmetic: 8, Several: 32}
 	// Tables weighs the tables themselves, of slices 1, 4, 5, and 6: their columns, types, and keys,
 	// the columns that take NULL, the lists and the faults of an insert, whole reals for a column of
 	// integers, and a select of all rows.
@@ -217,15 +220,27 @@ var (
 	// often, where a statement that fails leaves the transaction usable.
 	Arithmetic = &Profile{Name: "arithmetic", Faults: []string{areaArithmetic}, Aim: 3, Weights: weights(3, 12, 12, 1, 11, 4, 4, 1), Where: 3, Indexes: 2, Columns: 3,
 		Parameters: 3, Transactions: 3, Order: 1, Limit: 2, Keys: 2, Returning: 4, ByKey: 4, NewKey: 6, EveryRow: 3, Subquery: 5, Arithmetic: 2}
+	// Several weighs the texts of several statements in one Exec: two to five statements of every kind
+	// that a sequence writes, also selects, with their arguments in order, and with too few and too
+	// many; a statement in the middle that fails when it runs, on a constraint or with an evaluation
+	// error of arithmetic, that SQLite does not prepare, for a syntax error or a table that is not
+	// there, or that s4ql does not support; empty statements, comments, and spaces before, between,
+	// and after the statements; a last statement with RETURNING; a text that ends in an empty
+	// statement or a comment; and the spaces that Go's TrimSpace removes and SQLite reads as part of a
+	// token, which s4ql refuses. Some run through Query, QueryRow, and Prepare, which s4ql refuses for
+	// a second statement. Its test begins transactions more often, in which a statement that fails
+	// leaves those before it.
+	Several = &Profile{Name: "several", Faults: []string{areaSeveral}, Aim: 4, Weights: weights(3, 12, 6, 1, 5, 3, 2, 1),
+		Where: 2, Indexes: 1, Exists: 3, Parameters: 3, Around: [2]int{8, 16}, Transactions: 3, Returning: 4, Arithmetic: 3, Several: 2}
 )
 
 // allFaults are the areas whose statements have faults, for [Profile.Faults].
-var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder, areaReturning, areaSubquery, areaArithmetic}
+var allFaults = []string{areaTables, areaInserts, areaSelects, areaChanges, areaIndexes, areaOrder, areaReturning, areaSubquery, areaArithmetic, areaSeveral}
 
 // Profiles, each at the slot of its place in the list. A profile is added at the end, and none is
 // taken out or moved, since the seeds of each profile are those of its slot: see [Profile.Seed].
 var Profiles = func() []*Profile {
-	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order, Returning, Subquery, Arithmetic}
+	ps := []*Profile{Mixed, Tables, Where, Changes, Indexes, Exists, Defaults, ValueFirst, Transactions, Arguments, Order, Returning, Subquery, Arithmetic, Several}
 	if len(ps) > Slots {
 		panic("stmttest: more profiles than slots")
 	}
@@ -298,6 +313,9 @@ const (
 	// areaArithmetic draws whether a comparison of a WHERE or an assignment of SET has arithmetic, its
 	// expressions, and the texts of [ArithmeticRefused].
 	areaArithmetic = "arithmetic"
+	// areaSeveral draws whether a call is a text of several statements, how many, which, and what
+	// stands before, between, and after them.
+	areaSeveral = "several"
 	// areaOthers draws the texts of [Others].
 	areaOthers = "others"
 	// areaText draws how a statement is written: its gaps, the case of its keywords, the spelling of
@@ -334,6 +352,8 @@ func (p *Profile) on(area string) bool {
 		return p.Subquery > 0
 	case areaArithmetic:
 		return p.Arithmetic > 0
+	case areaSeveral:
+		return p.Several > 0
 	}
 	return true
 }

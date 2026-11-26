@@ -130,8 +130,8 @@ func TestExec(t *testing.T) {
 		is.Equal(t, "GROUP BY clause (at offset 17)", notSupported(t, err))
 		_, err = db.QueryContext(t.Context(), "insert into t1 (v1) values (1), (2)")
 		is.True(t, notSupported(t, err) != "")
-		_, err = db.ExecContext(t.Context(), insert1+"; "+insert1)
-		is.True(t, notSupported(t, err) != "")
+		_, err = db.QueryContext(t.Context(), insert1+"; "+insert1)
+		is.Equal(t, "second statement (at offset 32)", notSupported(t, err))
 		_, err = db.ExecContext(t.Context(), "begin")
 		is.True(t, notSupported(t, err) != "")
 
@@ -4133,5 +4133,219 @@ func TestConcurrent(t *testing.T) {
 		}
 		is.EqualSlice(t, want, values(t, db, select1))
 		readersFree(t, db)
+	})
+}
+
+// statementEvents records the outcome and the text of each event of a statement of the engine.
+type statementEvents struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (h *statementEvents) Enabled(context.Context, slog.Level) bool { return true }
+func (h *statementEvents) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *statementEvents) WithGroup(string) slog.Handler            { return h }
+
+func (h *statementEvents) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "statement" {
+		return nil
+	}
+	var sql, outcome string
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case "statement.sql":
+			sql = a.Value.String()
+		case "outcome":
+			outcome = a.Value.String()
+		}
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.events = append(h.events, outcome+": "+sql)
+	return nil
+}
+
+func TestExec_several(t *testing.T) {
+	t.Run("should run the statements of a text one after another, each committed by itself, and keep them after a restart with an empty cache", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		// goqite's schema, as far as s4ql runs it: a table, and an index on it.
+		schema := "create table goqite (\n  id text primary key,\n  queue text not null,\n  body blob not null\n) strict, without rowid;\n\n" +
+			"-- The index of the receive.\ncreate index goqite_queue_idx on goqite (queue);\n"
+		res, err := db.ExecContext(t.Context(), schema)
+		is.Equal(t, int64(0), affected(t, res, err))
+		res, err = db.ExecContext(t.Context(), "insert into goqite (id, queue, body) values (?, ?, ?);\ninsert into goqite (id, queue, body) values (?, 'q', x'02')",
+			"m1", "q", []byte{1}, "m2")
+		is.Equal(t, int64(1), affected(t, res, err))
+		is.EqualSlice(t, []string{
+			"create table goqite (\n  id text primary key,\n  queue text not null,\n  body blob not null\n) strict, without rowid;",
+			"create index goqite_queue_idx on goqite (queue);",
+			`insert into goqite (id, queue, body) values (?, ?, ?); with "m1" with "q" with x'01'`,
+			`insert into goqite (id, queue, body) values (?, 'q', x'02') with "m2"`,
+		}, annotations(t, w))
+		is.Equal(t, 4, len(commits(t, w)))
+		want := rowsText(t, db, "select id, queue, body from goqite where queue = 'q' order by id")
+		is.NotError(t, db.Close())
+
+		db = w.serve(t, "b")
+		is.Equal(t, want, rowsText(t, db, "select id, queue, body from goqite where queue = 'q' order by id"))
+	})
+
+	t.Run("should keep the statements before one that fails, committed, run none after it, and give the error of the one that failed", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		_, err := db.ExecContext(t.Context(), t1+"; "+insert1+"; "+insert1+"; insert into t1 (v1) values (2)")
+		e, ok := errors.AsType[*s4ql.Error](failed(t, err))
+		is.True(t, ok)
+		is.Equal(t, "UNIQUE constraint failed: t1.v1", e.Message)
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (3); selec; insert into t1 (v1) values (4)")
+		e, ok = errors.AsType[*s4ql.Error](failed(t, err))
+		is.True(t, ok)
+		is.Equal(t, `near "selec": syntax error`, e.Message)
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (5); begin; insert into t1 (v1) values (6)")
+		is.Equal(t, "BEGIN (at offset 32)", notSupported(t, err))
+		is.EqualSlice(t, []int64{1, 3, 5}, values(t, db, select1))
+		is.NotError(t, db.Close())
+
+		db = w.serve(t, "b")
+		is.EqualSlice(t, []int64{1, 3, 5}, values(t, db, select1))
+	})
+
+	t.Run("should run the statements in a transaction as statements of it, keep those before one that fails in it, and undo them all with a roll back", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		tx, err := db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), insert1+"; "+insert1+"; insert into t1 (v1) values (2)")
+		is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
+		is.EqualSlice(t, []int64{1}, values(t, tx, select1))
+		is.NotError(t, tx.Rollback())
+		is.EqualSlice(t, []int64{}, values(t, db, select1))
+
+		tx, err = db.BeginTx(t.Context(), nil)
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), insert1+"; insert into t1 (v1) values (2)")
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "insert into t1 (v1) values (3); "+insert1)
+		is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
+		is.NotError(t, tx.Commit())
+		is.EqualSlice(t, []int64{1, 2, 3}, values(t, db, select1))
+		is.EqualSlice(t, []string{t1, insert1 + ";", "insert into t1 (v1) values (2)", "insert into t1 (v1) values (3);"}, annotations(t, w))
+	})
+
+	t.Run("should give each statement the arguments of its parameters in order, refuse more arguments before any statement runs, and too few at the statement that lacks them", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		_, err := db.ExecContext(t.Context(), "insert into t1 (v1) values (?); update t1 set v1 = ? where v1 = ?; insert into t1 (v1) values (?)", 1, 2, 1, 3)
+		is.NotError(t, err)
+		is.EqualSlice(t, []int64{2, 3}, values(t, db, select1))
+
+		two := "insert into t1 (v1) values (?); insert into t1 (v1) values (?)"
+		_, err = db.ExecContext(t.Context(), two, 4, 5, 6)
+		is.Equal(t, "s4ql: wrong number of arguments: 3 for a text whose 2 statements have 2 parameters", failed(t, err).Error())
+		_, err = db.ExecContext(t.Context(), two, 4)
+		is.Equal(t, "s4ql: wrong number of arguments: 1 for a text whose statements up to the one at offset 32 have 2 parameters", failed(t, err).Error())
+		is.EqualSlice(t, []int64{2, 3, 4}, values(t, db, select1))
+
+		// An argument that s4ql does not support runs nothing, after the errors that come before any
+		// statement runs.
+		_, err = db.ExecContext(t.Context(), two, 5, true)
+		is.Equal(t, "argument 2 of type bool", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?); selec", 5, true)
+		is.Equal(t, "argument 2 of type bool", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), two, true)
+		is.Equal(t, "argument 1 of type bool", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?); selec", true)
+		is.Equal(t, "space after a statement that SQLite reads as part of a token (at offset 31)", notSupported(t, err))
+		_, err = db.ExecContext(t.Context(), two, 5, true, 6)
+		is.Equal(t, "s4ql: wrong number of arguments: 3 for a text whose 2 statements have 2 parameters", failed(t, err).Error())
+		is.EqualSlice(t, []int64{2, 3, 4}, values(t, db, select1))
+
+		// More arguments than parameters run the statements before one that s4ql refuses, which may
+		// take them.
+		_, err = db.ExecContext(t.Context(), "insert into t1 (v1) values (?); selec", 5, 6)
+		is.Equal(t, `near "selec": syntax error`, failed(t, err).Error())
+		is.EqualSlice(t, []int64{2, 3, 4, 5}, values(t, db, select1))
+	})
+
+	t.Run("should give SQLite's count of changes after the last statement that sets it, also after a statement that sets none", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		conn, err := db.Conn(t.Context())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, conn.Close()) }()
+		run := func(query string) int64 {
+			t.Helper()
+			res, err := conn.ExecContext(t.Context(), query)
+			return affected(t, res, err)
+		}
+		is.Equal(t, int64(0), run(t1+"; "+select1))
+		is.Equal(t, int64(1), run(insert1+"; insert into t1 (v1) values (2); delete from t1 where v1 = 2"))
+		is.Equal(t, int64(1), run("insert into t1 (v1) values (2); create table t2 (v1 int primary key) strict, without rowid; "+select1))
+		// mattn/go-sqlite3 gives 0 for these two, for the empty statement at the end.
+		is.Equal(t, int64(1), run("insert into t1 (v1) values (3); -- c"))
+		is.Equal(t, int64(1), run("insert into t1 (v1) values (4);;"))
+		is.Equal(t, int64(4), run("update t1 set v1 = v1 + 10 returning v1; "+select1))
+		// mattn gives the count of the statement before a last statement with RETURNING, 1.
+		is.Equal(t, int64(5), run("insert into t1 (v1) values (5); delete from t1 returning v1"))
+		is.Equal(t, int64(5), run("drop table t2"))
+	})
+
+	t.Run("should refuse several statements in Query, QueryRow, and Prepare, and run a prepared statement that a comment follows", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		src := insert1 + "; insert into t1 (v1) values (2)"
+		_, err := db.QueryContext(t.Context(), src)
+		is.Equal(t, "second statement (at offset 32)", notSupported(t, err))
+		var v int64
+		err = db.QueryRowContext(t.Context(), select1+"; "+select1).Scan(&v)
+		is.Equal(t, "second statement (at offset 18)", notSupported(t, err))
+		_, err = db.PrepareContext(t.Context(), src)
+		is.Equal(t, "second statement (at offset 32)", notSupported(t, err))
+		is.EqualSlice(t, []int64{}, values(t, db, select1))
+
+		// A prepared statement runs its one statement, as mattn's does, whatever comment follows it.
+		prepared, err := db.PrepareContext(t.Context(), insert1+"; /* ")
+		is.NotError(t, err)
+		_, err = prepared.ExecContext(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, prepared.Close())
+		is.EqualSlice(t, []int64{1}, values(t, db, select1))
+	})
+
+	t.Run("should refuse a text whose spaces mattn/go-sqlite3 and SQLite read differently, before any statement runs", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, t1)
+		for src, want := range map[string]string{
+			insert1 + ";\u00a0insert into t1 (v1) values (2)":  "space after a statement that SQLite reads as part of a token (at offset 31)",
+			insert1 + ";\vinsert into t1 (v1) values (2)":      "space after a statement that SQLite reads as part of a token (at offset 31)",
+			insert1 + "; insert into t1 (v1) values (2)\u00a0": "space at the end of the text that SQLite reads as part of a token (at offset 62)",
+			insert1 + "; /* ": "space at the end of the text that SQLite reads as part of a token (at offset 34)",
+		} {
+			_, err := db.ExecContext(t.Context(), src)
+			is.Equal(t, want, notSupported(t, err), src)
+		}
+		is.EqualSlice(t, []int64{}, values(t, db, select1))
+	})
+
+	t.Run("should log an event for each statement, with the text of its part, as if it ran alone", func(t *testing.T) {
+		w := newWorld(t)
+		h := &statementEvents{}
+		o := w.options("a")
+		o.Logger = slog.New(h)
+		db, err := s4ql.OpenStore(t.Context(), w.host, w.client(), o, coreOptions())
+		is.NotError(t, err)
+		defer func() { is.NotError(t, db.Close()) }()
+		is.NotError(t, db.PingContext(t.Context()))
+		_, err = db.ExecContext(t.Context(), t1+";\n"+insert1+"; "+insert1+"; insert into t1 (v1) values (2)")
+		is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		is.EqualSlice(t, []string{"ok: " + t1 + ";", "ok: \n" + insert1 + ";", "sqlite_error:  " + insert1 + ";"}, h.events)
 	})
 }

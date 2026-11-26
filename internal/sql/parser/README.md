@@ -13,6 +13,7 @@ SQLite's verdicts come from the oracle in [`internal/sql/oracle`](../oracle/READ
 Package `parser`:
 
 - `Parse(src)` reads the first statement of a text as `sqlite3_prepare_v2` does: up to the first NUL byte, skipping empty statements. It returns the statement and the tail, which is the offset after the statement's semicolon or the end of the text. A text with no statement gives a nil statement, no error, and the tail at the end.
+- `ParseAt(src, at)` reads the first statement from the offset `at`, as `Parse` of the rest of the text reads it, with the offsets in the whole text.
 - `ParseAll(src)` reads each statement from where the last one ended, until the end of the text or the first error.
 - `Tokens(src, stmt)` gives the tokens that the parser read for a statement, from the tokenizer. The ownership check compares the tree with them.
 - `Error` holds SQLite's `Message` and `Offset`, with -1 where SQLite gives no offset. `Limit` is true for a limit of this parser, whose message starts with `s4ql: `.
@@ -455,6 +456,7 @@ Pinned results:
 - `TestParse` pins the result for 36 texts that are easy to get wrong, and checks each against SQLite too.
 - `TestParse_expressions` and `TestParse_statements` pin the shape of the tree for every form of expression and every kind of statement.
 - `TestParseAll` checks the offsets of several statements in one text, the stop at the first error, and a text without statements.
+- `TestParseAt` checks that a statement read from an offset is the statement that `Parse` reads from the rest of the text, with the offsets in the whole text, and the error and the end of a rest without a statement.
 - `TestParse_depth` and `TestParse_length` check the [limits](#limits).
 - `TestPlanOf` and `TestCheckOwnership` in `internal/sql/ast` check the [ownership rule](#the-ownership-rule) and its check.
 

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mattn/go-sqlite3"
@@ -609,8 +610,9 @@ func mattnText(tb testing.TB, err error) string {
 
 // firstStatement of src: the text up to the end of its first semicolon, or all of it. It is what
 // the oracle runs of a text that s4ql runs or answers with SQLite's error, which holds one statement
-// and maybe semicolons, spaces, and comments after it, since s4ql does not support a second
-// statement. mattn runs every statement of a text, and one that is only a comment too, and then gives
+// and maybe semicolons, spaces, and comments after it: Query and Prepare refuse a second statement,
+// and a text of several statements in an Exec is [pair.several]'s. mattn runs every statement of a
+// text, and one that is only a comment too, and then gives
 // the result of the last: 0 rows affected after `insert into t1 (v1) values (1); -- c`, and no rows
 // for `select * from t1; -- c`. SQLite's sqlite3_prepare_v2 prepares the first statement, and so
 // does the engine's oracle.
@@ -718,9 +720,13 @@ func (y tally) add(scope, src string, got outcome, runs [][]any) {
 }
 
 // statementKind of src: the kind of the statement of slices 1 and 2 that it is, in lower case and
-// with a parameter if it has one, or "other".
+// with a parameter if it has one, "several statements" for a text that [stmt.Split] reads as more
+// than one, or "other".
 func statementKind(src string) string {
 	s, _ := stmt.Check(src)
+	if parts, _ := stmt.Split(src); len(parts) > 1 {
+		return "several statements"
+	}
 	if s == nil {
 		return "other"
 	}
@@ -733,7 +739,8 @@ func statementKind(src string) string {
 
 // reach counts in the tally what the text src with the arguments of each run, whose outcome of s4ql
 // is got, reaches, under "reached: ", on the tables that SQLite has on o, where the call runs,
-// before it runs there. For an insert: each argument by its kind, as [argumentKind] names it, each
+// before it runs there. For a text of several statements through a call that refuses it: the call
+// and its outcome; [pair.reachSeveral] counts what one through Exec reaches. For an insert: each argument by its kind, as [argumentKind] names it, each
 // literal by its kind, as [stmttest.LiteralKind] names it, and, for an insert into a table that
 // SQLite has, the outcome of each run by the type of the key column; of each run that reaches the
 // instance, by what it reaches of NULL, as [stmttest.NullCases] gives it, and of defaults, as
@@ -760,6 +767,10 @@ func (p *pair) reach(src string, runs [][]any, got outcome, o runner) {
 			return messageKind(o.err)
 		}
 		return "ok"
+	}
+	if statementKind(src) == "several statements" {
+		// Through every call but Exec, which [pair.reachSeveral] counts.
+		count(fmt.Sprintf("several statements through %v %v", got.call, kind(got)))
 	}
 	s, _ := stmt.Check(src)
 	// A value on the left, of slice 12, on a table that a create table if not exists, of slice 10,
@@ -1389,7 +1400,7 @@ const wrongArguments = "s4ql: wrong number of arguments: "
 func messageKind(err string) string {
 	for _, kind := range []string{
 		"already exists", "no such table", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name",
-		"too many columns on", "UNIQUE constraint failed", "NOT NULL constraint failed", "syntax error", "incomplete input", "no rows",
+		"too many columns on", "UNIQUE constraint failed", "NOT NULL constraint failed", "syntax error", "incomplete input", "unrecognized token", "no rows",
 		"wrong number of arguments", "attempt to write a readonly database", "there is already a table named", "there is already an index named",
 		"no such index", "row value misused", "sub-select returns",
 		"s4ql: integer overflow", "s4ql: division by zero", "s4ql: real result that is not finite",
@@ -1487,6 +1498,26 @@ const (
 	// real, NULL, or an infinity: it is checked by [pair.checkEvaluation] against SQLite's own result
 	// of the operator that failed, as [stmttest.Justify] says, and not run in SQLite.
 	excusedEvaluation = "an evaluation error of arithmetic, which SQLite's result of its operator justifies"
+	// excusedSpaces is a text of several statements with a space that Go's TrimSpace removes and
+	// SQLite reads as part of a token, at the start of the text after a statement or at the end of the
+	// text, which mattn trims and runs, and s4ql refuses as a whole: it is checked against the error of
+	// [stmt.Split], and not run in SQLite.
+	excusedSpaces = "spaces that mattn trims and SQLite does not take for spaces"
+	// excusedSeveralArguments is a text of several statements with more arguments than its statements
+	// have parameters, which mattn drops, or with fewer than a statement needs after those before it,
+	// for which mattn gives an error of its own: s4ql refuses the first before any statement runs and
+	// the second when the statement runs, by its rule, which [pair.several] checks, and SQLite runs the
+	// statements before.
+	excusedSeveralArguments = "the wrong number of arguments of a text of several statements, checked against s4ql's rule"
+	// excusedSeveralEnd is a text of several statements whose last statement ends in a semicolon
+	// after which an empty statement or a comment follows, for which mattn's result is 0 rows affected,
+	// its fix of its issue 963, where s4ql gives SQLite's count of changes after the text, which
+	// [pair.several] requires of it.
+	excusedSeveralEnd = "mattn's result of 0 rows affected after a text of several statements that ends in an empty statement, where s4ql gives SQLite's count"
+	// excusedSeveralReturning is a text of several statements whose last statement has RETURNING, for
+	// which mattn's result is the count of the statement before, since it steps the statement once,
+	// where s4ql gives SQLite's count of changes after the text, which [pair.several] requires of it.
+	excusedSeveralReturning = "mattn's result of the statement before a last statement with RETURNING, where s4ql gives SQLite's count"
 )
 
 // rowsOpen is the error of s4ql for a statement in a transaction while the rows of a query of the
@@ -1614,6 +1645,11 @@ func (p *pair) stepRuns(src string, c call, supported bool, runs [][]any) (outco
 		return p.begin(src, c)
 	case callCommit, callRollback:
 		return p.end(c)
+	}
+	if c == callExec || c == callExecArgument {
+		if got, failure, ok := p.several(src, c, supported, runs); ok {
+			return got, failure
+		}
 	}
 	s, o, scope := p.where(c, src)
 	if p.tx != nil && p.tx.sRows != nil {
@@ -4944,7 +4980,17 @@ func generated(t *testing.T, w *world, seed uint64, n int, y tally) {
 	for range n {
 		next := q.Next()
 		c := pick(r, next.Query, p.tx != nil, p.tx != nil && p.tx.sRows != nil, begins)
+		if next.Statements > 0 && (c == callPrepareExec || c == callPrepareExecRuns || c == callStmtExec) && r.IntN(3) != 0 {
+			// A text of several statements runs through Exec, as glue's migrations do, two times in three of
+			// those that would run through a prepared statement, which s4ql refuses for its second statement.
+			c = callExec
+		}
 		src, supported, runs := next.Src, next.Supported, [][]any{next.Args}
+		if next.Statements > 0 && c == callExec {
+			// Each statement of a text of several statements in one Exec is judged as a statement alone, as
+			// [pair.several] says, and every other call refuses the text for its second statement.
+			supported = next.Each
+		}
 		switch c {
 		case callBegin, callBeginReadOnly:
 			src, supported, runs = pickLevel(r), false, nil
@@ -5034,10 +5080,12 @@ func TestGenerated(t *testing.T) {
 	// that the test runs, which the run must reach once at least: a value on the left of != in a
 	// select that finds rows, which the values on the left reach about 4 times in 100 sequences, and
 	// a column that the table does not have under IS NULL or IS NOT NULL alone in a WHERE, which the
-	// profile of the WHERE reaches about 3 times in 100.
+	// profile of the WHERE reaches about 3 times in 100; and an insert of NULL beside a value of another
+	// type in a column that does not take NULL, which the profiles reach 6 times in all, mixed twice.
 	for _, kind := range []string{
 		"reached: value on the left of != finds rows",
 		"reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column",
+		"reached: insert of NULL beside a value of another type NOT NULL constraint failed",
 	} {
 		if total[kind] == 0 {
 			t.Errorf("no profile reaches %q", kind)
@@ -5081,7 +5129,10 @@ func TestGenerated(t *testing.T) {
 // runs more of it, which it does not count. The profile of the
 // values on the left runs 70 for a value on the left of != in a select that finds rows, which
 // [TestGenerated] requires once: since the fixes after the review of the workload of arithmetic of
-// 2026-11-25, mixed no longer reaches it.
+// 2026-11-25, mixed no longer reaches it. The profile of several statements runs 80 for a text whose
+// last statement has RETURNING and whose result in mattn is the count of the statement before, which
+// [pair.several] excuses, and for an evaluation error after a statement ran, each reached about once
+// in twenty sequences.
 func generatedOf(p *stmttest.Profile) uint64 {
 	switch p {
 	case stmttest.Mixed:
@@ -5108,6 +5159,8 @@ func generatedOf(p *stmttest.Profile) uint64 {
 		return 50
 	case stmttest.Tables:
 		return 14
+	case stmttest.Several:
+		return 80
 	}
 	return 13
 }
@@ -5162,4 +5215,942 @@ func FuzzSequence(f *testing.F) {
 		}
 		p.close()
 	})
+}
+
+// several runs src through c, an Exec, with the arguments of runs, one run, if [stmt.Split] reads the
+// text as several statements, or refuses it as a whole for its spaces, or the oracle's rule of spaces
+// [spaceRule] refuses it, and reports whether it did, with s4ql's outcome and what differs, or "".
+// Open rows of the transaction are read to their end and closed first, as [pair.closeRows] does.
+//
+// The whole text runs in one Exec on s4ql's side. What SQLite's side runs depends on s4ql's outcome:
+//
+//   - The errors that come before any statement runs are checked against the oracle's rules, and
+//     nothing runs in SQLite: the spaces that mattn trims and SQLite reads as part of a token, as
+//     [spaceRule] gives the error, which s4ql must give exactly where the rule does, and nowhere
+//     else; more arguments than the statements have parameters; and an argument of a Go type that
+//     s4ql does not support, which the driver judges for the whole call, as [driverRefusal] gives
+//     it.
+//   - Every other text is walked in SQLite, as [pair.severalWalk] says, in a savepoint that is
+//     rolled back after it: statement by statement, each that s4ql ran checked against the rules of
+//     a statement alone, up to the statement at which s4ql stopped. Then mattn's own Exec runs on
+//     the connection, as [pair.severalMattn] says: of the whole text, which must give s4ql's result
+//     if s4ql ran the text to its end, and the error at which the walk stopped if SQLite gave it
+//     there; or of the text up to the statement at which s4ql stopped with an error of its own,
+//     which must run.
+//
+// Then every table is read back on both sides where the call ran, in the transaction if one is open,
+// also after a call that failed.
+func (p *pair) several(src string, c call, supported bool, runs [][]any) (outcome, string, bool) {
+	tb := p.tb
+	tb.Helper()
+	p.reachForms(src)
+	parts, failed := stmt.Split(src)
+	ns, _ := errors.AsType[*stmt.NotSupportedError](failed)
+	splitSpaces := ns != nil && len(parts) == 0 && strings.HasPrefix(ns.What, "space ")
+	rule := spaceRule(src)
+	if rule == "" && !splitSpaces && (len(parts) == 0 || len(parts) == 1 && failed == nil) {
+		return outcome{}, "", false
+	}
+	if p.tx != nil && p.tx.sRows != nil {
+		if failure := p.closeRows(); failure != "" {
+			return outcome{}, failure, true
+		}
+	}
+	var args []any
+	if len(runs) > 0 {
+		args = runs[0]
+	}
+	s, o, scope := p.where(c, src)
+	got := run(tb, s, c, src, runs, s4qlText)
+	p.y.add(scope, src, got, runs)
+	switch {
+	case rule != "":
+		p.y.excused(excusedSpaces)
+		if got.failed != "exec" || got.err != rule {
+			return got, fmt.Sprintf("%q: s4ql gives %v, and must refuse it with %v", src, got, rule), true
+		}
+		return got, "", true
+	case splitSpaces:
+		return got, fmt.Sprintf("%q: s4ql gives %v, and mattn and SQLite read its spaces alike", src, got), true
+	}
+	if q, ok := o.(*sql.DB); ok {
+		// mattn's count of changes is that of the connection that ran the text.
+		conn, err := q.Conn(tb.Context())
+		is.NotError(tb, err)
+		defer func() { is.NotError(tb, conn.Close()) }()
+		o = conn
+	}
+	var failure string
+	var stopped int
+	switch total := parameters(parts); {
+	case failed == nil && len(args) > total:
+		failure = p.severalArguments(src, got, fmt.Sprintf("%v%v for a text whose %v statements have %v %v", wrongArguments, len(args), len(parts), total, parameterNoun(total)))
+		stopped = -1
+	case driverRefusal(args) != "":
+		if want := driverRefusal(args); got.failed != "exec" || got.err != want {
+			failure = fmt.Sprintf("s4ql gives %v, where the rule gives %q", got, want)
+		}
+		p.y.excused(excusedArgument)
+		stopped = -1
+	default:
+		savepoint := func(q string) {
+			_, err := o.ExecContext(tb.Context(), q)
+			is.NotError(tb, err)
+		}
+		savepoint("savepoint several")
+		var at outcome
+		stopped, at, failure = p.severalWalk(src, supported, parts, failed, args, got, o)
+		savepoint("rollback to several")
+		savepoint("release several")
+		if failure == "" {
+			failure = p.severalMattn(src, parts, stopped, at, args, got, o)
+		}
+	}
+	p.reachSeveral(src, parts, args, got, stopped, scope)
+	for i, part := range parts {
+		if ct, ok := part.Statement.(*stmt.CreateTable); ok && i < stopped {
+			p.created[ct.Table.Value] = true
+		}
+		if p.tx != nil && scope == p.tx.kind() && i <= stopped {
+			ran := outcome{}
+			if i == stopped {
+				ran = got
+			}
+			p.note(src[part.Span.Start:part.Span.End], ran)
+		}
+	}
+	if p.tx != nil && scope == p.tx.kind() && got.failed != "" && (stopped < 0 || stopped == len(parts)) {
+		// A failure before any statement, or of the statement that Split refused.
+		p.note(src, got)
+	}
+	if failure == "" {
+		failure = p.compareIn(s, o)
+	}
+	if failure != "" {
+		failure = fmt.Sprintf("the text of several statements %q with the arguments %#v:\n%v", src, args, failure)
+	}
+	return got, failure, true
+}
+
+// parameters of the statements of parts, together.
+func parameters(parts []stmt.Part) int {
+	n := 0
+	for _, part := range parts {
+		n += part.Statement.Parameters()
+	}
+	return n
+}
+
+// parameterNoun for n parameters.
+func parameterNoun(n int) string {
+	if n == 1 {
+		return "parameter"
+	}
+	return "parameters"
+}
+
+// severalArguments checks s4ql's outcome got of the text src of several statements against want, its
+// rule's error of the wrong number of arguments, which mattn does not give: it drops the arguments
+// that the statements do not take, and gives an error of its own for too few after the statements
+// before. It gives what differs, or "".
+func (p *pair) severalArguments(src string, got outcome, want string) string {
+	p.y.excused(excusedSeveralArguments)
+	if got.failed != "exec" || got.err != want {
+		return fmt.Sprintf("%q: s4ql gives %v, where the rule gives %q", src, got, want)
+	}
+	return ""
+}
+
+// driverRefusal is the "not supported" of the first argument of args that the driver refuses for the
+// whole call, before any statement runs, by its number in the call, as [argumentRefusal] gives it:
+// one with a name, a []byte that is nil, an unsigned integer above the largest int64, and one of a
+// type that no column holds. It is "" if there is none. An argument whose value no column holds, a
+// real that is not finite or text that is no valid UTF-8 or holds NUL, is its statement's to refuse.
+func driverRefusal(args []any) string {
+	for i, a := range args {
+		switch v := converted(a).(type) {
+		case int64, float64, string, nil:
+			continue
+		case []byte:
+			if v != nil {
+				continue
+			}
+		}
+		if _, ok := stmttest.Integers([]any{a}); ok {
+			continue
+		}
+		// The number of the argument in the call.
+		return argumentRefusal(append(make([]any, i), a))
+	}
+	return ""
+}
+
+// severalMattn runs mattn's own Exec on o after [pair.severalWalk] of the text src of several
+// statements, with the arguments args, whose walk stopped at the part of the number stopped of
+// parts, with SQLite's outcome at of the statement there if the walk ran it in SQLite, and checks
+// it against s4ql's outcome got. It gives what differs, or "":
+//
+//   - A text that s4ql ran to its end runs whole, as [pair.severalRan] says.
+//   - A text at whose statement SQLite gave the error at which the walk stopped runs whole, and
+//     mattn's Exec must fail with the same error.
+//   - A text at whose statement s4ql stopped with an error of its own, which the walk judged
+//     without SQLite, runs up to the end of the statement before it, with the arguments of the
+//     statements there, and mattn's Exec must run it. Too few arguments for a statement is such an
+//     error: mattn prepares the statement before it counts its arguments, and may fail on its names
+//     where s4ql counts first.
+func (p *pair) severalMattn(src string, parts []stmt.Part, stopped int, at outcome, args []any, got outcome, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	ctx := tb.Context()
+	switch {
+	case got.failed == "":
+		return p.severalRan(src, parts, args, got, o)
+	case at.failed != "":
+		p.y.compared()
+		if stopped == len(parts) {
+			// The walk ran the statement after the parts that Split refused without arguments, and
+			// mattn's Exec binds the arguments after those of the parts to it.
+			args = args[:parameters(parts)]
+		}
+		_, err := o.ExecContext(ctx, src, args...)
+		if err == nil {
+			return fmt.Sprintf("s4ql gives %v, and mattn's Exec runs the text to its end", got)
+		}
+		text := severalMattnText(tb, err)
+		if text != at.err {
+			return fmt.Sprintf("s4ql gives %v, and mattn's Exec fails with %v, where its statements one after another fail with %v", got, text, at.err)
+		}
+		return ""
+	case stopped > 0:
+		p.y.compared()
+		n := parameters(parts[:min(stopped, len(parts))])
+		if _, err := o.ExecContext(ctx, src[:parts[stopped-1].Span.End], args[:n]...); err != nil {
+			return fmt.Sprintf("s4ql gives %v, and mattn's Exec of the statements before the one at which s4ql stopped fails with %v", got, severalMattnText(tb, err))
+		}
+	}
+	return ""
+}
+
+// severalRan compares the text src of several statements, with the arguments args, which s4ql ran to
+// its end with the outcome got, with one Exec of it in mattn on o, as [pair.several] says, and gives
+// what differs, or "".
+func (p *pair) severalRan(src string, parts []stmt.Part, args []any, got outcome, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	ctx := tb.Context()
+	p.y.compared()
+	res, err := o.ExecContext(ctx, src, args...)
+	if err != nil {
+		return fmt.Sprintf("s4ql gives %v, and mattn fails with %v", got, severalMattnText(tb, err))
+	}
+	want := result(tb, outcome{}, res)
+	var changes int64
+	is.NotError(tb, o.QueryRowContext(ctx, "select changes()").Scan(&changes))
+	sets := slices.ContainsFunc(parts, func(part stmt.Part) bool {
+		switch part.Statement.(type) {
+		case *stmt.Insert, *stmt.Update, *stmt.Delete:
+			return true
+		}
+		return false
+	})
+	if !p.pinned && !sets {
+		return ""
+	}
+	if got.affected != fmt.Sprint(changes) {
+		return fmt.Sprintf("s4ql gives %v, and SQLite's count of changes after the text in mattn is %v", got, changes)
+	}
+	if want.affected != fmt.Sprint(changes) {
+		excuse := severalExcuse(src, parts)
+		if excuse == excusedSeveralEnd && want.affected != "0" {
+			excuse = ""
+		}
+		if excuse == "" {
+			return fmt.Sprintf("mattn's result has %v rows affected, and SQLite's count of changes after the text is %v", want.affected, changes)
+		}
+		p.y.excused(excuse)
+	}
+	return ""
+}
+
+// severalExcuse of mattn's result of the text src of several statements, whose count of rows
+// affected is not SQLite's count of changes after the text: [excusedSeveralEnd] for a text whose last
+// statement ends in a semicolon after which a comment or an empty statement follows, for which mattn
+// gives 0, and [excusedSeveralReturning] for a text whose last statement has RETURNING, for which
+// mattn gives the count of the statement before, as it steps the statement once; or "".
+func severalExcuse(src string, parts []stmt.Part) string {
+	last := parts[len(parts)-1].Statement
+	if end := last.Bounds().End; src[end-1] == ';' && strings.TrimSpace(src[end:]) != "" {
+		return excusedSeveralEnd
+	}
+	if returns(last) {
+		return excusedSeveralReturning
+	}
+	return ""
+}
+
+// severalMattnText of an error of mattn: SQLite's error, as [mattnText] gives it, or mattn's own,
+// such as `not enough args to execute query: want 1 got 0`, as it is.
+func severalMattnText(tb testing.TB, err error) string {
+	tb.Helper()
+	if _, ok := errors.AsType[sqlite3.Error](err); ok {
+		return mattnText(tb, err)
+	}
+	return err.Error()
+}
+
+// severalWalk runs in SQLite on o the statements of the text src that s4ql, with the outcome got,
+// ran, as mattn runs them, one after another, each with the arguments of its parameters of args, and
+// checks the one at which s4ql failed, if it did. It walks the parts of the text in order, and before
+// each part runs in SQLite it asks whether s4ql's error is the part's:
+//
+//   - If the part has more parameters than the arguments after those of the statements before, s4ql
+//     must give its rule's error of the wrong number of arguments.
+//   - An error of s4ql's own with an offset, "not supported" or an evaluation error, is the part's
+//     whose span holds the offset, and is judged as an Exec of the text of the part alone, with the
+//     offset in it, by [pair.compare]: against s4ql's rules, and not run in SQLite. Such an error
+//     without an offset, of an argument or of the type of a value, is the first part's that the
+//     rules give it for.
+//   - SQLite's error of a name in double quotes that is no column, which the pinned build gives and
+//     mattn's SQLite reads as a string, is the part's that [pair.checkQuoted] gives it for, and the
+//     part does not run in SQLite.
+//   - Every other error is SQLite's: the part runs in SQLite, and is the one at which s4ql stopped if
+//     SQLite fails with the same error, or with an error that [knownGap] or [pair.startedTable]
+//     accepts.
+//
+// A part that SQLite runs, s4ql ran too, and so it must be one that s4ql's rules of a statement alone
+// do not refuse, as [pair.refusedAlone] gives them, on the state before it. A text that s4ql ran to
+// its end is walked so to its end. A statement after the parts that Split refused gets the same
+// judgement, without arguments. It gives the number of the part at which s4ql stopped, SQLite's
+// outcome of that part if it ran there, and what differs, or "".
+//
+// An error without an offset that two parts give alike, as a statement of the text again does, is
+// taken for the first, where s4ql stops if it follows its rules. An s4ql that ran the first and
+// failed at the second changed the state that the tables read back after the text show, but for a
+// first that changes nothing, such as a select, which the checks of a statement alone judge.
+func (p *pair) severalWalk(src string, supported bool, parts []stmt.Part, failed error, args []any, got outcome, o runner) (int, outcome, string) {
+	tb := p.tb
+	tb.Helper()
+	spans := make([]stmt.Span, len(parts))
+	for i, part := range parts {
+		spans[i] = part.Span
+	}
+	if failed != nil {
+		spans = append(spans, stmt.Span{Start: parts[len(parts)-1].Span.End, End: len(src)})
+	}
+	used := 0
+	for i, span := range spans {
+		n := 0
+		if i < len(parts) {
+			n = parts[i].Statement.Parameters()
+		}
+		text := src[span.Start:span.End]
+		if used+n > len(args) {
+			if got.failed == "" {
+				return i, outcome{}, fmt.Sprintf("s4ql gives %v, and the statement %q has %v %v without an argument", got, text, used+n-len(args), parameterNoun(used+n-len(args)))
+			}
+			return i, outcome{}, p.severalArguments(src, got, fmt.Sprintf("%v%v for a text whose statements up to the one at offset %v have %v %v", wrongArguments, len(args),
+				parts[i].Statement.Bounds().Start, used+n, parameterNoun(used+n)))
+		}
+		a := args[used : used+n]
+		used += n
+		part := got
+		part.err = shifted(got.err, span.Start)
+		at, ok := errorOffset(got.err)
+		switch {
+		case got.failed == "":
+		case ok && (at < span.Start || at >= span.End):
+			// The offset is in another part.
+		case ok || got.notSupported() || evaluated(got):
+			if failure := p.compare(text, callExec, supported && i < len(parts), [][]any{a}, part, o); failure == "" || ok {
+				return i, outcome{}, failure
+			}
+		default:
+			st, _ := stmt.Check(text)
+			if st == nil {
+				break
+			}
+			check := p.checkQuoted
+			if subqueriesIn(st) != nil {
+				check = p.checkQuotedSubquery
+			}
+			if failure, ok := check(text, st, part, o); ok {
+				return i, outcome{}, failure
+			}
+		}
+		refusal := ""
+		if i < len(parts) {
+			if _, err := stmt.Check(text); err != nil {
+				// Not run in SQLite, where a statement of a transaction, such as a COMMIT, would end the
+				// savepoint of the walk.
+				return i, outcome{}, fmt.Sprintf("s4ql gives %v, and runs the statement %q, whose check alone refuses it with %v", got, text, err)
+			}
+			refusal = p.refusedAlone(text, a, o)
+		}
+		want := run(tb, o, callExec, text, [][]any{a}, severalMattnText)
+		p.y.compared()
+		if want.failed == "" {
+			if refusal != "" {
+				return i, outcome{}, fmt.Sprintf("s4ql gives %v, and runs the statement %q with the arguments %#v, which its rules for a statement alone refuse with %v", got, text, a, refusal)
+			}
+			continue
+		}
+		switch {
+		case got.failed == "" || got.notSupported() || evaluated(got) || strings.HasPrefix(got.err, wrongArguments):
+		case part.err == want.err:
+			return i, want, ""
+		case knownGap(text, part, want) != "":
+			p.y.excused(knownGap(text, part, want) + knownGapSuffix)
+			return i, want, ""
+		case p.startedTable(text, callExec, [][]any{a}, part, want):
+			p.y.excused(excusedStartedTable)
+			return i, want, ""
+		}
+		return i, outcome{}, fmt.Sprintf("s4ql gives %v, and SQLite fails at the statement %q with %v", got, text, want)
+	}
+	if got.failed == "" {
+		return len(parts), outcome{}, ""
+	}
+	return len(parts), outcome{}, fmt.Sprintf("s4ql gives %v, and SQLite runs every statement", got)
+}
+
+// refusedAlone is the refusal that s4ql's rules of a statement alone give for the text src of a part
+// of a text of several statements, with args, the arguments of its parameters, on o, as SQLite has
+// the tables there before the part runs, or "" if they give none: the check of the text, an
+// argument that s4ql does not support, as [argumentRefusal] gives it, and, as [pair.checkRefused]
+// judges a statement alone, one of the refusals of its arithmetic, as [pair.arithmeticRefusals]
+// gives them, or of the type of a value, as [pair.typeRefusal] gives it.
+func (p *pair) refusedAlone(src string, args []any, o runner) string {
+	s, err := stmt.Check(src)
+	switch {
+	case err != nil:
+		return err.Error()
+	case s == nil:
+		return ""
+	case argumentRefusal(args) != "":
+		return argumentRefusal(args)
+	case stmttest.HasExpression(s):
+		if refusals := p.arithmeticRefusals(src, s, boundArgs(args), o); len(refusals) > 0 {
+			return refusals[0]
+		}
+		return ""
+	}
+	return p.typeRefusal(src, s, args, o)
+}
+
+// sqliteStatement is a statement of a text as [sqliteStatements] reads it: its span, from its first
+// token to the end of the semicolon that ends it, or of its last token, and whether a semicolon ends
+// it.
+type sqliteStatement struct {
+	stmt.Span
+	semi bool
+}
+
+// sqliteStatements of the text src, as SQLite's sqlite3_complete (complete.c) reads where a
+// statement ends, on the tokens of SQLite's tokenizer: a semicolon ends a statement, but within the
+// body of a CREATE TRIGGER, which a semicolon after END ends. Spaces, comments, and empty statements
+// are in no statement. The oracle reads the statements of a text so, and not as [stmt.Split] does.
+func sqliteStatements(src string) []sqliteStatement {
+	// The classes of tokens of sqlite3_complete, and its table of states: invalid, start, normal,
+	// explain, create, trigger, semi, and end.
+	const (
+		semi = iota
+		ws
+		other
+		explain
+		create
+		temp
+		trigger
+		end
+	)
+	trans := [8][8]int{
+		{1, 0, 2, 3, 4, 2, 2, 2},
+		{1, 1, 2, 3, 4, 2, 2, 2},
+		{1, 2, 2, 2, 2, 2, 2, 2},
+		{1, 3, 3, 2, 4, 2, 2, 2},
+		{1, 4, 2, 2, 2, 4, 5, 2},
+		{6, 5, 5, 5, 5, 5, 5, 5},
+		{6, 6, 5, 5, 5, 5, 5, 7},
+		{1, 7, 5, 5, 5, 5, 5, 5},
+	}
+	var statements []sqliteStatement
+	state, from, last := 0, 0, 0
+	for _, t := range token.Tokens(src) {
+		class := other
+		switch t.Kind {
+		case token.Semi:
+			class = semi
+		case token.Space, token.Comment:
+			class = ws
+		case token.Explain:
+			class = explain
+		case token.Create:
+			class = create
+		case token.Temp:
+			class = temp
+		case token.Trigger:
+			class = trigger
+		case token.End:
+			class = end
+		}
+		next := trans[state][class]
+		switch {
+		case state <= 1 && class != semi && class != ws:
+			from = t.Offset
+		case next == 1 && state > 1:
+			statements = append(statements, sqliteStatement{Span: stmt.Span{Start: from, End: t.Offset + t.Len}, semi: true})
+		}
+		if class != ws {
+			last = t.Offset + t.Len
+		}
+		state = next
+	}
+	if state > 1 {
+		statements = append(statements, sqliteStatement{Span: stmt.Span{Start: from, End: last}})
+	}
+	return statements
+}
+
+// spaceRule is the oracle's rule of the spaces of a text of several statements: the "not supported"
+// with which s4ql must refuse the text src before any statement runs, or "". mattn hands SQLite each
+// statement after the first as the text after the semicolon of the statement before it, with Go's
+// strings.TrimSpace applied, so mattn and SQLite read the text differently where the trim removes a
+// character that SQLite does not read as a space, or a space that SQLite reads as part of a token:
+// at the start of the text after a statement, "space after a statement", and, if text follows the
+// first statement, at the end of the text, as [trimmedEndAt] says. s4ql reads the statements, as
+// [sqliteStatements] gives them, up to the first that its check refuses, and the rule looks at the
+// end after the first statement, and then at the start of the text after each statement that s4ql
+// reads.
+func spaceRule(src string) string {
+	if !utf8.ValidString(src) || strings.ContainsRune(src, 0) {
+		// The text is refused as a whole, for its bytes.
+		return ""
+	}
+	trimmed := len(strings.TrimRightFunc(src, unicode.IsSpace))
+	for i, s := range sqliteStatements(src) {
+		if st, err := stmt.Check(src[s.Start:s.End]); err != nil || st == nil || !s.semi {
+			return ""
+		}
+		if i == 0 && s.End < len(src) {
+			if at, ok := trimmedEndAt(src, trimmed); ok {
+				return fmt.Sprintf("s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset %v)", at)
+			}
+		}
+		if s.End >= trimmed {
+			return ""
+		}
+		// SQLite's tokens of the spaces that the trim removes there: a token of SQLite's spaces starts
+		// with a space, a tab, a line break, or a form feed, and may hold a vertical tab after it, which
+		// starts no token.
+		spaces := src[s.End : len(src)-len(strings.TrimLeftFunc(src[s.End:], unicode.IsSpace))]
+		for _, t := range token.Tokens(spaces) {
+			if t.Kind != token.Space {
+				return fmt.Sprintf("s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset %v)", s.End+t.Offset)
+			}
+		}
+	}
+	return ""
+}
+
+// trimmedEndAt is where SQLite reads the end of src from the offset trimmed on, which Go's TrimSpace
+// removes, otherwise than it reads src without it, and true: at trimmed, if a token runs past it that
+// is no comment that stays one without the end, such as a string without its closing quote, a name
+// that ends in a no-break space, or a block comment of which only `/*` is left, which SQLite reads as
+// a slash at the end of a text; or at the first token after it that is not of SQLite's spaces. It
+// reports false if SQLite reads both alike.
+func trimmedEndAt(src string, trimmed int) (int, bool) {
+	for _, t := range token.Tokens(src) {
+		switch {
+		case t.Offset+t.Len <= trimmed:
+		case t.Offset < trimmed && t.Kind == token.Comment:
+			if src[t.Offset:trimmed] == "/*" {
+				return trimmed, true
+			}
+		case t.Offset < trimmed:
+			return trimmed, true
+		case t.Kind != token.Space:
+			return t.Offset, true
+		}
+	}
+	return 0, false
+}
+
+// reachForms counts in the tally the forms of the text src, of several statements as
+// [sqliteStatements] reads them, that a split must read as SQLite does, by the position of the
+// statement in the text, first, in the middle, or last: a CREATE TRIGGER, whose body holds
+// semicolons; a name in double quotes and a string that hold a semicolon; statements that depend on
+// each other, a create table and a later statement of its table, by the first of them, or the last
+// if the first is not the first of the text; and a comment that holds a semicolon before the
+// statements, between two, and after them. It counts every such text of an Exec, also one that
+// [pair.several] leaves to the checks of a statement alone because [stmt.Split] refuses its first
+// statement, as it refuses a CREATE TRIGGER first: there s4ql's error must be the check's of the
+// whole text, which a split that read the trigger otherwise would not give.
+func (p *pair) reachForms(src string) {
+	ss := sqliteStatements(src)
+	if p.y == nil || len(ss) < 2 {
+		return
+	}
+	count := func(what string, i int) {
+		position := "in the middle"
+		switch i {
+		case 0:
+			position = "first"
+		case len(ss) - 1:
+			position = "last"
+		}
+		p.y["reached: several statements: "+what+" "+position]++
+	}
+	created := map[string]int{}
+	dependent := false
+	for i, s := range ss {
+		var kinds []token.Kind
+		quoted, text := false, false
+		for _, t := range token.Tokens(src[s.Start:s.End]) {
+			value := src[s.Start+t.Offset : s.Start+t.Offset+t.Len]
+			switch t.Kind {
+			case token.Space, token.Comment:
+				continue
+			case token.ID:
+				quoted = quoted || strings.HasPrefix(value, `"`) && strings.Contains(value, ";")
+				if c, ok := created[strings.ToLower(value)]; ok && !dependent && len(kinds) > 0 && kinds[0] != token.Create {
+					dependent = true
+					if c == 0 {
+						count("statements that depend on each other", 0)
+					} else {
+						count("statements that depend on each other", i)
+					}
+				}
+				if len(kinds) >= 2 && kinds[0] == token.Create && kinds[1] == token.Table && !slices.Contains(kinds, token.ID) {
+					created[strings.ToLower(value)] = i
+				}
+			case token.String:
+				text = text || strings.Contains(value, ";")
+			}
+			kinds = append(kinds, t.Kind)
+		}
+		if len(kinds) >= 2 && kinds[0] == token.Create && (kinds[1] == token.Trigger || len(kinds) >= 3 && kinds[1] == token.Temp && kinds[2] == token.Trigger) {
+			count("create trigger", i)
+		}
+		if quoted {
+			count("name in double quotes with a semicolon", i)
+		}
+		if text {
+			count("string with a semicolon", i)
+		}
+	}
+	positions := map[string]bool{}
+	for _, t := range token.Tokens(src) {
+		if t.Kind != token.Comment || !strings.Contains(src[t.Offset:t.Offset+t.Len], ";") {
+			continue
+		}
+		switch {
+		case t.Offset < ss[0].Start:
+			positions["before the first statement"] = true
+		case t.Offset >= ss[len(ss)-1].End:
+			positions["after the last statement"] = true
+		case !slices.ContainsFunc(ss, func(s sqliteStatement) bool { return s.Start <= t.Offset && t.Offset < s.End }):
+			positions["between statements"] = true
+		}
+	}
+	for position := range positions {
+		p.y["reached: several statements: comment with a semicolon "+position]++
+	}
+}
+
+// errorOffset of the error text err: the offset that it ends with, as "(at offset 12)", and true, or
+// false if it ends with none.
+func errorOffset(err string) (int, bool) {
+	i := strings.LastIndex(err, " (at offset ")
+	if i < 0 || !strings.HasSuffix(err, ")") {
+		return 0, false
+	}
+	var at int
+	if _, scanned := fmt.Sscanf(err[i:], " (at offset %d)", &at); scanned != nil {
+		return 0, false
+	}
+	return at, true
+}
+
+// shifted is the error text err with the offset that it ends with, if it has one, less start: the
+// offset in the text of a part of the text that starts at start.
+func shifted(err string, start int) string {
+	at, ok := errorOffset(err)
+	if !ok {
+		return err
+	}
+	return fmt.Sprintf("%v (at offset %v)", err[:strings.LastIndex(err, " (at offset ")], at-start)
+}
+
+// compareIn compares every table of SQLite on o and every table that a text created, through a query
+// of each on s4ql's s and on o, where the call ran, in the transaction if it ran in one, and gives
+// what differs, or "".
+func (p *pair) compareIn(s, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	rows, err := o.QueryContext(tb.Context(), "select name from sqlite_schema where type = 'table' order by name collate binary")
+	is.NotError(tb, err)
+	var names []string
+	for rows.Next() {
+		var name string
+		is.NotError(tb, rows.Scan(&name))
+		names = append(names, name)
+	}
+	is.NotError(tb, rows.Err())
+	is.NotError(tb, rows.Close())
+	for name := range p.created {
+		if !slices.ContainsFunc(names, func(n string) bool { return stmt.Name{Value: n}.Fold() == stmt.Name{Value: name}.Fold() }) {
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
+		q := "select * from " + stmttest.Quote(name)
+		held, want := run(tb, s, callQuery, q, nil, s4qlText), run(tb, o, callQuery, q, nil, mattnText)
+		if held.full() != want.full() {
+			return fmt.Sprintf("after it, the table %q holds in s4ql\n%v\nand in SQLite\n%v", name, held.full(), want.full())
+		}
+	}
+	return ""
+}
+
+// reachSeveral counts in the tally what the text src of several statements, with the parts that
+// [stmt.Split] gives and the arguments args, reached with s4ql's outcome got, which stopped at the part
+// of the number stopped, -1 before any part, and len(parts) after every part, in the scope of the
+// call: the number of its statements, the kinds of the statements that ran, the arguments, too few
+// and too many, a statement that failed after one ran and one that failed before the last, by its
+// error, the empty statements and comments before, between, and after the statements, and a last
+// statement with RETURNING that ran.
+func (p *pair) reachSeveral(src string, parts []stmt.Part, args []any, got outcome, stopped int, scope string) {
+	if p.y == nil {
+		return
+	}
+	count := func(what string) {
+		p.y["reached: several statements: "+what]++
+		if scope != "" {
+			p.y[scope+": reached: several statements: "+what]++
+		}
+	}
+	outcome := "ok"
+	if got.failed != "" {
+		outcome = "failed"
+	}
+	count(outcome)
+	count(fmt.Sprint(min(len(parts), 5), " statements ", outcome))
+	if len(args) > 0 {
+		count("with arguments " + outcome)
+	}
+	for i, part := range parts[:max(0, min(stopped, len(parts)))] {
+		count(statementKind(src[part.Span.Start:part.Span.End]) + " that ran")
+		if i == len(parts)-1 && returns(part.Statement) {
+			count("last statement with RETURNING that ran")
+		}
+	}
+	switch {
+	case strings.HasPrefix(got.err, wrongArguments) && stopped < 0:
+		count("more arguments than parameters")
+	case strings.HasPrefix(got.err, wrongArguments):
+		count("fewer arguments than parameters")
+	}
+	if got.failed != "" && stopped > 0 && stopped <= len(parts) {
+		what := messageKind(got.err)
+		switch {
+		case got.notSupported():
+			what = "not supported"
+		case evaluated(got):
+			what = "evaluation error"
+		case what == got.err:
+			what = "another error"
+		}
+		count("failed after a statement ran: " + what)
+		if stopped < len(parts)-1 {
+			count("failed before the last statement: " + what)
+		}
+	}
+	first, last := parts[0].Statement.Bounds(), parts[len(parts)-1].Statement.Bounds()
+	if fills(src[:first.Start]) {
+		count("empty statement or comment before the first statement")
+	}
+	for i := 1; i < len(parts); i++ {
+		if fills(src[parts[i-1].Statement.Bounds().End:parts[i].Statement.Bounds().Start]) {
+			count("empty statement or comment between statements")
+			break
+		}
+	}
+	if fills(src[last.End:]) {
+		count("empty statement or comment after the last statement " + outcome)
+	}
+}
+
+// fills reports whether src holds a semicolon or a comment.
+func fills(src string) bool {
+	return slices.ContainsFunc(token.Tokens(src), func(t token.Token) bool { return t.Kind == token.Semi || t.Kind == token.Comment })
+}
+
+// severalText of the outcome of an Exec of a text of several statements on r: the rows affected of
+// its result, or its error. If changes, it ends with the count of changes that SQLite has on the
+// connection of r after it, as `select changes()` gives it, which only mattn's SQLite answers.
+// mattn's own errors, such as `not enough args to execute query: want 1 got 0`, are given as they
+// are.
+func severalText(tb testing.TB, r runner, src string, args []any, changes bool) string {
+	tb.Helper()
+	ctx := tb.Context()
+	res, err := r.ExecContext(ctx, src, args...)
+	var text string
+	switch {
+	case err == nil:
+		o := result(tb, outcome{}, res)
+		text = "affected " + o.affected
+	case changes:
+		if _, ok := errors.AsType[sqlite3.Error](err); ok {
+			text = "failed with " + mattnText(tb, err)
+		} else {
+			text = "failed with " + err.Error()
+		}
+	default:
+		text = "failed with " + s4qlText(tb, err)
+	}
+	if changes {
+		var n int64
+		is.NotError(tb, r.QueryRowContext(ctx, "select changes()").Scan(&n))
+		text += fmt.Sprint(", changes() ", n)
+	}
+	return text
+}
+
+// TestSeveral runs texts of several statements through Exec on both sides, on a pinned connection
+// and in transactions, and compares what each gives and the tables after it. Where mattn's driver
+// gives what s4ql does not copy, the test pins both outcomes and what s4ql's rule leaves of the
+// tables, as the comment of the case says.
+func TestSeveral(t *testing.T) {
+	ins := func(v int) string { return fmt.Sprint("insert into t1 (v1) values (", v, ")") }
+	tests := []struct {
+		name  string
+		setup []string
+		src   string
+		args  []any
+		// s4ql and mattn are the outcomes of each, as severalText gives them. The count of changes of
+		// s4ql's result must be the changes() of mattn's SQLite after the same text, unless the case
+		// has an oracle.
+		s4ql, mattn string
+		// oracle, if set, is what mattn runs on the database that the tables are compared with, so
+		// that it holds what s4ql's rule leaves of them, and "-" for nothing. The text itself then runs
+		// in mattn on a database of its own, with the same set-up.
+		oracle string
+	}{
+		{name: "statements with arguments, a comment, an empty statement, and a select", src: t1 + "; ;-- c\n" + "insert into t1 (v1) values (?);\nupdate t1 set v1 = ? where v1 = ?; select * from t1 where v1 = ?",
+			args: []any{1, 2, 1, 2}, s4ql: "affected 1", mattn: "affected 1, changes() 1"},
+		{name: "a create table and a select after an insert", setup: []string{t1}, src: ins(1) + "; " + ins(2) + "; delete from t1; create table t2 (v1 int primary key) strict, without rowid; select * from t2",
+			s4ql: "affected 2", mattn: "affected 2, changes() 2"},
+		{name: "a failed insert in the middle, which sets the count to 0", setup: []string{t1}, src: ins(1) + "; " + ins(1) + "; " + ins(2),
+			s4ql: "failed with 19/1555: UNIQUE constraint failed: t1.v1", mattn: "failed with 19/1555: UNIQUE constraint failed: t1.v1, changes() 0"},
+		{name: "a syntax error in the middle", setup: []string{t1}, src: ins(1) + "; insert into t1 (v1) valus (2); " + ins(3),
+			s4ql: `failed with 1/1: near "valus": syntax error`, mattn: `failed with 1/1: near "valus": syntax error, changes() 1`},
+		{name: "an error of the names in the middle", setup: []string{t1}, src: ins(1) + "; insert into t9 (v1) values (2); " + ins(3),
+			s4ql: "failed with 1/1: no such table: t9", mattn: "failed with 1/1: no such table: t9, changes() 1"},
+		{name: "an incomplete statement at the end", setup: []string{t1}, src: ins(1) + "; insert into",
+			s4ql: "failed with 1/1: incomplete input", mattn: "failed with 1/1: incomplete input, changes() 1"},
+		{name: "a RETURNING in the middle", setup: []string{t1}, src: ins(1) + " returning v1; " + ins(2) + "; select * from t1",
+			s4ql: "affected 1", mattn: "affected 1, changes() 1"},
+		{name: "too few arguments, which runs the statements before the one that lacks them", setup: []string{t1},
+			src: "insert into t1 (v1) values (?); insert into t1 (v1) values (?)", args: []any{1},
+			s4ql:  "failed with s4ql: wrong number of arguments: 1 for a text whose statements up to the one at offset 32 have 2 parameters",
+			mattn: "failed with not enough args to execute query: want 1 got 0, changes() 1"},
+		// The empty statement at the end makes mattn give a result of 0 rows affected, which its
+		// issue 963 put there in place of no result; SQLite's count of changes is 1, which s4ql gives.
+		{name: "a comment at the end", setup: []string{t1}, src: ins(1) + "; -- c", s4ql: "affected 1", mattn: "affected 0, changes() 1", oracle: ins(1)},
+		{name: "a semicolon at the end", setup: []string{t1}, src: ins(1) + ";;", s4ql: "affected 1", mattn: "affected 0, changes() 1", oracle: ins(1)},
+		{name: "a semicolon and a space at the end", setup: []string{t1}, src: ins(1) + "; \n", s4ql: "affected 1", mattn: "affected 1, changes() 1"},
+		// mattn steps a statement with RETURNING once, and its result has the count of the statement
+		// before; SQLite's count after it is that of the RETURNING, which s4ql gives.
+		{name: "a RETURNING at the end", setup: []string{t1, ins(1), ins(2)}, src: ins(3) + "; delete from t1 returning v1",
+			s4ql: "affected 3", mattn: "affected 1, changes() 3", oracle: ins(3) + "; delete from t1"},
+		// Each of these, s4ql refuses before any statement runs.
+		{name: "more arguments than parameters, which mattn drops", setup: []string{t1}, src: "insert into t1 (v1) values (?); " + ins(2), args: []any{1, 9},
+			s4ql:  "failed with s4ql: wrong number of arguments: 2 for a text whose 2 statements have 1 parameter",
+			mattn: "affected 1, changes() 1", oracle: "-"},
+		{name: "a no-break space after a semicolon, which mattn's TrimSpace removes and SQLite reads as a name", setup: []string{t1}, src: ins(1) + ";\u00a0" + ins(2),
+			s4ql:  "failed with s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 31)",
+			mattn: "affected 1, changes() 1", oracle: "-"},
+		{name: "a vertical tab after a semicolon, which SQLite does not read as a space where a token starts", setup: []string{t1}, src: ins(1) + ";\v" + ins(2),
+			s4ql:  "failed with s4ql: not supported: space after a statement that SQLite reads as part of a token (at offset 31)",
+			mattn: "affected 1, changes() 1", oracle: "-"},
+		{name: "a no-break space at the end", setup: []string{t1}, src: ins(1) + "; " + ins(2) + "\u00a0",
+			s4ql:  "failed with s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 62)",
+			mattn: "affected 1, changes() 1", oracle: "-"},
+		{name: "a block comment that the trim makes a slash", setup: []string{t1}, src: ins(1) + "; /* ",
+			s4ql:  "failed with s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 34)",
+			mattn: `failed with 1/1: near "/": syntax error, changes() 1`, oracle: "-"},
+		{name: "a string without its closing quote, whose spaces the trim takes from the message", setup: []string{t1}, src: ins(1) + "; select 'abc  ",
+			s4ql:  "failed with s4ql: not supported: space at the end of the text that SQLite reads as part of a token (at offset 43)",
+			mattn: `failed with 1/1: unrecognized token: "'abc", changes() 1`, oracle: "-"},
+		// A statement that s4ql does not support ends the run after the statements before it.
+		{name: "a statement that s4ql does not support in the middle", setup: []string{t1}, src: ins(1) + "; drop view if exists v; " + ins(2),
+			s4ql:  "failed with s4ql: not supported: DROP VIEW (at offset 37)",
+			mattn: "affected 1, changes() 1", oracle: ins(1)},
+	}
+	w := newWorld(t)
+	for _, test := range tests {
+		t.Run("should give what mattn gives for "+test.name, func(t *testing.T) {
+			p := newPair(t, w, true, nil)
+			defer p.close()
+			for _, s := range test.setup {
+				_, err := p.s.ExecContext(t.Context(), s)
+				is.NotError(t, err)
+				_, err = p.o.ExecContext(t.Context(), s)
+				is.NotError(t, err)
+			}
+			got := severalText(t, p.s, test.src, test.args, false)
+			is.Equal(t, test.s4ql, got)
+			if test.oracle == "" {
+				is.Equal(t, test.mattn, severalText(t, p.o, test.src, test.args, true))
+				if !strings.HasPrefix(got, "failed") {
+					is.Equal(t, "affected "+strings.TrimPrefix(test.mattn[strings.LastIndex(test.mattn, "changes() "):], "changes() "), got)
+				}
+			} else {
+				scratch, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "scratch.db"))
+				is.NotError(t, err)
+				defer func() { is.NotError(t, scratch.Close()) }()
+				scratch.SetMaxOpenConns(1)
+				for _, s := range test.setup {
+					_, err := scratch.ExecContext(t.Context(), s)
+					is.NotError(t, err)
+				}
+				is.Equal(t, test.mattn, severalText(t, scratch, test.src, test.args, true))
+				if test.oracle != "-" {
+					_, err := p.o.ExecContext(t.Context(), test.oracle)
+					is.NotError(t, err)
+				}
+			}
+			is.Equal(t, "", p.compareTables())
+		})
+	}
+
+	for _, commit := range []bool{true, false} {
+		t.Run(fmt.Sprintf("should keep the statements before one that fails in a transaction, which goes on, and commits them: %v", commit), func(t *testing.T) {
+			p := newPair(t, w, false, nil)
+			defer p.close()
+			for _, r := range []queryer{p.s, p.o} {
+				_, err := r.ExecContext(t.Context(), t1)
+				is.NotError(t, err)
+			}
+			var txs []*sql.Tx
+			for _, r := range []queryer{p.s, p.o} {
+				tx, err := r.BeginTx(t.Context(), nil)
+				is.NotError(t, err)
+				txs = append(txs, tx)
+			}
+			src := ins(1) + "; " + ins(2) + "; " + ins(1) + "; " + ins(3)
+			is.Equal(t, "failed with 19/1555: UNIQUE constraint failed: t1.v1", severalText(t, txs[0], src, nil, false))
+			is.Equal(t, "failed with 19/1555: UNIQUE constraint failed: t1.v1, changes() 0", severalText(t, txs[1], src, nil, true))
+			src = ins(4) + "; " + ins(5)
+			is.Equal(t, "affected 1", severalText(t, txs[0], src, nil, false))
+			is.Equal(t, "affected 1, changes() 1", severalText(t, txs[1], src, nil, true))
+			for _, tx := range txs {
+				if commit {
+					is.NotError(t, tx.Commit())
+				} else {
+					is.NotError(t, tx.Rollback())
+				}
+			}
+			is.Equal(t, "", p.compareTables())
+		})
+	}
 }
