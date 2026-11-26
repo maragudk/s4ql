@@ -3799,10 +3799,11 @@ func (p *pair) sqliteOrder(u *stmt.Update, args []any) (order, index string, ok 
 		if !ok {
 			scan, ok = strings.CutPrefix(detail, "SEARCH ")
 		}
-		if rest, named := strings.CutPrefix(scan, table); !ok || !named || rest != "" && !strings.HasPrefix(rest, " ") {
+		// The plan names the table as the statement spells it, which SQLite compares without case.
+		if !ok || len(scan) < len(table) || !strings.EqualFold(scan[:len(table)], table) || len(scan) > len(table) && scan[len(table)] != ' ' {
 			continue
 		}
-		if _, rest, ok := strings.Cut(strings.TrimPrefix(scan, table), " INDEX "); ok {
+		if _, rest, ok := strings.Cut(scan[len(table):], " INDEX "); ok {
 			// The name of the index as it was created, which may hold a space: the longest that the
 			// rest begins with.
 			_, columns := p.o.columns(t, u.Table.Value)
