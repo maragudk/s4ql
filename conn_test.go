@@ -758,7 +758,7 @@ func TestParameters(t *testing.T) {
 		is.Equal(t, 1, len(commits(t, w)))
 	})
 
-	t.Run("should keep the arguments in the annotation of the commit, and give the same rows from an empty cache after a restart", func(t *testing.T) {
+	t.Run("should annotate the commit with the text alone, and give the same rows from an empty cache after a restart", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, t1)
@@ -1186,7 +1186,7 @@ func TestColumns(t *testing.T) {
 func TestNulls(t *testing.T) {
 	const create = "create table n (k int primary key, t text, i integer, r real, b blob, s text not null) strict, without rowid"
 
-	t.Run("should take every kind of nil that database/sql hands the driver as NULL, in a column of any type, directly and prepared, and annotate it as NULL", func(t *testing.T) {
+	t.Run("should take every kind of nil that database/sql hands the driver as NULL, in a column of any type, directly and prepared, and annotate the statement by its text", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, create)

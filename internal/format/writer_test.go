@@ -439,7 +439,7 @@ func TestCommitWriter(t *testing.T) {
 		}},
 		{name: "should refuse a statement with parameters, which the format no longer holds", write: func(w *format.CommitWriter) error {
 			return w.Annotate(oldStatement("select ?", integer(1)))
-		}},
+		}, why: "holds field 2"},
 	}
 	for _, test := range refused {
 		t.Run(test.name, func(t *testing.T) {

@@ -883,9 +883,8 @@ func (k *KeySet) after(ctx context.Context, last []*s4qlpb.Value) ([]*s4qlpb.Val
 	return key, tx.fail(ctx, operation, err)
 }
 
-// Annotate the transaction with a statement that it ran: its SQL text, and nothing else, so the
-// arguments of its parameters are not kept. The annotations go into the commit object after its
-// changes, in the order in which they were made. Replay never uses them. It fails with an error that
+// Annotate the transaction with a statement that it ran: its SQL text, and nothing else. The
+// annotations go into the commit object after its changes, in the order in which they were made. Replay never uses them. It fails with an error that
 // wraps [ErrInvalid] for text that is not valid UTF-8.
 func (tx *Tx) Annotate(ctx context.Context, sql string) error {
 	const operation = "annotate"

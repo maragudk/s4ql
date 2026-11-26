@@ -238,12 +238,12 @@ message Null {}
 message Annotation {
   // What the annotation is.
   oneof kind {
-    // One statement, as it ran.
+    // One statement that ran in the commit.
     Statement statement = 1;
   }
 }
 
-// One statement that ran: which statement wrote the changes of the commit.
+// One statement that ran in the commit, by its text.
 //
 // It holds the statement's text and nothing else. The arguments of its
 // parameters, the time that it read, and the random bytes that it drew are

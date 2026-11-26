@@ -351,6 +351,7 @@ var plantable = map[string]func(b *bugs){
 	"checkOutside":          func(b *bugs) { b.checkOutside = true },
 	"keepOpen":              func(b *bugs) { b.keepOpen = true },
 	"keepRead":              func(b *bugs) { b.keepRead = true },
+	"argsNext":              func(b *bugs) { b.argsNext = true },
 	"keepFailed":            func(b *bugs) { b.keepFailed = true },
 	"readNewest":            func(b *bugs) { b.readNewest = true },
 	"rollbackKeeps":         func(b *bugs) { b.rollbackKeeps = true },

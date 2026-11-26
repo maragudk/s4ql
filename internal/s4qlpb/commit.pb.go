@@ -2212,7 +2212,7 @@ type Annotation_builder struct {
 	// What the annotation is.
 
 	// Fields of oneof xxx_hidden_Kind:
-	// One statement, as it ran.
+	// One statement that ran in the commit.
 	Statement *Statement
 	// -- end of xxx_hidden_Kind
 }
@@ -2242,13 +2242,13 @@ type isAnnotation_Kind interface {
 }
 
 type annotation_Statement struct {
-	// One statement, as it ran.
+	// One statement that ran in the commit.
 	Statement *Statement `protobuf:"bytes,1,opt,name=statement,oneof"`
 }
 
 func (*annotation_Statement) isAnnotation_Kind() {}
 
-// One statement that ran: which statement wrote the changes of the commit.
+// One statement that ran in the commit, by its text.
 //
 // It holds the statement's text and nothing else. The arguments of its
 // parameters, the time that it read, and the random bytes that it drew are

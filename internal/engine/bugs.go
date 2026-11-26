@@ -29,6 +29,9 @@ type bugs struct {
 	keepOpen bool
 	// keepRead makes [Rows.Close] of rows that no loop has read leave the read transaction open.
 	keepRead bool
+	// argsNext makes a statement of its own that changes the database run with each integer argument
+	// plus one, while its caller gave the argument.
+	argsNext bool
 	// keepFailed makes a statement that fails in a write transaction after its savepoint annotate
 	// the transaction and release the savepoint, so that the statement is kept as if it had
 	// succeeded.
@@ -229,10 +232,25 @@ func (t *textRun) commit(ctx context.Context) {
 // annotation of a statement of the text of ctx whose own text is sql: sql, or with the planted bug
 // annotateText the whole text.
 func (b bugs) annotation(ctx context.Context, sql string) string {
-	if t := textOf(ctx); b.annotateText && t != nil {
+	if !b.annotateText {
+		return sql
+	}
+	if t := textOf(ctx); t != nil {
 		return t.src
 	}
 	return sql
+}
+
+// nextArgs of the arguments args, with each integer plus one: the planted bug argsNext.
+func nextArgs(args []*s4qlpb.Value) []*s4qlpb.Value {
+	next := make([]*s4qlpb.Value, len(args))
+	for i, a := range args {
+		next[i] = a
+		if a.HasInteger() {
+			next[i] = s4qlpb.Value_builder{Integer: new(a.GetInteger() + 1)}.Build()
+		}
+	}
+	return next
 }
 
 // commitFailed commits the write transaction tx of a statement of a text of several that failed while

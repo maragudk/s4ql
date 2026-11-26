@@ -482,8 +482,8 @@ func planOf(s stmt.Statement, src string) (Plan, string) {
 
 // write runs the plan p of a statement that changes the database, whose text is sql, with the
 // arguments args, in a write transaction of its own, and gives its result. The transaction is
-// annotated with the text, and committed if the statement succeeds and writes,
-// and rolled back otherwise, also when an operator panics. A statement of IF NOT EXISTS or IF EXISTS
+// annotated with the text, and committed if the statement succeeds and writes, and rolled back
+// otherwise, also when an operator panics. A statement of IF NOT EXISTS or IF EXISTS
 // that does nothing on the newest state succeeds in a read transaction, as [Conn.nothingToWrite]
 // says, without the write transaction; one that does nothing in the write transaction succeeds there
 // without an annotation, and the transaction is rolled back.
@@ -527,6 +527,10 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	b := e.bugs
 	b.skipUnique = b.skipUnique || b.checkOutside
 	order := e.order(p)
+	if b.argsNext {
+		// The planted bug: the statement runs with each integer argument plus one.
+		args = nextArgs(args)
+	}
 	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit(), e.reading(false))
 	if err != nil {
 		return Result{}, nil, err
