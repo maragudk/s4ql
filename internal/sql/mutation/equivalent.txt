@@ -1322,6 +1322,31 @@ internal/engine/tx.go Conn.writeIn condition: err != nil => true #5
 internal/engine/tx.go Conn.writeIn operator: err != nil => err == nil #5
 	As the mutant above where the read transaction begins, which it does in every run of the planted bugs.
 
+# Arithmetic in the recognizer, internal/sql/stmt.
+
+stmt/recognize.go recognizer.condition swap arguments: max(left.height, right.height) => max(right.height, left.height)
+	max is commutative.
+stmt/recognize.go recognizer.expression swap arguments: max(hl, hr) => max(hr, hl)
+	max is commutative.
+stmt/recognize.go recognizer.operand constant: height := 1 => height := 0
+	The other side of a comparison with a plain value has a column, which is at least 1 deep, so the comparison is as deep with a value of 0 levels as with one of 1. A sign makes the value 2 deep, which is read.
+stmt/recognize.go plainValue condition: e.Op.Kind != token.Minus => false
+	A +, a ~, or NOT before an operand then goes to recognizer.unary instead of recognizer.term, which refuses it by the same name, at the same token: + sign, NULL after a sign, ~ operator, or NOT operator.
+stmt/recognize.go plainValue remove statement: return true => #3
+	As the mutant above: recognizer.unary refuses a sign other than - by the name that recognizer.term gives it, at its token.
+stmt/recognize.go plainValue boolean: true => false #2
+	As the mutants above: recognizer.unary refuses a sign other than - by the name that recognizer.term gives it, at its token.
+stmt/recognize.go recognizer.expression remove statement: r.accept(x) => #2
+	The only token of a column without a table is taken at once by recognizer.name, or refused by a name of its own, so describe never looks inside the node.
+stmt/recognize.go recognizer.expression constant: return Expression{}, 0 => return Expression{}, 1
+	r.unexpected panics, so the return after it is never reached.
+stmt/recognize.go recognizer.unary condition: u.Op.Kind == token.Minus => true
+	A sign other than - before a literal then goes to recognizer.literal, whose sign refuses it by the same name, at the same token, as the switch after it does.
+stmt/recognize.go recognizer.unary remove statement: r.reject(unaryName(x.Op)) =>
+	The operand, a ~ or NOT, then goes to recognizer.unary itself, which refuses it by the same name at the same token, the next one.
+stmt/stmt.go ExprValue constant: iota + 1 => iota + 2
+	The kinds are named, never counted: they need only differ from each other and from 0, which is no expression.
+
 # The evaluator of arithmetic, internal/expr.
 
 internal/expr/expr.go TypeInteger constant: iota + 1 => iota + 2
