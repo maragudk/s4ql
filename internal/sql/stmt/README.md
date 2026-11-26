@@ -1104,7 +1104,17 @@ A test checks that every name the pass gives in any test is in these tables.
 | `NULL in arithmetic` | An operand of `+`, `-`, `*`, or `/` is NULL, as in `a + null`, which SQLite gives as NULL. NULL after a sign is `NULL after a sign`. |
 | `division by zero` | The right operand of `/` is the literal 0 or 0.0, with or without a sign, or a real literal that SQLite reads as 0.0, such as `1e-400`. SQLite gives NULL. The offset is that of the literal. |
 | `expression deeper than SQLite's limit` | The value of an assignment of SET is an expression deeper than 1,000, `SQLITE_MAX_EXPR_DEPTH`. SQLite gives `Expression tree is too large (maximum depth 1000)` while it parses. The offset is that of the operator that makes it too deep, or of the token after an operand that makes it too deep. In WHERE, such an expression is `WHERE deeper than SQLite's limit`. |
-| `parentheses deeper than 100` | An expression has a 101st parenthesis open inside 100 others. SQLite has no such limit, but its parser refuses an expression nested deeper than its stack holds, with `Recursion limit`, from 831 levels of `(1 + (1 + ...))`. The offset is that of the 101st parenthesis. |
+| `parentheses deeper than 100` | An expression has a 101st parenthesis open inside 100 others, the parenthesis of a call included. SQLite has no such limit, but its parser refuses an expression nested deeper than its stack holds, with `Recursion limit`, from 831 levels of `(1 + (1 + ...))`. The offset is that of the 101st parenthesis. |
+| `function other than lower or hex` | An expression calls a function other than `lower` and `hex`, such as `abs(v)` or `upper(v)`. The offset is that of the name of the function. |
+| `wrong number of arguments` | A call of `lower` or `hex` has no argument or more than one. SQLite gives `wrong number of arguments to function lower()` once it has found the tables. The offset is that of the closing parenthesis, or of the comma after the first argument. |
+| `* as an argument` | A call of `lower` or `hex` has `*` in its parentheses, as in `hex(*)`. SQLite gives `wrong number of arguments to function hex()` once it has found the tables. The offset is that of the `*`. |
+| `text in arithmetic` | An operand of `+`, `-`, `*`, `/`, or of a `-` before it, is a concatenation or a call of `lower` or `hex`, which give text, as in `v + lower(w)`, `-hex(v)`, or `v + 1 \|\| 'a'`, which is `v + (1 \|\| 'a')`. SQLite reads the text as a number. The offset is that of the first token of the operand. |
+| `number in a concatenation` | An operand of `\|\|` is a number literal, with or without a sign, an operator of arithmetic, or a negation, as in `v \|\| 1`, `1.5 \|\| v`, `v \|\| -1`, `v \|\| (w + 1)`, or `v \|\| -w`. SQLite writes the number as text. The offset is that of the first token of the operand. |
+| `NULL in a concatenation` | An operand of `\|\|` is NULL, as in `v \|\| null`, which SQLite gives as NULL. |
+| `blob in a concatenation` | An operand of `\|\|` is a blob, as in `x'01' \|\| v`. SQLite reads the blob as text. |
+| `number as an argument` | The argument of `lower` or `hex` is a number literal, with or without a sign, an operator of arithmetic, or a negation, as in `lower(1)`, `hex(-1)`, or `hex(v + 1)`. SQLite writes the number as text. The offset is that of the first token of the argument. |
+| `NULL as an argument` | The argument of `lower` or `hex` is NULL. SQLite gives NULL for `lower(null)` and the empty text for `hex(null)`. |
+| `blob as an argument` | The argument of `lower` is a blob, as in `lower(x'41')`. SQLite reads the blob as text. `hex` takes a blob. |
 
 ### Names of fields
 
@@ -1129,7 +1139,8 @@ These are the tokens of a node that the recognizer accepted, in a field that no 
 | `DEFAULT VALUES` | `Insert.Default` |
 | `alias` | `TargetTable.As`, `FromItem.As`, `FromItem.Alias`, `ResultColumn.As`, `ResultColumn.Alias` |
 | `second row` | `Values.Commas` |
-| `DISTINCT or ALL` | `SimpleSelect.Distinct` |
+| `DISTINCT or ALL` | `SimpleSelect.Distinct`, `FuncCall.Distinct` |
+| `* as an argument` | `FuncCall.Star` |
 
 Any other field of an accepted node has the name of the node's type.
 

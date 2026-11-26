@@ -308,7 +308,7 @@ func (r Returning) Present() bool {
 
 // Term of a row, of an [Assignment], or of a [Condition]: the literal Value, the argument of a
 // parameter if Parameter is not 0, the value of a scalar subquery if Subquery is not 0, or the value
-// of an arithmetic expression if Expression is present.
+// of an expression if Expression is present.
 //
 // A Term without an Expression is a plain value, as it was before expressions: a literal, with at
 // most one - before a number, a plain ?, or a subquery. Only the value of an [Assignment] and the
@@ -349,13 +349,17 @@ func parametersOf(t Term, subqueries []Select) int {
 	return t.Expression.parameters()
 }
 
-// Expression of arithmetic: a literal, a parameter, a column, or an operator with its operands, each
-// an Expression. It holds its operands by value, in a slice, so that a statement holds no pointer and
-// is compared and printed by value.
+// Expression of arithmetic or of text: a literal, a parameter, a column, or an operator or a call of
+// a function with its operands, each an Expression. It holds its operands by value, in a slice, so
+// that a statement holds no pointer and is compared and printed by value.
 //
-// The tree has SQLite's precedence and associativity: * and / bind more tightly than + and -, each
-// groups to the left, and the - of a negation binds most tightly. Parentheses are not nodes: they
-// group, and the Span of the parent holds them.
+// The tree has SQLite's precedence and associativity: || binds more tightly than * and /, and those
+// more tightly than + and -, each groups to the left, and the - of a negation binds most tightly.
+// Parentheses are not nodes: they group, and the Span of the parent holds them.
+//
+// Arithmetic and text do not meet where the text alone shows it: an operand of +, -, *, /, or a
+// negation is never an [ExprConcat] or an [ExprCall], which give text, and an operand of || or the
+// argument of a function is never a number, an operator of arithmetic, or a negation.
 //
 // A - directly before a number is part of the literal, as SQLite codes it, so `-5` is the value -5
 // and never the negation of 5, and `-9223372036854775808` is the smallest integer of 64 bits. Every
@@ -363,8 +367,9 @@ func parametersOf(t Term, subqueries []Select) int {
 type Expression struct {
 	// Kind of the node, or 0 for no expression.
 	Kind ExpressionKind
-	// Value of the literal of [ExprValue]: an [Integer] or a [Real], with its sign. Never a [Text],
-	// a [Blob], or [Null], which arithmetic does not take. Nil for every other kind.
+	// Value of the literal of [ExprValue]: an [Integer] or a [Real], with its sign, as an operand of
+	// arithmetic; a [Text] as an operand of || or the argument of a function; or a [Blob] as the
+	// argument of [FuncHex]. Never [Null]. Nil for every other kind.
 	Value Value
 	// Parameter of [ExprParameter]: its number, from 1, numbered with every other parameter of the
 	// statement in the order of the text. 0 for every other kind.
@@ -372,9 +377,11 @@ type Expression struct {
 	// Column of [ExprColumn]: its name, bare or in double quotes. Whether the table has it is not
 	// decided here. The zero Name for every other kind.
 	Column Name
-	// Operands of an operator, in the order of the text: one for [ExprNegate], and two, the left and
-	// the right, for [ExprAdd], [ExprSubtract], [ExprMultiply], and [ExprDivide]. Nil for a literal, a
-	// parameter, and a column.
+	// Function of [ExprCall], and 0 for every other kind.
+	Function Function
+	// Operands of an operator or a call, in the order of the text: one for [ExprNegate], two, the left
+	// and the right, for [ExprAdd], [ExprSubtract], [ExprMultiply], [ExprDivide], and [ExprConcat], and
+	// the one argument for [ExprCall]. Nil for a literal, a parameter, and a column.
 	Operands []Expression
 	// Span of the node in the text, from its first token to the end of its last, without parentheses
 	// around the node itself and with those around its operands. That of a literal holds its sign.
@@ -402,12 +409,20 @@ const (
 	ExprMultiply
 	// ExprDivide is /. Its right operand is never the literal 0 or 0.0, with or without a sign.
 	ExprDivide
+	// ExprConcat is ||, the concatenation of text.
+	ExprConcat
+	// ExprCall is a call of its Function with its one argument.
+	ExprCall
 )
 
 // String of the kind: the operator as SQL writes it, such as + or - for both a negation and a
-// subtraction, or "value", "parameter", or "column", or "" for no kind.
+// subtraction, or "value", "parameter", "column", or "call", or "" for no kind.
 func (k ExpressionKind) String() string {
 	switch k {
+	case ExprConcat:
+		return "||"
+	case ExprCall:
+		return "call"
 	case ExprValue:
 		return "value"
 	case ExprParameter:
@@ -422,6 +437,30 @@ func (k ExpressionKind) String() string {
 		return "*"
 	case ExprDivide:
 		return "/"
+	}
+	return ""
+}
+
+// Function of an [ExprCall]. The zero value is no function.
+type Function int
+
+// The functions of an [ExprCall].
+const (
+	// FuncLower is lower(x), x with the ASCII letters in lower case. Its argument is never a number,
+	// a blob, or NULL.
+	FuncLower Function = iota + 1
+	// FuncHex is hex(x), the bytes of x in upper-case hexadecimal digits. Its argument is never a
+	// number or NULL.
+	FuncHex
+)
+
+// String of the function: its name as SQL writes it, such as lower, or "" for no function.
+func (f Function) String() string {
+	switch f {
+	case FuncLower:
+		return "lower"
+	case FuncHex:
+		return "hex"
 	}
 	return ""
 }
@@ -518,8 +557,8 @@ type OrderColumn struct {
 	Descending bool
 }
 
-// Condition of a WHERE clause of a select, an update, or a delete: a column, or an arithmetic
-// expression with a column, compared with a value, which may be a scalar subquery or an arithmetic
+// Condition of a WHERE clause of a select, an update, or a delete: a column, or an
+// expression with a column, compared with a value, which may be a scalar subquery or an
 // expression, or a column tested for NULL.
 //
 // A condition always reads as Column, Operator, Value, whichever side of the operator the text
@@ -537,14 +576,15 @@ type Condition struct {
 	// Column that the condition tests, or the zero Name if Expression is present. Whether the table
 	// has it is not decided here.
 	Column Name
-	// Expression that the condition tests in place of Column: an operator with a column, as in `a + 1
-	// = 5`, or the zero Expression if the condition tests Column; see [Expression.Present].
+	// Expression that the condition tests in place of Column: an operator or a call with a column, as
+	// in `a + 1 = 5` and `lower(a) = 'x'`, or the zero Expression if the condition tests Column; see
+	// [Expression.Present].
 	Expression Expression
 	// Operator of the condition, as it compares Column with Value. When ValueFirst is set, the text
 	// writes [Operator.Swapped] of it.
 	Operator Operator
 	// Value that the column is compared with, a literal or a parameter, as a value of an insert is,
-	// or a scalar subquery, or an arithmetic expression, with a column or without one, on either side
+	// or a scalar subquery, or an expression, with a column or without one, on either side
 	// of the column. For [OpIsNull] and [OpIsNotNull] it is the zero Term, which is none of them.
 	Value Term
 	// ValueFirst reports whether the text writes the value on the left of the operator and the column
@@ -635,7 +675,7 @@ type Update struct {
 type Assignment struct {
 	// Column that gets the value.
 	Column Name
-	// Value of the column, a literal or a parameter, as a value of an insert is, or an arithmetic
+	// Value of the column, a literal or a parameter, as a value of an insert is, or an
 	// expression, which may be a column alone and may name the columns of the row before the update.
 	Value Term
 }
