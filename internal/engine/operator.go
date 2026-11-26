@@ -1510,11 +1510,12 @@ func (b build) values(f *Filter, conditions []condition) error {
 // value, in the order of the text, that is of another type than its column. A subquery is checked
 // where it is, as [subqueries.types] says.
 //
-// An arithmetic expression is checked and bound first, as [bindArithmetic] says, the side that the
-// condition tests and its value in the order of the text, and then the class of its values must be
-// that of the other side, as [comparable] says: so a column of type TEXT or BLOB compared with an
-// expression is refused, whatever the arguments, where SQLite converts the number to text or a blob
-// by the column's affinity. The expressions are put in conditions, to be computed later.
+// An expression is checked and bound first, as [bindExpression] says, the side that the condition
+// tests and its value in the order of the text, and then the class of its values must be that of the
+// other side, as [comparable] says: so a column of type TEXT or BLOB compared with arithmetic is
+// refused, whatever the arguments, where SQLite converts the number to text or a blob by the column's
+// affinity, and a number compared with text, where SQLite orders a number before text. The
+// expressions are put in conditions, to be computed later.
 func (b build) types(f *Filter, s *scan, conditions []condition) error {
 	for i := range conditions {
 		c, fc := &conditions[i], f.Conditions[i]
