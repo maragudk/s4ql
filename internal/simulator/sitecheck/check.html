@@ -528,6 +528,8 @@ async function check() {
 
   await sqlBox(p);
 
+  await shortcuts(p);
+
   // Each action on a, while paused: its effect in the state, and switched off again, gone.
   const a = () => p.instance("a");
   // The engine names two of the faults by the network, but they act only on the connection of the
@@ -1012,6 +1014,89 @@ async function sqlBox(p) {
   await until(() => box.dataset.pending === "false" && p.idle());
   line = p.$("#sql-status").textContent;
   expect(!p.win.s4qlPage.playing && line === "a serves 1 row.", `a statement sent while playing and paused at once is answered: ${line}`);
+}
+
+// shortcuts checks the keys of the page, on a paused page that sends the requests to a, and leaves it
+// so: Space plays and pauses, and a and b send the requests, and so the SQL of the box, to that
+// instance. They are the page's where no text is typed and no Ctrl, Alt, or Meta is held, also on a
+// focused button, where Space does not press it, and a held Space does nothing. The buttons say their
+// keys in aria-keyshortcuts.
+async function shortcuts(p) {
+  const play = p.$("#play"), area = p.$("#sql-text");
+  const press = (el, key, init = {}, type = "keydown") => {
+    const e = new p.win.KeyboardEvent(type, { key, bubbles: true, cancelable: true, ...init });
+    el.dispatchEvent(e);
+    return e;
+  };
+  const playing = () => p.win.s4qlPage.playing;
+  const to = async (name) => {
+    await until(() => p.requests().target === name && p.idle());
+    return p.requests().target;
+  };
+  const body = p.win.document.body;
+  expect(play.getAttribute("aria-keyshortcuts") === "Space" && p.$('#requests [data-target="a"]').getAttribute("aria-keyshortcuts") === "A" && p.$('#requests [data-target="b"]').getAttribute("aria-keyshortcuts") === "B",
+    "Play and the switch of the requests say their keys in aria-keyshortcuts");
+  expect(!playing() && p.requests().target === "a", "the check starts paused, with the requests going to a");
+
+  // Space plays and pauses, as Play does, and keeps the page from scrolling.
+  let e = press(body, " ");
+  expect(playing() && play.textContent.trim() === "Pause" && e.defaultPrevented, "Space plays, and the page does not scroll");
+  e = press(body, " ");
+  expect(!playing() && play.textContent.trim() === "Play" && e.defaultPrevented, "Space pauses");
+  e = press(body, " ", { repeat: true });
+  expect(!playing() && e.defaultPrevented, "a held Space does nothing, and does not scroll");
+  for (const mod of ["ctrlKey", "altKey", "metaKey"]) {
+    e = press(body, " ", { [mod]: true });
+    expect(!playing() && !e.defaultPrevented, `Space with ${mod} is the browser's`);
+  }
+  e = press(body, "a", { ctrlKey: true });
+  expect(p.requests().target === "a" && !e.defaultPrevented, "a with Ctrl is the browser's");
+  e = press(body, "b", { metaKey: true });
+  await p.frames(3);
+  expect(p.requests().target === "a" && !e.defaultPrevented, "b with Meta is the browser's");
+
+  // a and b send the requests, and so the box, to that instance, and a sends them to a again.
+  press(body, "b");
+  expect(await to("b") === "b" && p.$('#requests [data-target="b"]').getAttribute("aria-pressed") === "true", "b sends the requests to b");
+  const lines = p.lines;
+  press(body, "b");
+  await p.frames(3);
+  expect(p.requests().target === "b" && p.lines === lines, "b again changes nothing");
+  press(body, "A", { shiftKey: true });
+  expect(await to("a") === "a", "Shift and a sends the requests to a");
+
+  // In a text field the keys only type.
+  area.focus();
+  for (const key of [" ", "a", "b"]) {
+    e = press(area, key);
+    await p.frames(3);
+    expect(!playing() && p.requests().target === "a" && !e.defaultPrevented, `${JSON.stringify(key)} in the box for SQL is typed, and does nothing else`);
+  }
+  area.blur();
+
+  // On a focused button Space plays and pauses, once, and does not press the button; Enter is the
+  // button's, and the stick figure's poke. A key that is let go does not press it either.
+  const run = p.$("#sql-run");
+  const sent = p.win.s4qlPage.box.pending;
+  run.focus();
+  e = press(run, " ");
+  const up = press(run, " ", {}, "keyup");
+  expect(playing() && e.defaultPrevented && up.defaultPrevented && !p.win.s4qlPage.box.pending && sent === p.win.s4qlPage.box.pending, "Space on a focused button plays, and does not press the button");
+  play.focus();
+  e = press(play, " ");
+  expect(!playing() && e.defaultPrevented, "Space on a focused Play pauses it once");
+  const fig = p.$("#figure"), pose = () => p.$("#dancer").dataset.pose;
+  fig.focus();
+  let before = pose();
+  e = press(fig, " ");
+  expect(playing() && e.defaultPrevented && pose() === before, `Space on the stick figure plays, and does not poke it (${before})`);
+  e = press(fig, " ");
+  expect(!playing(), "Space on the stick figure pauses");
+  before = pose();
+  e = press(fig, "Enter");
+  expect(e.defaultPrevented && pose() !== before && !playing(), `Enter on the stick figure pokes it, and does not play (${before}, ${pose()})`);
+  fig.blur();
+  await p.frames(3);
 }
 
 // database checks that S3 lives in the page's memory only: the page stores nothing of it in the
