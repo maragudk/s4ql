@@ -92,6 +92,10 @@ A call with subqueries runs in SQLite flattened, with the values in place of the
 
 The code-review skill's reviewers found, and I fixed: `pair.sqliteOrder` took the first SCAN or SEARCH row of the plan, which for a WHERE with a subquery can be the subquery's, and would then stop the test with `Fatalf` (now only the row of the updated table, and a statement with subqueries is two passes without a plan); `pair.recordSlips` ran the rows of a flattened statement in the order of the index, where the engine runs the statement with subqueries in the order of the key (now a flag, as in `checkUpdateOrder`); `createKeyTable` left the first temporary table when the second failed (now dropped); the doc comment of `TestPair_recordSlips` had slid onto the new test; Step 1 of the todo said `changes()` keeps the count before a failed statement (it is 0); and the replays ran for every failing update (now only where SQLite's order is not the key's, or the answers differ).
 
+### The long runs
+
+At the nightly's sizes after the last change: `go test -count=1 -p 3 -run '^TestDifferential$' -timeout 40m ./internal/engine/ -sequences 400` passed in 926 s. Its first try failed at once: `"update \"JsoN\" set \"OF\" = ?": SQLite's plan ["4,0,211,\"SCAN JsoN\""] has no scan`, since the plan names the table as the statement spells it and the pair looked for the stored spelling; it now compares without case, and `TestPair_updateOrder` pins it. `S4QL_ENGINE_SIM_SEEDS=100 go test -count=1 -run '^TestSimulation$' ./internal/engine/` passed in 457 s, and `go test ./drivercheck/` from `internal/sqlite/crosscheck` in 91 s.
+
 ### Future work
 
 A generator of its own that reaches "update whose first row to fail is another in SQLite's order than in the order of the key", then the kind made required; see `/docs/todo/update-order.md`.
