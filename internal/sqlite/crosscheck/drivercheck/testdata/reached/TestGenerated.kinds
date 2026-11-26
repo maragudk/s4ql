@@ -13,7 +13,9 @@
 # select of names ok", "reached: WHERE that gives some rows of a table", "reached: LIMIT that
 # cuts", "reached: LIMIT by an argument ok", the evaluation errors justified of a division by zero
 # and of a real result that is not finite, and the excuse of an evaluation error, and in nothing
-# else.
+# else. A text of several statements, whose statements after one that fails do not run, has no
+# LIMIT and no subquery where it may have arithmetic, so that its counts, the excuses of its result
+# among them, do not vary so.
 
 # Each kind of statement by its outcome, and each call, with arguments and without.
 1	createtable ok
@@ -617,3 +619,22 @@
 31	reached: several statements through prepare, exec not supported
 16	reached: several statements through prepare, exec several times not supported
 7	reached: several statements through prepare, query not supported
+# The forms of a text of several statements that a split must read as SQLite does, by the position
+# of the statement, of 2026-11-26, at a third of their totals: a CREATE TRIGGER, whose body holds
+# semicolons; a name in double quotes and a string that hold a semicolon; statements that depend on
+# each other; and comments that hold a semicolon, before, between, and after the statements.
+8	reached: several statements: create trigger first
+13	reached: several statements: create trigger in the middle
+5	reached: several statements: create trigger last
+27	reached: several statements: name in double quotes with a semicolon first
+66	reached: several statements: name in double quotes with a semicolon in the middle
+45	reached: several statements: name in double quotes with a semicolon last
+8	reached: several statements: string with a semicolon first
+43	reached: several statements: string with a semicolon in the middle
+32	reached: several statements: string with a semicolon last
+33	reached: several statements: statements that depend on each other first
+19	reached: several statements: statements that depend on each other in the middle
+19	reached: several statements: statements that depend on each other last
+25	reached: several statements: comment with a semicolon before the first statement
+132	reached: several statements: comment with a semicolon between statements
+46	reached: several statements: comment with a semicolon after the last statement

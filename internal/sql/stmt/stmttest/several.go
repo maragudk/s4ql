@@ -38,14 +38,15 @@ const severalTrigger = "create trigger if not exists tr%v after insert on %v beg
 // severalChain is a create table, an insert into the table, and an update of the row, which depend
 // on each other, of one of two tables and one of three keys at random from r: the name of the table
 // in double quotes and the key in a string, each holding a semicolon. A second chain of the same
-// table and key fails on the key at its insert.
+// table and key fails on the key at its insert. One chain in three starts at its insert, into a table
+// that an earlier chain may have created.
 func severalChain(r Rand) []string {
 	table, key := fmt.Sprintf(`"c;%v"`, r.IntN(2)), fmt.Sprintf("'k;%v'", r.IntN(3))
 	return []string{
 		"create table if not exists " + table + " (k text primary key, v int) strict, without rowid",
 		"insert into " + table + " (k, v) values (" + key + ", 1)",
 		"update " + table + " set v = 2 where k = " + key,
-	}
+	}[r.IntN(3)/2:]
 }
 
 // several is a call of a text of several statements, two to five, as glue's migrations and goqite's

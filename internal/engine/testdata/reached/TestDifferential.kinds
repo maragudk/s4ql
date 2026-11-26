@@ -808,7 +808,7 @@
 # Left out on 2026-11-26, when the mixed profile began to write texts of several statements in
 # place of some statements, and reached each twice where it had reached it three times: "arithmetic
 # with a column in WHERE of a delete, no such column" and "arithmetic without a column in WHERE of a
-# delete, wrong number of arguments".
+# delete, wrong number of arguments". TestDifferential requires each once at least.
 # The fixes after the review of the engine's checks of arithmetic of 2026-11-25: a third of the
 # total that day.
 18	reached: arithmetic of a write whose evaluation error the model's access judges
