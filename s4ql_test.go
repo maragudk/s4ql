@@ -56,8 +56,8 @@ type world struct {
 // newWorld, with a directory for the caches. When the test ends, after the cleanups that close the
 // instances, it fails the test for each cache that a connection still holds: an instance that is not
 // closed, or the rows of a query that still hold a read. SQLite deletes the write-ahead log when the
-// last connection to a cache closes, except after a stop for a local failure, when the instance
-// closes its connections without that checkpoint. So for each cache with a log, the check opens a
+// last connection to a cache closes, but the log of an instance that stopped for a local failure
+// can stay after its close. So for each cache with a log, the check opens a
 // connection of its own, reads the cache, and closes the connection, which deletes the log if no
 // other connection holds the cache. A test that has failed already is not checked.
 func newWorld(t *testing.T) *world {
@@ -74,11 +74,17 @@ func newWorld(t *testing.T) *world {
 				return err
 			}
 			c, err := sqlite.OpenExistingVFS(cache, "")
-			is.NotError(t, err)
-			is.NotError(t, c.Exec("select count(*) from sqlite_schema"))
-			is.NotError(t, c.Close())
-			if _, err := os.Stat(path); err == nil {
+			if err != nil {
+				return err
+			}
+			if err := errors.Join(c.Exec("select count(*) from sqlite_schema"), c.Close()); err != nil {
+				return err
+			}
+			switch _, err := os.Stat(path); {
+			case err == nil:
 				t.Errorf("a connection to the cache %v is still open", cache)
+			case !errors.Is(err, fs.ErrNotExist):
+				return err
 			}
 			return nil
 		}))

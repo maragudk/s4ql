@@ -79,7 +79,7 @@ type Options struct {
 	// than 1000.
 	LengthLimit int
 
-	// syncs says how SQLite syncs the cache to disk. Only tests set it: see [SyncOff].
+	// syncs says how SQLite syncs the cache to disk, which tests change: see [SyncOff].
 	syncs syncs
 	// checkpointAfter is the number of frames in the write-ahead log from which the writer
 	// checkpoints the cache after a commit: see [DB.checkpoint]. The default is 1000.
@@ -90,9 +90,9 @@ type Options struct {
 	local local
 }
 
-// syncs is how SQLite syncs the cache to disk: with synchronous = full, unless a test turned syncs
-// off. A test that tests syncing sets [syncsFull], so that a default of its own to turn them off
-// leaves them on.
+// syncs is how SQLite syncs the cache to disk: with synchronous = full, unless it is [syncsOff].
+// The zero value, [syncsDefault], leaves the choice open to whoever sets the options next, and
+// [syncsFull] does not.
 type syncs int
 
 const (
@@ -103,7 +103,7 @@ const (
 
 // SyncOff is o with SQLite's syncs of the cache to disk off: pragma synchronous = off. A crash of
 // the operating system can then lose or tear commits of the cache, so it is for tests that do not
-// test syncing, and only a package that can import the package of the key can call it.
+// test syncing. The key is of a package that only the packages under this one can import.
 func SyncOff(o Options, _ testonly.Key) Options {
 	o.syncs = syncsOff
 	return o
@@ -252,6 +252,9 @@ type DB struct {
 	// then.
 	stopped error
 	done    chan struct{}
+	// failedLocally is whether a local I/O failure has stopped the instance, or would have, had it
+	// not stopped for another cause before: see [DB.keepLogLocked].
+	failedLocally bool
 	// holder is whether the instance holds the lease, as far as it knows: whether version is set.
 	holder bool
 	// serving is whether the instance holds the lease, its cache is caught up, and no commit of it
@@ -339,6 +342,8 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 
 	defer func() {
 		if err != nil {
+			// Nothing else knows the instance yet.
+			d.failedLocally = errors.Is(err, ErrLocal)
 			d.closeCache()
 		}
 	}()
@@ -435,14 +440,14 @@ func (d *DB) closeCache() {
 }
 
 // keepLogLocked is whether a connection to the cache that closes now must leave the write-ahead log
-// as it is: once the instance has stopped for a local I/O failure. SQLite's close of the last
-// connection to a database otherwise runs a checkpoint, drops its error, and on success deletes the
-// log. After a failed sync that is a second try in place: a sync that succeeds where the first one
-// failed, and that deletes the log while the file of the cache may hold older pages than the log,
-// when an earlier checkpoint that read transactions held back has copied pages into the file that
-// are not written again. With the log left, the next open recovers from it. It requires mu.
+// as it is: once a local I/O failure has stopped the instance, or met it after it stopped for
+// another cause, as a commit that goes on after [DB.Close] can, and after an [Open] that failed for
+// one. The close of the last connection otherwise checkpoints the log into the file of the cache
+// and then deletes it, which after a failed sync tries the sync again in place, and can delete the
+// only copy of pages that are not durable in the file. With the log left, the next open recovers
+// from it. It requires mu.
 func (d *DB) keepLogLocked() bool {
-	return errors.Is(d.stopped, ErrLocal)
+	return d.failedLocally
 }
 
 // Done is closed when the instance has stopped for good.
@@ -480,6 +485,7 @@ func (d *DB) stop(ctx context.Context, cause error) error {
 // stopLocked is [DB.stop] without the event, which the caller logs with [DB.stopEvent] if first is
 // true. It requires mu.
 func (d *DB) stopLocked(cause error) (first bool, err error) {
+	d.failedLocally = d.failedLocally || errors.Is(cause, ErrLocal)
 	first = d.stopped == nil
 	if first {
 		d.stopped = fmt.Errorf("%w: %w", ErrStopped, cause)

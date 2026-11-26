@@ -1,6 +1,5 @@
-// Package coretest has what the tests of other packages need of the storage core in
-// [maragu.dev/s4ql/internal/core] beyond its API. Only tests may import it, which the linter's rule
-// coretest checks.
+// Package coretest has what tests need of the storage core in [maragu.dev/s4ql/internal/core]
+// beyond its API, and is for tests only.
 package coretest
 
 import (

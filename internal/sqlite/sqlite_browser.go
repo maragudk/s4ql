@@ -61,8 +61,6 @@ const (
 	codeRow     = 100
 	codeDone    = 101
 	limitLength = 0 // SQLITE_LIMIT_LENGTH
-
-	dbconfigNoCkptOnClose = 1006 // SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE
 )
 
 // pragmas are the PRAGMAs that every connection runs when it is opened, for the compile options of
@@ -411,7 +409,8 @@ func (c *Conn) NoCheckpointOnClose() error {
 	if c.db == 0 {
 		return errorFromConn(0, codeMisuse)
 	}
-	if rc := call(lib().dbConfigIP, c.db, dbconfigNoCkptOnClose, 1, 0); rc != codeOK {
+	// 1006 is SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE.
+	if rc := call(lib().dbConfigIP, c.db, 1006, 1, 0); rc != codeOK {
 		return errorFromConn(c.db, rc)
 	}
 	return nil

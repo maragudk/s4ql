@@ -66,10 +66,10 @@ func cacheDir(t *testing.T) string {
 // read the cache, keeps its write-ahead log: "The WAL file exists for as long as any database
 // connection has the database open. Usually, the WAL file is deleted automatically when the last
 // connection to the database closes." (https://sqlite.org/wal.html) An instance that has stopped for
-// a local I/O failure closes its connections without that checkpoint, so its log stays too. So for
+// a local I/O failure closes its connections without deleting the log, so its log stays too. So for
 // each cache with a log, leftOpen opens a connection of its own, reads the cache, and closes the
-// connection: if it was the last one, its close checkpoints and deletes the log, as the next open of
-// the cache would recover from it, and if another connection holds the cache, the log stays. A
+// connection: if it was the last one, its close moves the log into the file of the cache and
+// deletes it, and if another connection holds the cache, the log stays. A
 // connection that has not read a cache yet holds no lock on it and keeps no log, so not every
 // connection that is left shows.
 func leftOpen(dir string) ([]string, error) {
@@ -430,10 +430,11 @@ func TestOpen(t *testing.T) {
 	})
 
 	t.Run("should sync the cache with synchronous = full by default, and not with syncs off", func(t *testing.T) {
-		// The setting is that of the write connection from the open on, so no instance needs to
-		// serve, and each is a spare of its own world's database.
+		// Each instance is alone in a world of its own. It reads the setting once it serves, when the
+		// lease task no longer uses the write connection.
 		synchronous := func(d *core.DB) int64 {
 			t.Helper()
+			is.NotError(t, d.Wait(t.Context()))
 			setting, err := d.Synchronous()
 			is.NotError(t, err)
 			return setting
@@ -672,6 +673,38 @@ func TestDB_Close_afterLocalFailure(t *testing.T) {
 			is.Equal(t, keyed(commits*500), read(t, w.serve(t, "a", core.Options{})))
 		})
 	}
+
+	t.Run("should leave the write-ahead log when a commit that goes on after the close meets a failed sync, though the close stopped the instance first", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			vfs, options := checkpointFaults(t, 1<<30)
+			s, d, tx := committing(t, w, options)
+			// The swap is applied, its answer is lost, and the store is out of reach for a while.
+			s.on("swap", "manifest", lose, 1)
+			s.on("swap", "", drop, -1)
+			s.on("get", "", drop, -1)
+			committed := make(chan error, 1)
+			go func() { committed <- tx.Commit(t.Context()) }()
+			time.Sleep(5 * time.Second)
+			// The close stops the instance, waits for the commit, and gives up.
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			is.Error(t, context.DeadlineExceeded, d.Close(ctx))
+			cancel()
+
+			// The commit finds out that it is committed, and its commit of the cache fails a sync of
+			// the log. The connection closes when the commit ends, without a checkpoint: a second sync
+			// would fail too, and none does.
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.WAL | faultvfs.MainDB})
+			s.clear()
+			is.NotError(t, <-committed)
+			is.Error(t, core.ErrClosed, d.Err())
+			is.Equal(t, 1, vfs.Failures())
+			_, err := os.Stat(filepath.Join(w.dir, "a.db-wal"))
+			is.NotError(t, err)
+
+			vfs.Fail(faultvfs.Fault{})
+			is.Equal(t, "t1(k*0): \nt2(k*0): ", read(t, w.serve(t, "a", core.Options{})))
+		})
+	})
 
 	t.Run("should checkpoint and delete the write-ahead log at a close without a stop for a local failure", func(t *testing.T) {
 		w := newWorld(t)
