@@ -446,6 +446,20 @@ func TestEngine_upsert(t *testing.T) {
 			"1/1: no such column: zz; 0",
 			"1/1: no such column: zz; 0",
 		}, got)
+
+		// NOT NULL of the row that DO UPDATE changes is checked in the order of the table, not of SET.
+		steps = []upsertStep{
+			{"insert into u values (1, 2, 2) on conflict (k) do update set b = null, a = null", nil},
+			{"insert into u values (1, 2, 2) on conflict (k) do update set b = ?, a = ?", []any{nil, nil}},
+			{"insert into u values (1, 2, 2) on conflict (k) do update set b = null, a = 3", nil},
+		}
+		got = runUpserts(t, newInstance(t, forward()), newOracle(t),
+			[]string{"create table u (k int primary key, a int not null, b int not null) strict, without rowid", "insert into u values (1, 1, 1)"}, steps)
+		is.EqualSlice(t, []string{
+			"19/1299: NOT NULL constraint failed: u.a; 0",
+			"19/1299: NOT NULL constraint failed: u.a; 0",
+			"19/1299: NOT NULL constraint failed: u.b; 0",
+		}, got)
 	})
 
 	t.Run("should fail as SQLite does for a value and a record longer than the length limit, the record of the proposed row also where the key exists", func(t *testing.T) {
