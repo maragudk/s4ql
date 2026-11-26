@@ -1515,8 +1515,9 @@ const (
 	// [pair.several] requires of it.
 	excusedSeveralEnd = "mattn's result of 0 rows affected after a text of several statements that ends in an empty statement, where s4ql gives SQLite's count"
 	// excusedSeveralReturning is a text of several statements whose last statement has RETURNING, for
-	// which mattn's result is the count of the statement before, since it steps the statement once,
-	// where s4ql gives SQLite's count of changes after the text, which [pair.several] requires of it.
+	// which mattn's result is SQLite's count of changes before that statement, as
+	// [severalBeforeLast] measures it, since it steps the statement once, where s4ql gives SQLite's
+	// count of changes after the text, which [pair.several] requires of it.
 	excusedSeveralReturning = "mattn's result of the statement before a last statement with RETURNING, where s4ql gives SQLite's count"
 )
 
@@ -5439,6 +5440,10 @@ func (p *pair) severalRan(src string, parts []stmt.Part, args []any, got outcome
 	tb.Helper()
 	ctx := tb.Context()
 	p.y.compared()
+	before := ""
+	if returns(parts[len(parts)-1].Statement) {
+		before = severalBeforeLast(tb, src, parts, args, o)
+	}
 	res, err := o.ExecContext(ctx, src, args...)
 	if err != nil {
 		return fmt.Sprintf("s4ql gives %v, and mattn fails with %v", got, severalMattnText(tb, err))
@@ -5461,7 +5466,7 @@ func (p *pair) severalRan(src string, parts []stmt.Part, args []any, got outcome
 	}
 	if want.affected != fmt.Sprint(changes) {
 		excuse := severalExcuse(src, parts)
-		if excuse == excusedSeveralEnd && want.affected != "0" {
+		if excuse == excusedSeveralEnd && want.affected != "0" || excuse == excusedSeveralReturning && want.affected != before {
 			excuse = ""
 		}
 		if excuse == "" {
@@ -5472,11 +5477,38 @@ func (p *pair) severalRan(src string, parts []stmt.Part, args []any, got outcome
 	return ""
 }
 
+// severalBeforeLast is SQLite's count of changes on o before the last statement of the text src of
+// several statements runs, with the arguments args, which is mattn's result of a last statement with
+// RETURNING that gives a row: mattn steps it once, and SQLite counts its changes when it ends. It
+// runs the statements before the last in mattn, in a savepoint that it rolls back, which leaves the
+// count of changes as they set it, or as it was if none sets one, as the whole text then sets it too.
+func severalBeforeLast(tb testing.TB, src string, parts []stmt.Part, args []any, o runner) string {
+	tb.Helper()
+	ctx := tb.Context()
+	savepoint := func(q string) {
+		_, err := o.ExecContext(ctx, q)
+		is.NotError(tb, err)
+	}
+	savepoint("savepoint before_last")
+	defer savepoint("release before_last")
+	defer savepoint("rollback to before_last")
+	if len(parts) > 1 {
+		if _, err := o.ExecContext(ctx, src[:parts[len(parts)-2].Span.End], args[:parameters(parts[:len(parts)-1])]...); err != nil {
+			// The Exec of the whole text fails too, which is a failure of its own.
+			return ""
+		}
+	}
+	var changes int64
+	is.NotError(tb, o.QueryRowContext(ctx, "select changes()").Scan(&changes))
+	return fmt.Sprint(changes)
+}
+
 // severalExcuse of mattn's result of the text src of several statements, whose count of rows
 // affected is not SQLite's count of changes after the text: [excusedSeveralEnd] for a text whose last
 // statement ends in a semicolon after which a comment or an empty statement follows, for which mattn
 // gives 0, and [excusedSeveralReturning] for a text whose last statement has RETURNING, for which
-// mattn gives the count of the statement before, as it steps the statement once; or "".
+// mattn gives SQLite's count before that statement, as it steps the statement once; or "". The
+// caller requires mattn's number of each.
 func severalExcuse(src string, parts []stmt.Part) string {
 	last := parts[len(parts)-1].Statement
 	if end := last.Bounds().End; src[end-1] == ';' && strings.TrimSpace(src[end:]) != "" {
@@ -6062,6 +6094,11 @@ func TestSeveral(t *testing.T) {
 		// before; SQLite's count after it is that of the RETURNING, which s4ql gives.
 		{name: "a RETURNING at the end", setup: []string{t1, ins(1), ins(2)}, src: ins(3) + "; delete from t1 returning v1",
 			s4ql: "affected 3", mattn: "affected 1, changes() 3", oracle: ins(3) + "; delete from t1"},
+		// It is SQLite's count before the last statement, which a call before sets where no statement
+		// of the text before the last does.
+		{name: "a RETURNING at the end after a statement that sets no count", setup: []string{t1, ins(1), ins(2), ins(3), "delete from t1 where v1 > 1"},
+			src:  "create table t2 (v1 int primary key) strict, without rowid; " + ins(4) + " returning v1",
+			s4ql: "affected 1", mattn: "affected 2, changes() 1", oracle: "create table t2 (v1 int primary key) strict, without rowid; " + ins(4)},
 		// Each of these, s4ql refuses before any statement runs.
 		{name: "more arguments than parameters, which mattn drops", setup: []string{t1}, src: "insert into t1 (v1) values (?); " + ins(2), args: []any{1, 9},
 			s4ql:  "failed with s4ql: wrong number of arguments: 2 for a text whose 2 statements have 1 parameter",

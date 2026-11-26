@@ -589,7 +589,7 @@
 14	reached: several statements: createindex that ran
 7	reached: several statements: dropindex that ran
 15	reached: several statements: droptable that ran
-14	reached: several statements: last statement with RETURNING that ran
+40	reached: several statements: last statement with RETURNING that ran
 24	reached: several statements: more arguments than parameters
 8	reached: several statements: fewer arguments than parameters
 26	reached: several statements: failed after a statement ran: UNIQUE constraint failed
@@ -619,6 +619,10 @@
 31	reached: several statements through prepare, exec not supported
 16	reached: several statements through prepare, exec several times not supported
 7	reached: several statements through prepare, query not supported
+# The texts of several statements of 2026-11-26 that end in a create table, an update of every row
+# of its table, and an insert with RETURNING, so that mattn's result after the last statement differs
+# from SQLite's count, raised the last statements with RETURNING that ran to 121, of which a third is
+# required above; the excuse of that result, 44 that day, is pinned exactly in TestGenerated.tsv.
 # The forms of a text of several statements that a split must read as SQLite does, by the position
 # of the statement, of 2026-11-26, at a third of their totals: a CREATE TRIGGER, whose body holds
 # semicolons; a name in double quotes and a string that hold a semicolon; statements that depend on
