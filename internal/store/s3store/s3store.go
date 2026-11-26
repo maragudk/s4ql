@@ -30,7 +30,8 @@
 // The client owns the HTTP transport that [New] makes for it, and [Client.Close] closes every
 // connection of that transport once the last request of the client has ended. The requests of the
 // SDK's default chain for credentials, such as to the endpoint of a container or to STS, go through
-// an HTTP client of the SDK's own type with the same roots, and not through that transport.
+// an HTTP client of the SDK's own type, with the same roots, no proxy, and HTTP/1.1 only, and not
+// through that transport, so Close does not close their connections.
 package s3store
 
 import (
@@ -152,12 +153,17 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 
 	// The SDK adds the certificates of a CA bundle of its configuration to the roots of an HTTP
 	// client of its own type alone. It gets one whose roots are a copy of RootCAs, and the roots
-	// that come out of the configuration are those of the transport below.
+	// that come out of the configuration are those of the transport below. The SDK's default
+	// chain sends its requests for credentials through that client, which goes through no proxy
+	// and speaks HTTP/1.1 only, as the transport below does.
 	var roots *x509.CertPool
 	if opts.RootCAs != nil {
 		roots = opts.RootCAs.Clone()
 	}
 	sdkClient := awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		tr.Proxy = nil
+		tr.Protocols = new(http.Protocols)
+		tr.Protocols.SetHTTP1(true)
 		if tr.TLSClientConfig == nil {
 			tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		}
