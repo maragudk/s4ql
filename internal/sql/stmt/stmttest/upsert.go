@@ -10,7 +10,7 @@ import (
 
 // The rules of the upserts, as s4ql's documents give them: DO UPDATE reads the row that the table
 // holds and the row that the insert proposes, and excluded.c is a column of the type of its column,
-// copied and compared as a column alone is, and in arithmetic as a column is. The rules read DO
+// copied and compared as a column alone is, and in arithmetic and in text as a column is. The rules read DO
 // UPDATE as SET and WHERE over the columns of the table followed by a column for each of them under
 // the name that [excludedColumn] gives, so that the rules of an update give its refusals.
 
@@ -26,12 +26,12 @@ func excludedColumn(name string) string {
 // UpsertRefusals of the upsert s, an insert with ON CONFLICT, into the table of the name, as the
 // table stores it, and of the columns, in the order of the table, which SQLite prepares, with the
 // arguments args as SQLite binds them, one for each parameter: every "not supported" that s4ql's
-// rules give for it, whatever their order. They are the refusal of [TextRefusal], which is then the
-// one; and, but in a read-only transaction, which refuses the write before s4ql looks at a value, the
-// first value of the proposed row, in the order of the table, of another type than its column, as
-// for an insert, and the refusals of the SET and the WHERE of DO UPDATE, as [ArithmeticRefusals]
-// gives those of an update, with excluded.c as a column of its type, named "the column excluded.c of
-// type T" in a message.
+// rules give for it, whatever their order. They are none in a read-only transaction, which refuses
+// the write before s4ql looks at a value; otherwise the first value of the proposed row, in the order
+// of the table, of another type than its column, as for an insert, and the refusals of the SET and
+// the WHERE of DO UPDATE, as [ArithmeticRefusals] gives those of an update, of arithmetic and of
+// text, with excluded.c as a column of its type, named "the column excluded.c of type T" in a
+// message.
 func UpsertRefusals(table string, columns []TableColumn, s *stmt.Insert, args []any, readOnly bool) []string {
 	if readOnly {
 		return nil

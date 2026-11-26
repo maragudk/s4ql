@@ -3,6 +3,7 @@ package engine
 import (
 	"cmp"
 	"context"
+	"errors"
 	"slices"
 
 	"maragu.dev/s4ql/internal/expr"
@@ -99,9 +100,9 @@ func combinedConditions(where []Condition) []Condition {
 // the target, in their order, with `no such column` for one that the table does not have, and then
 // `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint` for a target that is not
 // the key. Then come the assignments of SET, in the order of the text, each its value before its
-// column, as for an update, and then the conditions of WHERE, as [whereNames] says. A column of
-// excluded that the table does not have is `no such column: excluded.c`, as [noSuchExcluded] gives
-// it.
+// column, as for an update, the value a walk of its own, and then the conditions of WHERE, one walk,
+// as [whereNames] says. The walks are those of [resolver], with a column of excluded as a column, so
+// one that the table does not have is `no such column: excluded.c`.
 func conflictNames(t *s4qlpb.CreateTable, key int, c *Conflict) error {
 	of := columnPositions(t)
 	var target []int
@@ -115,84 +116,71 @@ func conflictNames(t *s4qlpb.CreateTable, key int, c *Conflict) error {
 	if len(target) != 1 || target[0] != key {
 		return conflictTarget()
 	}
+	found := func(name stmt.Name) bool { _, ok := of[name.Fold()]; return ok }
 	for _, a := range c.Set {
 		if arithmetic, ok := a.Value.(*Arithmetic); ok {
-			if err := missingNames(arithmetic.Expression, of); err != nil {
-				return err
+			n := &resolver{found: found}
+			if name, missing := n.all(arithmetic.Expression); missing {
+				return noSuchResultColumn(name)
 			}
 		}
 		if _, ok := of[a.Column.Fold()]; !ok {
 			return noSuchSetColumn(a.Column)
 		}
 	}
-	return whereNames(c.Where, of)
+	return whereNames(c.Where, found)
 }
 
-// missingNames of the expression e of DO UPDATE, whose table has the columns of: SQLite's error for
-// the first column, or column of excluded, in the order of the text, that the table does not have,
-// or nil.
-func missingNames(e stmt.Expression, of map[string]int) error {
-	switch e.Kind {
-	case stmt.ExprColumn:
-		if _, ok := of[e.Column.Fold()]; !ok {
-			return noSuchResultColumn(e.Column)
-		}
-	case stmt.ExprExcluded:
-		if _, ok := of[e.Column.Fold()]; !ok {
-			return noSuchExcluded(e)
-		}
-	}
-	for _, o := range e.Operands {
-		if err := missingNames(o, of); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// whereNames of the conditions of the WHERE of DO UPDATE, whose table has the columns of: SQLite's
-// error of their names, or nil. SQLite looks them up as it does those of a WHERE of a select, as
-// [build.walk] says: the names of a comparison in the order of the text, where the first that the
-// table does not have fails; and a test for NULL of a column that the table does not have, or of
-// excluded.c of such a column, does not stop it, but gives its error at the next comparison, or at
-// the end, unless a later test for NULL replaces it.
-func whereNames(where []Condition, of map[string]int) error {
-	var missing error
-	tested := func(c Condition) error {
+// whereNames of the conditions of the WHERE of DO UPDATE, for whose names found reports whether the
+// table has a column of the name: SQLite's error of their names, or nil. SQLite looks them up in one
+// walk, as it does those of the WHERE of a select, as [build.walk] says: the names of a comparison in
+// the order of the text, where a missing column ends the walk, but where [resolver] says that it is
+// pending; a test for NULL of a column that the table does not have, or of excluded.c of one, is
+// pending too, until the next comparison or the end, unless a later missing column replaces it; and a
+// literal or a parameter after the tested side ends the walk with a pending column.
+func whereNames(where []Condition, found func(stmt.Name) bool) error {
+	n := &resolver{found: found}
+	tested := func(c Condition) (stmt.Name, bool) {
 		if c.Expression.Present() {
-			return missingNames(c.Expression, of)
+			return n.resolve(c.Expression)
 		}
-		if _, ok := of[c.Column.Fold()]; !ok {
-			return noSuchResultColumn(c.Column)
+		if !found(c.Column) {
+			return c.Column, true
 		}
-		return nil
+		return stmt.Name{}, false
 	}
 	for _, c := range where {
 		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
-			if err := tested(c); err != nil {
-				missing = err
+			if name, missing := tested(c); missing {
+				n.pending = &name
 			}
 			continue
 		}
-		if missing != nil {
-			return missing
+		if n.pending != nil {
+			return noSuchResultColumn(*n.pending)
 		}
 		value, _ := c.Value.(*Arithmetic)
 		if value != nil && c.ValueFirst {
-			if err := missingNames(value.Expression, of); err != nil {
-				return err
+			if name, stop := n.resolve(value.Expression); stop {
+				return noSuchResultColumn(name)
 			}
 		}
-		if err := tested(c); err != nil {
-			return err
+		if name, stop := tested(c); stop {
+			return noSuchResultColumn(name)
 		}
 		if value != nil && !c.ValueFirst {
-			if err := missingNames(value.Expression, of); err != nil {
-				return err
+			if name, stop := n.resolve(value.Expression); stop {
+				return noSuchResultColumn(name)
 			}
 		}
+		if value == nil && !c.ValueFirst && n.pending != nil {
+			return noSuchResultColumn(*n.pending)
+		}
 	}
-	return missing
+	if n.pending != nil {
+		return noSuchResultColumn(*n.pending)
+	}
+	return nil
 }
 
 // doUpdate of the clause c of an upsert into the table t, whose names [conflictNames] has checked, in
@@ -202,7 +190,11 @@ func whereNames(where []Condition, of map[string]int) error {
 // longer than the limit of b, as an update gives it; and then, in a write transaction, with "not
 // supported" for the values of another type than what they meet, as an update does, SET before
 // WHERE, and with the evaluation error of an expression without a column, which it computes once,
-// SET before WHERE, as an update computes them. In a [readOnly] transaction, SQLite refuses the write
+// SET before WHERE, as an update computes them, and with SQLite's `string or blob too big` for a text
+// that SQLite computes at the start of the statement, where the table has a row of the key or not:
+// the subtrees that [hoisted] gives and the sides of a comparison without a column and without a
+// call. A text without a column that is too long in SET, and a side with a call, fail on the row of
+// the conflict, where SQLite computes them. In a [readOnly] transaction, SQLite refuses the write
 // before it looks at a value, so the expressions are neither checked nor computed there, and the
 // update and the filter are built only for their lengths.
 func (b build) doUpdate(ctx context.Context, w writer, t *s4qlpb.CreateTable, c *Conflict) (*update, *filter, error) {
@@ -223,7 +215,7 @@ func (b build) doUpdate(ctx context.Context, w writer, t *s4qlpb.CreateTable, c 
 		}
 		u.positions[i], u.exprs[i], u.copied[i] = position, set[i].Value, -1
 		if arithmetic, ok := set[i].Value.(*Arithmetic); ok {
-			// A number has no length, but an argument of its parameters has.
+			// An expression is computed later, but the arguments of its parameters are checked here.
 			if err := argumentLengths(arithmetic.Expression, b.args, b.limit); err != nil {
 				return nil, nil, err
 			}
@@ -276,17 +268,38 @@ func (b build) doUpdate(ctx context.Context, w writer, t *s4qlpb.CreateTable, c 
 			return nil, nil, err
 		}
 	}
+	// As for an update: the subtrees of SET that SQLite computes before any row, and then the values of
+	// SET without a column, but one of text that is too long, which SQLite computes on the row that
+	// DO UPDATE changes, and the update computes there too. SQLite computes them at the start of the
+	// statement, also where the table has no row of the key.
+	if err := computeHoisted(u.hoisted); err != nil {
+		return nil, nil, err
+	}
 	for i, bound := range u.computed {
-		if bound == nil || set[i].Value.(*Arithmetic).Expression.HasColumn() {
+		if bound == nil {
+			continue
+		}
+		e := set[i].Value.(*Arithmetic).Expression
+		if e.HasColumn() {
 			continue
 		}
 		v, err := bound.Eval(nil)
 		if err != nil {
+			if isText(e) && errors.Is(err, expr.ErrTooLong) {
+				continue
+			}
 			return nil, nil, fromExpr(err)
 		}
 		u.values[i] = v.Proto()
 	}
-	if err := b.constants(ctx, both, conditions); err != nil {
+	// Then the subtrees and the constants of WHERE. SQLite computes WHERE on the row of the conflict
+	// and never to find a row, so a constant of text with a call that is too long serves no access,
+	// whatever the key and the indexes, and fails on the row, as [build.constants] says for the nil
+	// table.
+	if err := b.hoist(ctx, both, conditions, false); err != nil {
+		return nil, nil, err
+	}
+	if err := b.constants(ctx, nil, conditions); err != nil {
 		return nil, nil, err
 	}
 	return u, where, nil

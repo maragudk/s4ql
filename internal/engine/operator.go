@@ -1382,7 +1382,7 @@ func (b build) computeAndReach(ctx context.Context, f *Filter, s *scan, conditio
 // when the first row reaches it, unless its access needs it before. Where the condition may serve the
 // access, as [mayServe] says, SQLite's `string or blob too big` comes here, as for every other
 // constant; otherwise the condition keeps the error, serves no access, and gives the error on the
-// first row that it is evaluated on.
+// first row that it is evaluated on. A nil table t is that of conditions that serve no access.
 func (b build) constants(ctx context.Context, t *s4qlpb.CreateTable, conditions []condition) error {
 	_, lookups := b.r.(readOnly)
 	for i := range conditions {
@@ -1416,9 +1416,10 @@ func (b build) constants(ctx context.Context, t *s4qlpb.CreateTable, conditions 
 
 // mayServe reports whether SQLite may compute the value of the condition c of the table t, which
 // compares a column alone with a constant, before it reads a row, to find the rows by the key or by an
-// index: where the operator is not != and the column is the key or a column of an index of t.
+// index: where the operator is not != and the column is the key or a column of an index of t. No
+// condition of a nil table serves.
 func mayServe(ctx context.Context, r reader, t *s4qlpb.CreateTable, c condition) (bool, error) {
-	if c.test != nil || c.per != nil || c.paired || c.position < 0 || c.op == stmt.OpNotEqual {
+	if t == nil || c.test != nil || c.per != nil || c.paired || c.position < 0 || c.op == stmt.OpNotEqual {
 		return false, nil
 	}
 	for _, k := range t.GetPrimaryKey() {

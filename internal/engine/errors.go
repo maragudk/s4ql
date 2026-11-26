@@ -379,13 +379,6 @@ func readOnlyDatabase() error {
 	return &sqlerr.Error{Code: sqlerr.CodeReadOnly, ExtendedCode: sqlerr.CodeReadOnly, Message: "attempt to write a readonly database", Offset: -1}
 }
 
-// noSuchExcluded is `no such column: excluded.%s`, for excluded.c of DO UPDATE whose column the table
-// does not have, with the values of the two names as the statement writes them, and at the offset of
-// the first.
-func noSuchExcluded(e stmt.Expression) error {
-	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "no such column: " + e.Table.Value + "." + e.Column.Value, Offset: e.Table.Offset}
-}
-
 // conflictTarget is `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint`, for an
 // upsert whose conflict target is not the primary key of its table.
 func conflictTarget() error {

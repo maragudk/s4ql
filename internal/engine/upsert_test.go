@@ -556,15 +556,27 @@ func TestEngine_upsert(t *testing.T) {
 				// row changes.
 				{"(k, n) values (#, 1) on conflict (k) do update set v = 9223372036854775807 + 1", nil, "s4ql: integer overflow in + (at offset 69)"},
 				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where v = 9223372036854775807 * 2", nil, "s4ql: integer overflow in * (at offset 81)"},
-				// Text, which the engine does not compute yet, before the database is read.
-				{"(k, n) values (#, 1) on conflict (zz) do update set s = lower(excluded.s) || s", nil, "s4ql: not supported: concatenation (at offset 70)"},
-				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where excluded.s || 'a' = 'b'", nil, "s4ql: not supported: concatenation (at offset 77)"},
+				// Text, with excluded.c as a column of its type: its class meets only TEXT, NULL, and text,
+				// and a number or a blob inside it is the evaluator's refusal, at its offset.
+				{"(k, n) values (#, 1) on conflict (k) do update set v = lower(excluded.s)", nil, "s4ql: not supported: an expression of type text for the column t.v of type INT"},
+				{"(k, n) values (#, 1) on conflict (k) do update set b = hex(excluded.b)", nil, "s4ql: not supported: an expression of type text for the column t.b of type BLOB"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = lower(?)", []any{nil}, "s4ql: not supported: an expression of type text for the column t.v of type INT"},
+				{"(k, n) values (#, 1) on conflict (k) do update set s = excluded.v || 'a'", nil, "s4ql: not supported: column of type INT in a concatenation (at offset 69)"},
+				{"(k, n) values (#, 1) on conflict (k) do update set s = lower(excluded.b)", nil, "s4ql: not supported: column of type BLOB in a call of lower (at offset 75)"},
+				{"(k, n) values (#, 1) on conflict (k) do update set s = hex(excluded.w) || s", nil, "s4ql: not supported: column of type REAL in a call of hex (at offset 73)"},
+				{"(k, n) values (#, 1) on conflict (k) do update set s = ? || excluded.s", []any{int64(1)}, "s4ql: not supported: argument 1 in a concatenation, which is an integer (at offset 69)"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where lower(excluded.b) = s", nil, "s4ql: not supported: column of type BLOB in a call of lower (at offset 83)"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where s = hex(?)", []any{1.5}, "s4ql: not supported: argument 1 in a call of hex, which is a real (at offset 85)"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where lower(excluded.s) = 1", nil, "s4ql: not supported: an integer literal compared with an expression of type text"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where lower(s) = ?", []any{int64(1)}, "s4ql: not supported: argument 1, which is an integer, compared with an expression of type text"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where excluded.v = s || 'a'", nil, "s4ql: not supported: an expression of type text compared with the column excluded.v of type INT"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where excluded.s || s = excluded.v + 1", nil, "s4ql: not supported: an expression of type integer compared with an expression of type text"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where hex(b) = excluded.w", nil, "s4ql: not supported: an expression of type real compared with an expression of type text"},
+				// SET before WHERE for text too.
+				{"(k, n) values (#, 1) on conflict (k) do update set v = lower(s) where excluded.s = 1", nil, "s4ql: not supported: an expression of type text for the column t.v of type INT"},
 			} {
 				src := "insert into t " + strings.Replace(c.clause, "#", key, 1)
 				is.Equal(t, c.want, i.execValues(src, values(c.args)).message, src)
-				if strings.Contains(c.want, "call of") || strings.Contains(c.want, "concatenation") {
-					is.Equal(t, c.want, fmt.Sprint(engine.Check(src, len(c.args))), src)
-				}
 			}
 		}
 		// The evaluation errors of an expression with a column, only where the row changes.
@@ -579,6 +591,196 @@ func TestEngine_upsert(t *testing.T) {
 		is.Equal(t, "", i.exec("delete from t where k = 8 and v = 0").err)
 		is.Equal(t, 1, i.changes)
 		is.Equal(t, before, i.state())
+	})
+
+	t.Run("should compute text in SET and WHERE of DO UPDATE as SQLite does, with excluded.c as a column of its type, and NULL in every position", func(t *testing.T) {
+		steps := []upsertStep{
+			// Text of both rows, in both orders.
+			{"insert into t (k, s, n) values (1, 'z', 1) on conflict (k) do update set s = s || excluded.s returning s", nil},
+			{"insert into t (k, s, n) values (2, 'z', 1) on conflict (k) do update set s = excluded.s || s || excluded.s returning s", nil},
+			// NULL of the row that the table holds, of the proposed row, and of an argument.
+			{"insert into t (k, s, n) values (3, 'z', 1) on conflict (k) do update set s = s || excluded.s returning s", nil},
+			{"insert into t (k, n) values (2, 1) on conflict (k) do update set s = excluded.s || s returning s", nil},
+			{"insert into t (k, s, n) values (2, 'a', 1) on conflict (k) do update set s = excluded.s || ? returning s", []any{nil}},
+			{"insert into t (k, n) values (1, 1) on conflict (k) do update set s = lower(excluded.s) returning s", nil},
+			{"insert into t (k, n) values (1, 1) on conflict (k) do update set s = hex(excluded.b) returning s", nil},
+			{"insert into t (k, n) values (3, 1) on conflict (k) do update set s = hex(b) || hex(excluded.s) returning s", nil},
+			// The calls, of both rows.
+			{"insert into t (k, s, b, n) values (2, 'AbC', x'00ff', 1) on conflict (k) do update set s = lower(excluded.s) || '-' || hex(excluded.b) || hex(b) returning s", nil},
+			{"insert into t (k, s, n) values (?, ?, 1) on conflict (k) do update set s = 'm_' || lower(hex(?)) returning s", []any{int64(1), "q", []byte{0xab, 0xcd}}},
+			// No conflict: the proposed row, and SET is not computed.
+			{"insert into t (k, s, n) values (?, ?, 1) on conflict (k) do update set s = 'm_' || lower(hex(?)) returning *", []any{int64(5), "q", []byte{0xab, 0xcd}}},
+			// WHERE, on either side, with NULL that compares with nothing.
+			{"insert into t (k, s, n) values (2, 'B', 1) on conflict (k) do update set v = 21 where lower(excluded.s) || '-' = s || '-' returning v", nil},
+			{"insert into t (k, s, n) values (2, 'ABC-00FF02', 1) on conflict (k) do update set v = 22 where s = lower(excluded.s) returning v", nil},
+			{"insert into t (k, s, n) values (2, 'abc', 1) on conflict (k) do update set v = 23 where excluded.s || '-00FF02' = s returning v", nil},
+			{"insert into t (k, s, n) values (2, 'abc', 1) on conflict (k) do update set v = 24 where s || excluded.s = ? returning v", []any{nil}},
+			{"insert into t (k, n) values (2, 1) on conflict (k) do update set v = 25 where lower(excluded.s) = s returning v", nil},
+			{"insert into t (k, n) values (3, 1) on conflict (k) do update set v = 26 where hex(excluded.b) = hex(b) returning v", nil},
+			{"insert into t (k, n) values (3, 1) on conflict (k) do update set v = 27 where s || excluded.s = '' returning v", nil},
+			{"insert into t (k, s, n) values (1, 'a', 1) on conflict (k) do update set v = 28 where excluded.s || 'b' > s and s = ? || '' returning v", []any{"m_abcd"}},
+			{"insert into t (k, s, n) values (1, 'z', 1) on conflict (k) do update set v = 29 where excluded.s || 'b' > s and s = ? || '' returning v", []any{"m_abcd"}},
+			// A text key, and NOT NULL of a column that a NULL of text sets.
+			{"insert into q (id, a) values ('m_1', 'b') on conflict (id) do update set a = a || excluded.id || excluded.a returning *", nil},
+			{"insert into q (id, a) values ('m_1', 'b') on conflict (id) do update set a = c || excluded.a", nil},
+			{"insert into q (id, a) values ('m_1', 'b') on conflict (id) do update set a = lower(excluded.c)", nil},
+			{"insert into q (id, a) values ('m_1', 'b') on conflict (id) do update set a = hex(excluded.c) returning *", nil},
+			{"insert into q (id, a) values ('m_2', 'b') on conflict (id) do update set a = c || excluded.a returning *", nil},
+		}
+		setUp := append(slices.Clone(upsertSetUp),
+			"create table q (id text primary key, a text not null, c text) strict, without rowid",
+			"insert into q values ('m_1', 'a', null)")
+		for _, memory := range []bool{false, true} {
+			i := newInstance(t, forward())
+			if memory {
+				i = newMemoryInstance(t)
+			}
+			got := runUpserts(t, i, newOracle(t), setUp, steps)
+			is.EqualSlice(t, []string{
+				`"az"; 1`,
+				`"zbz"; 1`,
+				"null; 1",
+				"null; 1",
+				"null; 1",
+				"null; 1",
+				`""; 1`,
+				`""; 1`,
+				`"abc-00FF02"; 1`,
+				`"m_abcd"; 1`,
+				`5,null,null,"q",null,1,7; 1`,
+				"; 0",
+				"; 0",
+				"23; 1",
+				"; 0",
+				"; 0",
+				"26; 1",
+				"; 0",
+				"; 0",
+				"29; 1",
+				`"m_1","am_1b",null; 1`,
+				"19/1299: NOT NULL constraint failed: q.a; 0",
+				"19/1299: NOT NULL constraint failed: q.a; 0",
+				`"m_1","",null; 1`,
+				`"m_2","b",null; 1`,
+			}, got)
+			if !memory {
+				want := i.state()
+				i.restart(true, forward())
+				is.Equal(t, want, i.state(), "after a replay into an empty cache")
+			}
+		}
+	})
+
+	t.Run("should give SQLite's errors of the names inside a call of DO UPDATE in SQLite's order, at SQLite's offsets, whether the key exists or not", func(t *testing.T) {
+		var steps []upsertStep
+		for _, key := range []string{"1", "9"} {
+			for _, clause := range []string{
+				// SET, each value a walk of its own, a missing column inside a call pending until the walk
+				// ends or a later one replaces it.
+				"set s = lower(zz) || yy",
+				"set s = lower(excluded.zz) || yy",
+				"set s = lower(zz) || excluded.yy",
+				"set s = lower(excluded.zz), yy = 1",
+				"set s = hex(zz) || s, v = yy",
+				"set s = hex(EXCLUDED.zz) || excluded.s",
+				"set s = lower(zz) || lower(yy)",
+				"set s = lower(lower(zz) || yy)",
+				"set s = lower(zz) where yy = 1",
+				// WHERE, one walk, after SET.
+				"set s = 'x' where hex(excluded.zz) = yy",
+				"set s = 'x' where hex(zz) = excluded.s",
+				"set s = 'x' where hex(zz) = s",
+				"set s = 'x' where lower(zz) = s and excluded.yy is null",
+				"set s = 'x' where lower(zz) = 'a' and yy is null",
+				"set s = 'x' where hex(zz) || s || excluded.xx = 'a'",
+				"set s = 'x' where lower(zz) = s and yy = 1",
+				"set s = 'x' where 'a' = lower(zz) and yy = 1",
+				"set s = 'x' where s = lower(excluded.zz) returning xx",
+				"set s = 'x' where s = lower(zz) and lower(yy) = s",
+				"set s = 'x' where lower(zz) = lower(yy)",
+				"set s = 'x' where lower(zz) = 'a' || s",
+			} {
+				steps = append(steps, upsertStep{fmt.Sprint("insert into t (k, n) values (", key, ", 1) on conflict (k) do update ", clause), nil})
+			}
+		}
+		got := runUpserts(t, newInstance(t, forward()), newOracle(t), upsertSetUp, steps)
+		var want []string
+		for range 2 {
+			for _, name := range []string{
+				"yy", "yy", "excluded.yy", "excluded.zz", "zz", "EXCLUDED.zz", "yy", "yy", "zz",
+				"yy", "zz", "zz", "excluded.yy", "zz", "excluded.xx", "zz", "zz", "excluded.zz", "zz", "yy", "zz",
+			} {
+				want = append(want, "1/1: no such column: "+name+"; 1")
+			}
+		}
+		is.EqualSlice(t, want, got)
+	})
+
+	t.Run("should fail as SQLite does for a text longer than the length limit in DO UPDATE, at the start of the statement or on the row of the conflict", func(t *testing.T) {
+		const limit = 1000
+		x, y, long := strings.Repeat("x", 600), strings.Repeat("y", 600), strings.Repeat("z", limit+1)
+		const tooBig, none, one = "18/18: string or blob too big; 0", "; 0", "; 1"
+		// Each clause runs with a conflict, on the key '1', and without one, on the key '9', and then a
+		// delete of the key '9': conflict and inserted are the answers of the upsert. An argument that is
+		// too long fails when SQLite binds it, which leaves the count of changes of the delete before.
+		cases := []struct {
+			clause             string
+			args               []any
+			conflict, inserted string
+		}{
+			// SQLite computes these at the start of the statement, also where the table has no row of the
+			// key: a concatenation without a column and without a call inside text with a column, and a
+			// side of a comparison without a column and without a call.
+			{"set a = ? || ? || a", []any{x, y}, tooBig, tooBig},
+			{"set a = a || (? || ?)", []any{x, y}, tooBig, tooBig},
+			{"set a = excluded.a || (? || ?)", []any{x, y}, tooBig, tooBig},
+			{"set a = 'q' where a = ? || ?", []any{x, y}, tooBig, tooBig},
+			{"set a = 'q' where ? || ? || a = 'x'", []any{x, y}, tooBig, tooBig},
+			{"set a = 'q' where excluded.a = ? || ?", []any{x, y}, tooBig, tooBig},
+			// These on the row of the conflict only, and in the order of WHERE: a value of SET without a
+			// column, a side with a call, also of the key and of a column of an index, which serve no
+			// access in DO UPDATE, and text with a column.
+			{"set a = ? || ?", []any{x, y}, tooBig, one},
+			{"set a = lower(? || ?)", []any{x, y}, tooBig, one},
+			{"set a = 'q' where a = lower(? || ?)", []any{x, y}, tooBig, one},
+			{"set a = 'q' where b = lower(? || ?)", []any{x, y}, tooBig, one},
+			{"set a = 'q' where id = lower(? || ?)", []any{x, y}, tooBig, one},
+			{"set a = 'q' where lower(? || ?) || a = 'x'", []any{x, y}, tooBig, one},
+			{"set a = 'q' where a = 'q' and b = lower(? || ?)", []any{x, y}, none, one},
+			{"set a = 'q' where b = lower(? || ?) and a = 'q'", []any{x, y}, tooBig, one},
+			{"set a = excluded.b || excluded.b || excluded.b", nil, tooBig, one},
+			{"set a = 'q' where excluded.b || excluded.b || excluded.b = 'x'", nil, tooBig, one},
+			{"set a = 'q' where a = 'q' and excluded.b || excluded.b || excluded.b = 'x'", nil, none, one},
+			// Under the limit, and an argument longer than the limit.
+			{"set a = excluded.b || ? returning id", []any{strings.Repeat("v", 500)}, `"1"` + one, `"9"` + one},
+			{"set a = ? || a", []any{long}, "18/18: string or blob too big; 0", "18/18: string or blob too big; 1"},
+			{"set a = 'q' where a = lower(?)", []any{long}, "18/18: string or blob too big; 0", "18/18: string or blob too big; 0"},
+		}
+		var steps []upsertStep
+		var want []string
+		for _, key := range []string{"1", "9"} {
+			for _, c := range cases {
+				src := "insert into q (id, a, b) values ('" + key + "', 'p', '" + strings.Repeat("w", 400) + "') on conflict (id) do update " + c.clause
+				steps = append(steps, upsertStep{src, c.args}, upsertStep{"delete from q where id = '9'", nil})
+				if key == "1" {
+					want = append(want, c.conflict, none)
+				} else if strings.HasPrefix(c.inserted, "18/") {
+					want = append(want, c.inserted, none)
+				} else {
+					want = append(want, c.inserted, one)
+				}
+			}
+		}
+		steps = append(steps,
+			upsertStep{"begin read only", nil},
+			upsertStep{"insert into q (id, a) values ('1', 'p') on conflict (id) do update set a = ? || ? || a", []any{x, y}},
+			upsertStep{"insert into q (id, a) values ('1', 'p') on conflict (id) do update set a = 'q' where a = ? || ?", []any{x, y}},
+			upsertStep{"rollback", nil},
+		)
+		want = append(want, "8/8: attempt to write a readonly database; 0", "8/8: attempt to write a readonly database; 0")
+		got := runUpserts(t, newInstanceLimited(t, forward(), nil, limit), newOracleLimited(t, limit),
+			[]string{"create table q (id text primary key, a text, b text) strict, without rowid", "create index q_b on q (b)", "insert into q values ('1', 'x', 'y')"}, steps)
+		is.EqualSlice(t, want, got)
 	})
 
 	t.Run("should plan an upsert with its clause, and print it", func(t *testing.T) {

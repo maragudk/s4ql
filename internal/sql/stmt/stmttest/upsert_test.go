@@ -39,7 +39,25 @@ func TestUpsertRefusals(t *testing.T) {
 				"s4ql: not supported: the column excluded.w of type REAL compared with the column t.v of type INT",
 			}},
 			{"insert into t (k) values (1) on conflict (k) do update set v = excluded.s", nil, true, nil},
-			{"insert into t (k) values (1) on conflict (k) do update set s = lower(excluded.s)", nil, true, []string{"s4ql: not supported: call of lower (at offset 63)"}},
+			// Text, with excluded.c as a column of its type, as in an update.
+			{"insert into t (k, s) values (1, 'a') on conflict (k) do update set s = s || lower(excluded.s) where hex(excluded.s) = s || 'b'", nil, false, nil},
+			{"insert into t (k) values (1) on conflict (k) do update set s = lower(?) || excluded.s where ? = lower(s)", []any{nil, nil}, false, nil},
+			{"insert into t (k) values (1) on conflict (k) do update set v = lower(excluded.s), s = excluded.v || 'a'", nil, false, []string{
+				"s4ql: not supported: an expression of type text for the column t.v of type INT",
+				"s4ql: not supported: column of type INT in a concatenation (at offset 86)",
+			}},
+			{"insert into t (k) values (1) on conflict (k) do update set s = hex(excluded.w) || ?", []any{int64(1)}, false, []string{
+				"s4ql: not supported: column of type REAL in a call of hex (at offset 67)",
+				"s4ql: not supported: argument 1 in a concatenation, which is an integer (at offset 82)",
+			}},
+			{"insert into t (k) values (1) on conflict (k) do update set s = 'a' where lower(excluded.s) = 1 and excluded.v = s || 'a'", nil, false, []string{
+				"s4ql: not supported: an integer literal compared with an expression of type text",
+				"s4ql: not supported: an expression of type text compared with the column excluded.v of type INT",
+			}},
+			{"insert into t (k) values (1) on conflict (k) do update set s = 'a' where excluded.s || 'a' = excluded.v + 1", nil, false, []string{
+				"s4ql: not supported: an expression of type integer compared with an expression of type text",
+			}},
+			{"insert into t (k) values (1) on conflict (k) do update set s = lower(excluded.v)", nil, true, nil},
 		} {
 			s, err := stmt.Check(c.src)
 			is.NotError(t, err, c.src)

@@ -4621,9 +4621,19 @@ func TestUpsert(t *testing.T) {
 		is.NotError(t, p.Close())
 
 		// Several statements in one Exec, which counts the changes of the last.
-		_, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('a', '1') on conflict (key) do nothing; "+
+		res, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('a', '1') on conflict (key) do nothing; "+
 			"insert into settings (key, value) values ('a', '2') on conflict (key) do update set value = excluded.value || value")
-		is.Error(t, s4ql.ErrNotSupported, err)
+		is.Equal(t, int64(1), affected(t, res, err))
+		is.Equal(t, "value TEXT: 21", rowsText(t, db, "select value from settings where key = 'a'"))
+
+		// Text in DO UPDATE, prepared, with an argument.
+		p, err = db.PrepareContext(t.Context(), "insert into settings (key, value) values (?, 'x') on conflict (key) do update set value = 'm_' || lower(hex(?)) where lower(value) != 'm_ab' returning value")
+		is.NotError(t, err)
+		is.NotError(t, p.QueryRowContext(t.Context(), "a", []byte{0xab}).Scan(&value))
+		is.Equal(t, "m_ab", value)
+		is.Equal(t, sql.ErrNoRows, p.QueryRowContext(t.Context(), "a", []byte{0xab}).Scan(&value))
+		is.NotError(t, p.Close())
+
 		res, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('a', '1') on conflict (key) do nothing; "+
 			"insert into settings (key, value) values ('a', '2') on conflict (key) do update set value = excluded.value")
 		is.Equal(t, int64(1), affected(t, res, err))
@@ -4647,6 +4657,8 @@ func TestUpsert(t *testing.T) {
 		is.Equal(t, "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint", fmt.Sprint(err))
 		_, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('theme', 'x') on conflict (key) do update set version = excluded.value")
 		is.Error(t, s4ql.ErrNotSupported, err)
+		_, err = db.ExecContext(t.Context(), "insert into settings (key, value) values ('theme', 'x') on conflict (key) do update set value = excluded.version || value")
+		is.Equal(t, "s4ql: not supported: column of type INT in a concatenation (at offset 96)", fmt.Sprint(err))
 		is.Equal(t, "key TEXT, value TEXT, version INT: theme dark 1", rowsText(t, db, "select * from settings"))
 	})
 }
