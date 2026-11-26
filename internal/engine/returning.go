@@ -104,6 +104,8 @@ func returnsOf(s sink) *returning {
 	switch s := s.(type) {
 	case *insert:
 		return s.ret
+	case *upsert:
+		return s.ret
 	case *update:
 		return s.ret
 	case *remove:
@@ -118,6 +120,8 @@ func returnsOf(s sink) *returning {
 func dropReturns(s sink) {
 	switch s := s.(type) {
 	case *insert:
+		s.ret = nil
+	case *upsert:
 		s.ret = nil
 	case *update:
 		s.ret = nil
