@@ -1229,13 +1229,13 @@ func (r *recognizer) parenthesized(p *ast.Paren, deep string) (Expression, int) 
 }
 
 // isZero reports whether the expression e is the literal 0 or 0.0, with or without a sign, also one
-// that SQLite reads as 0.0, as `1e-400`.
+// that SQLite reads as 0.0, as `1e-400`. Only a literal has a Value.
 func isZero(e Expression) bool {
 	switch v := e.Value.(type) {
 	case Integer:
-		return e.Kind == ExprValue && v == 0
+		return v == 0
 	case Real:
-		return e.Kind == ExprValue && v == 0
+		return v == 0
 	}
 	return false
 }
