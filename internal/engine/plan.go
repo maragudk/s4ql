@@ -628,8 +628,8 @@ func formatExpr(e Expr) string {
 }
 
 // formatArithmetic of the expression e: a literal as [formatExpr] prints it, a parameter by its
-// number, a column as the statement writes it, a negation with a - before its operand, and every
-// binary operator in parentheses, so that the text shows the tree.
+// number, a column as the statement writes it, a negation with a - before its operand, a call with
+// its argument, and every binary operator in parentheses, so that the text shows the tree.
 func formatArithmetic(e stmt.Expression) string {
 	switch e.Kind {
 	case stmt.ExprValue:
@@ -640,8 +640,10 @@ func formatArithmetic(e stmt.Expression) string {
 		return e.Column.Raw
 	case stmt.ExprNegate:
 		return "-" + formatArithmetic(e.Operands[0])
-	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
+	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprConcat:
 		return fmt.Sprint("(", formatArithmetic(e.Operands[0]), " ", e.Kind, " ", formatArithmetic(e.Operands[1]), ")")
+	case stmt.ExprCall:
+		return fmt.Sprint(e.Function, "(", formatArithmetic(e.Operands[0]), ")")
 	}
 	panic(fmt.Sprintf("engine: an expression of kind %v", int(e.Kind)))
 }

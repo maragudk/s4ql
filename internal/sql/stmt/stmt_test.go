@@ -445,22 +445,27 @@ func canonicalExpression(e stmt.Expression) string {
 		return quote(e.Column.Value)
 	case stmt.ExprNegate:
 		return "-" + group(e.Operands[0], false)
+	case stmt.ExprCall:
+		return e.Function.String() + "(" + canonicalExpression(e.Operands[0]) + ")"
 	}
 	return group(e.Operands[0], true) + " " + e.Kind.String() + " " + group(e.Operands[1], false)
 }
 
 // precedence of the operator of the kind k, higher for one that binds more tightly: a negation more
-// tightly than * and /, and those more tightly than + and -.
+// tightly than ||, that more tightly than * and /, and those more tightly than + and -. A leaf and a
+// call bind most tightly.
 func precedence(k stmt.ExpressionKind) int {
 	switch k {
 	case stmt.ExprNegate:
+		return 4
+	case stmt.ExprConcat:
 		return 3
 	case stmt.ExprMultiply, stmt.ExprDivide:
 		return 2
 	case stmt.ExprAdd, stmt.ExprSubtract:
 		return 1
 	}
-	return 4
+	return 5
 }
 
 // parenthesized expression e, with every name in double quotes and every operator in parentheses of
@@ -472,6 +477,8 @@ func parenthesized(e stmt.Expression) string {
 		return canonicalExpression(e)
 	case stmt.ExprNegate:
 		return "(-" + parenthesized(e.Operands[0]) + ")"
+	case stmt.ExprCall:
+		return e.Function.String() + "(" + parenthesized(e.Operands[0]) + ")"
 	}
 	return "(" + parenthesized(e.Operands[0]) + " " + e.Kind.String() + " " + parenthesized(e.Operands[1]) + ")"
 }
@@ -2704,9 +2711,13 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 	var names []stmt.Name
 	switch e.Kind {
 	case stmt.ExprValue:
-		_, integer := e.Value.(stmt.Integer)
-		_, real := e.Value.(stmt.Real)
-		if !integer && !real || e.Operands != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) {
+		// The place of the literal decides its types, which the parent checks.
+		switch e.Value.(type) {
+		case stmt.Integer, stmt.Real, stmt.Text, stmt.Blob:
+		default:
+			t.Fatalf("%q: the literal %+v", src, e)
+		}
+		if e.Operands != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) || e.Function != 0 {
 			t.Fatalf("%q: the literal %+v", src, e)
 		}
 	case stmt.ExprParameter:
@@ -2720,8 +2731,10 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 		}
 		names = append(names, e.Column)
 	case stmt.ExprNegate:
-		if len(e.Operands) != 1 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) ||
-			e.Operands[0].Kind == stmt.ExprValue || e.Operands[0].Kind == stmt.ExprNegate {
+		// A second sign is refused, but a negation in parentheses is an operator, as in `-(-v)`.
+		if len(e.Operands) != 1 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) || e.Function != 0 ||
+			e.Operands[0].Kind == stmt.ExprValue ||
+			e.Operands[0].Kind == stmt.ExprNegate && !slices.ContainsFunc(token.Tokens(src[sp.Start:e.Operands[0].Span.Start]), func(tk token.Token) bool { return tk.Kind == token.LP }) {
 			t.Fatalf("%q: the negation %+v", src, e)
 		}
 		x := e.Operands[0]
@@ -2730,8 +2743,28 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 		}
 		*end = sp.Start
 		names = checkExpression(t, src, sp, end, parameters, x)
-	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
-		if len(e.Operands) != 2 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) {
+		checkPlace(t, src, e.Kind, 0, x)
+	case stmt.ExprCall:
+		if len(e.Operands) != 1 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) || e.Function.String() == "" {
+			t.Fatalf("%q: the call %+v", src, e)
+		}
+		x := e.Operands[0]
+		var name string
+		for _, tk := range token.Tokens(src[sp.Start:x.Span.Start]) {
+			if tk.Kind != token.Space && tk.Kind != token.Comment {
+				name = tk.Text(src[sp.Start:x.Span.Start])
+				break
+			}
+		}
+		if !strings.EqualFold(strings.Trim(name, `"`), e.Function.String()) || src[sp.Start:sp.Start+len(name)] != name ||
+			!oneToken(src[sp.Start+len(name):x.Span.Start], token.LP) || !oneToken(src[x.Span.End:sp.End], token.RP) {
+			t.Fatalf("%q: the call of %v at %v of the argument at %v", src, e.Function, sp, x.Span)
+		}
+		*end = sp.Start
+		names = checkExpression(t, src, sp, end, parameters, x)
+		checkPlace(t, src, e.Kind, e.Function, x)
+	case stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprConcat:
+		if len(e.Operands) != 2 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) || e.Function != 0 {
 			t.Fatalf("%q: the operator %+v", src, e)
 		}
 		x, y := e.Operands[0], e.Operands[1]
@@ -2742,6 +2775,8 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 		*end = sp.Start
 		names = checkExpression(t, src, sp, end, parameters, x)
 		names = append(names, checkExpression(t, src, sp, end, parameters, y)...)
+		checkPlace(t, src, e.Kind, 0, x)
+		checkPlace(t, src, e.Kind, 0, y)
 		if e.Kind == stmt.ExprDivide && y.Kind == stmt.ExprValue && compareValues(y.Value, stmt.Integer(0)) == 0 {
 			t.Fatalf("%q: a division by zero", src)
 		}
@@ -2750,6 +2785,55 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 	}
 	*end = sp.End
 	return names
+}
+
+// oneToken reports whether text holds the one token of the kind k, and spaces and comments.
+func oneToken(text string, k token.Kind) bool {
+	n := 0
+	for _, tk := range token.Tokens(text) {
+		switch tk.Kind {
+		case token.Space, token.Comment:
+		case k:
+			n++
+		default:
+			return false
+		}
+	}
+	return n == 1
+}
+
+// checkPlace of the operand x of a node of the kind k, of the function f for a call: arithmetic and
+// text never meet. An operand of arithmetic is no concatenation and no call, and its literal is a
+// number; an operand of || and the argument of a function are no arithmetic, and their literal is a
+// string, or a blob for hex.
+func checkPlace(t testing.TB, src string, k stmt.ExpressionKind, f stmt.Function, x stmt.Expression) {
+	t.Helper()
+	text := k == stmt.ExprConcat || k == stmt.ExprCall
+	switch x.Kind {
+	case stmt.ExprConcat, stmt.ExprCall:
+		if !text {
+			t.Fatalf("%q: the operand %v of %v", src, x.Kind, k)
+		}
+	case stmt.ExprNegate, stmt.ExprAdd, stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide:
+		if text {
+			t.Fatalf("%q: the operand %v of %v", src, x.Kind, k)
+		}
+	case stmt.ExprValue:
+		switch x.Value.(type) {
+		case stmt.Integer, stmt.Real:
+			if text {
+				t.Fatalf("%q: the number %v as an operand of %v", src, x.Value, k)
+			}
+		case stmt.Text:
+			if !text {
+				t.Fatalf("%q: the text %v as an operand of %v", src, x.Value, k)
+			}
+		case stmt.Blob:
+			if f != stmt.FuncHex {
+				t.Fatalf("%q: the blob %v as an operand of %v %v", src, x.Value, k, f)
+			}
+		}
+	}
 }
 
 // operatorsOnly reports whether text, between two operands or around one, holds only parentheses,
@@ -3020,11 +3104,21 @@ func TestExpressionKind_String(t *testing.T) {
 	t.Run("should give each kind as SQL writes its operator, or its name, and nothing for no kind", func(t *testing.T) {
 		var got []string
 		for _, k := range []stmt.ExpressionKind{0, stmt.ExprValue, stmt.ExprParameter, stmt.ExprColumn, stmt.ExprNegate, stmt.ExprAdd,
-			stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprDivide + 1} {
+			stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprConcat, stmt.ExprCall, stmt.ExprCall + 1} {
 			got = append(got, k.String())
 		}
-		is.Equal(t, fmt.Sprint([]string{"", "value", "parameter", "column", "-", "+", "-", "*", "/", ""}), fmt.Sprint(got))
+		is.Equal(t, fmt.Sprint([]string{"", "value", "parameter", "column", "-", "+", "-", "*", "/", "||", "call", ""}), fmt.Sprint(got))
 		is.True(t, !stmt.Expression{}.Present())
+	})
+}
+
+func TestFunction_String(t *testing.T) {
+	t.Run("should give each function by its name, and nothing for no function", func(t *testing.T) {
+		var got []string
+		for f := stmt.Function(0); f <= stmt.FuncHex+1; f++ {
+			got = append(got, f.String())
+		}
+		is.Equal(t, fmt.Sprint([]string{"", "lower", "hex", ""}), fmt.Sprint(got))
 	})
 }
 

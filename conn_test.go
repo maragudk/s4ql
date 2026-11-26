@@ -2909,6 +2909,18 @@ func TestArithmetic(t *testing.T) {
 		is.NotError(t, other.QueryRowContext(t.Context(), "select r from t").Scan(&r))
 		is.True(t, r == 0 && !math.Signbit(r))
 	})
+
+	t.Run("should refuse text in expressions with ErrNotSupported, also when it is prepared, whatever the database holds", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table)
+		_, err := db.PrepareContext(t.Context(), "update goqite set id = 'm_' || lower(hex(body)) where queue = ?")
+		is.Equal(t, "concatenation (at offset 23)", typeRefused(t, err))
+		_, err = db.ExecContext(t.Context(), "delete from goqite where lower(queue) = ?", "default")
+		is.Equal(t, "call of lower (at offset 25)", typeRefused(t, err))
+		_, err = db.ExecContext(t.Context(), "delete from nosuch where lower(queue) = ?", "default")
+		is.Equal(t, "call of lower (at offset 25)", typeRefused(t, err))
+	})
 }
 
 // committedReals of the last commit object of the log of w: each real of each row that it upserts, as

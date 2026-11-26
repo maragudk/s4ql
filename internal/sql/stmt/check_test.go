@@ -1063,15 +1063,15 @@ var checkCases = []checkCase{
 	{name: "or after and", src: "select * from t where v = 1 and w = 2 or x = 3", err: "s4ql: not supported: OR (at offset 38)"},
 	{name: "or before and", src: "select * from t where v = 1 or w = 2 and x = 3", err: "s4ql: not supported: OR (at offset 28)"},
 	{name: "or twice", src: "select * from t where v = 1 or w = 2 or x = 3", err: "s4ql: not supported: OR (at offset 28)"},
-	{name: "a function before or", src: "select * from t where lower(v) = 'a' or w = 2", err: "s4ql: not supported: function call (at offset 22)"},
-	{name: "a function after and before or", src: "select * from t where v = 1 and lower(v) = 'a' or w = 2", err: "s4ql: not supported: function call (at offset 32)"},
+	{name: "a function before or", src: "select * from t where upper(v) = 'a' or w = 2", err: "s4ql: not supported: function other than lower or hex (at offset 22)"},
+	{name: "a function after and before or", src: "select * from t where v = 1 and upper(v) = 'a' or w = 2", err: "s4ql: not supported: function other than lower or hex (at offset 32)"},
 	{name: "not", src: "select * from t where not v = 1", err: "s4ql: not supported: NOT operator (at offset 22)"},
 	{name: "not after and", src: "select * from t where v = 1 and not w = 2", err: "s4ql: not supported: NOT operator (at offset 32)"},
 	{name: "a condition in parentheses", src: "select * from t where (v = 1)", err: "s4ql: not supported: parentheses (at offset 22)"},
 	{name: "a value in parentheses", src: "select * from t where v = (1)", err: "s4ql: not supported: parentheses (at offset 26)"},
 	{name: "a second condition in parentheses", src: "select * from t where v = 1 and (w = 2)", err: "s4ql: not supported: parentheses (at offset 32)"},
-	{name: "a function on the left", src: "select * from t where lower(v) = 'a'", err: "s4ql: not supported: function call (at offset 22)"},
-	{name: "a function on the right", src: "select * from t where v = abs(1)", err: "s4ql: not supported: function call (at offset 26)"},
+	{name: "a function on the left", src: "select * from t where upper(v) = 'a'", err: "s4ql: not supported: function other than lower or hex (at offset 22)"},
+	{name: "a function on the right", src: "select * from t where v = abs(1)", err: "s4ql: not supported: function other than lower or hex (at offset 26)"},
 	{name: "in", src: "select * from t where v in (1, 2)", err: "s4ql: not supported: IN (at offset 22)"},
 	{name: "not in", src: "select * from t where v not in (1)", err: "s4ql: not supported: IN (at offset 22)"},
 	{name: "between", src: "select * from t where v between 1 and 2", err: "s4ql: not supported: BETWEEN (at offset 22)"},
@@ -1218,7 +1218,7 @@ var checkCases = []checkCase{
 	{name: "a column twice in set, in another case", src: "update t set v = 1, w = 2, V = 3", err: "s4ql: not supported: column named twice (at offset 27)"},
 	{name: "a column twice in set, once in double quotes", src: `update t set "v" = 1, v = 2`, err: "s4ql: not supported: column named twice (at offset 22)"},
 	{name: "a value in parentheses in set", src: "update t set v = (1)", err: "s4ql: not supported: parentheses (at offset 17)"},
-	{name: "a function in set", src: "update t set v = abs(1)", err: "s4ql: not supported: function call (at offset 17)"},
+	{name: "a function in set", src: "update t set v = abs(1)", err: "s4ql: not supported: function other than lower or hex (at offset 17)"},
 	{name: "a subquery in set", src: "update t set v = (select 1)", err: "s4ql: not supported: subquery (at offset 17)"},
 	{name: "a plus sign in set", src: "update t set v = +1", err: "s4ql: not supported: + sign (at offset 17)"},
 	{name: "a numbered parameter in set", src: "update t set v = ?1", err: "s4ql: not supported: numbered parameter (at offset 17)"},
@@ -1581,7 +1581,7 @@ var checkCases = []checkCase{
 	{name: "a column in brackets on the right of a value", src: "select * from t where 5 < [v]", err: "s4ql: not supported: name in brackets (at offset 26)"},
 	{name: "a column in backticks on the right of a value", src: "select * from t where 5 < `v`", err: "s4ql: not supported: name in backticks (at offset 26)"},
 	{name: "an empty name on the right of a value", src: `select * from t where 5 < ""`, err: "s4ql: not supported: empty name (at offset 26)"},
-	{name: "a function on the right of a value", src: "select * from t where 5 < abs(v)", err: "s4ql: not supported: function call (at offset 26)"},
+	{name: "a function on the right of a value", src: "select * from t where 5 < abs(v)", err: "s4ql: not supported: function other than lower or hex (at offset 26)"},
 	{name: "two comparisons in a row", src: "select * from t where 5 < v < 10", err: "s4ql: not supported: binary operator (at offset 22)"},
 	{name: "a collation on a value on the left", src: "select * from t where 'a' collate nocase < v", err: "s4ql: not supported: COLLATE (at offset 22)"},
 	{name: "a collation on a column on the right", src: "select * from t where 'a' < v collate nocase", err: "s4ql: not supported: COLLATE (at offset 28)"},
@@ -2048,7 +2048,6 @@ var checkCases = []checkCase{
 	// Arithmetic that is not supported.
 	{name: "the remainder", src: "update t set v = v % 2", err: "s4ql: not supported: binary operator (at offset 17)"},
 	{name: "the remainder as an operand", src: "update t set v = v + 1 % 2", err: "s4ql: not supported: binary operator (at offset 21)"},
-	{name: "a concatenation", src: "update t set v = v || 'a'", err: "s4ql: not supported: binary operator (at offset 17)"},
 	{name: "a bitwise and", src: "update t set v = v & 1", err: "s4ql: not supported: binary operator (at offset 17)"},
 	{name: "a comparison inside a comparison", src: "select * from t where v = 1 + 2 = 3", err: "s4ql: not supported: binary operator (at offset 22)"},
 	{name: "a string in arithmetic", src: "update t set v = v + 'a'", err: "s4ql: not supported: string in arithmetic (at offset 21)"},
@@ -2097,10 +2096,7 @@ var checkCases = []checkCase{
 	{name: "a column in parentheses compared with a column", src: "select * from t where v = (w)", err: "s4ql: not supported: parentheses (at offset 26)"},
 	{name: "a subquery in arithmetic", src: "update t set v = v + (select k from u)", err: "s4ql: not supported: subquery (at offset 21)"},
 	{name: "a subquery in arithmetic in where", src: "select * from t where v = (select k from u) + 1", err: "s4ql: not supported: subquery (at offset 26)"},
-	{name: "a function in arithmetic", src: "update t set v = v + abs(v)", err: "s4ql: not supported: function call (at offset 21)"},
-	{name: "a function in set", src: "update t set v = abs(v)", err: "s4ql: not supported: function call (at offset 17)"},
 	// What a negation holds is named for itself.
-	{name: "a negated function in arithmetic", src: "update t set v = 1 + -abs(v)", err: "s4ql: not supported: function call (at offset 22)"},
 	{name: "a negated cast in set", src: "update t set v = -cast(v as int)", err: "s4ql: not supported: CAST (at offset 18)"},
 	{name: "an operator that is not arithmetic in negated parentheses", src: "select * from t where v = -(v % 2)", err: "s4ql: not supported: binary operator (at offset 28)"},
 	{name: "a cast in set", src: "update t set v = cast(v as int)", err: "s4ql: not supported: CAST (at offset 17)"},
@@ -2120,6 +2116,112 @@ var checkCases = []checkCase{
 	{name: "an expression in a default", src: "create table t (k int primary key default (1 + 1)) strict, without rowid", err: "s4ql: not supported: DEFAULT of an expression (at offset 42)"},
 	{name: "an operator without a right operand", src: "update t set v = v +", err: "incomplete input"},
 	{name: "two operators", src: "update t set v = v * * 2", err: `near "*": syntax error`},
+
+	// Text in expressions: || on text, and lower and hex, in SET and on either side of a comparison of
+	// WHERE.
+	{name: "the id of goqite's queue", src: "update t set v = 'm_' || lower(hex(w))", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 38}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprConcat, 17, 38, ev(stmt.Text("m_"), 17, 21), ecall(stmt.FuncLower, 25, 38, ecall(stmt.FuncHex, 31, 37, ec("w", 35)))), 17, 38))}}},
+	{name: "a call compared with a parameter", src: "select * from t where lower(v) = ?", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 34}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condExpr(ecall(stmt.FuncLower, 22, 30, ec("v", 28)), stmt.OpEqual, param(1, 33), false)}}},
+	{name: "concatenations, which group to the left", src: "select * from t where v = 'a' || 'b' || ?", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 41}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("v", "v", 22), stmt.OpEqual, ex(eop(stmt.ExprConcat, 26, 41, eop(stmt.ExprConcat, 26, 36, ev(stmt.Text("a"), 26, 29), ev(stmt.Text("b"), 33, 36)), ep(1, 40)), 26, 41))}}},
+	{name: "hex in a delete", src: "delete from t where hex(v) > 'A'", want: &stmt.Delete{Span: stmt.Span{Start: 0, End: 32}, Table: name("t", "t", 12),
+		Where: []stmt.Condition{condExpr(ecall(stmt.FuncHex, 20, 26, ec("v", 24)), stmt.OpGreater, lit(stmt.Text("A"), 29, 32), false)}}},
+	{name: "hex of a blob", src: "update t set v = hex(x'00ff')", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 29}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(ecall(stmt.FuncHex, 17, 29, ev(stmt.Blob{0, 0xff}, 21, 28)), 17, 29))}}},
+	{name: "a concatenation in parentheses on the right", src: "update t set v = 'a' || (w || 'b')", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 34}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprConcat, 17, 34, ev(stmt.Text("a"), 17, 20), eop(stmt.ExprConcat, 25, 33, ec("w", 25), ev(stmt.Text("b"), 30, 33))), 17, 34))}}},
+	{name: "a name of a function in upper case and one in double quotes", src: `update t set v = LOWER("w") || "hex"(w)`, want: &stmt.Update{Span: stmt.Span{Start: 0, End: 39}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprConcat, 17, 39,
+			ecall(stmt.FuncLower, 17, 27, stmt.Expression{Kind: stmt.ExprColumn, Column: name(`"w"`, "w", 23), Span: stmt.Span{Start: 23, End: 26}}), ecall(stmt.FuncHex, 31, 39, ec("w", 37))), 17, 39))}}},
+	{name: "a call on both sides", src: "select * from t where lower(v) = lower(w)", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 41}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condExpr(ecall(stmt.FuncLower, 22, 30, ec("v", 28)), stmt.OpEqual, ex(ecall(stmt.FuncLower, 33, 41, ec("w", 39)), 33, 41), false)}}},
+	{name: "a concatenation on the left of a column", src: "select * from t where 'x' || v < w", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 34}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{condFirst(name("w", "w", 33), stmt.OpGreater, ex(eop(stmt.ExprConcat, 22, 30, ev(stmt.Text("x"), 22, 25), ec("v", 29)), 22, 30))}}},
+	{name: "the parameters of text in the order of the text", src: "update t set v = ? || w where hex(?) = k", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 40}, Table: name("t", "t", 7),
+		Set:   []stmt.Assignment{set(name("v", "v", 13), ex(eop(stmt.ExprConcat, 17, 23, ep(1, 17), ec("w", 22)), 17, 23))},
+		Where: []stmt.Condition{condFirst(name("k", "k", 39), stmt.OpEqual, ex(ecall(stmt.FuncHex, 30, 36, ep(2, 34)), 30, 36))}}},
+	{name: "a call with a comment and spaces", src: "update t set v = lower /* c */ ( w )", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 36}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{set(name("v", "v", 13), ex(ecall(stmt.FuncLower, 17, 36, ec("w", 33)), 17, 36))}}},
+	{name: "a call in the where of a subquery", src: "select * from t where k = (select k from u where lower(x) = 'a')", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 64}, Table: name("t", "t", 14),
+		Where: []stmt.Condition{cond(name("k", "k", 22), stmt.OpEqual, sub(1, 26, 64))},
+		Subqueries: []stmt.Select{{Span: stmt.Span{Start: 27, End: 63}, Table: name("u", "u", 41), Columns: []stmt.Name{name("k", "k", 34)},
+			Where: []stmt.Condition{condExpr(ecall(stmt.FuncLower, 49, 57, ec("x", 55)), stmt.OpEqual, lit(stmt.Text("a"), 60, 63), false)}}}}},
+
+	{name: "a call compared with a subquery", src: "select * from t where lower(v) = (select x from u)", want: &stmt.Select{Span: stmt.Span{Start: 0, End: 50}, Table: name("t", "t", 14),
+		Where:      []stmt.Condition{condExpr(ecall(stmt.FuncLower, 22, 30, ec("v", 28)), stmt.OpEqual, sub(1, 33, 50), false)},
+		Subqueries: []stmt.Select{{Span: stmt.Span{Start: 34, End: 49}, Table: name("u", "u", 48), Columns: []stmt.Name{name("x", "x", 41)}}}}},
+
+	// Text that is not supported.
+	{name: "a function other than lower or hex in set", src: "update t set v = abs(w)", err: "s4ql: not supported: function other than lower or hex (at offset 17)"},
+	{name: "upper", src: "update t set v = upper(w)", err: "s4ql: not supported: function other than lower or hex (at offset 17)"},
+	{name: "a function other than lower or hex in arithmetic", src: "update t set v = w + abs(w)", err: "s4ql: not supported: function other than lower or hex (at offset 21)"},
+	{name: "a negated function other than lower or hex", src: "update t set v = 1 + -abs(v)", err: "s4ql: not supported: function other than lower or hex (at offset 22)"},
+	{name: "a function other than lower or hex in a concatenation", src: "update t set v = w || upper(w)", err: "s4ql: not supported: function other than lower or hex (at offset 22)"},
+	{name: "a function other than lower or hex in where", src: "select * from t where length(v) = 1", err: "s4ql: not supported: function other than lower or hex (at offset 22)"},
+	{name: "lower without an argument", src: "update t set v = lower()", err: "s4ql: not supported: wrong number of arguments (at offset 23)"},
+	{name: "hex without an argument", src: "update t set v = hex( )", err: "s4ql: not supported: wrong number of arguments (at offset 22)"},
+	{name: "lower with two arguments", src: "update t set v = lower(w, w)", err: "s4ql: not supported: wrong number of arguments (at offset 24)"},
+	{name: "hex with three arguments", src: "select * from t where v = hex(w, 1, 2)", err: "s4ql: not supported: wrong number of arguments (at offset 31)"},
+	{name: "hex of *", src: "update t set v = hex(*)", err: "s4ql: not supported: * as an argument (at offset 21)"},
+	{name: "lower with DISTINCT", src: "update t set v = lower(distinct w)", err: "s4ql: not supported: DISTINCT or ALL (at offset 23)"},
+	{name: "hex with ALL", src: "update t set v = hex(all w)", err: "s4ql: not supported: DISTINCT or ALL (at offset 21)"},
+	{name: "lower with ORDER BY", src: "update t set v = lower(w order by w)", err: "s4ql: not supported: ORDER BY clause (at offset 25)"},
+	{name: "lower with FILTER", src: "update t set v = lower(w) filter (where 1)", err: "s4ql: not supported: FILTER clause (at offset 26)"},
+	{name: "hex with OVER", src: "update t set v = hex(w) over ()", err: "s4ql: not supported: OVER clause (at offset 24)"},
+	{name: "lower in brackets", src: "update t set v = [lower](w)", err: "s4ql: not supported: name in brackets (at offset 17)"},
+	{name: "hex in backticks", src: "update t set v = `hex`(w)", err: "s4ql: not supported: name in backticks (at offset 17)"},
+	{name: "two numbers in a concatenation", src: "update t set v = 1 || 2", err: "s4ql: not supported: number in a concatenation (at offset 17)"},
+	{name: "an integer in a concatenation", src: "update t set v = w || 1", err: "s4ql: not supported: number in a concatenation (at offset 22)"},
+	{name: "a negative integer in a concatenation", src: "update t set v = w || -1", err: "s4ql: not supported: number in a concatenation (at offset 22)"},
+	{name: "a real in a concatenation", src: "select * from t where v = 1.5 || w", err: "s4ql: not supported: number in a concatenation (at offset 26)"},
+	{name: "a hex literal in a concatenation", src: "update t set v = w || 0x10", err: "s4ql: not supported: number in a concatenation (at offset 22)"},
+	{name: "NULL in a concatenation", src: "update t set v = w || null", err: "s4ql: not supported: NULL in a concatenation (at offset 22)"},
+	{name: "a blob in a concatenation", src: "update t set v = x'01' || w", err: "s4ql: not supported: blob in a concatenation (at offset 17)"},
+	{name: "arithmetic in a concatenation", src: "update t set v = w || (w + 1)", err: "s4ql: not supported: number in a concatenation (at offset 23)"},
+	{name: "a negation in a concatenation", src: "update t set v = w || -w", err: "s4ql: not supported: number in a concatenation (at offset 22)"},
+	{name: "a negated parameter in a concatenation", src: "update t set v = -? || w", err: "s4ql: not supported: number in a concatenation (at offset 17)"},
+	{name: "a concatenation in arithmetic, by precedence", src: "update t set v = w + 1 || 'a'", err: "s4ql: not supported: text in arithmetic (at offset 21)"},
+	{name: "a concatenation in parentheses in arithmetic", src: "update t set v = (w || 'a') * 2", err: "s4ql: not supported: text in arithmetic (at offset 18)"},
+	{name: "lower in arithmetic", src: "update t set v = w * lower(w)", err: "s4ql: not supported: text in arithmetic (at offset 21)"},
+	{name: "a negated hex", src: "update t set v = -hex(w)", err: "s4ql: not supported: text in arithmetic (at offset 18)"},
+	{name: "hex in a negation of parentheses", src: "select * from t where v = -(1 + hex(w))", err: "s4ql: not supported: text in arithmetic (at offset 32)"},
+	{name: "a number as the argument of lower", src: "update t set v = lower(1)", err: "s4ql: not supported: number as an argument (at offset 23)"},
+	{name: "a negative number as the argument of hex", src: "update t set v = hex(-1)", err: "s4ql: not supported: number as an argument (at offset 21)"},
+	{name: "NULL as the argument of hex", src: "update t set v = hex(null)", err: "s4ql: not supported: NULL as an argument (at offset 21)"},
+	{name: "a blob as the argument of lower", src: "update t set v = lower(x'41')", err: "s4ql: not supported: blob as an argument (at offset 23)"},
+	{name: "arithmetic as the argument of hex", src: "update t set v = hex(w + 1)", err: "s4ql: not supported: number as an argument (at offset 21)"},
+	{name: "a negation as the argument of lower", src: "update t set v = lower(-w)", err: "s4ql: not supported: number as an argument (at offset 23)"},
+	{name: "a string after a sign as the argument of lower", src: "update t set v = lower(-'a')", err: "s4ql: not supported: string after a sign (at offset 24)"},
+	{name: "a column in parentheses as the argument", src: "update t set v = lower((w))", err: "s4ql: not supported: parentheses (at offset 23)"},
+	{name: "a concatenation in parentheses as the argument", src: "update t set v = hex((w || 'a'))", err: "s4ql: not supported: parentheses (at offset 21)"},
+	{name: "a call in parentheses", src: "update t set v = (lower(w))", err: "s4ql: not supported: parentheses (at offset 17)"},
+	{name: "a call in parentheses in a concatenation", src: "update t set v = 'a' || (hex(w))", err: "s4ql: not supported: parentheses (at offset 24)"},
+	{name: "a call tested for NULL", src: "select * from t where lower(v) is null", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a call in the select list", src: "select lower(v) from t", err: "s4ql: not supported: result column other than a column or * (at offset 7)"},
+	{name: "a call in values", src: "insert into t values (lower('a'))", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a concatenation in values", src: "insert into t values ('a' || 'b')", err: "s4ql: not supported: binary operator (at offset 22)"},
+	{name: "a concatenation without a column compared with a value", src: "select * from t where 'a' || 'b' = 'ab'", err: "s4ql: not supported: value compared with a value (at offset 35)"},
+	{name: "a call without a column compared with a value", src: "select * from t where ? = lower(?)", err: "s4ql: not supported: value compared with a value (at offset 26)"},
+	{name: "a concatenation with COLLATE", src: "update t set v = w || 'a' collate nocase", err: "s4ql: not supported: COLLATE (at offset 22)"},
+	{name: "a call with COLLATE", src: "update t set v = lower(w) collate nocase", err: "s4ql: not supported: COLLATE (at offset 17)"},
+	{name: "a subquery in a concatenation", src: "update t set v = w || (select k from u)", err: "s4ql: not supported: subquery (at offset 22)"},
+	{name: "the current time in a concatenation", src: "update t set v = w || current_time", err: "s4ql: not supported: current date or time (at offset 22)"},
+	{name: "TRUE as the argument of lower", src: "update t set v = lower(true)", err: "s4ql: not supported: TRUE or FALSE (at offset 23)"},
+	{name: "a column with the name of a table in a call", src: "update t set v = hex(t.w)", err: "s4ql: not supported: column with the name of a table (at offset 21)"},
+	{name: "a numbered parameter in a concatenation", src: "update t set v = w || ?1", err: "s4ql: not supported: numbered parameter (at offset 22)"},
+	{name: "a number with a digit separator in a concatenation", src: "update t set v = w || 1_000", err: "s4ql: not supported: number in a concatenation (at offset 22)"},
+	{name: "the remainder in a concatenation", src: "update t set v = 'a' || (w % 2)", err: "s4ql: not supported: binary operator (at offset 25)"},
+	{name: "the id of goqite's queue with randomblob, which comes later", src: "update t set v = 'm_' || lower(hex(randomblob(16)))", err: "s4ql: not supported: function other than lower or hex (at offset 35)"},
+	{name: "lower with ORDER BY and no argument", src: "update t set v = lower(order by w)", err: "s4ql: not supported: wrong number of arguments (at offset 23)"},
+	{name: "a call alone as a condition", src: "select * from t where lower(v)", err: "s4ql: not supported: function call (at offset 22)"},
+	{name: "a call in arithmetic with a refused argument, refused for its place first", src: "update t set v = lower(1) + 2", err: "s4ql: not supported: text in arithmetic (at offset 17)"},
+	{name: "a concatenation in arithmetic with a refused operand, refused for its place first", src: "update t set v = 'a' || 1 + 2", err: "s4ql: not supported: text in arithmetic (at offset 17)"},
+	{name: "a call without its closing parenthesis", src: "update t set v = lower(w", err: "incomplete input"},
+	{name: "a concatenation without a right operand", src: "update t set v = w ||", err: "incomplete input"},
+	{name: "a call with an empty second argument", src: "update t set v = lower(w,)", err: `near ")": syntax error`},
+	{name: "two concatenations", src: "update t set v = w || || w", err: `near "||": syntax error`},
+	{name: "a function with the name of a schema", src: "update t set v = main.lower(w)", err: `near "(": syntax error`},
 }
 
 // sub is the value of a condition that is the subquery k of its statement, in parentheses at
@@ -2193,6 +2295,11 @@ func ep(n, at int) stmt.Expression {
 // ec is a column of an expression, of the bare name raw at the offset at.
 func ec(raw string, at int) stmt.Expression {
 	return stmt.Expression{Kind: stmt.ExprColumn, Column: name(raw, raw, at), Span: stmt.Span{Start: at, End: at + len(raw)}}
+}
+
+// ecall is the call of the function f with the argument x, at [start, end).
+func ecall(f stmt.Function, start, end int, x stmt.Expression) stmt.Expression {
+	return stmt.Expression{Kind: stmt.ExprCall, Function: f, Operands: []stmt.Expression{x}, Span: stmt.Span{Start: start, End: end}}
 }
 
 // eneg is the negation of x, at [start, end).
@@ -3287,21 +3394,32 @@ func TestCheck(t *testing.T) {
 			most             int
 			deep             string
 			offset           func(src string) int
+			// link of the chain, " + 1" for "".
+			link string
 		}{
-			{"in set", "update t set v = 1", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a negative literal", "update t set v = -1", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a column", "update t set v = v", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a parameter", "update t set v = ?", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a negated column", "update t set v = -v", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set after a negated parameter", "update t set v = -?", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }},
-			{"in set with a where", "update t set v = 1", " where v = 1", 999, "expression", func(src string) int { return len(src) - len("+ 1 where v = 1") }},
-			{"on the right of a comparison", "select * from t where v = 1", "", 998, "WHERE", func(src string) int { return len(src) }},
-			{"on the left of a comparison", "select * from t where 1", " = v", 998, "WHERE", func(src string) int { return len(src) }},
-			{"on the left after a negative literal", "delete from t where -1", " = v", 997, "WHERE", func(src string) int { return len(src) }},
-			{"after an and", "select * from t where v = 1 and v = 1", "", 997, "WHERE", func(src string) int { return len(src) }},
+			{"in set", "update t set v = 1", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a negative literal", "update t set v = -1", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a column", "update t set v = v", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a parameter", "update t set v = ?", "", 999, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a negated column", "update t set v = -v", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set after a negated parameter", "update t set v = -?", "", 998, "expression", func(src string) int { return len(src) - len("+ 1") }, ""},
+			{"in set with a where", "update t set v = 1", " where v = 1", 999, "expression", func(src string) int { return len(src) - len("+ 1 where v = 1") }, ""},
+			{"on the right of a comparison", "select * from t where v = 1", "", 998, "WHERE", func(src string) int { return len(src) }, ""},
+			{"on the left of a comparison", "select * from t where 1", " = v", 998, "WHERE", func(src string) int { return len(src) }, ""},
+			{"on the left after a negative literal", "delete from t where -1", " = v", 997, "WHERE", func(src string) int { return len(src) }, ""},
+			{"after an and", "select * from t where v = 1 and v = 1", "", 997, "WHERE", func(src string) int { return len(src) }, ""},
+			// A concatenation is an operator, and a call one level more than its argument.
+			{"of concatenations in set", "update t set v = 'a'", "", 999, "expression", func(src string) int { return len(src) - len("|| 'a'") }, " || 'a'"},
+			{"of concatenations on the right of a comparison", "select * from t where v = w", "", 998, "WHERE", func(src string) int { return len(src) }, " || ?"},
+			{"of concatenations in a call in set", "update t set v = lower(w", ")", 998, "expression", func(src string) int { return len(src) }, " || 'a'"},
+			{"of concatenations in a call on the left of a comparison", "select * from t where hex(v", ") = 'x'", 997, "WHERE", func(src string) int { return len(src) }, " || 'a'"},
 		} {
+			link := c.link
+			if link == "" {
+				link = " + 1"
+			}
 			chain := func(n int) string {
-				return c.start + strings.Repeat(" + 1", n) + c.end
+				return c.start + strings.Repeat(link, n) + c.end
 			}
 			src := chain(c.most)
 			_, err := stmt.Check(src)
@@ -3375,36 +3493,47 @@ func TestCheck(t *testing.T) {
 		// Each level holds as many entries of the stack of SQLite's parser as an expression can: an
 		// addition and a multiplication that wait for their right operands, a negation, and a
 		// parenthesis. In a subquery after an AND, the statement holds more entries of the stack.
-		for _, c := range []struct{ start, end string }{
-			{"update t set v = ", ""},
-			{"select * from t where v = 1 and k = (select k from u where a = ", ")"},
+		// The parenthesis of a call counts as one, and a concatenation that waits for its right operand,
+		// a call, and a parenthesis hold the most of text. The calls are of lower, since the text of hex
+		// is twice as long as its argument, which nested 100 times SQLite cannot hold.
+		for _, c := range []struct{ start, open, inner, end string }{
+			{"update t set v = ", "a + b * -(", "a + 1", ""},
+			{"select * from t where v = 1 and k = (select k from u where a = ", "a + b * -(", "a + 1", ")"},
+			{"update t set v = ", "a || lower(", "a", ""},
+			{"select * from t where v = 1 and k = (select k from u where a = ", "a || (b || lower(", "a", ")"},
 		} {
 			nested := func(n int) string {
-				return c.start + strings.Repeat("a + b * -(", n) + "a + 1" + strings.Repeat(")", n) + c.end
+				return c.start + strings.Repeat(c.open, n) + c.inner + strings.Repeat(")", n*strings.Count(c.open, "(")) + c.end
 			}
-			src := nested(100)
+			n := 100 / strings.Count(c.open, "(")
+			src := nested(n)
 			_, err := stmt.Check(src)
 			is.NotError(t, err)
 			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
 			o, _ := verify(t, src)
 			is.Equal(t, supported, o)
 
-			src = nested(101)
+			src = nested(n + 1)
 			_, err = stmt.Check(src)
-			is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len(c.start)+100*len("a + b * -(")+len("a + b * -")), err.Error())
+			is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len(c.start)+n*len(c.open)+strings.Index(c.open, "(")), err.Error())
 			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
 			verify(t, src)
 		}
-		// Parentheses that are closed count no more, however many come one after the other.
-		src := "update t set v = (v + 1)" + strings.Repeat(" * (v - 1)", 150) + " where k = (v + 1)" + strings.Repeat(" * (v - 1)", 150)
-		_, err := stmt.Check(src)
-		is.NotError(t, err)
-		is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
-		o, _ := verify(t, src)
-		is.Equal(t, supported, o)
+		// Parentheses that are closed count no more, however many come one after the other, those of
+		// a call too.
+		for _, src := range []string{
+			"update t set v = (v + 1)" + strings.Repeat(" * (v - 1)", 150) + " where k = (v + 1)" + strings.Repeat(" * (v - 1)", 150),
+			"update t set v = lower(w)" + strings.Repeat(" || lower(w)", 150),
+		} {
+			_, err := stmt.Check(src)
+			is.NotError(t, err)
+			is.Equal(t, oracle.Parses, oracle.Judge(src).Kind)
+			o, _ := verify(t, src)
+			is.Equal(t, supported, o)
+		}
 		// Where SQLite's parser gives up, the pass has refused the text long before.
-		src = "update t set v = " + strings.Repeat("(1 + ", 831) + "1" + strings.Repeat(")", 831)
-		_, err = stmt.Check(src)
+		src := "update t set v = " + strings.Repeat("(1 + ", 831) + "1" + strings.Repeat(")", 831)
+		_, err := stmt.Check(src)
 		is.Equal(t, fmt.Sprintf("s4ql: not supported: parentheses deeper than 100 (at offset %v)", len("update t set v = ")+100*len("(1 + ")), err.Error())
 		is.Equal(t, "Recursion limit", oracle.Judge(src).Message)
 		verify(t, src)

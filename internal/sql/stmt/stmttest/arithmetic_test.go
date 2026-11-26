@@ -65,6 +65,12 @@ func TestArithmeticRefusals(t *testing.T) {
 		{"select * from t where s = ? + 1", []any{nil}, false, []string{"s4ql: not supported: an expression of type null compared with the column t.s of type TEXT"}},
 		{"update t set b = ? + 1", []any{nil}, false, []string{"s4ql: not supported: an expression of type null for the column t.b of type BLOB"}},
 		{"update t set r = ? + 1", []any{nil}, false, nil},
+		// Text has the one refusal of its root, and no class.
+		{"update t set s = lower(s)", nil, false, []string{"s4ql: not supported: call of lower (at offset 17)"}},
+		{"update t set k = 'a' || hex(b)", nil, false, []string{"s4ql: not supported: concatenation (at offset 17)"}},
+		{"update t set s = lower(s)", nil, true, []string{"s4ql: not supported: call of lower (at offset 17)"}},
+		{"select * from t where k = hex(?)", []any{"a"}, false, []string{"s4ql: not supported: call of hex (at offset 26)"}},
+		{"select * from t where s || 'a' < r * 2", nil, false, []string{"s4ql: not supported: concatenation (at offset 22)"}},
 	}
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("should give %q for %q with %v", test.want, test.src, test.args), func(t *testing.T) {

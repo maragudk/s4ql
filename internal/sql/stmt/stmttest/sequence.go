@@ -3210,7 +3210,7 @@ var ArithmeticRefused = []string{
 	"update %[1]v set %[2]v = +%[2]v",                                // + sign
 	"select * from %[1]v where %[2]v = ~1 + %[2]v",                   // ~ operator
 	"delete from %[1]v where %[2]v = %[2]v %% 2",                     // binary operator
-	"update %[1]v set %[2]v = abs(%[2]v) + 1",                        // function call
+	"update %[1]v set %[2]v = abs(%[2]v) + 1",                        // function other than lower or hex
 	"select * from %[1]v where %[2]v = (1) + %[2]v",                  // parentheses
 	"select * from %[1]v where %[2]v = " + deepParentheses + "%[2]v", // parentheses deeper than 100
 	"select %[2]v + 1 from %[1]v",                                    // result column other than a column or *
