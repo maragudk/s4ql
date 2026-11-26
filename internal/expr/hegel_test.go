@@ -3,7 +3,6 @@ package expr_test
 import (
 	"encoding/hex"
 	"math"
-	"math/rand/v2"
 	"strconv"
 	"strings"
 	"testing"
@@ -50,28 +49,7 @@ func TestHegel_cases(t *testing.T) {
 	o := newOracle(t)
 	hegel.Test(t, func(ht *hegel.T) {
 		checkDrawn(ht, o, drawCase(ht))
-	}, hegelOptions(2000)...)
-}
-
-// TestHegel_generator checks the evaluator against SQLite and [reference] with the cases of
-// [generator], which draws its random numbers from Hegel through [hegelSource]: the cases of
-// [TestDifferential], which Hegel shrinks toward the generator's first choices, where they fail.
-func TestHegel_generator(t *testing.T) {
-	o := newOracle(t)
-	hegel.Test(t, func(ht *hegel.T) {
-		g := &generator{r: rand.New(hegelSource{ht})}
-		checkDrawn(ht, o, g.next())
-	}, append(hegelOptions(1000), hegel.SuppressHealthCheck(hegel.TooSlow, hegel.LargeInitialTestCase))...)
-}
-
-// hegelSource is a [rand.Source] whose numbers are draws of Hegel.
-type hegelSource struct {
-	tc hegel.TestCase
-}
-
-// Uint64 drawn from Hegel, which shrinks it toward 0.
-func (s hegelSource) Uint64() uint64 {
-	return hegel.Draw(s.tc, hegel.Integers[uint64](0, math.MaxUint64))
+	}, hegelOptions(5000)...)
 }
 
 // drawCase draws a case of the evaluator: a tree of arithmetic two times in three, and of text
