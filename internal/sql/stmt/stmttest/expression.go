@@ -190,9 +190,9 @@ func (g *Generator) operand(parent stmt.ExpressionKind, left bool, depth, column
 	return stmt.Expression{Kind: stmt.ExprValue, Value: value, Span: stmt.Span{Start: start, End: g.b.Len()}}, args
 }
 
-// givenTerm of arithmetic that a hook gives, the value of an assignment or of a comparison, after the
-// arguments args, as [Generator.given] writes it, one time in six in parentheses if it is an
-// operator. A column alone is the term of the column, and a value alone a plain value, as
+// givenTerm of arithmetic or of text that a hook gives, the value of an assignment or of a comparison,
+// after the arguments args, as [Generator.given] writes it, one time in six in parentheses if it is an
+// operator but a call. A column alone is the term of the column, and a value alone a plain value, as
 // [Generator.term] writes it, since neither is an expression of the statement pass. It gives the term
 // and the arguments with those of its parameters.
 func (g *Generator) givenTerm(e stmt.Expression, args []any) (stmt.Term, []any) {
@@ -204,7 +204,8 @@ func (g *Generator) givenTerm(e stmt.Expression, args []any) (stmt.Term, []any) 
 		x := g.givenColumn(e.Column.Raw)
 		return stmt.Term{Expression: x, Span: x.Span}, args
 	}
-	paren := g.r.IntN(6) == 0
+	// The pass refuses parentheses around a call, which hold nothing of their own.
+	paren := e.Kind != stmt.ExprCall && g.r.IntN(6) == 0
 	if paren {
 		g.openParen()
 		g.gap(false)
@@ -217,6 +218,104 @@ func (g *Generator) givenTerm(e stmt.Expression, args []any) (stmt.Term, []any) 
 	return stmt.Term{Expression: x, Span: stmt.Span{Start: start, End: g.b.Len()}}, args
 }
 
+// The places of an operand of text, for [Generator.givenText]: the root of an expression, an operand
+// of ||, and the argument of lower or of hex.
+const (
+	placeRoot = iota
+	placeConcat
+	placeLower
+	placeHex
+)
+
+// givenText writes the expression of text e that a hook gives, a concatenation, a call of lower or
+// hex, a column, or a value, at the place, after the arguments args: a column by the raw text of its
+// name; a value as [Generator.textValue] writes it; a concatenation with its right operand in
+// parentheses where it is a concatenation too, since || groups to the left, and one time in four
+// its left one; and a call by its name in any case of its letters, one time in eight in double
+// quotes, with or without a gap before its parenthesis, and never with parentheses around its
+// argument or around the call, which the pass refuses. Arithmetic inside text, which the pass
+// refuses, and a parameter, whose argument it does not know, panic. It gives the typed form of what it
+// writes and the arguments with those of its parameters.
+func (g *Generator) givenText(e stmt.Expression, place int, args []any) (stmt.Expression, []any) {
+	start := g.b.Len()
+	switch e.Kind {
+	case stmt.ExprColumn:
+		return g.givenColumn(e.Column.Raw), args
+	case stmt.ExprValue:
+		return g.textValue(e.Value, place, args)
+	case stmt.ExprConcat:
+		x, args := g.textOperand(e.Operands[0], false, args)
+		g.gap(false)
+		g.punct("||")
+		g.gap(false)
+		y, args := g.textOperand(e.Operands[1], true, args)
+		return stmt.Expression{Kind: stmt.ExprConcat, Operands: []stmt.Expression{x, y}, Span: stmt.Span{Start: start, End: g.b.Len()}}, args
+	case stmt.ExprCall:
+		name := e.Function.String()
+		switch g.r.IntN(4) {
+		case 0:
+			name = strings.ToUpper(name)
+		case 1:
+			name = randomCase(g.r, name)
+		}
+		if g.r.IntN(8) == 0 {
+			name = Quote(name)
+		}
+		g.open = false
+		g.b.WriteString(name)
+		g.gap(false)
+		g.openParen()
+		g.gap(false)
+		argument := placeLower
+		if e.Function == stmt.FuncHex {
+			argument = placeHex
+		}
+		x, args := g.givenText(e.Operands[0], argument, args)
+		g.gap(false)
+		g.punct(")")
+		return stmt.Expression{Kind: stmt.ExprCall, Function: e.Function, Operands: []stmt.Expression{x}, Span: stmt.Span{Start: start, End: g.b.Len()}}, args
+	}
+	panic(fmt.Sprintf("stmttest: an expression of the kind %v in text that a hook gives", e.Kind))
+}
+
+// textOperand e of a concatenation, on its right if right, as [Generator.givenText] writes it.
+func (g *Generator) textOperand(e stmt.Expression, right bool, args []any) (stmt.Expression, []any) {
+	if e.Kind != stmt.ExprConcat || !right && g.r.IntN(4) != 0 {
+		return g.givenText(e, placeConcat, args)
+	}
+	g.openParen()
+	g.gap(false)
+	x, args := g.givenText(e, placeConcat, args)
+	g.gap(false)
+	g.punct(")")
+	return x, args
+}
+
+// textValue v of an expression of text at the place, as [Generator.givenText] writes it: a literal,
+// or one time in [Generator.Parameters] a ?, and always a ? where the pass would refuse the literal or
+// it is long: NULL, a number, a blob but as the argument of hex, and a text of more than 40 bytes,
+// which keeps the text of the statement shorter than the length limit.
+func (g *Generator) textValue(v stmt.Value, place int, args []any) (stmt.Expression, []any) {
+	at := g.b.Len()
+	g.open = false
+	param := false
+	switch v := v.(type) {
+	case stmt.Null, stmt.Integer, stmt.Real:
+		param = true
+	case stmt.Blob:
+		param = place != placeHex || len(v) > 20
+	case stmt.Text:
+		param = len(v) > 40
+	}
+	if param || g.Parameters > 0 && g.params.IntN(g.Parameters) == 0 {
+		g.punct("?")
+		return stmt.Expression{Kind: stmt.ExprParameter, Parameter: len(args) + 1, Span: stmt.Span{Start: at, End: at + 1}}, append(args, Argument(v))
+	}
+	text, value := Literal(g.r, v)
+	g.b.WriteString(text)
+	return stmt.Expression{Kind: stmt.ExprValue, Value: value, Span: stmt.Span{Start: at, End: g.b.Len()}}, args
+}
+
 // given writes the expression e that a hook gives, an operand of an operator of the kind parent, on
 // its left if left, or 0 at the top, after the arguments args: its columns by the raw text of their
 // names, and its values, of [stmt.ExprValue], as literals, or one time in [Generator.Parameters] as a
@@ -226,7 +325,8 @@ func (g *Generator) givenTerm(e stmt.Expression, args []any) (stmt.Term, []any) 
 // of a division, which the pass refuses or SQLite reads as zero. An operator is in parentheses where
 // SQLite would otherwise group it with another, and one time in four elsewhere, but at the top. A
 // negation of a negation, which the pass refuses as a second sign, and a parameter, whose argument
-// it does not know, panic. It gives the typed form of what it writes and the arguments with those of
+// it does not know, panic. Text at the top is written as [Generator.givenText] writes it, and text
+// under arithmetic panics. It gives the typed form of what it writes and the arguments with those of
 // its parameters.
 func (g *Generator) given(e stmt.Expression, parent stmt.ExpressionKind, left bool, args []any) (stmt.Expression, []any) {
 	start := g.b.Len()
@@ -235,6 +335,11 @@ func (g *Generator) given(e stmt.Expression, parent stmt.ExpressionKind, left bo
 		return g.givenColumn(e.Column.Raw), args
 	case stmt.ExprValue:
 		return g.givenValue(e.Value, parent, left, args)
+	case stmt.ExprConcat, stmt.ExprCall:
+		if parent != 0 {
+			panic("stmttest: text in arithmetic, which the statement pass refuses")
+		}
+		return g.givenText(e, placeRoot, args)
 	case stmt.ExprNegate:
 		g.open = false
 		g.punct("-")
