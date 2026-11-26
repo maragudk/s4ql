@@ -110,7 +110,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 
 **Decided,** with the details in [todo/writing.md](todo/writing.md):
 
-- Upserts. An `insert` without a clause fails on a conflict and changes nothing, as today, which is SQLite's `abort`. `insert ... on conflict (key) do nothing` and `insert ... on conflict (key) do update set ...` are built when they are next. Agreed by Markus on 2026-11-24.
+- Upserts. An `insert` without a clause fails on a conflict and changes nothing, as today, which is SQLite's `abort`. `insert ... on conflict (key) do nothing` and `insert ... on conflict (key) do update set ...` are built when they are next. Agreed by Markus on 2026-11-24. The statement pass reads both forms, with `excluded.<column>` (2026-11-26); the engine and its checks are still to come, so no upsert runs yet.
 - Several rows per `insert`, and `insert ... select`, are details, built when they are next. Decided by the lead on 2026-11-24.
 
 **Undecided:** `insert ... default values`, `update ... from`, and `set (a, b) = (...)`.
