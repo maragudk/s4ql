@@ -848,7 +848,9 @@
 # reaches three times, by where a text is, whether it has a column, and the outcome; each refusal of
 # the types of text; each operator at the edge of the length limit, one byte short of it, and one byte
 # over it, by the outcome; and the constants of text that serve the access, and the cases of
-# pair.reachOfText.
+# pair.reachOfText. An edge counts only a length that the generator wrote a text for
+# (stmttest.Call.TextEdges), and goqite's id only its own form, of a blob of 16 bytes; their numbers
+# are a third of their totals after that change, of the same day.
 1	reached: text with a column in SET of a update, NOT NULL constraint failed
 2	reached: text with a column in SET of a update, UNIQUE constraint failed
 5	reached: text with a column in SET of a update, no such column
@@ -927,16 +929,14 @@
 3	reached: text: constant text that serves a bound of an index
 12	reached: text: constant text that serves a bound of the key
 21	reached: text: constant text that serves a get of one key
-9	reached: text: goqite's id, 'm_' || lower(hex(?)), ok
-3	reached: text: hex at the length limit, ok
-3	reached: text: hex one byte over the length limit, string or blob too big
-3	reached: text: hex one byte short of the length limit, ok
-1	reached: text: hex one byte short of the length limit, string or blob too big
-3	reached: text: lower at the length limit, ok
-2	reached: text: lower at the length limit, string or blob too big
-4	reached: text: lower one byte over the length limit, string or blob too big
+5	reached: text: goqite's id, 'm_' || lower(hex(?)), ok
+2	reached: text: hex at the length limit, ok
+2	reached: text: hex one byte over the length limit, string or blob too big
+1	reached: text: hex one byte short of the length limit, ok
+2	reached: text: lower at the length limit, ok
+1	reached: text: lower at the length limit, string or blob too big
+3	reached: text: lower one byte over the length limit, string or blob too big
 2	reached: text: lower one byte short of the length limit, ok
-1	reached: text: lower one byte short of the length limit, string or blob too big
 10	reached: text: refused a BLOB column in a concatenation
 4	reached: text: refused a BLOB column in lower
 23	reached: text: refused a column of a number in a concatenation
@@ -954,8 +954,8 @@
 11	reached: text: text beside arithmetic in one statement, ok
 92	reached: text: the empty text in a text, ok
 82	reached: text: the key compared with a text, ok
-3	reached: text: || at the length limit, ok
-4	reached: text: || at the length limit, string or blob too big
-9	reached: text: || one byte over the length limit, string or blob too big
-5	reached: text: || one byte short of the length limit, ok
-4	reached: text: || one byte short of the length limit, string or blob too big
+2	reached: text: || at the length limit, ok
+1	reached: text: || at the length limit, string or blob too big
+3	reached: text: || one byte over the length limit, string or blob too big
+3	reached: text: || one byte short of the length limit, ok
+2	reached: text: || one byte short of the length limit, string or blob too big

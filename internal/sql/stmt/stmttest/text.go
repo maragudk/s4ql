@@ -507,10 +507,13 @@ func (q *Sequence) textEdge(r Rand, x stmt.Expression, texts []stmt.Text) stmt.E
 	if len(texts) == 0 {
 		return hexNode(x)
 	}
-	n := edgeLength(f, edgeDeltas[r.IntN(len(edgeDeltas))]) - len(texts[r.IntN(len(texts))])
+	delta := edgeDeltas[r.IntN(len(edgeDeltas))]
+	target := texts[r.IntN(len(texts))]
+	n := edgeLength(f, delta) - len(target)
 	if n < 0 {
 		return lowerNode(x)
 	}
+	q.wroteEdge(f, min(n, LengthLimit)+len(target))
 	e := concatNode(x, valueNode(stmt.Text(strings.Repeat("e", min(n, LengthLimit)))))
 	if f != 0 {
 		e = callNode(f, e)
@@ -526,16 +529,29 @@ func (q *Sequence) textEdgeConstant(r Rand) stmt.Expression {
 	switch r.IntN(3) {
 	case 0:
 		n := edgeLength(0, delta)
+		q.wroteEdge(0, n)
 		left := 1 + r.IntN(n-1)
 		return concatNode(valueNode(stmt.Text(strings.Repeat("c", left))), valueNode(stmt.Text(strings.Repeat("d", n-left))))
 	case 1:
-		return lowerNode(valueNode(stmt.Text(strings.Repeat("L", edgeLength(stmt.FuncLower, delta)))))
+		n := edgeLength(stmt.FuncLower, delta)
+		q.wroteEdge(stmt.FuncLower, n)
+		return lowerNode(valueNode(stmt.Text(strings.Repeat("L", n))))
 	}
 	n := edgeLength(stmt.FuncHex, delta)
+	q.wroteEdge(stmt.FuncHex, n)
 	if r.IntN(2) == 0 {
 		return hexNode(valueNode(stmt.Blob(strings.Repeat("\x01", n))))
 	}
 	return hexNode(valueNode(stmt.Text(strings.Repeat("h", n))))
+}
+
+// wroteEdge records that the statement that the sequence writes has a text of the function f, 0 for
+// a concatenation, written for an edge of the length limit, whose result, or argument, is length bytes
+// long, for [Call.TextEdges].
+func (q *Sequence) wroteEdge(f stmt.Function, length int) {
+	if e := (TextEdge{Function: f, Length: length}); !slices.Contains(q.textEdges, e) {
+		q.textEdges = append(q.textEdges, e)
+	}
 }
 
 // goqiteID is goqite's id of a message, 'm_' || lower(hex(?)), with a blob of 16 bytes at random

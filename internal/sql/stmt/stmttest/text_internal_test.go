@@ -132,6 +132,38 @@ func TestSequence_text(t *testing.T) {
 		}
 	})
 
+	t.Run("should record each edge of the length limit that a statement has a text written for, and none for a text that runs again", func(t *testing.T) {
+		counts := map[TextEdge]int{}
+		for k := range uint64(10) {
+			q, err := newSequence(TextFunctions.Seed(k), TextFunctions)
+			is.NotError(t, err)
+			var last *Call
+			for range 300 {
+				c := q.Next()
+				if last != nil && c.Src == last.Src && c.Supported {
+					// The text that runs again, which the area draws before any statement.
+					is.Equal(t, 0, len(c.TextEdges), c.Src)
+				}
+				for _, e := range c.TextEdges {
+					counts[e]++
+				}
+				if c.Supported {
+					last = &c
+				}
+			}
+		}
+		for _, f := range []stmt.Function{0, stmt.FuncLower, stmt.FuncHex} {
+			for _, delta := range edgeDeltas {
+				e := TextEdge{Function: f, Length: edgeLength(f, delta)}
+				is.True(t, counts[e] >= 3, fmt.Sprint(e))
+			}
+		}
+		for e := range counts {
+			// Each a byte short of an edge, at it, or a byte over it.
+			is.True(t, e.Length >= edgeLength(e.Function, -1) && e.Length <= edgeLength(e.Function, 1), fmt.Sprint(e))
+		}
+	})
+
 	t.Run("should give a key of type TEXT to some tables of the profile", func(t *testing.T) {
 		texts := 0
 		for k := range uint64(20) {

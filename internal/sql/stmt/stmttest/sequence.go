@@ -100,6 +100,9 @@ type Sequence struct {
 	// LIMITs, of the select and of its subqueries.
 	textAgain  *Call
 	textLimits []int
+	// textEdges are the edges of the length limit that the statement that the sequence writes has a
+	// text at, as [Call.TextEdges] says.
+	textEdges []TextEdge
 	// selected are the conditions of the WHERE of the select that the sequence writes, as
 	// [Sequence.where] gave them, for its ORDER BY.
 	selected []stmt.Condition
@@ -2245,6 +2248,20 @@ type Call struct {
 	// [Sequence.several] joined has one for each of its statements, so Supports can have more than
 	// Statements.
 	Supports []bool
+	// TextEdges are the texts of the statement that the generator wrote for an edge of the length
+	// limit [LengthLimit], by [Sequence.textEdge] and [Sequence.textEdgeConstant], each once, in the
+	// order of their first draw, so that a test counts a length at an edge that it measures only where
+	// the generator wrote that length. A call that runs an earlier text again, with other arguments,
+	// has none.
+	TextEdges []TextEdge
+}
+
+// TextEdge is a text that the generator wrote for an edge of the length limit: of a concatenation
+// for the Function 0, whose result is Length bytes long, or of lower or hex, whose argument is, on
+// the row of the text that it aimed it at, for a text with a column.
+type TextEdge struct {
+	Function stmt.Function
+	Length   int
 }
 
 // Integers of args, and true, if each is a Go integer without a name that fits a signed 64-bit
@@ -2446,7 +2463,7 @@ func (q *Sequence) next() Call {
 		// an integer from 0 to 4, which s4ql takes.
 		r := q.rSubquery
 		c := *q.again
-		c.Args = slices.Clone(c.Args)
+		c.Args, c.TextEdges = slices.Clone(c.Args), nil
 		for i, a := range c.Args {
 			if r.IntN(2) != 0 {
 				continue
@@ -2464,7 +2481,7 @@ func (q *Sequence) next() Call {
 		// argument the same one time in two and otherwise another, but for a LIMIT.
 		r := q.rTextFunctions
 		c := *q.textAgain
-		c.Args = slices.Clone(c.Args)
+		c.Args, c.TextEdges = slices.Clone(c.Args), nil
 		for i, a := range c.Args {
 			if r.IntN(2) != 0 || slices.Contains(q.textLimits, i+1) {
 				continue
@@ -2520,7 +2537,7 @@ func (q *Sequence) statement() Call {
 		k++
 	}
 	k = q.aim(r, k, p.Aim > 0 && r.IntN(4) < p.Aim)
-	q.inner = nil
+	q.inner, q.textEdges = nil, nil
 	src, s, args := q.g.CallOf(k)
 	if p.on(areaSubquery) {
 		// An argument of the LIMIT of a subquery that s4ql refuses, as for that of a select below.
@@ -2550,7 +2567,7 @@ func (q *Sequence) statement() Call {
 	}
 	// A query, and an insert, an update, or a delete with RETURNING, of slice 14, runs through Exec
 	// one time in eight, and every other statement through Query one time in eight.
-	c := Call{Src: src, Args: args, Query: (k == KindSelect || returns(s)) != (r.IntN(8) == 0), Supported: true}
+	c := Call{Src: src, Args: args, Query: (k == KindSelect || returns(s)) != (r.IntN(8) == 0), Supported: true, TextEdges: q.textEdges}
 	if p.on(areaTextFunctions) && hasText(s) {
 		q.textAgain, q.textLimits = &c, nil
 		if sel, ok := s.(*stmt.Select); ok && sel.Limit.Parameter > 0 {

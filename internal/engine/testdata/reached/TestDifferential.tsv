@@ -550,7 +550,6 @@ mixed	12	4	reached: text: refused text set for a column of a number or a blob
 mixed	4	1	reached: text: text beside arithmetic in one statement, ok
 mixed	10	3	reached: text: the empty text in a text, ok
 mixed	15	5	reached: text: the key compared with a text, ok
-mixed	3	1	reached: text: || one byte over the length limit, string or blob too big
 mixed	19	6	reached: update WHERE that reads a get of one key ok, rows changed
 mixed	5	1	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
 mixed	5	1	reached: update WHERE that reads a scan of every row ok, rows changed
@@ -5010,16 +5009,14 @@ textfunctions	15	5	reached: text: constant text that makes the access read no ro
 textfunctions	10	3	reached: text: constant text that serves a bound of an index
 textfunctions	36	12	reached: text: constant text that serves a bound of the key
 textfunctions	58	19	reached: text: constant text that serves a get of one key
-textfunctions	27	9	reached: text: goqite's id, 'm_' || lower(hex(?)), ok
-textfunctions	9	3	reached: text: hex at the length limit, ok
-textfunctions	8	2	reached: text: hex one byte over the length limit, string or blob too big
-textfunctions	7	2	reached: text: hex one byte short of the length limit, ok
-textfunctions	3	1	reached: text: hex one byte short of the length limit, string or blob too big
+textfunctions	15	5	reached: text: goqite's id, 'm_' || lower(hex(?)), ok
+textfunctions	6	2	reached: text: hex at the length limit, ok
+textfunctions	6	2	reached: text: hex one byte over the length limit, string or blob too big
+textfunctions	4	1	reached: text: hex one byte short of the length limit, ok
 textfunctions	8	2	reached: text: lower at the length limit, ok
-textfunctions	6	2	reached: text: lower at the length limit, string or blob too big
-textfunctions	12	4	reached: text: lower one byte over the length limit, string or blob too big
+textfunctions	3	1	reached: text: lower at the length limit, string or blob too big
+textfunctions	10	3	reached: text: lower one byte over the length limit, string or blob too big
 textfunctions	6	2	reached: text: lower one byte short of the length limit, ok
-textfunctions	4	1	reached: text: lower one byte short of the length limit, string or blob too big
 textfunctions	25	8	reached: text: refused a BLOB column in a concatenation
 textfunctions	12	4	reached: text: refused a BLOB column in lower
 textfunctions	59	19	reached: text: refused a column of a number in a concatenation
@@ -5037,11 +5034,11 @@ textfunctions	75	25	reached: text: refused text set for a column of a number or 
 textfunctions	30	10	reached: text: text beside arithmetic in one statement, ok
 textfunctions	268	89	reached: text: the empty text in a text, ok
 textfunctions	232	77	reached: text: the key compared with a text, ok
-textfunctions	10	3	reached: text: || at the length limit, ok
-textfunctions	14	4	reached: text: || at the length limit, string or blob too big
-textfunctions	28	9	reached: text: || one byte over the length limit, string or blob too big
-textfunctions	15	5	reached: text: || one byte short of the length limit, ok
-textfunctions	13	4	reached: text: || one byte short of the length limit, string or blob too big
+textfunctions	7	2	reached: text: || at the length limit, ok
+textfunctions	5	1	reached: text: || at the length limit, string or blob too big
+textfunctions	11	3	reached: text: || one byte over the length limit, string or blob too big
+textfunctions	10	3	reached: text: || one byte short of the length limit, ok
+textfunctions	6	2	reached: text: || one byte short of the length limit, string or blob too big
 textfunctions	16	5	reached: update WHERE that reads a get of one key ok, rows changed
 textfunctions	4	1	reached: update WHERE that reads a scan to an upper bound ok, rows changed
 textfunctions	11	3	reached: update WHERE that reads no row ok, no row found
