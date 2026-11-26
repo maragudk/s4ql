@@ -55,7 +55,7 @@ func (c *Conn) execAll(ctx context.Context, src string, args []*s4qlpb.Value) (R
 	one := len(parts) == 1 && failed == nil
 	var text *textRun
 	if c.e.bugs.ofText() && !one {
-		text = &textRun{src: src, args: args}
+		text = &textRun{src: src}
 		ctx = context.WithValue(ctx, textKey{}, text)
 		defer text.commit(ctx)
 	}

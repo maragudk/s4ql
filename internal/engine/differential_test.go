@@ -894,6 +894,14 @@ const (
 	// The rows of s4ql must be SQLite's for the same select without the length limit. See
 	// [pair.sortTooBig].
 	excusedSortTooBig = "a sorted select that SQLite refuses for the length of what it sorts, checked against SQLite without the length limit"
+	// excusedPlannerOrder is an update whose rows fail with different errors, which SQLite changes in
+	// the order of an access that its planner chooses by its estimate of costs, other than the access
+	// that the rules choose, in whose order the engine changes them, or which SQLite runs with the
+	// values of its subqueries in their place, in one pass, where the engine changes the rows of the
+	// statement with subqueries in the order of the key: SQLite's error and the engine's must each be
+	// that of the first row that fails in its order, changed one at a time. See
+	// [pair.checkUpdateOrder] and docs/todo/update-order.md.
+	excusedPlannerOrder = "an update whose rows SQLite's planner reads by another access than the rules, checked row by row in each order"
 	// excusedReturningTooBig is an insert, an update, or a delete with RETURNING, which SQLite refuses
 	// with `string or blob too big` under a lowered length limit, where s4ql gives the rows: SQLite
 	// writes each row of RETURNING into a record of its own, which can be longer than the row's record
@@ -1078,6 +1086,8 @@ type pair struct {
 	walking bool
 	// severalFailed is set after a text of several statements failed in the transaction that is open.
 	severalFailed bool
+	// lastText is the text of the last call with text of ||, lower, or hex, for [pair.reachOfText].
+	lastText string
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -1234,7 +1244,7 @@ func (p *pair) step(c stmttest.Call) string {
 	if mayslip {
 		is.Equal(t, "", o.run(t, "rollback to s4ql_record").err)
 		is.Equal(t, "", o.run(t, "release s4ql_record").err)
-		if (want.err == "" || strings.Contains(want.err, "UNIQUE constraint failed")) && p.recordSlips(update, args) {
+		if (want.err == "" || strings.Contains(want.err, "UNIQUE constraint failed")) && p.recordSlips(update, args, p.computed != nil) {
 			p.y.excused(excusedRecordSlip)
 			return ""
 		}
@@ -1242,6 +1252,7 @@ func (p *pair) step(c stmttest.Call) string {
 	if !c.Query {
 		want.columns, want.rows = "", nil
 	}
+	plannerOrder := update != nil && rowFailure(want.err) && p.checkUpdateOrder(update, args, p.computed != nil, got, want)
 	if p.longCondition(src) && want.err == "" && got.err != tooBig {
 		// Where SQLite gives rows, as it does for a blob literal, which it turns into NULL, the rule
 		// decides alone.
@@ -1283,7 +1294,10 @@ func (p *pair) step(c stmttest.Call) string {
 	}
 	if differs {
 		gap := knownGap(src, got, want)
+		textGap := p.textDifference(c, got, want)
 		switch {
+		case textGap != "":
+			p.y.excused(textGap)
 		case startedTable(t, p.empty, src, got, want):
 			p.y.excused(acceptedStartedTable)
 		case want.err == tooBig && got.err == "" && c.Query && p.sortTooBig(src, args, got):
@@ -1294,6 +1308,8 @@ func (p *pair) step(c stmttest.Call) string {
 			p.y.excused(excusedLongCondition)
 		case gap != "":
 			p.y.excused(gap + knownGapSuffix)
+		case plannerOrder:
+			p.y.excused(excusedPlannerOrder)
 		default:
 			return fmt.Sprintf("%q with the arguments %v: the engine gives\n%v\nand SQLite\n%v", src, args, got, want)
 		}
@@ -2293,6 +2309,57 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, which %v", c.Src, c.Args, path, all.message, why)
 		}
 		p.count("evaluation error by one path and not by another")
+		return ""
+	}
+	if isSelect && textIn(s) && (got.err == tooBig || all.err == tooBig) && all.err != got.err {
+		// Which rows a select with text computes depends on its access too, and a text that is too
+		// long by one path may be on a row that the other does not read: a text too long of the other
+		// instance must be one that SQLite finds too long for a row that the rule may evaluate, as
+		// [pair.textTooLong] says, and one of the instance is judged by [pair.step], where the other
+		// instance must give no error and SQLite's rows without the limit.
+		if all.err != tooBig {
+			// The other instance read no row whose text is too long: it gives no error, and SQLite's
+			// answer without the length limit.
+			if all.err != "" {
+				return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, where it gives %q as the rules choose", c.Src, c.Args, path, all.message, got.message)
+			}
+			want := p.o.unlimited(p.t, c.Src, oracleArgs(c.Args)...)
+			bad := want.err != ""
+			if q := orderedOf(s.(*stmt.Select), oracleArgs(c.Args)); !bad && c.Query {
+				if q.plain() {
+					bad = all.String() != want.String()
+				} else {
+					bad = q.compare(p.t, p.o, all, want) != ""
+				}
+			}
+			if bad {
+				return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives\n%v\nand SQLite without the length limit\n%v", c.Src, c.Args, path, all, want)
+			}
+			p.count("text too long by one path and not by another")
+			return ""
+		}
+		if !p.textTooLong(s, oracleArgs(c.Args)) {
+			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, and SQLite finds no text of it too long for a row that the rule may evaluate", c.Src, c.Args, path, all.message)
+		}
+		p.count("text too long by one path and not by another")
+		return ""
+	}
+	if subqueried(s) && textIn(s) && (got.err == tooBig) != (all.err == tooBig) && got.err+all.err == tooBig && changes == 0 && allChanges == 0 {
+		// The first row of a subquery without an ORDER BY that decides it is the first of the direction
+		// that each instance draws, and so are the rows that it reads before it, whose text may be too
+		// long. Where a statement fails so by one direction and changes nothing by the other, both
+		// instances hold what they held, as [pair.textOneDirection] judges.
+		computed := p.computed
+		if got.err != "" {
+			computed = otherComputed
+			if computed != nil && p.force != nil {
+				computed = p.force
+			}
+		}
+		if failure := p.textOneDirection(c, s, computed); failure != "" {
+			return failure
+		}
+		p.count("text too long in a subquery by one direction and not by another")
 		return ""
 	}
 	if failed, ok := subqueryErrorOfOne(s, got, all); ok && changes == 0 && allChanges == 0 {
@@ -3663,34 +3730,223 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 // engine refused with `string or blob too big` for the record of a row, and which SQLite ran without
 // that error, succeeding or failing with `UNIQUE constraint failed`, is the known difference of a
 // record that is too long in docs/todo/sql-front-end.md: it finds two rows or more, and when the rows change one at
-// a time in the order of the key, as the engine changes them, each by an update of that row alone
-// in SQLite, in a savepoint that is rolled back, the first error is `string or blob too big` for the
-// record of a row with the values of its SET. SQLite's `OP_MakeRecord` checks the
+// a time in the engine's order, as [pair.engineOrder] gives it, each by an update of that row alone
+// in SQLite, as [pair.firstError] runs them, the first error is `string or blob too big` for the
+// record of a row with the values of its SET. u is the statement of the engine with the values of
+// its subqueries in their place if flattened. SQLite's `OP_MakeRecord` checks the
 // limit only when the buffer of the record of an earlier row of the statement is too small for the
 // next, and that buffer has the size that the allocator gives, so a statement that changes many rows
 // can store a record over the limit by a few bytes, on some platforms. recordSlips leaves SQLite's
 // count of changes at 0, as the engine's is after the refusal.
-func (p *pair) recordSlips(u *stmt.Update, args []any) bool {
+func (p *pair) recordSlips(u *stmt.Update, args []any, flattened bool) bool {
+	order, _, ok := p.engineOrder(u, args)
+	if !ok || flattened {
+		// The engine changes the rows of the statement with its subqueries in the order of the key.
+		order = p.keyOrder(u)
+	}
+	first, n, ok := p.firstError(u, args, order)
+	return ok && n >= 2 && first == tooBig
+}
+
+// firstError of the update u, with the arguments args as SQLite binds them, whose rows change one at
+// a time in the order of the terms of an ORDER BY order, each by an update of that row alone in
+// SQLite, as [stmttest.RowQueries] gives them, in a savepoint that is rolled back: the error of the
+// first row that fails, or "", and the number of rows that u finds. It reports false where SQLite
+// fails to find the rows, as for an error of the WHERE. It leaves SQLite's count of changes at 0,
+// as it is after an update that fails with a broken constraint or a record that is too long.
+func (p *pair) firstError(u *stmt.Update, args []any, order string) (first string, n int, ok bool) {
 	t, o := p.t, p.o
 	t.Helper()
 	table, columns := o.columns(t, u.Table.Value)
 	key := columns[slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })].Name
-	found, foundArgs, one, oneArgs := stmttest.RowQueries(u, key, args)
+	found, foundArgs, one, oneArgs := stmttest.RowQueries(u, key, order, args)
 	is.Equal(t, "", o.run(t, "savepoint s4ql_rows").err)
-	is.Equal(t, "", o.run(t, found, foundArgs...).err, found)
-	n, err := strconv.Atoi(o.run(t, "select count(*) from temp.s4ql_found").rows[0])
-	is.NotError(t, err)
-	// The rows change one at a time, in the order of the key, as the engine changes them, and the
-	// first error is the one that the engine must give.
-	first := ""
-	for i := 0; i < n && first == ""; i++ {
-		first = o.run(t, one, append(slices.Clone(oneArgs), int64(i))...).err
+	if o.run(t, found, foundArgs...).err == "" {
+		var err error
+		n, err = strconv.Atoi(o.run(t, "select count(*) from temp.s4ql_found").rows[0])
+		is.NotError(t, err)
+		ok = true
+		for i := 0; i < n && first == ""; i++ {
+			first = o.run(t, one, append(slices.Clone(oneArgs), int64(i))...).err
+		}
 	}
 	is.Equal(t, "", o.run(t, "rollback to s4ql_rows").err)
 	is.Equal(t, "", o.run(t, "release s4ql_rows").err)
 	is.Equal(t, "", o.run(t, "update "+stmttest.Quote(table)+" set "+stmttest.Quote(key)+" = "+stmttest.Quote(key)+" where 0").err)
 	p.prev = 0
-	return n >= 2 && first == tooBig
+	return first, n, ok
+}
+
+// keyOrder of the update u: the ORDER BY of the primary key of its table, in SQLite's database.
+func (p *pair) keyOrder(u *stmt.Update) string {
+	_, columns := p.o.columns(p.t, u.Table.Value)
+	return stmttest.Quote(columns[slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })].Name)
+}
+
+// changeOrderOf the update u of its table, in SQLite's database, that reads its rows by the index of
+// the name, or by the primary key for "": the ORDER BY in which SQLite changes them, which is the key
+// of the index, each column in its direction, and then the primary key, where it changes them in one
+// pass, and the primary key otherwise. SQLite runs an update in one pass unless it has RETURNING, its
+// WHERE has a subquery, or it sets a column of the primary key or of the index; see
+// docs/todo/update-order.md.
+func (p *pair) changeOrderOf(u *stmt.Update, index string) string {
+	t, o := p.t, p.o
+	t.Helper()
+	table, columns := o.columns(t, u.Table.Value)
+	key := p.keyOrder(u)
+	if index == "" || u.Returning.Present() || u.Subqueries != nil {
+		return key
+	}
+	_, indexes := o.tableIndexes(t, table, columns)
+	i := slices.IndexFunc(indexes, func(ix stmttest.TableIndex) bool { return strings.EqualFold(ix.Name, index) })
+	if i < 0 {
+		t.Fatalf("%q: SQLite reads by the index %v, which the table does not have", u.Table.Value, index)
+	}
+	var terms []string
+	for _, c := range indexes[i].Columns {
+		name := columns[c.Position].Name
+		for _, a := range u.Set {
+			if strings.EqualFold(a.Column.Value, name) {
+				return key
+			}
+		}
+		term := stmttest.Quote(name)
+		if c.Descending {
+			term += " desc"
+		}
+		terms = append(terms, term)
+	}
+	for _, a := range u.Set {
+		if stmttest.Quote(a.Column.Value) == key || strings.EqualFold(a.Column.Value, strings.Trim(key, `"`)) {
+			return key
+		}
+	}
+	return strings.Join(append(terms, key), ", ")
+}
+
+// engineOrder of the update u with the arguments args as SQLite binds them: the ORDER BY in which the
+// engine changes its rows, as [pair.changeOrderOf] gives it for the access that the model chooses for
+// the select of its WHERE, as [pair.accessRange] chooses it, and the index of that access, "" for
+// the primary key. It reports false where the pair has no model's access.
+func (p *pair) engineOrder(u *stmt.Update, args []any) (order, index string, ok bool) {
+	if u.Where == nil {
+		return p.changeOrderOf(u, ""), "", true
+	}
+	if u.Subqueries != nil {
+		return p.keyOrder(u), "", true
+	}
+	sel, selArgs := stmttest.SelectOf(u, args)
+	if sel == nil {
+		return "", "", false
+	}
+	reduced, ok := p.reducedSelect(sel, selArgs, true)
+	if !ok {
+		return "", "", false
+	}
+	table, columns := p.o.columns(p.t, sel.Table.Value)
+	_, indexes := p.o.tableIndexes(p.t, table, columns)
+	a, ok := stmttest.ChosenAccess(columns, indexes, reduced, nil)
+	if !ok {
+		return "", "", false
+	}
+	return p.changeOrderOf(u, a.Index), a.Index, true
+}
+
+// sqliteOrder of the update u with the arguments args as SQLite binds them: the ORDER BY in which
+// SQLite changes its rows, as [pair.changeOrderOf] gives it for the access of SQLite's plan of u,
+// and the index of that access, "" for the primary key. It reports false where SQLite gives no
+// plan, as for an argument that is longer than the length limit.
+func (p *pair) sqliteOrder(u *stmt.Update, args []any) (order, index string, ok bool) {
+	t := p.t
+	t.Helper()
+	if u.Subqueries != nil {
+		// Two passes, whatever the access.
+		return p.keyOrder(u), "", true
+	}
+	table, _ := p.o.columns(t, u.Table.Value)
+	src, srcArgs := stmttest.UpdateText(u, args)
+	plan := p.o.run(t, "explain query plan "+src, srcArgs...)
+	if plan.err != "" {
+		return "", "", false
+	}
+	for _, row := range plan.rows {
+		detail, err := strconv.Unquote(row[strings.LastIndex(row, `,"`)+1:])
+		is.NotError(t, err, row)
+		scan, ok := strings.CutPrefix(detail, "SCAN ")
+		if !ok {
+			scan, ok = strings.CutPrefix(detail, "SEARCH ")
+		}
+		// The plan names the table as the statement spells it, which SQLite compares without case.
+		if !ok || len(scan) < len(table) || !strings.EqualFold(scan[:len(table)], table) || len(scan) > len(table) && scan[len(table)] != ' ' {
+			continue
+		}
+		if _, rest, ok := strings.Cut(scan[len(table):], " INDEX "); ok {
+			// The name of the index as it was created, which may hold a space: the longest that the
+			// rest begins with.
+			_, columns := p.o.columns(t, u.Table.Value)
+			_, indexes := p.o.tableIndexes(t, table, columns)
+			for _, ix := range indexes {
+				if (rest == ix.Name || strings.HasPrefix(rest, ix.Name+" ")) && len(ix.Name) > len(index) {
+					index = ix.Name
+				}
+			}
+			if index == "" {
+				t.Fatalf("%q: SQLite's plan %q reads by an index that the table does not have", src, detail)
+			}
+		}
+		return p.changeOrderOf(u, index), index, true
+	}
+	t.Fatalf("%q: SQLite's plan %q has no scan", src, plan.rows)
+	return "", "", false
+}
+
+// rowFailure reports whether err, an error of an [answer] of SQLite, is one that an update gives for
+// one of the rows that it changes: a column that does not take NULL, a key that exists, and a record
+// that is too long.
+func rowFailure(err string) bool {
+	return strings.HasPrefix(err, "19/1299: ") || strings.HasPrefix(err, "19/1555: ") || err == tooBig
+}
+
+// checkUpdateOrder of the update u, with the arguments args as SQLite binds them, which SQLite ran
+// and failed for one of its rows with want, and for which the engine gave got, as SQLite's
+// database is before the statement. It counts [reachedUpdateOrder] where the first row that fails in
+// SQLite's order, as [pair.sqliteOrder] gives it, fails with want and with another error than the
+// first that fails in the order of the key, so that the order decides the error. It reports whether
+// the engine's error is excused: where SQLite's planner reads the rows by another access than the
+// model's, or where u is the statement of the engine with the values of its subqueries in their
+// place, if flattened, which the engine changes in the order of the key and SQLite may change in one
+// pass, the engine's error must be that of the first row that fails in the engine's order, as
+// [pair.engineOrder] gives it, and is excused as [excusedPlannerOrder].
+func (p *pair) checkUpdateOrder(u *stmt.Update, args []any, flattened bool, got, want answer) bool {
+	sqlite, sqliteIndex, ok := p.sqliteOrder(u, args)
+	key := p.keyOrder(u)
+	if !ok || sqlite == key && got.String() == want.String() {
+		// Nothing to count, and nothing to excuse.
+		return false
+	}
+	first, _, ok := p.firstError(u, args, sqlite)
+	if !ok || first != want.err {
+		// Rows that change one at a time do not give SQLite's error, as where an error of the WHERE of a
+		// row comes after the change of a row before it.
+		return false
+	}
+	if sqlite != key {
+		if byKey, _, ok := p.firstError(u, args, key); ok && byKey != first {
+			p.count(reachedUpdateOrder)
+		}
+	}
+	if got.String() == want.String() {
+		return false
+	}
+	engine, engineIndex, ok := p.engineOrder(u, args)
+	if flattened {
+		engine, engineIndex, ok = p.keyOrder(u), "", true
+	}
+	if !ok || engine == sqlite || !flattened && strings.EqualFold(engineIndex, sqliteIndex) {
+		return false
+	}
+	byEngine, _, ok := p.firstError(u, args, engine)
+	return ok && got.err == byEngine
 }
 
 // changeTerms of the update or the delete s: the values of its SET, and of its conditions, in the
@@ -3771,6 +4027,10 @@ func (p *pair) longCondition(src string) bool {
 
 // tooBig is the err of an [answer] of SQLite's error of a text or a blob that is too long.
 const tooBig = "18/18: string or blob too big"
+
+// reachedUpdateOrder is the kind of an update whose rows fail with different errors in the order of
+// the key and in the order in which SQLite changes them, as [pair.checkUpdateOrder] counts it.
+const reachedUpdateOrder = "update whose first row to fail is another in SQLite's order than in the order of the key"
 
 // byteLength of a value, a literal or an argument, that is text or a blob, and 0 for any other.
 func byteLength(v any) int {
@@ -4019,7 +4279,7 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several, stmttest.TextFunctions:
 		n *= 2
 	}
 	return uint64(n)
@@ -4378,6 +4638,59 @@ func TestPair_tooLongForCache(t *testing.T) {
 	})
 }
 
+func TestPair_updateOrder(t *testing.T) {
+	// The row of the key 1 gives NULL to x, and that of the key 2 to y; ia holds the row of the key 2
+	// first. ib holds the same b in every row, so a range of b reads by ib in SQLite.
+	setup := []string{
+		"create table t (k int primary key, a int, b int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+		"create index ia on t (a)",
+		"insert into t values (1, 20, 5, 1, 1, null, 1)", "insert into t values (2, 10, 5, 1, 1, 1, null)",
+	}
+	cases := []struct {
+		name, src string
+		// reached and excused report whether the step counts the update whose first row to fail
+		// depends on the order, and excuses the engine's error by SQLite's planner.
+		reached, excused bool
+	}{
+		{name: "should compare and count an update by an index whose first row to fail is another than in the order of the key", src: "update t set x = nx, y = ny where a > 0", reached: true},
+		{name: "should excuse an update without WHERE that SQLite reads by an index and the engine by the key, as each row alone gives it", src: "update t set x = nx, y = ny", reached: true, excused: true},
+		{name: "should find the table in SQLite's plan as the statement spells it", src: "update T set x = nx, y = ny", reached: true, excused: true},
+		{name: "should neither count nor excuse an update in the order of the key in both", src: "update t set x = nx, y = ny where k > 0"},
+		{name: "should neither count nor excuse an update that sets the key, which both change in the order of the key", src: "update t set k = k, x = nx, y = ny where a > 0"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			y := tally{}
+			p := newPair(t, newInstance(t, engine.Options{}), y)
+			for _, src := range setup {
+				is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+			}
+			is.Equal(t, "", p.step(stmttest.Call{Src: c.src, Supported: true}), c.src)
+			is.Equal(t, map[bool]int{true: 1}[c.reached], y["reached: "+reachedUpdateOrder], "reached")
+			is.Equal(t, map[bool]int{true: 1}[c.excused], y["excused: "+excusedPlannerOrder], "excused")
+			is.Equal(t, p.o.state(t), p.i.state(), "SQLite's state after the step")
+		})
+	}
+
+	t.Run("should not excuse an engine that gives the error of another row than the first in its order", func(t *testing.T) {
+		p := newPair(t, newInstance(t, engine.Options{}), tally{})
+		for _, src := range setup {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		s, _ := stmt.Check("update t set x = nx, y = ny")
+		got := answer{err: "19/1299: NOT NULL constraint failed: t.y"}
+		want := answer{err: "19/1299: NOT NULL constraint failed: t.y"}
+		is.True(t, !p.checkUpdateOrder(s.(*stmt.Update), nil, false, got, want), "the engine's error is SQLite's")
+		got.err = "19/1299: NOT NULL constraint failed: t.x"
+		is.True(t, p.checkUpdateOrder(s.(*stmt.Update), nil, false, got, want), "the engine's error is that of its first row")
+		want.err, got.err = "19/1299: NOT NULL constraint failed: t.x", "19/1299: NOT NULL constraint failed: t.y"
+		is.True(t, !p.checkUpdateOrder(s.(*stmt.Update), nil, false, got, want), "SQLite's error is not that of its first row")
+		// Another error of a row, which the first row to fail gives in neither order.
+		want.err, got.err = "19/1299: NOT NULL constraint failed: t.y", tooBig
+		is.True(t, !p.checkUpdateOrder(s.(*stmt.Update), nil, false, got, want), "the engine's error is of a row, but of no first row")
+	})
+}
+
 // TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo/sql-front-end.md, at the
 // length limit of 1000: the engine refuses the update of two rows whose second record is too long,
 // which SQLite stores on some platforms and refuses on others, and the comparison accepts either
@@ -4409,7 +4722,7 @@ func TestPair_recordSlips(t *testing.T) {
 			got := p.i.execValues(c.src, nil)
 			is.Equal(t, c.tooBig, got.err == tooBig, got.String())
 			s, _ := stmt.Check(c.src)
-			is.Equal(t, c.slips, p.recordSlips(s.(*stmt.Update), nil))
+			is.Equal(t, c.slips, p.recordSlips(s.(*stmt.Update), nil, false))
 			changes, _ := p.o.changes(t)
 			is.Equal(t, int64(0), changes, "SQLite's count of changes after the check")
 			if c.tooBig {

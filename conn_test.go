@@ -545,7 +545,7 @@ func (failingValuer) Value() (driver.Value, error) {
 }
 
 // annotations of the commit objects of the database "db" in the world's store, in the order of the
-// log: the text of each statement, and " with " and the value of each of its parameters.
+// log: the text of each statement, which is all that an annotation holds.
 func annotations(t *testing.T, w *world) []string {
 	t.Helper()
 	data, _, ok := w.store.Object("db/manifest.json")
@@ -568,24 +568,7 @@ func annotations(t *testing.T, w *world) []string {
 			}
 			is.NotError(t, err)
 			if a != nil {
-				note := a.GetStatement().GetSql()
-				for _, p := range a.GetStatement().GetParameters() {
-					switch {
-					case p.HasInteger():
-						note += fmt.Sprint(" with ", p.GetInteger())
-					case p.HasReal():
-						note += " with real " + strconv.FormatFloat(p.GetReal(), 'g', -1, 64)
-					case p.HasText():
-						note += " with " + strconv.Quote(p.GetText())
-					case p.HasBlob():
-						note += fmt.Sprintf(" with x'%x'", p.GetBlob())
-					case p.HasNull():
-						note += " with null"
-					default:
-						t.Fatalf("%q: a parameter of kind %v", note, p.WhichKind())
-					}
-				}
-				commit = append(commit, note)
+				commit = append(commit, a.GetStatement().GetSql())
 			}
 		}
 		notes = append(commit, notes...)
@@ -776,7 +759,7 @@ func TestParameters(t *testing.T) {
 		is.Equal(t, 1, len(commits(t, w)))
 	})
 
-	t.Run("should keep the arguments in the annotation of the commit, and give the same rows from an empty cache after a restart", func(t *testing.T) {
+	t.Run("should annotate the commit with the text alone, and give the same rows from an empty cache after a restart", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, t1)
@@ -794,9 +777,9 @@ func TestParameters(t *testing.T) {
 		exec(t, db, "insert into t1 (v1) values (1)")
 		is.EqualSlice(t, []string{
 			t1,
-			"insert into t1 (v1) values (?) with -9223372036854775808",
-			"insert into t1 (v1) values ( ? ) with 7",
-			"insert into t1 (v1) values ( ? ) with 9223372036854775807",
+			"insert into t1 (v1) values (?)",
+			"insert into t1 (v1) values ( ? )",
+			"insert into t1 (v1) values ( ? )",
 			"insert into t1 (v1) values (1)",
 		}, annotations(t, w))
 		want := values(t, db, select1)
@@ -933,11 +916,11 @@ func TestArgument(t *testing.T) {
 		is.Equal(t, want, rowsText(t, db, "select * from r"), "the cache")
 		is.EqualSlice(t, []string{
 			"create table r (k int primary key, b blob) strict, without rowid",
-			"insert into r values (1, ?) with x'01'",
-			"insert into r values (?, ?) with 2 with x'02'",
-			"insert into r values (3, ?); with x'03'",
-			"insert into r values (4, ?) with x'04'",
-			"insert into r values (5, ?) returning b with x'05'",
+			"insert into r values (1, ?)",
+			"insert into r values (?, ?)",
+			"insert into r values (3, ?);",
+			"insert into r values (4, ?)",
+			"insert into r values (5, ?) returning b",
 		}, annotations(t, w), "the commit object")
 		is.NotError(t, db.Close())
 		is.Equal(t, want, rowsText(t, w.serve(t, "b"), "select * from r"), "the cache of another instance")
@@ -1085,7 +1068,7 @@ func TestTypes(t *testing.T) {
 		is.Equal(t, len(typedTables), len(commits(t, w)))
 	})
 
-	t.Run("should store -0.0 as 0.0, give it back as 0.0, take it for the key 0.0, and annotate the argument as given", func(t *testing.T) {
+	t.Run("should store -0.0 as 0.0, give it back as 0.0, take it for the key 0.0, and annotate the statement by its text", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, typedTables[2])
@@ -1100,7 +1083,7 @@ func TestTypes(t *testing.T) {
 		}
 		_, err = db.ExecContext(t.Context(), "insert into reals (v) values (?)", 0.0)
 		sqliteError(t, 19, 1555, "UNIQUE constraint failed: reals.v", err)
-		is.EqualSlice(t, []string{typedTables[2], "insert into reals (v) values (?) with real -0"}, annotations(t, w))
+		is.EqualSlice(t, []string{typedTables[2], "insert into reals (v) values (?)"}, annotations(t, w))
 		is.NotError(t, db.Close())
 		is.NotError(t, w.serve(t, "b").QueryRowContext(t.Context(), "select * from reals").Scan(&v))
 		is.True(t, v == 0 && !math.Signbit(v), fmt.Sprint(v))
@@ -1255,8 +1238,8 @@ func TestColumns(t *testing.T) {
 
 		is.EqualSlice(t, []string{
 			t3, "insert into t3 values (2, 'b', 2.5)", `insert into T3 (V3, v1, "V2") values (1.5, 1, 'a')`,
-			`insert into t3 (v1, v2, v3) values (?, ?, ?) with 4 with "d" with real 4.5`,
-			`insert into t3 (v2, v3, v1) values (?, ?, ?) with "c" with real 3.5 with 3`,
+			`insert into t3 (v1, v2, v3) values (?, ?, ?)`,
+			`insert into t3 (v2, v3, v1) values (?, ?, ?)`,
 		}, annotations(t, w))
 		is.NotError(t, db.Close())
 		is.Equal(t, want, rowsText(t, w.serve(t, "b"), "select * from t3"))
@@ -1338,7 +1321,7 @@ func TestColumns(t *testing.T) {
 func TestNulls(t *testing.T) {
 	const create = "create table n (k int primary key, t text, i integer, r real, b blob, s text not null) strict, without rowid"
 
-	t.Run("should take every kind of nil that database/sql hands the driver as NULL, in a column of any type, directly and prepared, and annotate it as NULL", func(t *testing.T) {
+	t.Run("should take every kind of nil that database/sql hands the driver as NULL, in a column of any type, directly and prepared, and annotate the statement by its text", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, create)
@@ -1360,7 +1343,7 @@ func TestNulls(t *testing.T) {
 			rows = append(rows, "<nil> <nil> <nil> <nil> x")
 		}
 		is.Equal(t, "t TEXT, i INTEGER, r REAL, b BLOB, s TEXT: "+strings.Join(rows, "; "), rowsText(t, db, "select t, i, r, b, s from n"))
-		is.Equal(t, `insert into n (k, t, i, r, b, s) values (?, ?, ?, ?, ?, ?) with 0 with null with null with null with null with "x"`, annotations(t, w)[1])
+		is.Equal(t, `insert into n (k, t, i, r, b, s) values (?, ?, ?, ?, ?, ?)`, annotations(t, w)[1])
 		is.NotError(t, db.Close())
 		is.Equal(t, int64(2*len(nils)), rowCount(t, w.serve(t, "b"), "select k from n"))
 	})
@@ -1944,7 +1927,7 @@ func TestDefaults(t *testing.T) {
 		is.NotError(t, tx.Commit())
 		const want = "k INT, n INTEGER, r REAL, s TEXT, b BLOB, u TEXT: 1 0 0 it's [10] <nil>; 2 0 0 <nil> [10] <nil>; 3 0 0 x [10] <nil>; 4 5 0 it's [10] u"
 		is.Equal(t, want, rowsText(t, db, "select * from d"))
-		is.Equal(t, "insert into d (k) values (?) with 1", annotations(t, w)[1])
+		is.Equal(t, "insert into d (k) values (?)", annotations(t, w)[1])
 
 		// Another instance replays the table with its defaults, and fills them in.
 		is.NotError(t, db.Close())
@@ -2049,7 +2032,7 @@ func TestValueFirst(t *testing.T) {
 		is.Equal(t, int64(2), affected(t, res, err))
 		const want = "id TEXT, priority INTEGER, received INTEGER: m2 8 3; m4 0 0"
 		is.Equal(t, want, rowsText(t, db, "select id, priority, received from goqite"))
-		is.Equal(t, `delete from goqite where ? <= timeout and 'q' = queue with "2026-11-21T14:00:00.000Z"`, annotations(t, w)[len(annotations(t, w))-1])
+		is.Equal(t, `delete from goqite where ? <= timeout and 'q' = queue`, annotations(t, w)[len(annotations(t, w))-1])
 
 		is.NotError(t, db.Close())
 		db = w.serve(t, "b")
@@ -2959,7 +2942,7 @@ func TestArithmetic(t *testing.T) {
 		is.Equal(t, "id TEXT, body BLOB, received INTEGER: ", rowsText(t, db, receive, at(5), "default", "default", at(4), 3))
 		is.NotError(t, p.Close())
 		notes := annotations(t, w)
-		is.Equal(t, receive+` with "2026-11-25T12:04:00.000Z" with "default" with "default" with "2026-11-25T12:03:00.000Z" with 3`, notes[len(notes)-1])
+		is.Equal(t, receive, notes[len(notes)-1])
 
 		// Another instance, with an empty cache, replays the receives, which the commits hold as rows.
 		is.NotError(t, db.Close())
@@ -4425,8 +4408,8 @@ func TestExec_several(t *testing.T) {
 		is.EqualSlice(t, []string{
 			"create table goqite (\n  id text primary key,\n  queue text not null,\n  body blob not null\n) strict, without rowid;",
 			"create index goqite_queue_idx on goqite (queue);",
-			`insert into goqite (id, queue, body) values (?, ?, ?); with "m1" with "q" with x'01'`,
-			`insert into goqite (id, queue, body) values (?, 'q', x'02') with "m2"`,
+			`insert into goqite (id, queue, body) values (?, ?, ?);`,
+			`insert into goqite (id, queue, body) values (?, 'q', x'02')`,
 		}, annotations(t, w))
 		is.Equal(t, 4, len(commits(t, w)))
 		want := rowsText(t, db, "select id, queue, body from goqite where queue = 'q' order by id")

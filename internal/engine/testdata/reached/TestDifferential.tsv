@@ -3,598 +3,634 @@
 # required of it, a third, or = for a count that is pinned exactly, and the kind. The kinds are
 # those of testdata/reached/TestDifferential.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
 # Do not edit a number by hand.
-mixed	12	4	createtable duplicate column name
-mixed	1	=	excused: a literal in a condition longer than the length limit, for which SQLite gives rows, checked against s4ql's rule
+mixed	13	4	createtable duplicate column name
 mixed	2	=	excused: a literal longer than the length limit, checked against s4ql's rule
-mixed	299	=	excused: a value of another type than its column, checked against s4ql's rule
-mixed	17	=	excused: already exists after the start of a table, accepted
-mixed	215	=	excused: an argument that no column holds, checked against s4ql's rule
-mixed	4	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
-mixed	64	=	excused: arithmetic refused by the rule of exact types
-mixed	22	=	excused: evaluation error that SQLite's result of its operator justifies
-mixed	566	=	excused: the wrong number of arguments, checked against s4ql's rule
-mixed	38	12	insert  values for 
-mixed	103	34	insert NOT NULL constraint failed
-mixed	39	13	insert values were supplied
-mixed	97	32	insert with a parameter UNIQUE constraint failed
-mixed	173	57	insert with a parameter not supported
-mixed	338	112	insert with a parameter ok
+mixed	256	=	excused: a value of another type than its column, checked against s4ql's rule
+mixed	18	=	excused: already exists after the start of a table, accepted
+mixed	224	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	5	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+mixed	137	=	excused: arithmetic refused by the rule of exact types
+mixed	17	=	excused: evaluation error that SQLite's result of its operator justifies
+mixed	2	=	excused: text without a call that may serve the access, too long, which SQLite computes only where its search uses it and the engine before the search
+mixed	560	=	excused: the wrong number of arguments, checked against s4ql's rule
+mixed	35	11	insert  values for 
+mixed	102	34	insert NOT NULL constraint failed
+mixed	37	12	insert values were supplied
+mixed	89	29	insert with a parameter UNIQUE constraint failed
+mixed	165	55	insert with a parameter not supported
+mixed	335	111	insert with a parameter ok
 mixed	145	48	insert with a parameter wrong number of arguments
-mixed	71	23	insert wrong number of arguments
-mixed	8	2	reached: != on another column ok
-mixed	6	2	reached: != on the key a value of another type
-mixed	20	6	reached: != on the key ok
+mixed	69	23	insert wrong number of arguments
+mixed	7	2	reached: != on another column ok
+mixed	3	1	reached: != on the key a value of another type
+mixed	14	4	reached: != on the key ok
 mixed	5	1	reached: -0.0 argument into REAL UNIQUE constraint failed
 mixed	7	2	reached: -0.0 literal into REAL UNIQUE constraint failed
-mixed	7	2	reached: < on another column ok
-mixed	11	3	reached: < on the key a value of another type
-mixed	47	15	reached: < on the key ok
-mixed	12	4	reached: <= on another column ok
-mixed	12	4	reached: <= on the key a value of another type
-mixed	38	12	reached: <= on the key ok
-mixed	27	9	reached: = on another column ok
-mixed	11	3	reached: = on the key a value of another type
-mixed	55	18	reached: = on the key ok
-mixed	12	4	reached: > on another column ok
-mixed	9	3	reached: > on the key a value of another type
-mixed	40	13	reached: > on the key ok
-mixed	7	2	reached: >= on another column ok
-mixed	12	4	reached: >= on the key a value of another type
-mixed	40	13	reached: >= on the key ok
+mixed	5	1	reached: < on another column ok
+mixed	4	1	reached: < on the key a value of another type
+mixed	39	13	reached: < on the key ok
+mixed	11	3	reached: <= on another column ok
+mixed	6	2	reached: <= on the key a value of another type
+mixed	32	10	reached: <= on the key ok
+mixed	25	8	reached: = on another column ok
+mixed	9	3	reached: = on the key a value of another type
+mixed	53	17	reached: = on the key ok
+mixed	8	2	reached: > on another column ok
+mixed	5	1	reached: > on the key a value of another type
+mixed	29	9	reached: > on the key ok
+mixed	6	2	reached: >= on another column ok
+mixed	6	2	reached: >= on the key a value of another type
+mixed	34	11	reached: >= on the key ok
 mixed	3	1	reached: IS NOT NULL on another column ok
-mixed	16	5	reached: IS NOT NULL on the key ok
-mixed	7	2	reached: IS NULL on another column ok
-mixed	16	5	reached: IS NULL on the key ok
+mixed	14	4	reached: IS NOT NULL on the key ok
+mixed	6	2	reached: IS NULL on another column ok
+mixed	14	4	reached: IS NULL on the key ok
 mixed	11	3	reached: LIMIT 0
 mixed	23	7	reached: LIMIT above the number of rows
 mixed	18	6	reached: LIMIT by an argument ok
-mixed	6	2	reached: LIMIT of the number of rows
-mixed	56	18	reached: LIMIT run by every path
-mixed	3	1	reached: LIMIT that cuts
+mixed	7	2	reached: LIMIT of the number of rows
+mixed	54	18	reached: LIMIT run by every path
 mixed	3	1	reached: LIMIT with an argument that is NULL not supported
-mixed	3	1	reached: LIMIT with an argument that is a blob not supported
 mixed	6	2	reached: LIMIT with an argument that is a negative integer not supported
-mixed	5	1	reached: LIMIT with an argument that is a real not supported
+mixed	4	1	reached: LIMIT with an argument that is a real not supported
 mixed	6	2	reached: LIMIT with an argument that is text not supported
 mixed	7	2	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
-mixed	6	2	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+mixed	4	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
 mixed	19	6	reached: NULL argument into a column that takes NULL ok
 mixed	18	6	reached: NULL argument into the key NOT NULL constraint failed
-mixed	38	12	reached: NULL given for a column with a default, which does not take NULL NOT NULL constraint failed
-mixed	27	9	reached: NULL given for a column with a default, which takes NULL ok
+mixed	39	13	reached: NULL given for a column with a default, which does not take NULL NOT NULL constraint failed
+mixed	26	8	reached: NULL given for a column with a default, which takes NULL ok
 mixed	23	7	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
 mixed	7	2	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
-mixed	33	11	reached: NULL literal into a column that takes NULL ok
-mixed	44	14	reached: NULL literal into the key NOT NULL constraint failed
-mixed	50	16	reached: ORDER BY ascending ok
-mixed	52	17	reached: ORDER BY descending ok
-mixed	89	29	reached: ORDER BY of 1 columns ok
-mixed	21	7	reached: ORDER BY of 2 columns ok
-mixed	5	1	reached: ORDER BY of 3 columns ok
-mixed	31	10	reached: ORDER BY of a column of type BLOB ok
-mixed	29	9	reached: ORDER BY of a column of type INT ok
-mixed	28	9	reached: ORDER BY of a column of type INTEGER ok
-mixed	27	9	reached: ORDER BY of a column of type REAL ok
-mixed	31	10	reached: ORDER BY of a column of type TEXT ok
+mixed	32	10	reached: NULL literal into a column that takes NULL ok
+mixed	45	15	reached: NULL literal into the key NOT NULL constraint failed
+mixed	44	14	reached: ORDER BY ascending ok
+mixed	50	16	reached: ORDER BY descending ok
+mixed	84	28	reached: ORDER BY of 1 columns ok
+mixed	17	5	reached: ORDER BY of 2 columns ok
+mixed	6	2	reached: ORDER BY of 3 columns ok
+mixed	27	9	reached: ORDER BY of a column of type BLOB ok
+mixed	28	9	reached: ORDER BY of a column of type INT ok
+mixed	27	9	reached: ORDER BY of a column of type INTEGER ok
+mixed	25	8	reached: ORDER BY of a column of type REAL ok
+mixed	29	9	reached: ORDER BY of a column of type TEXT ok
 mixed	21	7	reached: ORDER BY of a column that takes NULL ok
-mixed	14	4	reached: ORDER BY of a column that the WHERE pins ok
-mixed	16	5	reached: ORDER BY of a column that the table does not have no such column
+mixed	13	4	reached: ORDER BY of a column that the WHERE pins ok
+mixed	11	3	reached: ORDER BY of a column that the table does not have no such column
 mixed	13	4	reached: ORDER BY of mixed directions ok
-mixed	23	7	reached: ORDER BY or LIMIT with arguments that s4ql refuses wrong number of arguments
-mixed	4	1	reached: ORDER BY over rows with NULL in its columns
-mixed	113	37	reached: ORDER BY run by every path
+mixed	17	5	reached: ORDER BY or LIMIT with arguments that s4ql refuses wrong number of arguments
+mixed	5	1	reached: ORDER BY over rows with NULL in its columns
+mixed	105	35	reached: ORDER BY run by every path
 mixed	71	23	reached: ORDER BY without WHERE ok
-mixed	20	6	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
-mixed	18	6	reached: SET of NULL for a column that does not take it ok, no row found
-mixed	19	6	reached: SET of a column in double quotes that the table does not have no such column
-mixed	38	12	reached: SET of a column that the table does not have no such column
+mixed	16	5	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+mixed	19	6	reached: SET of NULL for a column that does not take it ok, no row found
+mixed	13	4	reached: SET of a column in double quotes that the table does not have no such column
+mixed	29	9	reached: SET of a column that the table does not have no such column
 mixed	20	6	reached: SET of every column ok, rows changed
-mixed	13	4	reached: SET of the key NOT NULL constraint failed
-mixed	22	7	reached: SET of the key UNIQUE constraint failed
-mixed	26	8	reached: SET of the key ok, rows changed
-mixed	32	10	reached: SET with a value of another type a value of another type
-mixed	11	3	reached: SET with argument []uint8 ok, no row found
-mixed	11	3	reached: SET with argument int64 ok, rows changed
-mixed	4	1	reached: SET with argument nil ok, rows changed
-mixed	4	1	reached: SET with argument string ok, rows changed
-mixed	8	2	reached: SET with literal blob ok, rows changed
-mixed	23	7	reached: SET with literal integer ok, rows changed
+mixed	10	3	reached: SET of the key NOT NULL constraint failed
+mixed	17	5	reached: SET of the key UNIQUE constraint failed
+mixed	27	9	reached: SET of the key ok, rows changed
+mixed	27	9	reached: SET with a value of another type a value of another type
+mixed	9	3	reached: SET with argument []uint8 ok, no row found
+mixed	10	3	reached: SET with argument int64 ok, rows changed
+mixed	3	1	reached: SET with argument nil ok, rows changed
+mixed	3	1	reached: SET with argument string ok, rows changed
+mixed	7	2	reached: SET with literal blob ok, rows changed
+mixed	3	1	reached: SET with literal empty blob ok, rows changed
+mixed	24	8	reached: SET with literal integer ok, rows changed
 mixed	3	1	reached: SET with literal real -0.0 ok, rows changed
 mixed	5	1	reached: SET with literal text ok, rows changed
-mixed	148	49	reached: WHERE run by a sample of its paths
-mixed	487	162	reached: WHERE run by every path
-mixed	169	56	reached: WHERE run by every path on a table with an index
+mixed	133	44	reached: WHERE run by a sample of its paths
+mixed	424	141	reached: WHERE run by every path
+mixed	154	51	reached: WHERE run by every path on a table with an index
 mixed	12	4	reached: WHERE that gives every row of a table with rows
-mixed	41	13	reached: WHERE that gives no row of a table with rows
-mixed	14	4	reached: WHERE that gives some rows of a table
-mixed	38	12	reached: WHERE that reads a get of one key ok
-mixed	13	4	reached: WHERE that reads a scan between two bounds ok
-mixed	13	4	reached: WHERE that reads a scan between two bounds that hold no key ok
-mixed	21	7	reached: WHERE that reads a scan from a lower bound ok
-mixed	43	14	reached: WHERE that reads a scan of every row ok
-mixed	19	6	reached: WHERE that reads a scan to an upper bound ok
-mixed	34	11	reached: WHERE that reads no row ok
-mixed	89	29	reached: WHERE that tests a column more than once ok
-mixed	29	9	reached: WHERE with a column in double quotes that the table does not have no such column
-mixed	15	5	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
+mixed	35	11	reached: WHERE that gives no row of a table with rows
+mixed	13	4	reached: WHERE that gives some rows of a table
+mixed	37	12	reached: WHERE that reads a get of one key ok
+mixed	10	3	reached: WHERE that reads a scan between two bounds ok
+mixed	11	3	reached: WHERE that reads a scan between two bounds that hold no key ok
+mixed	16	5	reached: WHERE that reads a scan from a lower bound ok
+mixed	36	12	reached: WHERE that reads a scan of every row ok
+mixed	17	5	reached: WHERE that reads a scan to an upper bound ok
+mixed	29	9	reached: WHERE that reads no row ok
+mixed	74	24	reached: WHERE that tests a column more than once ok
+mixed	27	9	reached: WHERE with a column in double quotes that the table does not have no such column
+mixed	12	4	reached: WHERE with a column that the table does not have in a comparison, after other conditions no such column
 mixed	22	7	reached: WHERE with a column that the table does not have in a comparison, alone no such column
-mixed	19	6	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
+mixed	15	5	reached: WHERE with a column that the table does not have in a comparison, before other conditions no such column
 mixed	3	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, after other conditions no such column
 mixed	5	1	reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, before other conditions no such column
-mixed	6	2	reached: WHERE with a literal longer than the length limit
-mixed	37	12	reached: WHERE with a value of another type a value of another type
-mixed	221	73	reached: WHERE with a value on the left run by every path
-mixed	88	29	reached: WHERE with a value on the left run by every path on a table with an index
-mixed	6	2	reached: WHERE with an argument that no column holds not supported
-mixed	15	5	reached: WHERE with contradicting conditions ok
-mixed	23	7	reached: WHERE with the wrong number of arguments wrong number of arguments
+mixed	4	1	reached: WHERE with a literal longer than the length limit
+mixed	21	7	reached: WHERE with a value of another type a value of another type
+mixed	185	61	reached: WHERE with a value on the left run by every path
+mixed	76	25	reached: WHERE with a value on the left run by every path on a table with an index
+mixed	5	1	reached: WHERE with an argument that no column holds not supported
+mixed	14	4	reached: WHERE with contradicting conditions ok
+mixed	16	5	reached: WHERE with the wrong number of arguments wrong number of arguments
 mixed	7	2	reached: argument NaN
-mixed	207	69	reached: argument []uint8
+mixed	202	67	reached: argument []uint8
 mixed	4	1	reached: argument bool
-mixed	58	19	reached: argument empty []byte
+mixed	57	19	reached: argument empty []byte
 mixed	31	10	reached: argument empty string
 mixed	10	3	reached: argument float32
 mixed	6	2	reached: argument float32 that is not finite
-mixed	235	78	reached: argument float64
-mixed	37	12	reached: argument float64 -0.0
-mixed	10	3	reached: argument infinite float64
+mixed	228	76	reached: argument float64
+mixed	36	12	reached: argument float64 -0.0
+mixed	9	3	reached: argument infinite float64
 mixed	13	4	reached: argument int
 mixed	8	2	reached: argument int32
-mixed	574	191	reached: argument int64
-mixed	70	23	reached: argument named
-mixed	127	42	reached: argument nil
+mixed	557	185	reached: argument int64
+mixed	68	22	reached: argument named
+mixed	123	41	reached: argument nil
 mixed	31	10	reached: argument nil []byte
-mixed	238	79	reached: argument string
-mixed	18	6	reached: argument string that is not valid UTF-8
-mixed	23	7	reached: argument string with NUL
+mixed	232	77	reached: argument string
+mixed	17	5	reached: argument string that is not valid UTF-8
+mixed	22	7	reached: argument string with NUL
 mixed	6	2	reached: argument time.Time
 mixed	14	4	reached: argument uint64
 mixed	8	2	reached: argument uint64 above int64
-mixed	31	10	reached: arithmetic of a select whose due errors the model's access decides
-mixed	8	2	reached: arithmetic of a write whose evaluation error the model's access judges
-mixed	4	1	reached: arithmetic with a column in SET of a update, no such column
-mixed	23	7	reached: arithmetic with a column in SET of a update, no such table
-mixed	15	5	reached: arithmetic with a column in SET of a update, not supported
-mixed	19	6	reached: arithmetic with a column in SET of a update, ok
+mixed	58	19	reached: arithmetic of a select whose due errors the model's access decides
+mixed	5	1	reached: arithmetic of a write whose evaluation error the model's access judges
+mixed	3	1	reached: arithmetic with a column in SET of a update, no such column
+mixed	24	8	reached: arithmetic with a column in SET of a update, no such table
+mixed	14	4	reached: arithmetic with a column in SET of a update, not supported
+mixed	24	8	reached: arithmetic with a column in SET of a update, ok
 mixed	7	2	reached: arithmetic with a column in SET of a update, wrong number of arguments
-mixed	31	10	reached: arithmetic with a column in WHERE of a delete, no such table
+mixed	33	11	reached: arithmetic with a column in WHERE of a delete, no such table
 mixed	7	2	reached: arithmetic with a column in WHERE of a delete, not supported
 mixed	10	3	reached: arithmetic with a column in WHERE of a delete, ok
-mixed	5	1	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: division by zero
+mixed	4	1	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: division by zero
 mixed	3	1	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: integer overflow
 mixed	8	2	reached: arithmetic with a column in WHERE of a select, no such column
-mixed	66	22	reached: arithmetic with a column in WHERE of a select, no such table
-mixed	34	11	reached: arithmetic with a column in WHERE of a select, not supported
-mixed	37	12	reached: arithmetic with a column in WHERE of a select, ok
+mixed	72	24	reached: arithmetic with a column in WHERE of a select, no such table
+mixed	36	12	reached: arithmetic with a column in WHERE of a select, not supported
+mixed	36	12	reached: arithmetic with a column in WHERE of a select, ok
 mixed	17	5	reached: arithmetic with a column in WHERE of a select, wrong number of arguments
 mixed	11	3	reached: arithmetic with a column in WHERE of a update, no such column
-mixed	19	6	reached: arithmetic with a column in WHERE of a update, no such table
-mixed	14	4	reached: arithmetic with a column in WHERE of a update, not supported
-mixed	9	3	reached: arithmetic with a column in WHERE of a update, ok
-mixed	4	1	reached: arithmetic with a column in WHERE of a update, wrong number of arguments
+mixed	17	5	reached: arithmetic with a column in WHERE of a update, no such table
+mixed	20	6	reached: arithmetic with a column in WHERE of a update, not supported
+mixed	7	2	reached: arithmetic with a column in WHERE of a update, ok
+mixed	7	2	reached: arithmetic with a column in WHERE of a update, wrong number of arguments
 mixed	3	1	reached: arithmetic with a column in a subquery of a update, ok
 mixed	5	1	reached: arithmetic without a column in SET of a update, no such table
-mixed	4	1	reached: arithmetic without a column in SET of a update, not supported
+mixed	3	1	reached: arithmetic without a column in SET of a update, not supported
 mixed	5	1	reached: arithmetic without a column in SET of a update, ok
-mixed	16	5	reached: arithmetic without a column in WHERE of a delete, no such table
-mixed	6	2	reached: arithmetic without a column in WHERE of a delete, not supported
+mixed	14	4	reached: arithmetic without a column in WHERE of a delete, no such table
+mixed	8	2	reached: arithmetic without a column in WHERE of a delete, not supported
 mixed	12	4	reached: arithmetic without a column in WHERE of a delete, ok
 mixed	4	1	reached: arithmetic without a column in WHERE of a select, an evaluation error: s4ql: integer overflow
 mixed	3	1	reached: arithmetic without a column in WHERE of a select, no such column
-mixed	38	12	reached: arithmetic without a column in WHERE of a select, no such table
-mixed	12	4	reached: arithmetic without a column in WHERE of a select, not supported
-mixed	33	11	reached: arithmetic without a column in WHERE of a select, ok
+mixed	37	12	reached: arithmetic without a column in WHERE of a select, no such table
+mixed	15	5	reached: arithmetic without a column in WHERE of a select, not supported
+mixed	32	10	reached: arithmetic without a column in WHERE of a select, ok
 mixed	6	2	reached: arithmetic without a column in WHERE of a select, wrong number of arguments
 mixed	8	2	reached: arithmetic without a column in WHERE of a update, no such column
-mixed	14	4	reached: arithmetic without a column in WHERE of a update, no such table
+mixed	15	5	reached: arithmetic without a column in WHERE of a update, no such table
 mixed	12	4	reached: arithmetic without a column in WHERE of a update, not supported
 mixed	12	4	reached: arithmetic without a column in WHERE of a update, ok
 mixed	4	1	reached: arithmetic without a column in a subquery of a select, no such table
 mixed	4	1	reached: arithmetic without a column in a subquery of a select, ok
-mixed	7	2	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
+mixed	12	4	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
+mixed	6	2	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
 mixed	5	1	reached: arithmetic: constant expression that serves a bound of the key
 mixed	8	2	reached: arithmetic: constant expression that serves a get of one key
-mixed	5	1	reached: arithmetic: expression compared with a plain value, ok
-mixed	7	2	reached: arithmetic: expression compared with a subquery, ok
-mixed	10	3	reached: arithmetic: refused a plain value compared with an expression
-mixed	6	2	reached: arithmetic: refused a subquery compared with an expression
+mixed	22	7	reached: arithmetic: expression compared with a plain value, ok
+mixed	11	3	reached: arithmetic: expression compared with a subquery, ok
+mixed	12	4	reached: arithmetic: refused a plain value compared with an expression
+mixed	7	2	reached: arithmetic: refused a subquery compared with an expression
 mixed	6	2	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
-mixed	9	3	reached: arithmetic: s4ql: division by zero in WHERE
-mixed	6	2	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
-mixed	3	1	reached: arithmetic: s4ql: division by zero in WHERE of an expression without a column
-mixed	8	2	reached: arithmetic: s4ql: integer overflow in WHERE
-mixed	4	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
+mixed	6	2	reached: arithmetic: s4ql: division by zero in WHERE
+mixed	5	1	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
+mixed	7	2	reached: arithmetic: s4ql: integer overflow in WHERE
+mixed	3	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression with a column
 mixed	4	1	reached: arithmetic: s4ql: integer overflow in WHERE of an expression without a column
-mixed	5	1	reached: arithmetic: select with LIMIT that failed on a row
-mixed	14	4	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
+mixed	4	1	reached: arithmetic: select with LIMIT that failed on a row
+mixed	17	5	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
 mixed	3	1	reached: arithmetic: update that sets a column from itself that changed rows
-mixed	1132	377	reached: changed both ways
-mixed	172	57	reached: chosen a get
-mixed	60	20	reached: chosen a get by a value on the left
+mixed	1155	385	reached: changed both ways
+mixed	151	50	reached: chosen a get
+mixed	52	17	reached: chosen a get by a value on the left
 mixed	8	2	reached: chosen a get of a table of several indexes
 mixed	8	2	reached: chosen a get, delivered forward
-mixed	3	1	reached: chosen an index with 1 pinned
-mixed	6	2	reached: chosen an index with 1 pinned and a range
-mixed	3	1	reached: chosen an index with 1 pinned by a value on the left
+mixed	4	1	reached: chosen an index with 1 pinned
+mixed	5	1	reached: chosen an index with 1 pinned and a range
+mixed	4	1	reached: chosen an index with 1 pinned by a value on the left
 mixed	3	1	reached: chosen an index with 1 pinned of a table of several indexes
-mixed	56	18	reached: chosen every row
+mixed	51	17	reached: chosen every row
 mixed	19	6	reached: chosen every row, delivered backward
 mixed	20	6	reached: chosen every row, delivered forward
-mixed	33	11	reached: chosen every row, sorted
-mixed	87	29	reached: chosen no row
-mixed	11	3	reached: chosen no row, delivered forward
-mixed	140	46	reached: chosen the primary key with 0 pinned and a range
-mixed	56	18	reached: chosen the primary key with 0 pinned and a range by a value on the left
+mixed	32	10	reached: chosen every row, sorted
+mixed	73	24	reached: chosen no row
+mixed	8	2	reached: chosen no row, delivered forward
+mixed	118	39	reached: chosen the primary key with 0 pinned and a range
+mixed	45	15	reached: chosen the primary key with 0 pinned and a range by a value on the left
 mixed	6	2	reached: chosen the primary key with 0 pinned and a range, delivered backward
-mixed	8	2	reached: chosen the primary key with 0 pinned and a range, delivered forward
-mixed	4	1	reached: chosen the primary key with 0 pinned and a range, sorted
-mixed	22	7	reached: comparison with argument []uint8 ok
-mixed	6	2	reached: comparison with argument empty []byte ok
-mixed	3	1	reached: comparison with argument empty string ok
-mixed	15	5	reached: comparison with argument float64 ok
+mixed	5	1	reached: chosen the primary key with 0 pinned and a range, delivered forward
+mixed	3	1	reached: chosen the primary key with 0 pinned and a range, sorted
+mixed	19	6	reached: comparison with argument []uint8 ok
+mixed	3	1	reached: comparison with argument empty []byte ok
+mixed	13	4	reached: comparison with argument float64 ok
 mixed	40	13	reached: comparison with argument int64 ok
-mixed	22	7	reached: comparison with argument nil ok
-mixed	20	6	reached: comparison with argument string ok
-mixed	37	12	reached: comparison with literal blob ok
-mixed	6	2	reached: comparison with literal empty blob ok
-mixed	7	2	reached: comparison with literal empty text ok
-mixed	70	23	reached: comparison with literal integer ok
-mixed	5	1	reached: comparison with literal null ok
+mixed	19	6	reached: comparison with argument nil ok
+mixed	15	5	reached: comparison with argument string ok
+mixed	22	7	reached: comparison with literal blob ok
+mixed	5	1	reached: comparison with literal empty blob ok
+mixed	4	1	reached: comparison with literal empty text ok
+mixed	66	22	reached: comparison with literal integer ok
+mixed	4	1	reached: comparison with literal null ok
 mixed	4	1	reached: comparison with literal real -0.0 ok
-mixed	25	8	reached: comparison with literal real ok
-mixed	31	10	reached: comparison with literal text ok
-mixed	80	26	reached: create index already exists
-mixed	55	18	reached: create index if not exists did its work
-mixed	40	13	reached: create index if not exists did nothing: an index of the name exists
-mixed	4	1	reached: create index if not exists did nothing: an index of the name exists, and the table lacks a column of the statement
-mixed	13	4	reached: create index if not exists no such column
-mixed	116	38	reached: create index if not exists no such table
-mixed	36	12	reached: create index if not exists there is already a table named
-mixed	44	14	reached: create index no such column
-mixed	340	113	reached: create index no such table
-mixed	120	40	reached: create index of 1 columns ok
-mixed	50	16	reached: create index of 2 columns ok
-mixed	20	6	reached: create index of 3 columns ok
-mixed	52	17	reached: create index of a column of type BLOB ok
+mixed	22	7	reached: comparison with literal real ok
+mixed	25	8	reached: comparison with literal text ok
+mixed	78	26	reached: create index already exists
+mixed	52	17	reached: create index if not exists did its work
+mixed	42	14	reached: create index if not exists did nothing: an index of the name exists
+mixed	3	1	reached: create index if not exists did nothing: an index of the name exists, and the table lacks a column of the statement
+mixed	12	4	reached: create index if not exists no such column
+mixed	113	37	reached: create index if not exists no such table
+mixed	32	10	reached: create index if not exists there is already a table named
+mixed	39	13	reached: create index no such column
+mixed	333	111	reached: create index no such table
+mixed	118	39	reached: create index of 1 columns ok
+mixed	54	18	reached: create index of 2 columns ok
+mixed	19	6	reached: create index of 3 columns ok
+mixed	51	17	reached: create index of a column of type BLOB ok
 mixed	49	16	reached: create index of a column of type INT ok
-mixed	67	22	reached: create index of a column of type INTEGER ok
-mixed	57	19	reached: create index of a column of type REAL ok
-mixed	55	18	reached: create index of a column of type TEXT ok
-mixed	59	19	reached: create index of a column that takes NULL ok
-mixed	87	29	reached: create index of a descending column ok
-mixed	190	63	reached: create index ok
-mixed	150	50	reached: create index that holds the primary key ok
-mixed	124	41	reached: create index there is already a table named
-mixed	178	59	reached: create table if not exists did its work
-mixed	212	70	reached: create table if not exists did nothing: a table of the name exists
-mixed	3	1	reached: create table if not exists duplicate column name
-mixed	12	4	reached: create table if not exists there is already an index named
-mixed	148	49	reached: create table of 1 columns ok
-mixed	190	63	reached: create table of 2 columns ok
-mixed	153	51	reached: create table of 3 columns ok
-mixed	191	63	reached: create table of mixed types ok
-mixed	161	53	reached: create table of which every column outside the key takes NULL ok
+mixed	68	22	reached: create index of a column of type INTEGER ok
+mixed	59	19	reached: create index of a column of type REAL ok
+mixed	56	18	reached: create index of a column of type TEXT ok
+mixed	60	20	reached: create index of a column that takes NULL ok
+mixed	88	29	reached: create index of a descending column ok
+mixed	191	63	reached: create index ok
+mixed	151	50	reached: create index that holds the primary key ok
+mixed	116	38	reached: create index there is already a table named
+mixed	173	57	reached: create table if not exists did its work
+mixed	204	68	reached: create table if not exists did nothing: a table of the name exists
+mixed	4	1	reached: create table if not exists duplicate column name
+mixed	10	3	reached: create table if not exists there is already an index named
+mixed	145	48	reached: create table of 1 columns ok
+mixed	189	63	reached: create table of 2 columns ok
+mixed	152	50	reached: create table of 3 columns ok
+mixed	189	63	reached: create table of mixed types ok
+mixed	158	52	reached: create table of which every column outside the key takes NULL ok
 mixed	144	48	reached: create table of which no column takes NULL ok
-mixed	38	12	reached: create table of which some columns outside the key take NULL ok
-mixed	63	21	reached: create table with DEFAULT NULL on a column that does not take NULL ok
-mixed	18	6	reached: create table with DEFAULT NULL on a column that takes NULL ok
-mixed	57	19	reached: create table with a default of 250 bytes or more ok
-mixed	52	17	reached: create table with a default of blob ok
-mixed	115	38	reached: create table with a default of integer ok
+mixed	39	13	reached: create table of which some columns outside the key take NULL ok
+mixed	61	20	reached: create table with DEFAULT NULL on a column that does not take NULL ok
+mixed	17	5	reached: create table with DEFAULT NULL on a column that takes NULL ok
+mixed	59	19	reached: create table with a default of 250 bytes or more ok
+mixed	53	17	reached: create table with a default of blob ok
+mixed	116	38	reached: create table with a default of integer ok
 mixed	79	26	reached: create table with a default of real ok
-mixed	56	18	reached: create table with a default of text ok
-mixed	237	79	reached: create table with a default on the key ok
-mixed	319	106	reached: create table with the key at 0 ok
-mixed	125	41	reached: create table with the key at 1 ok
-mixed	47	15	reached: create table with the key at 2 ok
-mixed	228	76	reached: create table with two columns of a type ok
-mixed	20	6	reached: delete WHERE that reads a get of one key ok, rows changed
-mixed	6	2	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
-mixed	4	1	reached: delete WHERE that reads a scan from a lower bound ok, rows changed
-mixed	5	1	reached: delete WHERE that reads a scan of every row ok, rows changed
-mixed	8	2	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
-mixed	24	8	reached: delete WHERE that reads no row ok, no row found
-mixed	3	1	reached: delete WHERE that tests a column more than once ok, rows changed
+mixed	57	19	reached: create table with a default of text ok
+mixed	238	79	reached: create table with a default on the key ok
+mixed	315	105	reached: create table with the key at 0 ok
+mixed	123	41	reached: create table with the key at 1 ok
+mixed	48	16	reached: create table with the key at 2 ok
+mixed	227	75	reached: create table with two columns of a type ok
+mixed	18	6	reached: delete WHERE that reads a get of one key ok, rows changed
+mixed	5	1	reached: delete WHERE that reads a scan between two bounds that hold no key ok, no row found
+mixed	5	1	reached: delete WHERE that reads a scan from a lower bound ok, rows changed
+mixed	4	1	reached: delete WHERE that reads a scan of every row ok, rows changed
+mixed	7	2	reached: delete WHERE that reads a scan to an upper bound ok, rows changed
+mixed	22	7	reached: delete WHERE that reads no row ok, no row found
 mixed	13	4	reached: delete WHERE with a column in double quotes that the table does not have no such column
-mixed	20	6	reached: delete WHERE with a value of another type a value of another type
+mixed	15	5	reached: delete WHERE with a value of another type a value of another type
 mixed	5	1	reached: delete WHERE with contradicting conditions ok, no row found
-mixed	47	15	reached: delete that changes every row of a table with rows
-mixed	59	19	reached: delete that changes no row of a table with rows
+mixed	41	13	reached: delete that changes every row of a table with rows
+mixed	50	16	reached: delete that changes no row of a table with rows
 mixed	22	7	reached: delete that changes some rows of a table
-mixed	20	6	reached: delete with RETURNING * ok
+mixed	19	6	reached: delete with RETURNING * ok
 mixed	5	1	reached: delete with RETURNING of a name that the table does not have no such column
-mixed	17	5	reached: delete with RETURNING of a name twice ok
+mixed	16	5	reached: delete with RETURNING of a name twice ok
 mixed	9	3	reached: delete with RETURNING of names ok
-mixed	34	11	reached: delete with RETURNING read by the access that the model chooses
+mixed	33	11	reached: delete with RETURNING read by the access that the model chooses
 mixed	4	1	reached: delete with RETURNING that gives a column of BLOB
 mixed	4	1	reached: delete with RETURNING that gives a column of INT
 mixed	4	1	reached: delete with RETURNING that gives a column of REAL
-mixed	28	9	reached: delete with RETURNING that gives no row
+mixed	26	8	reached: delete with RETURNING that gives no row
 mixed	7	2	reached: delete with RETURNING that gives one row
 mixed	4	1	reached: delete with RETURNING that gives several rows
 mixed	7	2	reached: delete with RETURNING through Exec ok
-mixed	39	13	reached: delete with RETURNING through Query ok
-mixed	3	1	reached: delete with RETURNING whose rows came in the reverse of the order of the key
-mixed	26	8	reached: delete with WHERE no such column
-mixed	111	37	reached: delete with WHERE ok, no row found
-mixed	38	12	reached: delete with WHERE ok, rows changed
+mixed	37	12	reached: delete with RETURNING through Query ok
+mixed	23	7	reached: delete with WHERE no such column
+mixed	95	31	reached: delete with WHERE ok, no row found
+mixed	35	11	reached: delete with WHERE ok, rows changed
 mixed	11	3	reached: delete with a subquery through Exec ok
-mixed	41	13	reached: delete with a value on the left ok, no row found
+mixed	35	11	reached: delete with a value on the left ok, no row found
 mixed	13	4	reached: delete with a value on the left ok, rows changed
-mixed	13	4	reached: delete with arguments that s4ql refuses not supported
-mixed	14	4	reached: delete with arguments that s4ql refuses wrong number of arguments
-mixed	34	11	reached: delete without WHERE ok, no row found
-mixed	31	10	reached: delete without WHERE ok, rows changed
+mixed	10	3	reached: delete with arguments that s4ql refuses not supported
+mixed	10	3	reached: delete with arguments that s4ql refuses wrong number of arguments
+mixed	30	10	reached: delete without WHERE ok, no row found
+mixed	28	9	reached: delete without WHERE ok, rows changed
 mixed	15	5	reached: drop index if exists did its work
-mixed	49	16	reached: drop index if exists did nothing: no index of the name exists
-mixed	15	5	reached: drop index if exists did nothing: no index of the name exists, and a table has it
-mixed	155	51	reached: drop index no such index
-mixed	39	13	reached: drop index ok
+mixed	47	15	reached: drop index if exists did nothing: no index of the name exists
+mixed	14	4	reached: drop index if exists did nothing: no index of the name exists, and a table has it
+mixed	149	49	reached: drop index no such index
+mixed	38	12	reached: drop index ok
 mixed	58	19	reached: drop table if exists did its work
 mixed	53	17	reached: drop table if exists did nothing: no table of the name exists
 mixed	4	1	reached: drop table if exists did nothing: no table of the name exists, and an index has it
-mixed	29	9	reached: insert into BLOB UNIQUE constraint failed
-mixed	45	15	reached: insert into BLOB a value of another type
+mixed	26	8	reached: insert into BLOB UNIQUE constraint failed
+mixed	43	14	reached: insert into BLOB a value of another type
 mixed	115	38	reached: insert into BLOB ok
 mixed	11	3	reached: insert into BLOB string or blob too big
-mixed	43	14	reached: insert into INT UNIQUE constraint failed
-mixed	23	7	reached: insert into INT a value of another type
-mixed	163	54	reached: insert into INT ok
-mixed	49	16	reached: insert into INTEGER UNIQUE constraint failed
-mixed	25	8	reached: insert into INTEGER a value of another type
-mixed	167	55	reached: insert into INTEGER ok
+mixed	40	13	reached: insert into INT UNIQUE constraint failed
+mixed	21	7	reached: insert into INT a value of another type
+mixed	156	52	reached: insert into INT ok
+mixed	46	15	reached: insert into INTEGER UNIQUE constraint failed
+mixed	21	7	reached: insert into INTEGER a value of another type
+mixed	171	57	reached: insert into INTEGER ok
 mixed	46	15	reached: insert into REAL UNIQUE constraint failed
-mixed	43	14	reached: insert into REAL a value of another type
-mixed	162	54	reached: insert into REAL ok
-mixed	25	8	reached: insert into TEXT UNIQUE constraint failed
-mixed	35	11	reached: insert into TEXT a value of another type
-mixed	162	54	reached: insert into TEXT ok
+mixed	42	14	reached: insert into REAL a value of another type
+mixed	159	53	reached: insert into REAL ok
+mixed	23	7	reached: insert into TEXT UNIQUE constraint failed
+mixed	33	11	reached: insert into TEXT a value of another type
+mixed	156	52	reached: insert into TEXT ok
 mixed	8	2	reached: insert into TEXT string or blob too big
 mixed	7	2	reached: insert of NULL beside a value of another type NOT NULL constraint failed
 mixed	4	1	reached: insert of NULL beside a value of another type a value of another type
-mixed	26	8	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed
+mixed	25	8	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed
 mixed	10	3	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
 mixed	13	4	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
 mixed	6	2	reached: insert that leaves out a column that takes NULL a value of another type
-mixed	56	18	reached: insert that leaves out a column that takes NULL ok
-mixed	18	6	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok
-mixed	37	12	reached: insert that leaves out a column with a default of blob ok
-mixed	52	17	reached: insert that leaves out a column with a default of integer ok
-mixed	37	12	reached: insert that leaves out a column with a default of real ok
-mixed	29	9	reached: insert that leaves out a column with a default of text ok
-mixed	44	14	reached: insert that leaves out a column with a default that an index holds ok
+mixed	53	17	reached: insert that leaves out a column that takes NULL ok
+mixed	16	5	reached: insert that leaves out a column that takes NULL with DEFAULT NULL ok
+mixed	34	11	reached: insert that leaves out a column with a default of blob ok
+mixed	51	17	reached: insert that leaves out a column with a default of integer ok
+mixed	34	11	reached: insert that leaves out a column with a default of real ok
+mixed	28	9	reached: insert that leaves out a column with a default of text ok
+mixed	43	14	reached: insert that leaves out a column with a default that an index holds ok
 mixed	8	2	reached: insert that leaves out a column with a long default string or blob too big
-mixed	11	3	reached: insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed
+mixed	10	3	reached: insert that leaves out the key with DEFAULT NULL NOT NULL constraint failed
 mixed	10	3	reached: insert that leaves out the key with a default UNIQUE constraint failed
-mixed	33	11	reached: insert that leaves out the key with a default ok
+mixed	31	10	reached: insert that leaves out the key with a default ok
 mixed	22	7	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
-mixed	27	9	reached: insert with NULL in the key: NOT NULL constraint failed
-mixed	40	13	reached: insert with RETURNING * ok
+mixed	28	9	reached: insert with NULL in the key: NOT NULL constraint failed
+mixed	43	14	reached: insert with RETURNING * ok
 mixed	15	5	reached: insert with RETURNING of a name that the table does not have no such column
-mixed	55	18	reached: insert with RETURNING of a name twice ok
-mixed	50	16	reached: insert with RETURNING of names ok
-mixed	5	1	reached: insert with RETURNING that gives NULL
+mixed	52	17	reached: insert with RETURNING of a name twice ok
+mixed	48	16	reached: insert with RETURNING of names ok
+mixed	4	1	reached: insert with RETURNING that gives NULL
 mixed	22	7	reached: insert with RETURNING that gives a column of BLOB
 mixed	20	6	reached: insert with RETURNING that gives a column of INT
 mixed	21	7	reached: insert with RETURNING that gives a column of INTEGER
-mixed	23	7	reached: insert with RETURNING that gives a column of REAL
-mixed	23	7	reached: insert with RETURNING that gives a column of TEXT
-mixed	28	9	reached: insert with RETURNING that gives a column that its list leaves out, with a default
+mixed	21	7	reached: insert with RETURNING that gives a column of REAL
+mixed	24	8	reached: insert with RETURNING that gives a column of TEXT
+mixed	24	8	reached: insert with RETURNING that gives a column that its list leaves out, with a default
 mixed	3	1	reached: insert with RETURNING that gives a column that its list leaves out, without a default
-mixed	95	31	reached: insert with RETURNING that gives one row
-mixed	50	16	reached: insert with RETURNING through Exec ok
+mixed	94	31	reached: insert with RETURNING that gives one row
+mixed	49	16	reached: insert with RETURNING through Exec ok
 mixed	19	6	reached: insert with RETURNING through Query NOT NULL constraint failed
-mixed	33	11	reached: insert with RETURNING through Query UNIQUE constraint failed
-mixed	95	31	reached: insert with RETURNING through Query ok
-mixed	42	14	reached: insert with a column that the table does not have: has no column named
-mixed	55	18	reached: insert with a column without a value: NOT NULL constraint failed
+mixed	31	10	reached: insert with RETURNING through Query UNIQUE constraint failed
+mixed	94	31	reached: insert with RETURNING through Query ok
+mixed	41	13	reached: insert with a column that the table does not have: has no column named
+mixed	53	17	reached: insert with a column without a value: NOT NULL constraint failed
 mixed	19	6	reached: insert with a list in another order NOT NULL constraint failed
-mixed	21	7	reached: insert with a list in another order UNIQUE constraint failed
-mixed	14	4	reached: insert with a list in another order a value of another type
-mixed	74	24	reached: insert with a list in another order ok
-mixed	283	94	reached: insert with a list in the order of the table ok
-mixed	34	11	reached: insert with a value of another type in another column: a value of another type
-mixed	55	18	reached: insert with a value of another type in the key: a value of another type
-mixed	62	20	reached: insert with the wrong number of values:  values for 
-mixed	62	20	reached: insert with the wrong number of values: values were supplied
-mixed	29	9	reached: insert with two faults: NOT NULL constraint failed
+mixed	18	6	reached: insert with a list in another order UNIQUE constraint failed
+mixed	13	4	reached: insert with a list in another order a value of another type
+mixed	75	25	reached: insert with a list in another order ok
+mixed	273	91	reached: insert with a list in the order of the table ok
+mixed	33	11	reached: insert with a value of another type in another column: a value of another type
+mixed	53	17	reached: insert with a value of another type in the key: a value of another type
+mixed	60	20	reached: insert with the wrong number of values:  values for 
+mixed	60	20	reached: insert with the wrong number of values: values were supplied
+mixed	27	9	reached: insert with two faults: NOT NULL constraint failed
 mixed	11	3	reached: insert with two faults: a value of another type
 mixed	4	1	reached: insert with two faults: has no column named
-mixed	160	53	reached: insert without a list ok
-mixed	458	152	reached: literal blob
+mixed	161	53	reached: insert without a list ok
+mixed	450	150	reached: literal blob
 mixed	132	44	reached: literal empty blob
-mixed	88	29	reached: literal empty text
-mixed	1418	472	reached: literal integer
-mixed	322	107	reached: literal null
-mixed	579	193	reached: literal real
-mixed	97	32	reached: literal real -0.0
-mixed	527	175	reached: literal text
-mixed	116	38	reached: long value
-mixed	1011	337	reached: path backward
-mixed	1042	347	reached: path forward
-mixed	138	46	reached: path of an index of a descending column
-mixed	211	70	reached: path of an index that holds every column
-mixed	182	60	reached: path of an index with 0 pinned
-mixed	46	15	reached: path of an index with 0 pinned and a range
-mixed	23	7	reached: path of an index with 0 pinned and a range of a WHERE with a value on the left
-mixed	64	21	reached: path of an index with 1 pinned
-mixed	11	3	reached: path of an index with 1 pinned and a range
-mixed	8	2	reached: path of an index with 1 pinned and a range of a WHERE with a value on the left
-mixed	5	1	reached: path of an index with 2 pinned
-mixed	1039	346	reached: path of every row
-mixed	273	91	reached: path of the primary key with 0 pinned and a range
-mixed	124	41	reached: path of the primary key with 0 pinned and a range of a WHERE with a value on the left
-mixed	289	96	reached: path of the primary key with 1 pinned
-mixed	98	32	reached: path that delivers the order
-mixed	143	47	reached: path that reads no row
-mixed	271	90	reached: path that sorts
-mixed	7	2	reached: path with a pin of NULL
-mixed	13	4	reached: path with a range on a descending column
-mixed	558	186	reached: plan of the cache checked
-mixed	900	300	reached: read both ways
+mixed	85	28	reached: literal empty text
+mixed	1381	460	reached: literal integer
+mixed	313	104	reached: literal null
+mixed	567	189	reached: literal real
+mixed	96	32	reached: literal real -0.0
+mixed	511	170	reached: literal text
+mixed	113	37	reached: long value
+mixed	891	297	reached: path backward
+mixed	915	305	reached: path forward
+mixed	122	40	reached: path of an index of a descending column
+mixed	185	61	reached: path of an index that holds every column
+mixed	169	56	reached: path of an index with 0 pinned
+mixed	33	11	reached: path of an index with 0 pinned and a range
+mixed	15	5	reached: path of an index with 0 pinned and a range of a WHERE with a value on the left
+mixed	63	21	reached: path of an index with 1 pinned
+mixed	9	3	reached: path of an index with 1 pinned and a range
+mixed	6	2	reached: path of an index with 1 pinned and a range of a WHERE with a value on the left
+mixed	3	1	reached: path of an index with 2 pinned
+mixed	921	307	reached: path of every row
+mixed	228	76	reached: path of the primary key with 0 pinned and a range
+mixed	103	34	reached: path of the primary key with 0 pinned and a range of a WHERE with a value on the left
+mixed	256	85	reached: path of the primary key with 1 pinned
+mixed	88	29	reached: path that delivers the order
+mixed	123	41	reached: path that reads no row
+mixed	246	82	reached: path that sorts
+mixed	6	2	reached: path with a pin of NULL
+mixed	12	4	reached: path with a range on a descending column
+mixed	508	169	reached: plan of the cache checked
+mixed	937	312	reached: read both ways
 mixed	55	18	reached: replay of indexes into an empty cache
-mixed	49	16	reached: restart with indexes in the cache
-mixed	86	28	reached: select * of 1 columns ok
-mixed	85	28	reached: select * of 2 columns ok
-mixed	87	29	reached: select * of 3 columns ok
-mixed	22	7	reached: select * with NULL ok
-mixed	23	7	reached: select of a name in double quotes that the table does not have no such column
-mixed	20	6	reached: select of a name that the table does not have no such column
-mixed	140	46	reached: select of a name twice ok
-mixed	51	17	reached: select of names in another order ok
-mixed	227	75	reached: select of names ok
-mixed	11	3	reached: select of names with NULL ok
-mixed	409	136	reached: select read by the access that the model chooses
-mixed	3	1	reached: select with a subquery of * of more than one column: row value misused
-mixed	3	1	reached: select with a subquery refused: compared with the column
+mixed	46	15	reached: restart with indexes in the cache
+mixed	73	24	reached: select * of 1 columns ok
+mixed	79	26	reached: select * of 2 columns ok
+mixed	77	25	reached: select * of 3 columns ok
+mixed	20	6	reached: select * with NULL ok
+mixed	21	7	reached: select of a name in double quotes that the table does not have no such column
+mixed	21	7	reached: select of a name that the table does not have no such column
+mixed	128	42	reached: select of a name twice ok
+mixed	48	16	reached: select of names in another order ok
+mixed	209	69	reached: select of names ok
+mixed	10	3	reached: select of names with NULL ok
+mixed	374	124	reached: select read by the access that the model chooses
 mixed	3	1	reached: select with a subquery refused: for LIMIT
-mixed	5	1	reached: select with a subquery through Exec ok
-mixed	6	2	reached: select with a subquery through Query not supported
-mixed	22	7	reached: select with a subquery through Query ok
-mixed	68	22	reached: select with a value on the left ok, no row found
-mixed	16	5	reached: select with a value on the left ok, rows found
-mixed	47	15	reached: select with arithmetic read by the access that the model chooses
+mixed	4	1	reached: select with a subquery through Exec ok
+mixed	5	1	reached: select with a subquery through Query not supported
+mixed	18	6	reached: select with a subquery through Query ok
+mixed	55	18	reached: select with a value on the left ok, no row found
+mixed	17	5	reached: select with a value on the left ok, rows found
+mixed	78	26	reached: select with arithmetic read by the access that the model chooses
 mixed	6	2	reached: select with two subqueries ok
-mixed	34	11	reached: select without ORDER BY whose rows came in the order of the key of its access
-mixed	46	15	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
-mixed	34	11	reached: several statements: a commit of each of two statements or more of a text outside a transaction
-mixed	26	8	reached: several statements: a last statement with RETURNING that ran
-mixed	22	7	reached: several statements: a last statement with RETURNING that ran, after another count of changes
-mixed	54	18	reached: several statements: a statement that ran on a table that an earlier statement of the text created
-mixed	10	3	reached: several statements: a statement that ran on a table whose rows an earlier statement of the text changed
-mixed	14	4	reached: several statements: a text of 2 statements that ran to its end
+mixed	40	13	reached: select without ORDER BY whose rows came in the order of the key of its access
+mixed	42	14	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+mixed	33	11	reached: several statements: a commit of each of two statements or more of a text outside a transaction
+mixed	24	8	reached: several statements: a last statement with RETURNING that ran
+mixed	21	7	reached: several statements: a last statement with RETURNING that ran, after another count of changes
+mixed	50	16	reached: several statements: a statement that ran on a table that an earlier statement of the text created
+mixed	8	2	reached: several statements: a statement that ran on a table whose rows an earlier statement of the text changed
+mixed	12	4	reached: several statements: a text of 2 statements that ran to its end
 mixed	15	5	reached: several statements: a text of 3 statements that ran to its end
 mixed	6	2	reached: several statements: a text of 4 statements that ran to its end
-mixed	5	1	reached: several statements: a text of 5 statements that ran to its end
+mixed	4	1	reached: several statements: a text of 5 statements that ran to its end
 mixed	3	1	reached: several statements: fewer arguments than parameters
-mixed	24	8	reached: several statements: more arguments than parameters
-mixed	30	10	reached: several statements: one commit of a text outside a transaction
+mixed	25	8	reached: several statements: more arguments than parameters
+mixed	28	9	reached: several statements: one commit of a text outside a transaction
 mixed	12	4	reached: several statements: refused for a space that mattn trims
-mixed	19	6	reached: several statements: stopped at a middle statement: SQLite's error
+mixed	18	6	reached: several statements: stopped at a middle statement: SQLite's error
 mixed	5	1	reached: several statements: stopped at a middle statement: a constraint
-mixed	93	31	reached: several statements: stopped at the first statement: SQLite's error
-mixed	8	2	reached: several statements: stopped at the first statement: a constraint
-mixed	32	10	reached: several statements: stopped at the first statement: not supported
+mixed	3	1	reached: several statements: stopped at a middle statement: not supported
+mixed	89	29	reached: several statements: stopped at the first statement: SQLite's error
+mixed	7	2	reached: several statements: stopped at the first statement: a constraint
+mixed	31	10	reached: several statements: stopped at the first statement: not supported
 mixed	3	1	reached: several statements: stopped at the first statement: too few arguments
 mixed	7	2	reached: several statements: stopped at the last statement: SQLite's error
 mixed	3	1	reached: subquery of another table in a select
 mixed	11	3	reached: subquery of the table of the statement in a delete
-mixed	30	10	reached: subquery of the table of the statement in a select
-mixed	22	7	reached: subquery of the table of the statement in a update
+mixed	25	8	reached: subquery of the table of the statement in a select
+mixed	18	6	reached: subquery of the table of the statement in a update
 mixed	4	1	reached: subquery on the left of != in a update
-mixed	3	1	reached: subquery on the left of < in a update
 mixed	4	1	reached: subquery on the left of = in a delete
-mixed	12	4	reached: subquery on the left of = in a select
+mixed	10	3	reached: subquery on the left of = in a select
 mixed	8	2	reached: subquery on the left of = in a update
-mixed	8	2	reached: subquery on the right of = in a select
+mixed	7	2	reached: subquery on the right of = in a select
 mixed	4	1	reached: subquery on the right of = in a update
-mixed	3	1	reached: subquery on the right of > in a delete
 mixed	4	1	reached: subquery that finds no row in a delete
-mixed	10	3	reached: subquery that finds no row in a select
-mixed	10	3	reached: subquery that finds no row in a update
+mixed	6	2	reached: subquery that finds no row in a select
+mixed	9	3	reached: subquery that finds no row in a update
 mixed	7	2	reached: subquery that finds one row in a select
-mixed	6	2	reached: subquery that finds one row in a update
+mixed	4	1	reached: subquery that finds one row in a update
 mixed	8	2	reached: subquery that the engine did not compute, of an update or a delete
 mixed	8	2	reached: subquery whose ORDER BY decides the first of several rows in a select
 mixed	4	1	reached: subquery whose ORDER BY puts NULL first of several rows
 mixed	3	1	reached: subquery whose order an index delivers
-mixed	51	17	reached: subquery whose value was NULL
+mixed	48	16	reached: subquery whose value was NULL
 mixed	22	7	reached: subquery whose value was that of its one first row
-mixed	6	2	reached: subquery whose value was the NULL of a row
-mixed	9	3	reached: subquery with LIMIT 0
-mixed	15	5	reached: subquery with LIMIT ?
+mixed	4	1	reached: subquery whose value was the NULL of a row
+mixed	8	2	reached: subquery with LIMIT 0
+mixed	14	4	reached: subquery with LIMIT ?
 mixed	4	1	reached: subquery with a LIMIT above 1
 mixed	4	1	reached: subquery with a parameter after it
-mixed	16	5	reached: subquery with a parameter before it
-mixed	23	7	reached: subquery with a parameter in it
-mixed	3	1	reached: subquery with rows that tie for the first, whose value was that of another
-mixed	3	1	reached: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of another
-mixed	20	6	reached: update WHERE that reads a get of one key ok, rows changed
-mixed	6	2	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
-mixed	3	1	reached: update WHERE that reads a scan from a lower bound ok, rows changed
+mixed	13	4	reached: subquery with a parameter before it
+mixed	22	7	reached: subquery with a parameter in it
+mixed	6	2	reached: text with a column in SET of a update, no such table
+mixed	3	1	reached: text with a column in SET of a update, not supported
+mixed	8	2	reached: text with a column in SET of a update, ok
+mixed	3	1	reached: text with a column in SET of a update, wrong number of arguments
+mixed	27	9	reached: text with a column in WHERE of a delete, no such table
+mixed	26	8	reached: text with a column in WHERE of a delete, not supported
+mixed	8	2	reached: text with a column in WHERE of a delete, ok
+mixed	8	2	reached: text with a column in WHERE of a delete, wrong number of arguments
+mixed	16	5	reached: text with a column in WHERE of a select, no such column
+mixed	55	18	reached: text with a column in WHERE of a select, no such table
+mixed	34	11	reached: text with a column in WHERE of a select, not supported
+mixed	24	8	reached: text with a column in WHERE of a select, ok
+mixed	3	1	reached: text with a column in WHERE of a select, string or blob too big
+mixed	16	5	reached: text with a column in WHERE of a select, wrong number of arguments
+mixed	9	3	reached: text with a column in WHERE of a update, no such column
+mixed	26	8	reached: text with a column in WHERE of a update, no such table
+mixed	16	5	reached: text with a column in WHERE of a update, not supported
+mixed	11	3	reached: text with a column in WHERE of a update, ok
+mixed	6	2	reached: text with a column in WHERE of a update, wrong number of arguments
+mixed	3	1	reached: text with a column in a subquery of a update, no such table
+mixed	4	1	reached: text with a column in a subquery of a update, not supported
+mixed	5	1	reached: text without a column in SET of a update, no such column
+mixed	11	3	reached: text without a column in SET of a update, no such table
+mixed	19	6	reached: text without a column in SET of a update, not supported
+mixed	3	1	reached: text without a column in WHERE of a delete, no such column
+mixed	15	5	reached: text without a column in WHERE of a delete, no such table
+mixed	10	3	reached: text without a column in WHERE of a delete, not supported
+mixed	6	2	reached: text without a column in WHERE of a delete, ok
+mixed	4	1	reached: text without a column in WHERE of a select, no such column
+mixed	31	10	reached: text without a column in WHERE of a select, no such table
+mixed	11	3	reached: text without a column in WHERE of a select, not supported
+mixed	21	7	reached: text without a column in WHERE of a select, ok
+mixed	5	1	reached: text without a column in WHERE of a select, string or blob too big
+mixed	11	3	reached: text without a column in WHERE of a select, wrong number of arguments
+mixed	5	1	reached: text without a column in WHERE of a update, no such column
+mixed	5	1	reached: text without a column in WHERE of a update, no such table
+mixed	7	2	reached: text without a column in WHERE of a update, ok
+mixed	5	1	reached: text: NULL as an argument in a text, ok
+mixed	14	4	reached: text: a blob in hex, ok
+mixed	7	2	reached: text: a text that is not ASCII in a text, ok
+mixed	7	2	reached: text: a text that runs again, ok
+mixed	6	2	reached: text: constant text that serves a get of one key
+mixed	5	1	reached: text: refused a BLOB column in a concatenation
+mixed	10	3	reached: text: refused a column of a number in a concatenation
+mixed	24	8	reached: text: refused a column of a number in hex
+mixed	10	3	reached: text: refused text compared with a column of a number or a blob
+mixed	12	4	reached: text: refused text set for a column of a number or a blob
+mixed	4	1	reached: text: text beside arithmetic in one statement, ok
+mixed	10	3	reached: text: the empty text in a text, ok
+mixed	15	5	reached: text: the key compared with a text, ok
+mixed	19	6	reached: update WHERE that reads a get of one key ok, rows changed
+mixed	5	1	reached: update WHERE that reads a scan between two bounds that hold no key ok, no row found
 mixed	5	1	reached: update WHERE that reads a scan of every row ok, rows changed
-mixed	7	2	reached: update WHERE that reads a scan to an upper bound ok, rows changed
-mixed	23	7	reached: update WHERE that reads no row ok, no row found
-mixed	7	2	reached: update WHERE with a column in double quotes that the table does not have no such column
-mixed	19	6	reached: update WHERE with a value of another type a value of another type
+mixed	6	2	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+mixed	17	5	reached: update WHERE that reads no row ok, no row found
+mixed	5	1	reached: update WHERE with a column in double quotes that the table does not have no such column
+mixed	15	5	reached: update WHERE with a value of another type a value of another type
 mixed	8	2	reached: update WHERE with contradicting conditions ok, no row found
-mixed	40	13	reached: update that changes every row of a table with rows
-mixed	45	15	reached: update that changes no row of a table with rows
-mixed	21	7	reached: update that changes some rows of a table
-mixed	12	4	reached: update with RETURNING * ok
-mixed	4	1	reached: update with RETURNING of a name that the table does not have no such column
-mixed	21	7	reached: update with RETURNING of a name twice ok
+mixed	42	14	reached: update that changes every row of a table with rows
+mixed	33	11	reached: update that changes no row of a table with rows
+mixed	18	6	reached: update that changes some rows of a table
+mixed	9	3	reached: update with RETURNING * ok
+mixed	19	6	reached: update with RETURNING of a name twice ok
 mixed	13	4	reached: update with RETURNING of names ok
 mixed	3	1	reached: update with RETURNING of the key that moves a row to another key
-mixed	41	13	reached: update with RETURNING read by the access that the model chooses
-mixed	3	1	reached: update with RETURNING that fails on a constraint where its WHERE finds two rows or more
+mixed	35	11	reached: update with RETURNING read by the access that the model chooses
 mixed	5	1	reached: update with RETURNING that gives a column of BLOB
-mixed	4	1	reached: update with RETURNING that gives a column of INT
+mixed	3	1	reached: update with RETURNING that gives a column of INT
 mixed	3	1	reached: update with RETURNING that gives a column of REAL
-mixed	23	7	reached: update with RETURNING that gives no row
-mixed	10	3	reached: update with RETURNING that gives one row
+mixed	22	7	reached: update with RETURNING that gives no row
+mixed	9	3	reached: update with RETURNING that gives one row
 mixed	6	2	reached: update with RETURNING that sets a column of an index ok
-mixed	28	9	reached: update with RETURNING that sets the key ok
-mixed	12	4	reached: update with RETURNING through Exec ok
-mixed	5	1	reached: update with RETURNING through Query NOT NULL constraint failed
-mixed	34	11	reached: update with RETURNING through Query ok
-mixed	10	3	reached: update with WHERE NOT NULL constraint failed
-mixed	12	4	reached: update with WHERE UNIQUE constraint failed
-mixed	41	13	reached: update with WHERE no such column
-mixed	109	36	reached: update with WHERE ok, no row found
-mixed	35	11	reached: update with WHERE ok, rows changed
-mixed	6	2	reached: update with a literal longer than the length limit in SET
+mixed	24	8	reached: update with RETURNING that sets the key ok
+mixed	9	3	reached: update with RETURNING through Exec ok
+mixed	4	1	reached: update with RETURNING through Query NOT NULL constraint failed
+mixed	32	10	reached: update with RETURNING through Query ok
+mixed	9	3	reached: update with WHERE NOT NULL constraint failed
+mixed	9	3	reached: update with WHERE UNIQUE constraint failed
+mixed	30	10	reached: update with WHERE no such column
+mixed	92	30	reached: update with WHERE ok, no row found
+mixed	32	10	reached: update with WHERE ok, rows changed
+mixed	4	1	reached: update with a literal longer than the length limit in SET
 mixed	3	1	reached: update with a subquery and RETURNING through Query ok
-mixed	4	1	reached: update with a subquery through Exec not supported
-mixed	17	5	reached: update with a subquery through Exec ok
-mixed	5	1	reached: update with a subquery through Query ok
-mixed	45	15	reached: update with a value on the left ok, no row found
-mixed	19	6	reached: update with a value on the left ok, rows changed
-mixed	13	4	reached: update with arguments that s4ql refuses not supported
-mixed	20	6	reached: update with arguments that s4ql refuses wrong number of arguments
-mixed	10	3	reached: update without WHERE NOT NULL constraint failed
-mixed	10	3	reached: update without WHERE UNIQUE constraint failed
-mixed	55	18	reached: update without WHERE ok, no row found
-mixed	26	8	reached: update without WHERE ok, rows changed
+mixed	3	1	reached: update with a subquery through Exec not supported
+mixed	15	5	reached: update with a subquery through Exec ok
+mixed	4	1	reached: update with a subquery through Query ok
+mixed	35	11	reached: update with a value on the left ok, no row found
+mixed	16	5	reached: update with a value on the left ok, rows changed
+mixed	8	2	reached: update with arguments that s4ql refuses not supported
+mixed	15	5	reached: update with arguments that s4ql refuses wrong number of arguments
+mixed	7	2	reached: update without WHERE NOT NULL constraint failed
+mixed	8	2	reached: update without WHERE UNIQUE constraint failed
+mixed	52	17	reached: update without WHERE ok, no row found
+mixed	28	9	reached: update without WHERE ok, rows changed
 mixed	3	1	reached: value on the left NOT NULL constraint failed
-mixed	6	2	reached: value on the left UNIQUE constraint failed
-mixed	32	10	reached: value on the left compared with NULL finds no row
-mixed	8	2	reached: value on the left of != a value of another type
-mixed	20	6	reached: value on the left of != finds no row
+mixed	3	1	reached: value on the left UNIQUE constraint failed
+mixed	25	8	reached: value on the left compared with NULL finds no row
+mixed	4	1	reached: value on the left of != a value of another type
+mixed	16	5	reached: value on the left of != finds no row
 mixed	4	1	reached: value on the left of != finds rows
-mixed	9	3	reached: value on the left of != no such column
-mixed	3	1	reached: value on the left of != wrong number of arguments
-mixed	9	3	reached: value on the left of < a value of another type
-mixed	19	6	reached: value on the left of < finds no row
+mixed	6	2	reached: value on the left of != no such column
+mixed	6	2	reached: value on the left of < a value of another type
+mixed	15	5	reached: value on the left of < finds no row
 mixed	3	1	reached: value on the left of < finds rows
-mixed	19	6	reached: value on the left of < no such column
-mixed	7	2	reached: value on the left of < not supported
-mixed	12	4	reached: value on the left of <= a value of another type
-mixed	30	10	reached: value on the left of <= finds no row
+mixed	14	4	reached: value on the left of < no such column
+mixed	4	1	reached: value on the left of < not supported
+mixed	10	3	reached: value on the left of <= a value of another type
+mixed	19	6	reached: value on the left of <= finds no row
 mixed	3	1	reached: value on the left of <= finds rows
-mixed	11	3	reached: value on the left of <= no such column
-mixed	5	1	reached: value on the left of <= not supported
-mixed	5	1	reached: value on the left of <= wrong number of arguments
-mixed	17	5	reached: value on the left of = a value of another type
-mixed	66	22	reached: value on the left of = finds no row
-mixed	28	9	reached: value on the left of = finds rows
-mixed	17	5	reached: value on the left of = no such column
-mixed	9	3	reached: value on the left of = not supported
-mixed	7	2	reached: value on the left of = wrong number of arguments
-mixed	18	6	reached: value on the left of > a value of another type
-mixed	31	10	reached: value on the left of > finds no row
-mixed	7	2	reached: value on the left of > finds rows
-mixed	12	4	reached: value on the left of > no such column
-mixed	4	1	reached: value on the left of > not supported
-mixed	4	1	reached: value on the left of > wrong number of arguments
-mixed	9	3	reached: value on the left of >= a value of another type
-mixed	27	9	reached: value on the left of >= finds no row
-mixed	3	1	reached: value on the left of >= finds rows
-mixed	17	5	reached: value on the left of >= no such column
-mixed	116	38	reached: value on the left on a table that a create table if not exists found
+mixed	10	3	reached: value on the left of <= no such column
+mixed	3	1	reached: value on the left of <= not supported
+mixed	4	1	reached: value on the left of <= wrong number of arguments
+mixed	10	3	reached: value on the left of = a value of another type
+mixed	59	19	reached: value on the left of = finds no row
+mixed	26	8	reached: value on the left of = finds rows
+mixed	15	5	reached: value on the left of = no such column
+mixed	6	2	reached: value on the left of = not supported
+mixed	4	1	reached: value on the left of = wrong number of arguments
+mixed	9	3	reached: value on the left of > a value of another type
+mixed	28	9	reached: value on the left of > finds no row
+mixed	5	1	reached: value on the left of > finds rows
+mixed	11	3	reached: value on the left of > no such column
+mixed	3	1	reached: value on the left of > not supported
+mixed	6	2	reached: value on the left of >= a value of another type
+mixed	19	6	reached: value on the left of >= finds no row
+mixed	5	1	reached: value on the left of >= finds rows
+mixed	13	4	reached: value on the left of >= no such column
+mixed	87	29	reached: value on the left on a table that a create table if not exists found
 mixed	7	2	reached: value on the left string or blob too big
-mixed	67	22	select no such column
-mixed	49	16	select wrong number of arguments
+mixed	66	22	select no such column
+mixed	48	16	select wrong number of arguments
 tables	7	2	createtable duplicate column name
 tables	171	=	excused: a value of another type than its column, checked against s4ql's rule
 tables	26	8	insert  values for 
@@ -4565,3 +4601,480 @@ several	79	26	reached: update without WHERE ok, no row found
 several	100	33	reached: update without WHERE ok, rows changed
 several	8	2	select no such column
 several	14	4	select wrong number of arguments
+textfunctions	3	=	excused: a literal longer than the length limit, checked against s4ql's rule
+textfunctions	79	=	excused: a value of another type than its column, checked against s4ql's rule
+textfunctions	15	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
+textfunctions	391	=	excused: arithmetic refused by the rule of exact types
+textfunctions	20	=	excused: evaluation error that SQLite's result of its operator justifies
+textfunctions	1	=	excused: scalar subquery with a text too long, which the engine computes and SQLite does not
+textfunctions	3	=	excused: text with a call that may serve the access, too long, which the engine computes before any row and SQLite does not
+textfunctions	2	=	excused: text without a call that may serve the access, too long, which SQLite computes only where its search uses it and the engine before the search
+textfunctions	7	2	insert  values for 
+textfunctions	22	7	insert NOT NULL constraint failed
+textfunctions	3	1	insert values were supplied
+textfunctions	23	7	insert with a parameter UNIQUE constraint failed
+textfunctions	45	15	insert with a parameter not supported
+textfunctions	354	118	insert with a parameter ok
+textfunctions	12	4	reached: != on another column ok
+textfunctions	4	1	reached: != on the key ok
+textfunctions	14	4	reached: < on another column ok
+textfunctions	5	1	reached: < on the key a value of another type
+textfunctions	16	5	reached: < on the key ok
+textfunctions	5	1	reached: <= on another column ok
+textfunctions	10	3	reached: <= on the key ok
+textfunctions	37	12	reached: = on another column ok
+textfunctions	17	5	reached: = on the key ok
+textfunctions	5	1	reached: > on another column ok
+textfunctions	12	4	reached: > on the key ok
+textfunctions	13	4	reached: >= on another column ok
+textfunctions	18	6	reached: >= on the key ok
+textfunctions	9	3	reached: IS NOT NULL on another column ok
+textfunctions	8	2	reached: IS NOT NULL on the key ok
+textfunctions	19	6	reached: IS NULL on another column ok
+textfunctions	14	4	reached: IS NULL on the key ok
+textfunctions	12	4	reached: LIMIT 0
+textfunctions	17	5	reached: LIMIT above the number of rows
+textfunctions	23	7	reached: LIMIT by an argument ok
+textfunctions	5	1	reached: LIMIT of the number of rows
+textfunctions	55	18	reached: LIMIT run by every path
+textfunctions	5	1	reached: LIMIT that cuts
+textfunctions	4	1	reached: NULL argument into a column that does not take NULL NOT NULL constraint failed
+textfunctions	3	1	reached: NULL argument into a column that takes NULL UNIQUE constraint failed
+textfunctions	26	8	reached: NULL argument into a column that takes NULL ok
+textfunctions	8	2	reached: NULL literal into a column that does not take NULL NOT NULL constraint failed
+textfunctions	9	3	reached: NULL literal into a column that takes NULL UNIQUE constraint failed
+textfunctions	4	1	reached: NULL literal into a column that takes NULL a value of another type
+textfunctions	57	19	reached: NULL literal into a column that takes NULL ok
+textfunctions	24	8	reached: ORDER BY ascending ok
+textfunctions	16	5	reached: ORDER BY descending ok
+textfunctions	29	9	reached: ORDER BY of 1 columns ok
+textfunctions	17	5	reached: ORDER BY of 2 columns ok
+textfunctions	12	4	reached: ORDER BY of 3 columns ok
+textfunctions	15	5	reached: ORDER BY of a column of type BLOB ok
+textfunctions	17	5	reached: ORDER BY of a column of type INT ok
+textfunctions	15	5	reached: ORDER BY of a column of type INTEGER ok
+textfunctions	16	5	reached: ORDER BY of a column of type REAL ok
+textfunctions	36	12	reached: ORDER BY of a column of type TEXT ok
+textfunctions	32	10	reached: ORDER BY of a column that takes NULL ok
+textfunctions	16	5	reached: ORDER BY of a column that the WHERE pins ok
+textfunctions	18	6	reached: ORDER BY of mixed directions ok
+textfunctions	4	1	reached: ORDER BY over rows with NULL in its columns
+textfunctions	58	19	reached: ORDER BY run by every path
+textfunctions	22	7	reached: ORDER BY without WHERE ok
+textfunctions	5	1	reached: SET of NULL for a column that does not take it NOT NULL constraint failed
+textfunctions	13	4	reached: SET of NULL for a column that does not take it ok, no row found
+textfunctions	3	1	reached: SET of a column in double quotes that the table does not have no such column
+textfunctions	4	1	reached: SET of a column that the table does not have no such column
+textfunctions	3	1	reached: SET of the key UNIQUE constraint failed
+textfunctions	5	1	reached: SET of the key ok, rows changed
+textfunctions	8	2	reached: SET with a value of another type a value of another type
+textfunctions	4	1	reached: SET with argument []uint8 ok, no row found
+textfunctions	5	1	reached: SET with argument float64 ok, rows changed
+textfunctions	9	3	reached: SET with argument int64 ok, rows changed
+textfunctions	3	1	reached: SET with argument string ok, rows changed
+textfunctions	15	5	reached: SET with literal blob ok, rows changed
+textfunctions	3	1	reached: SET with literal empty text ok, rows changed
+textfunctions	18	6	reached: SET with literal integer ok, rows changed
+textfunctions	6	2	reached: SET with literal null ok, rows changed
+textfunctions	3	1	reached: SET with literal real -0.0 ok, rows changed
+textfunctions	13	4	reached: SET with literal real ok, rows changed
+textfunctions	15	5	reached: SET with literal text ok, rows changed
+textfunctions	92	30	reached: WHERE run by a sample of its paths
+textfunctions	276	92	reached: WHERE run by every path
+textfunctions	115	38	reached: WHERE run by every path on a table with an index
+textfunctions	5	1	reached: WHERE that gives every row of a table with rows
+textfunctions	35	11	reached: WHERE that gives no row of a table with rows
+textfunctions	7	2	reached: WHERE that gives some rows of a table
+textfunctions	12	4	reached: WHERE that reads a get of one key ok
+textfunctions	6	2	reached: WHERE that reads a scan between two bounds ok
+textfunctions	3	1	reached: WHERE that reads a scan between two bounds that hold no key ok
+textfunctions	10	3	reached: WHERE that reads a scan from a lower bound ok
+textfunctions	51	17	reached: WHERE that reads a scan of every row ok
+textfunctions	10	3	reached: WHERE that reads a scan to an upper bound ok
+textfunctions	26	8	reached: WHERE that reads no row ok
+textfunctions	37	12	reached: WHERE that tests a column more than once ok
+textfunctions	8	2	reached: WHERE with a value of another type a value of another type
+textfunctions	12	4	reached: WHERE with a value on the left run by every path
+textfunctions	6	2	reached: WHERE with a value on the left run by every path on a table with an index
+textfunctions	5	1	reached: WHERE with contradicting conditions ok
+textfunctions	92	30	reached: argument []uint8
+textfunctions	33	11	reached: argument empty []byte
+textfunctions	32	10	reached: argument empty string
+textfunctions	58	19	reached: argument float64
+textfunctions	12	4	reached: argument float64 -0.0
+textfunctions	169	56	reached: argument int64
+textfunctions	39	13	reached: argument nil
+textfunctions	287	95	reached: argument string
+textfunctions	230	76	reached: arithmetic of a select whose due errors the model's access decides
+textfunctions	6	2	reached: arithmetic of a write whose evaluation error the model's access judges
+textfunctions	3	1	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: integer overflow
+textfunctions	4	1	reached: arithmetic with a column in SET of a update, no such column
+textfunctions	3	1	reached: arithmetic with a column in SET of a update, no such table
+textfunctions	9	3	reached: arithmetic with a column in SET of a update, not supported
+textfunctions	39	13	reached: arithmetic with a column in SET of a update, ok
+textfunctions	9	3	reached: arithmetic with a column in WHERE of a delete, ok
+textfunctions	8	2	reached: arithmetic with a column in WHERE of a select, an evaluation error: s4ql: division by zero
+textfunctions	11	3	reached: arithmetic with a column in WHERE of a select, no such column
+textfunctions	12	4	reached: arithmetic with a column in WHERE of a select, no such table
+textfunctions	22	7	reached: arithmetic with a column in WHERE of a select, not supported
+textfunctions	43	14	reached: arithmetic with a column in WHERE of a select, ok
+textfunctions	6	2	reached: arithmetic with a column in WHERE of a update, no such table
+textfunctions	16	5	reached: arithmetic with a column in WHERE of a update, not supported
+textfunctions	15	5	reached: arithmetic with a column in WHERE of a update, ok
+textfunctions	5	1	reached: arithmetic with a column in a subquery of a select, ok
+textfunctions	3	1	reached: arithmetic with a column in a subquery of a update, not supported
+textfunctions	4	1	reached: arithmetic without a column in SET of a update, not supported
+textfunctions	5	1	reached: arithmetic without a column in SET of a update, ok
+textfunctions	6	2	reached: arithmetic without a column in WHERE of a select, no such column
+textfunctions	4	1	reached: arithmetic without a column in WHERE of a select, no such table
+textfunctions	11	3	reached: arithmetic without a column in WHERE of a select, not supported
+textfunctions	27	9	reached: arithmetic without a column in WHERE of a select, ok
+textfunctions	6	2	reached: arithmetic without a column in WHERE of a update, ok
+textfunctions	4	1	reached: arithmetic without a column in a subquery of a select, no such table
+textfunctions	6	2	reached: arithmetic without a column in a subquery of a update, not supported
+textfunctions	25	8	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
+textfunctions	41	13	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
+textfunctions	3	1	reached: arithmetic: constant expression that serves a bound of the key
+textfunctions	6	2	reached: arithmetic: constant expression that serves a get of one key
+textfunctions	206	68	reached: arithmetic: expression compared with a plain value, ok
+textfunctions	160	53	reached: arithmetic: expression compared with a subquery, ok
+textfunctions	9	3	reached: arithmetic: refused a plain value compared with an expression
+textfunctions	25	8	reached: arithmetic: refused a subquery compared with an expression
+textfunctions	9	3	reached: arithmetic: s4ql: division by zero in WHERE
+textfunctions	8	2	reached: arithmetic: s4ql: division by zero in WHERE of an expression with a column
+textfunctions	4	1	reached: arithmetic: s4ql: integer overflow in SET
+textfunctions	3	1	reached: arithmetic: s4ql: integer overflow in WHERE
+textfunctions	7	2	reached: arithmetic: select with LIMIT that failed on a row
+textfunctions	102	34	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
+textfunctions	14	4	reached: arithmetic: update that computes its key from its row that changed rows
+textfunctions	6	2	reached: arithmetic: update that copies another column alone that changed rows
+textfunctions	75	25	reached: arithmetic: update that sets a column from itself that changed rows
+textfunctions	10	3	reached: arithmetic: update whose SET reads a column that it sets before that changed rows
+textfunctions	842	280	reached: changed both ways
+textfunctions	72	24	reached: chosen a get
+textfunctions	12	4	reached: chosen a get of a table of several indexes
+textfunctions	5	1	reached: chosen a get, delivered forward
+textfunctions	4	1	reached: chosen an index with 0 pinned and a range
+textfunctions	8	2	reached: chosen an index with 1 pinned
+textfunctions	4	1	reached: chosen an index with 1 pinned and a range
+textfunctions	3	1	reached: chosen an index with 1 pinned, delivered forward
+textfunctions	6	2	reached: chosen an index with 2 pinned
+textfunctions	32	10	reached: chosen every row
+textfunctions	3	1	reached: chosen every row of a table of several indexes
+textfunctions	5	1	reached: chosen every row, delivered backward
+textfunctions	5	1	reached: chosen every row, delivered forward
+textfunctions	21	7	reached: chosen every row, sorted
+textfunctions	42	14	reached: chosen no row
+textfunctions	5	1	reached: chosen no row, delivered forward
+textfunctions	43	14	reached: chosen the primary key with 0 pinned and a range
+textfunctions	4	1	reached: comparison with argument []uint8 ok
+textfunctions	5	1	reached: comparison with argument empty string ok
+textfunctions	6	2	reached: comparison with argument float64 ok
+textfunctions	19	6	reached: comparison with argument int64 ok
+textfunctions	14	4	reached: comparison with argument nil ok
+textfunctions	9	3	reached: comparison with argument string ok
+textfunctions	11	3	reached: comparison with literal blob ok
+textfunctions	3	1	reached: comparison with literal empty blob ok
+textfunctions	8	2	reached: comparison with literal empty text ok
+textfunctions	39	13	reached: comparison with literal integer ok
+textfunctions	4	1	reached: comparison with literal real -0.0 ok
+textfunctions	13	4	reached: comparison with literal real ok
+textfunctions	25	8	reached: comparison with literal text ok
+textfunctions	48	16	reached: create index already exists
+textfunctions	6	2	reached: create index no such column
+textfunctions	13	4	reached: create index no such table
+textfunctions	10	3	reached: create index of 1 columns ok
+textfunctions	111	37	reached: create index of 2 columns ok
+textfunctions	15	5	reached: create index of 3 columns ok
+textfunctions	54	18	reached: create index of a column of type BLOB ok
+textfunctions	41	13	reached: create index of a column of type INT ok
+textfunctions	31	10	reached: create index of a column of type INTEGER ok
+textfunctions	44	14	reached: create index of a column of type REAL ok
+textfunctions	107	35	reached: create index of a column of type TEXT ok
+textfunctions	123	41	reached: create index of a column that takes NULL ok
+textfunctions	91	30	reached: create index of a descending column ok
+textfunctions	136	45	reached: create index ok
+textfunctions	26	8	reached: create index that holds the primary key ok
+textfunctions	16	5	reached: create index there is already a table named
+textfunctions	172	57	reached: create table of 3 columns ok
+textfunctions	115	38	reached: create table of mixed types ok
+textfunctions	63	21	reached: create table of which every column outside the key takes NULL ok
+textfunctions	57	19	reached: create table of which no column takes NULL ok
+textfunctions	52	17	reached: create table of which some columns outside the key take NULL ok
+textfunctions	56	18	reached: create table with the key at 0 ok
+textfunctions	51	17	reached: create table with the key at 1 ok
+textfunctions	66	22	reached: create table with the key at 2 ok
+textfunctions	160	53	reached: create table with two columns of a type ok
+textfunctions	19	6	reached: delete WHERE that reads a get of one key ok, rows changed
+textfunctions	6	2	reached: delete WHERE that reads a scan of every row ok, rows changed
+textfunctions	12	4	reached: delete WHERE that reads no row ok, no row found
+textfunctions	5	1	reached: delete WHERE with a value of another type a value of another type
+textfunctions	40	13	reached: delete that changes every row of a table with rows
+textfunctions	32	10	reached: delete that changes no row of a table with rows
+textfunctions	16	5	reached: delete that changes some rows of a table
+textfunctions	8	2	reached: delete with RETURNING * ok
+textfunctions	11	3	reached: delete with RETURNING of a name twice ok
+textfunctions	5	1	reached: delete with RETURNING of names ok
+textfunctions	17	5	reached: delete with RETURNING read by the access that the model chooses
+textfunctions	6	2	reached: delete with RETURNING that gives a column of TEXT
+textfunctions	12	4	reached: delete with RETURNING that gives no row
+textfunctions	6	2	reached: delete with RETURNING that gives one row
+textfunctions	5	1	reached: delete with RETURNING through Exec ok
+textfunctions	19	6	reached: delete with RETURNING through Query ok
+textfunctions	56	18	reached: delete with WHERE ok, no row found
+textfunctions	29	9	reached: delete with WHERE ok, rows changed
+textfunctions	7	2	reached: delete with a subquery through Exec ok
+textfunctions	15	5	reached: delete without WHERE ok, no row found
+textfunctions	27	9	reached: delete without WHERE ok, rows changed
+textfunctions	5	1	reached: delivered select whose rows that tie came in the order of the key of its access
+textfunctions	47	15	reached: drop index no such index
+textfunctions	27	9	reached: drop index ok
+textfunctions	7	2	reached: insert into BLOB UNIQUE constraint failed
+textfunctions	17	5	reached: insert into BLOB a value of another type
+textfunctions	84	28	reached: insert into BLOB ok
+textfunctions	8	2	reached: insert into BLOB string or blob too big
+textfunctions	5	1	reached: insert into INT UNIQUE constraint failed
+textfunctions	18	6	reached: insert into INT a value of another type
+textfunctions	61	20	reached: insert into INT ok
+textfunctions	24	8	reached: insert into INTEGER ok
+textfunctions	9	3	reached: insert into REAL a value of another type
+textfunctions	33	11	reached: insert into REAL ok
+textfunctions	20	6	reached: insert into TEXT UNIQUE constraint failed
+textfunctions	10	3	reached: insert into TEXT a value of another type
+textfunctions	339	113	reached: insert into TEXT ok
+textfunctions	19	6	reached: insert into TEXT string or blob too big
+textfunctions	5	1	reached: insert of NULL beside a value of another type a value of another type
+textfunctions	5	1	reached: insert that leaves out a column that takes NULL NOT NULL constraint failed
+textfunctions	8	2	reached: insert that leaves out a column that takes NULL UNIQUE constraint failed
+textfunctions	8	2	reached: insert that leaves out a column that takes NULL a value of another type
+textfunctions	102	34	reached: insert that leaves out a column that takes NULL ok
+textfunctions	12	4	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
+textfunctions	49	16	reached: insert with RETURNING * ok
+textfunctions	4	1	reached: insert with RETURNING of a name that the table does not have no such column
+textfunctions	54	18	reached: insert with RETURNING of a name twice ok
+textfunctions	40	13	reached: insert with RETURNING of names ok
+textfunctions	28	9	reached: insert with RETURNING that gives NULL
+textfunctions	36	12	reached: insert with RETURNING that gives a column of BLOB
+textfunctions	19	6	reached: insert with RETURNING that gives a column of INT
+textfunctions	21	7	reached: insert with RETURNING that gives a column of INTEGER
+textfunctions	21	7	reached: insert with RETURNING that gives a column of REAL
+textfunctions	89	29	reached: insert with RETURNING that gives a column of TEXT
+textfunctions	21	7	reached: insert with RETURNING that gives a column that its list leaves out, without a default
+textfunctions	126	42	reached: insert with RETURNING that gives one row
+textfunctions	17	5	reached: insert with RETURNING through Exec ok
+textfunctions	8	2	reached: insert with RETURNING through Query NOT NULL constraint failed
+textfunctions	5	1	reached: insert with RETURNING through Query UNIQUE constraint failed
+textfunctions	126	42	reached: insert with RETURNING through Query ok
+textfunctions	10	3	reached: insert with a column that the table does not have: has no column named
+textfunctions	24	8	reached: insert with a column without a value: NOT NULL constraint failed
+textfunctions	15	5	reached: insert with a list in another order NOT NULL constraint failed
+textfunctions	11	3	reached: insert with a list in another order UNIQUE constraint failed
+textfunctions	17	5	reached: insert with a list in another order a value of another type
+textfunctions	195	65	reached: insert with a list in another order ok
+textfunctions	174	58	reached: insert with a list in the order of the table ok
+textfunctions	23	7	reached: insert with a value of another type in another column: a value of another type
+textfunctions	28	9	reached: insert with a value of another type in the key: a value of another type
+textfunctions	14	4	reached: insert with the wrong number of values:  values for 
+textfunctions	7	2	reached: insert with the wrong number of values: values were supplied
+textfunctions	5	1	reached: insert with two faults: a value of another type
+textfunctions	172	57	reached: insert without a list ok
+textfunctions	181	60	reached: literal blob
+textfunctions	34	11	reached: literal empty blob
+textfunctions	102	34	reached: literal empty text
+textfunctions	315	105	reached: literal integer
+textfunctions	97	32	reached: literal null
+textfunctions	118	39	reached: literal real
+textfunctions	9	3	reached: literal real -0.0
+textfunctions	599	199	reached: literal text
+textfunctions	70	23	reached: long value
+textfunctions	541	180	reached: path backward
+textfunctions	544	181	reached: path forward
+textfunctions	131	43	reached: path of an index of a descending column
+textfunctions	169	56	reached: path of an index that holds every column
+textfunctions	155	51	reached: path of an index with 0 pinned
+textfunctions	14	4	reached: path of an index with 0 pinned and a range
+textfunctions	32	10	reached: path of an index with 1 pinned
+textfunctions	7	2	reached: path of an index with 1 pinned and a range
+textfunctions	10	3	reached: path of an index with 2 pinned
+textfunctions	532	177	reached: path of every row
+textfunctions	95	31	reached: path of the primary key with 0 pinned and a range
+textfunctions	142	47	reached: path of the primary key with 1 pinned
+textfunctions	42	14	reached: path that delivers the order
+textfunctions	97	32	reached: path that reads no row
+textfunctions	139	46	reached: path that sorts
+textfunctions	11	3	reached: path with a pin of NULL
+textfunctions	7	2	reached: path with a range on a descending column
+textfunctions	292	97	reached: plan of the cache checked
+textfunctions	866	288	reached: read both ways
+textfunctions	63	21	reached: replay of indexes into an empty cache
+textfunctions	51	17	reached: restart with indexes in the cache
+textfunctions	128	42	reached: select * of 3 columns ok
+textfunctions	21	7	reached: select * with NULL ok
+textfunctions	55	18	reached: select of a name twice ok
+textfunctions	25	8	reached: select of names in another order ok
+textfunctions	90	30	reached: select of names ok
+textfunctions	9	3	reached: select of names with NULL ok
+textfunctions	195	65	reached: select read by the access that the model chooses
+textfunctions	12	4	reached: select with a subquery through Query ok
+textfunctions	5	1	reached: select with a value on the left ok, no row found
+textfunctions	366	122	reached: select with arithmetic read by the access that the model chooses
+textfunctions	25	8	reached: select without ORDER BY whose rows came in the order of the key of its access
+textfunctions	29	9	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+textfunctions	5	1	reached: subquery of the table of the statement in a delete
+textfunctions	15	5	reached: subquery of the table of the statement in a select
+textfunctions	5	1	reached: subquery of the table of the statement in a update
+textfunctions	3	1	reached: subquery on the left of = in a select
+textfunctions	3	1	reached: subquery on the right of < in a select
+textfunctions	3	1	reached: subquery on the right of = in a select
+textfunctions	11	3	reached: subquery that finds no row in a select
+textfunctions	3	1	reached: subquery that finds no row in a update
+textfunctions	12	4	reached: subquery that the engine did not compute, of a select that gave no row
+textfunctions	13	4	reached: subquery that the engine did not compute, of an update or a delete
+textfunctions	132	44	reached: subquery whose value was NULL
+textfunctions	66	22	reached: subquery whose value was that of its one first row
+textfunctions	9	3	reached: subquery with LIMIT ?
+textfunctions	3	1	reached: subquery with WHERE and without ORDER BY with rows that tie for the first, whose value was that of SQLite's first
+textfunctions	10	3	reached: subquery with a parameter in it
+textfunctions	6	2	reached: subquery with rows that tie for the first, whose value was that of SQLite's first
+textfunctions	3	1	reached: subquery with rows that tie for the first, whose value was that of another
+textfunctions	3	1	reached: subquery without WHERE and ORDER BY with rows that tie for the first, whose value was that of SQLite's first
+textfunctions	3	1	reached: text with a column in SET of a update, NOT NULL constraint failed
+textfunctions	6	2	reached: text with a column in SET of a update, UNIQUE constraint failed
+textfunctions	15	5	reached: text with a column in SET of a update, no such column
+textfunctions	19	6	reached: text with a column in SET of a update, no such table
+textfunctions	54	18	reached: text with a column in SET of a update, not supported
+textfunctions	138	46	reached: text with a column in SET of a update, ok
+textfunctions	14	4	reached: text with a column in SET of a update, string or blob too big
+textfunctions	6	2	reached: text with a column in WHERE of a delete, no such column
+textfunctions	7	2	reached: text with a column in WHERE of a delete, no such table
+textfunctions	38	12	reached: text with a column in WHERE of a delete, not supported
+textfunctions	76	25	reached: text with a column in WHERE of a delete, ok
+textfunctions	4	1	reached: text with a column in WHERE of a delete, string or blob too big
+textfunctions	6	2	reached: text with a column in WHERE of a select, 1/1: row value misused
+textfunctions	31	10	reached: text with a column in WHERE of a select, no such column
+textfunctions	42	14	reached: text with a column in WHERE of a select, no such table
+textfunctions	164	54	reached: text with a column in WHERE of a select, not supported
+textfunctions	234	78	reached: text with a column in WHERE of a select, ok
+textfunctions	48	16	reached: text with a column in WHERE of a select, string or blob too big
+textfunctions	9	3	reached: text with a column in WHERE of a update, 1/1: sub-select returns 3 columns - expected 1
+textfunctions	17	5	reached: text with a column in WHERE of a update, no such column
+textfunctions	25	8	reached: text with a column in WHERE of a update, no such table
+textfunctions	113	37	reached: text with a column in WHERE of a update, not supported
+textfunctions	150	50	reached: text with a column in WHERE of a update, ok
+textfunctions	24	8	reached: text with a column in WHERE of a update, string or blob too big
+textfunctions	5	1	reached: text with a column in a subquery of a delete, not supported
+textfunctions	4	1	reached: text with a column in a subquery of a delete, ok
+textfunctions	8	2	reached: text with a column in a subquery of a select, no such column
+textfunctions	5	1	reached: text with a column in a subquery of a select, no such table
+textfunctions	16	5	reached: text with a column in a subquery of a select, not supported
+textfunctions	24	8	reached: text with a column in a subquery of a select, ok
+textfunctions	3	1	reached: text with a column in a subquery of a select, string or blob too big
+textfunctions	5	1	reached: text with a column in a subquery of a update, no such column
+textfunctions	9	3	reached: text with a column in a subquery of a update, no such table
+textfunctions	31	10	reached: text with a column in a subquery of a update, not supported
+textfunctions	11	3	reached: text with a column in a subquery of a update, ok
+textfunctions	15	5	reached: text with a column in a subquery of a update, string or blob too big
+textfunctions	4	1	reached: text without a column in SET of a update, UNIQUE constraint failed
+textfunctions	4	1	reached: text without a column in SET of a update, no such column
+textfunctions	15	5	reached: text without a column in SET of a update, no such table
+textfunctions	114	38	reached: text without a column in SET of a update, not supported
+textfunctions	36	12	reached: text without a column in SET of a update, ok
+textfunctions	12	4	reached: text without a column in SET of a update, string or blob too big
+textfunctions	5	1	reached: text without a column in WHERE of a delete, not supported
+textfunctions	64	21	reached: text without a column in WHERE of a delete, ok
+textfunctions	25	8	reached: text without a column in WHERE of a select, no such column
+textfunctions	26	8	reached: text without a column in WHERE of a select, no such table
+textfunctions	49	16	reached: text without a column in WHERE of a select, not supported
+textfunctions	274	91	reached: text without a column in WHERE of a select, ok
+textfunctions	24	8	reached: text without a column in WHERE of a select, string or blob too big
+textfunctions	3	1	reached: text without a column in WHERE of a update, UNIQUE constraint failed
+textfunctions	5	1	reached: text without a column in WHERE of a update, no such column
+textfunctions	9	3	reached: text without a column in WHERE of a update, no such table
+textfunctions	42	14	reached: text without a column in WHERE of a update, not supported
+textfunctions	69	23	reached: text without a column in WHERE of a update, ok
+textfunctions	16	5	reached: text without a column in WHERE of a update, string or blob too big
+textfunctions	5	1	reached: text without a column in a subquery of a delete, ok
+textfunctions	3	1	reached: text without a column in a subquery of a select, no such table
+textfunctions	12	4	reached: text without a column in a subquery of a select, not supported
+textfunctions	14	4	reached: text without a column in a subquery of a select, ok
+textfunctions	6	2	reached: text without a column in a subquery of a update, no such table
+textfunctions	23	7	reached: text without a column in a subquery of a update, not supported
+textfunctions	15	5	reached: text without a column in a subquery of a update, ok
+textfunctions	11	3	reached: text without a column in a subquery of a update, string or blob too big
+textfunctions	53	17	reached: text: NULL as an argument in a text, ok
+textfunctions	99	33	reached: text: a blob in hex, ok
+textfunctions	177	59	reached: text: a text that is not ASCII in a text, ok
+textfunctions	164	54	reached: text: a text that runs again, ok
+textfunctions	15	5	reached: text: constant text that makes the access read no row
+textfunctions	10	3	reached: text: constant text that serves a bound of an index
+textfunctions	36	12	reached: text: constant text that serves a bound of the key
+textfunctions	58	19	reached: text: constant text that serves a get of one key
+textfunctions	15	5	reached: text: goqite's id, 'm_' || lower(hex(?)), ok
+textfunctions	6	2	reached: text: hex at the length limit, ok
+textfunctions	6	2	reached: text: hex one byte over the length limit, string or blob too big
+textfunctions	4	1	reached: text: hex one byte short of the length limit, ok
+textfunctions	8	2	reached: text: lower at the length limit, ok
+textfunctions	3	1	reached: text: lower at the length limit, string or blob too big
+textfunctions	10	3	reached: text: lower one byte over the length limit, string or blob too big
+textfunctions	6	2	reached: text: lower one byte short of the length limit, ok
+textfunctions	25	8	reached: text: refused a BLOB column in a concatenation
+textfunctions	12	4	reached: text: refused a BLOB column in lower
+textfunctions	59	19	reached: text: refused a column of a number in a concatenation
+textfunctions	71	23	reached: text: refused a column of a number in hex
+textfunctions	5	1	reached: text: refused a column of a number in lower
+textfunctions	8	2	reached: text: refused a plain value of another type compared with text
+textfunctions	19	6	reached: text: refused a subquery of another type compared with text
+textfunctions	6	2	reached: text: refused an argument that is a blob in a concatenation
+textfunctions	9	3	reached: text: refused an argument that is a blob in lower
+textfunctions	7	2	reached: text: refused an argument that is a number in a concatenation
+textfunctions	3	1	reached: text: refused an argument that is a number in hex
+textfunctions	8	2	reached: text: refused an argument that is a number in lower
+textfunctions	42	14	reached: text: refused text compared with a column of a number or a blob
+textfunctions	75	25	reached: text: refused text set for a column of a number or a blob
+textfunctions	30	10	reached: text: text beside arithmetic in one statement, ok
+textfunctions	268	89	reached: text: the empty text in a text, ok
+textfunctions	232	77	reached: text: the key compared with a text, ok
+textfunctions	7	2	reached: text: || at the length limit, ok
+textfunctions	5	1	reached: text: || at the length limit, string or blob too big
+textfunctions	11	3	reached: text: || one byte over the length limit, string or blob too big
+textfunctions	10	3	reached: text: || one byte short of the length limit, ok
+textfunctions	6	2	reached: text: || one byte short of the length limit, string or blob too big
+textfunctions	16	5	reached: update WHERE that reads a get of one key ok, rows changed
+textfunctions	4	1	reached: update WHERE that reads a scan to an upper bound ok, rows changed
+textfunctions	11	3	reached: update WHERE that reads no row ok, no row found
+textfunctions	6	2	reached: update of a row whose record is too long
+textfunctions	61	20	reached: update that changes every row of a table with rows
+textfunctions	25	8	reached: update that changes no row of a table with rows
+textfunctions	15	5	reached: update that changes some rows of a table
+textfunctions	16	5	reached: update with RETURNING * ok
+textfunctions	19	6	reached: update with RETURNING of a name twice ok
+textfunctions	8	2	reached: update with RETURNING of names ok
+textfunctions	3	1	reached: update with RETURNING of the key that moves a row to another key
+textfunctions	19	6	reached: update with RETURNING read by the access that the model chooses
+textfunctions	4	1	reached: update with RETURNING that gives NULL
+textfunctions	7	2	reached: update with RETURNING that gives a column of BLOB
+textfunctions	5	1	reached: update with RETURNING that gives a column of INT
+textfunctions	3	1	reached: update with RETURNING that gives a column of INTEGER
+textfunctions	6	2	reached: update with RETURNING that gives a column of REAL
+textfunctions	9	3	reached: update with RETURNING that gives a column of TEXT
+textfunctions	19	6	reached: update with RETURNING that gives no row
+textfunctions	9	3	reached: update with RETURNING that gives one row
+textfunctions	12	4	reached: update with RETURNING that gives several rows
+textfunctions	18	6	reached: update with RETURNING that sets a column of an index ok
+textfunctions	5	1	reached: update with RETURNING that sets the key ok
+textfunctions	3	1	reached: update with RETURNING through Exec ok
+textfunctions	40	13	reached: update with RETURNING through Query ok
+textfunctions	7	2	reached: update with RETURNING whose rows came in the order of the key
+textfunctions	10	3	reached: update with RETURNING whose rows came in the reverse of the order of the key
+textfunctions	3	1	reached: update with WHERE NOT NULL constraint failed
+textfunctions	39	13	reached: update with WHERE ok, no row found
+textfunctions	21	7	reached: update with WHERE ok, rows changed
+textfunctions	5	1	reached: update with a subquery through Exec ok
+textfunctions	4	1	reached: update with a value on the left ok, no row found
+textfunctions	36	12	reached: update without WHERE ok, no row found
+textfunctions	55	18	reached: update without WHERE ok, rows changed
+textfunctions	9	3	reached: value on the left compared with NULL finds no row
+textfunctions	3	1	reached: value on the left of < finds no row
+textfunctions	4	1	reached: value on the left of = finds no row
+textfunctions	3	1	reached: value on the left of > finds no row
+textfunctions	5	1	select no such column

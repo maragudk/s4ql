@@ -139,7 +139,7 @@ func TestSpool(t *testing.T) {
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
 		create("t1", 1, "k")(t, tx)
-		note("insert", 1)(t, tx)
+		note("insert")(t, tx)
 		is.EqualSlice(t, nil, names())
 		is.NotError(t, tx.Commit(t.Context()))
 		is.EqualSlice(t, nil, names())

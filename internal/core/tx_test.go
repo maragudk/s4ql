@@ -55,7 +55,7 @@ func (w *world) commits(t *testing.T) [][]string {
 
 // changes of the commit object with the given name and bytes, one line for each change and each
 // annotation, such as "create t1(k*0,v)", "drop t1", "upsert t1 [0 1] 1,2", "delete t1 1",
-// "create index i on t1(1 desc)", "drop index i", and "note insert... [1,2]", and the name of its
+// "create index i on t1(1 desc)", "drop index i", and "note insert...", and the name of its
 // parent.
 func changes(name format.Name, data []byte) (format.Name, []string, error) {
 	r := format.NewCommitReader(bytes.NewReader(data), name)
@@ -79,7 +79,7 @@ func changes(name format.Name, data []byte) (format.Name, []string, error) {
 		switch {
 		case annotation != nil:
 			s := annotation.GetStatement()
-			lines = append(lines, fmt.Sprint("note ", s.GetSql(), " [", text(s.GetParameters()), "]"))
+			lines = append(lines, "note "+s.GetSql())
 		case change.HasCreateTable():
 			lines = append(lines, "create "+describe(change.GetCreateTable()))
 		case change.HasDropTable():
@@ -141,10 +141,10 @@ func remove(name string, found bool, vs ...any) step {
 	}
 }
 
-func note(sql string, vs ...any) step {
+func note(sql string) step {
 	return func(t *testing.T, tx *core.Tx) {
 		t.Helper()
-		is.NotError(t, tx.Annotate(t.Context(), sql, row(vs...)))
+		is.NotError(t, tx.Annotate(t.Context(), sql))
 	}
 }
 
@@ -258,16 +258,16 @@ func TestTx_Commit(t *testing.T) {
 			state:  "t0(k*0): \nt1(k*0,v): 1,10 | 2,20 | 3,30\nt2(a*0,b*1,c): 0,0,0 | 1,1,100 | 2,2,200",
 		},
 		{
-			name: "should list the annotations after the changes, in the order in which they were made, with their parameters",
+			name: "should list the annotations after the changes, in the order in which they were made, each the text of its statement",
 			steps: []step{
-				note("insert into t1 (k, v) values (?, ?)", 3, 30), upsert("t1", 3, 30),
-				note("delete from t1 where k = ?", 1), remove("t1", true, 1),
-				note("select ?, ?, ?, ?, ?", "text", 1.5, nil, []byte{1}, math.Copysign(0, -1)),
+				note("insert into t1 (k, v) values (?, ?)"), upsert("t1", 3, 30),
+				note("delete from t1 where k = ?"), remove("t1", true, 1),
+				note("select ?, ?, ?, ?, ?"),
 			},
 			commit: []string{
 				"upsert t1 [0 1] 3,30", "delete t1 1",
-				"note insert into t1 (k, v) values (?, ?) [3,30]", "note delete from t1 where k = ? [1]",
-				`note select ?, ?, ?, ?, ? ["text",r1.5,null,x'01',r-0]`,
+				"note insert into t1 (k, v) values (?, ?)", "note delete from t1 where k = ?",
+				"note select ?, ?, ?, ?, ?",
 			},
 			state: "t1(k*0,v): 2,20 | 3,30\nt2(a*0,b*1,c): 1,1,100",
 		},
@@ -412,7 +412,7 @@ func TestTx_Commit(t *testing.T) {
 			is.True(t, !inserted, "an insert after the end inserted")
 			_, err = tx.Delete(t.Context(), "t1", row(1))
 			is.Error(t, core.ErrTxDone, err)
-			is.Error(t, core.ErrTxDone, tx.Annotate(t.Context(), "select 1", nil))
+			is.Error(t, core.ErrTxDone, tx.Annotate(t.Context(), "select 1"))
 			_, err = tx.Get(t.Context(), "t1", row(1))
 			is.Error(t, core.ErrTxDone, err)
 			_, err = tx.Table(t.Context(), "t1")
@@ -504,9 +504,7 @@ func TestTx_Commit(t *testing.T) {
 			_, err = tx.Get(ctx, "t1", key)
 			is.Error(t, core.ErrInvalid, err, name)
 		}
-		is.Error(t, core.ErrInvalid, tx.Annotate(ctx, "select '\xff'", nil))
-		is.Error(t, core.ErrInvalid, tx.Annotate(ctx, "select ?", []*s4qlpb.Value{{}}))
-		is.Error(t, core.ErrInvalid, tx.Annotate(ctx, "select ?", row("\xff")))
+		is.Error(t, core.ErrInvalid, tx.Annotate(ctx, "select '\xff'"))
 
 		// None of it changed anything or broke the transaction.
 		upsert("t1", 3, 30)(t, tx)
@@ -1019,7 +1017,7 @@ func TestTx_Commit_large(t *testing.T) {
 			is.NotError(t, tx.Upsert(t.Context(), "old", row(large+i, i%7, large-i, nil)))
 			is.NotError(t, tx.Upsert(t.Context(), "new", row(large+i, large-i, i)))
 			if i%3 == 0 {
-				is.NotError(t, tx.Annotate(t.Context(), "insert into new (k, v, w) values (?, ?, ?)", row(large+i, large-i, i)))
+				is.NotError(t, tx.Annotate(t.Context(), "insert into new (k, v, w) values (?, ?, ?)"))
 			}
 		}
 		is.NotError(t, tx.Commit(t.Context()))
@@ -1644,7 +1642,7 @@ func TestTx_Savepoint(t *testing.T) {
 		is.NotError(t, tx.Commit(t.Context()))
 		want := "t1(k*0,v): 1,10 | 2,20 | 3,30\nt2(k*0): 5\nt3(k*0): "
 		is.Equal(t, want, read(t, d))
-		is.EqualSlice(t, []string{"upsert t1 [0 1] 3,30", "create t3(k*0)", "upsert t2 [0] 5", "note insert 3 []"}, w.commits(t)[1])
+		is.EqualSlice(t, []string{"upsert t1 [0 1] 3,30", "create t3(k*0)", "upsert t2 [0] 5", "note insert 3"}, w.commits(t)[1])
 
 		// A replay of the log into an empty cache gives the same state.
 		is.NotError(t, d.Close(t.Context()))
@@ -1668,7 +1666,7 @@ func TestTx_Savepoint(t *testing.T) {
 		is.NotError(t, tx.Release(t.Context()))
 		is.NotError(t, tx.Commit(t.Context()))
 		is.Equal(t, "t1(k*0): 2\nt2(k*0): ", read(t, d))
-		is.EqualSlice(t, []string{"upsert t1 [0] 2", "delete t1 1", "create t2(k*0)", "note insert 2 []"}, w.commits(t)[1])
+		is.EqualSlice(t, []string{"upsert t1 [0] 2", "delete t1 1", "create t2(k*0)", "note insert 2"}, w.commits(t)[1])
 	})
 
 	t.Run("should keep the record of a row that was changed before the savepoint, and make the record anew for a table changed only after it", func(t *testing.T) {
@@ -2165,8 +2163,8 @@ func randomSavepoints(t *testing.T, seed uint64, verbose bool) savepointCounts {
 				}
 				sql := fmt.Sprint("statement ", len(notes))
 				logf("annotate %q", sql)
-				is.NotError(t, tx.Annotate(ctx, sql, nil))
-				notes = append(notes, "note "+sql+" []")
+				is.NotError(t, tx.Annotate(ctx, sql))
+				notes = append(notes, "note "+sql)
 			}
 			own, err := dump(ctx, tx)
 			is.NotError(t, err)
@@ -2358,9 +2356,9 @@ func TestTx_types(t *testing.T) {
 			is.NotError(t, err)
 			is.Equal(t, "r0,r0", text(got))
 			is.NotError(t, tx.Upsert(t.Context(), "t", row(0.0, 1.0)))
-			is.NotError(t, tx.Annotate(t.Context(), "insert into t values (?, ?)", row(negative, negative)))
+			is.NotError(t, tx.Annotate(t.Context(), "insert into t values (?, ?)"))
 		})
-		is.EqualSlice(t, []string{"create t(c0*0:real,c1:real)", "upsert t [0 1] r0,r1", "note insert into t values (?, ?) [r-0,r-0]"}, w.commits(t)[0])
+		is.EqualSlice(t, []string{"create t(c0*0:real,c1:real)", "upsert t [0 1] r0,r1", "note insert into t values (?, ?)"}, w.commits(t)[0])
 
 		transact(t, d, func(t *testing.T, tx *core.Tx) {
 			is.NotError(t, tx.Upsert(t.Context(), "t", row(negative, negative)))
@@ -3609,6 +3607,114 @@ func TestTx_Keys(t *testing.T) {
 				return nil
 			}), name)
 		}
+	})
+}
+
+func TestTx_KeysBy(t *testing.T) {
+	// ordered is a table of the primary key c0 and the columns c1, an integer, c2, a text, and c3, a
+	// real, which take NULL, with the index ix on c1 descending and c2 ascending, which holds many
+	// rows that tie in c1 and in both, and NULL in each.
+	ordered := func(t *testing.T, tx *core.Tx) (*s4qlpb.CreateTable, *s4qlpb.CreateIndex) {
+		t.Helper()
+		ct := nullableTable(typedTable("t", s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_INT, s4qlpb.Type_TYPE_TEXT, s4qlpb.Type_TYPE_REAL), 1, 2, 3)
+		ix := indexOf("ix", "t", desc(1), 2)
+		is.NotError(t, tx.CreateTable(t.Context(), ct))
+		is.NotError(t, tx.CreateIndex(t.Context(), ix))
+		r := rand.New(rand.NewPCG(3, 4))
+		maybe := func(v any) any {
+			if r.IntN(4) == 0 {
+				return nil
+			}
+			return v
+		}
+		for k := range 300 {
+			is.NotError(t, tx.Upsert(t.Context(), "t", row(k*7%300, maybe(r.IntN(5)), maybe(fmt.Sprint(r.IntN(3))), maybe(float64(r.IntN(3))))))
+		}
+		return ct, ix
+	}
+	// valuesOf the columns by of the row.
+	valuesOf := func(by []core.KeyColumn, r []*s4qlpb.Value) []*s4qlpb.Value {
+		var vs []*s4qlpb.Value
+		for _, c := range by {
+			vs = append(vs, r[c.Position])
+		}
+		return vs
+	}
+
+	t.Run("should give each key once in the order of the columns, as the index of those columns holds the rows, whatever the order of the adds", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			ct, ix := ordered(t, tx)
+			by := core.IndexKey(ct, ix)
+			var want []string
+			for _, r := range scanBy(t, tx, "t", core.IndexScan{Index: "ix"}) {
+				want = append(want, strings.SplitN(r, ",", 2)[0])
+			}
+			var rows [][]*s4qlpb.Value
+			for r, err := range tx.Scan(t.Context(), "t") {
+				is.NotError(t, err)
+				rows = append(rows, r)
+			}
+			rand.New(rand.NewPCG(5, 6)).Shuffle(len(rows), func(i, j int) { rows[i], rows[j] = rows[j], rows[i] })
+			is.NotError(t, tx.KeysBy(t.Context(), "t", by, func(k *core.KeySet) error {
+				for _, r := range append(rows, rows...) {
+					is.NotError(t, k.Add(t.Context(), valuesOf(by, r)))
+				}
+				is.Equal(t, 300, len(want))
+				is.EqualSlice(t, want, keysOf(t, k))
+				return nil
+			}))
+		})
+	})
+
+	t.Run("should let the transaction change the table between two keys, and take no key once the keys are read", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			ct, ix := ordered(t, tx)
+			by := core.IndexKey(ct, ix)
+			is.NotError(t, tx.KeysBy(t.Context(), "t", by, func(k *core.KeySet) error {
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(2, 1, "b", nil))))
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(1, 1, "a", nil))))
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(3, nil, "a", nil))))
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(4, 2, nil, nil))))
+				is.NotError(t, k.Add(t.Context(), valuesOf(by, row(5, 1, nil, nil))))
+				var got []string
+				for key, err := range k.All(t.Context()) {
+					is.NotError(t, err)
+					got = append(got, text(key))
+					found, err := tx.Delete(t.Context(), "t", key)
+					is.NotError(t, err)
+					is.True(t, found)
+					is.Error(t, core.ErrInvalid, k.Add(t.Context(), valuesOf(by, row(6, 1, "a", nil))))
+				}
+				// c1 descending, NULL last, and then c2 ascending, NULL first.
+				is.EqualSlice(t, []string{"4", "5", "1", "2", "3"}, got)
+				return nil
+			}))
+		})
+	})
+
+	t.Run("should refuse an order without every column of the primary key, or with a column twice or that the table does not have, and a key of another length", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		write(t, d, func(tx *core.Tx) {
+			ordered(t, tx)
+			for _, by := range [][]core.KeyColumn{{}, {{Position: 1}}, {{Position: 0}, {Position: 0}}, {{Position: 0}, {Position: 9}}, {{Position: -1}, {Position: 0}}} {
+				is.Error(t, core.ErrInvalid, tx.KeysBy(t.Context(), "t", by, func(*core.KeySet) error {
+					t.Fatal("f runs for an order that is refused")
+					return nil
+				}), fmt.Sprint(by))
+			}
+			is.NotError(t, tx.KeysBy(t.Context(), "t", []core.KeyColumn{{Position: 1}, {Position: 0}}, func(k *core.KeySet) error {
+				is.Error(t, core.ErrInvalid, k.Add(t.Context(), row(1)))
+				is.Error(t, core.ErrInvalid, k.Add(t.Context(), row(1, "a")))
+				is.NotError(t, k.Add(t.Context(), row(nil, 1)))
+				is.EqualSlice(t, []string{"1"}, keysOf(t, k))
+				return nil
+			}))
+		})
 	})
 }
 

@@ -93,6 +93,24 @@ func (d *DB) Synchronous() (int64, error) {
 	return setting, err
 }
 
+// ProgressPeriod sets the number of instructions of SQLite's virtual machine between two looks of
+// a step of the cache at its context, on every connection of the instance, as
+// [sqlite.Conn.SetProgressPeriod] says.
+func (o *Options) ProgressPeriod(n int) {
+	o.progressPeriod = n
+}
+
+// LoseCacheTx rolls back the transaction of the cache under the transaction, without the core
+// knowing, as SQLite does for an error that it rolls the whole transaction back for.
+func (tx *Tx) LoseCacheTx() error {
+	return tx.c.c.Exec("rollback")
+}
+
+// LoseCacheTx is [Tx.LoseCacheTx] of the read transaction.
+func (r *ReadTx) LoseCacheTx() error {
+	return r.c.c.Exec("rollback")
+}
+
 // CheckpointAfter sets the number of frames in the write-ahead log from which the writer
 // checkpoints the cache after a commit.
 func (o *Options) CheckpointAfter(frames int) {

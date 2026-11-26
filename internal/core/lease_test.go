@@ -928,7 +928,7 @@ func TestLease_openTx(t *testing.T) {
 				tx, err = a.Begin(t.Context())
 				is.NotError(t, err)
 				is.NotError(t, tx.Upsert(t.Context(), "t1", row(3)))
-				is.NotError(t, tx.Annotate(t.Context(), "insert", nil))
+				is.NotError(t, tx.Annotate(t.Context(), "insert"))
 				is.NotError(t, tx.Savepoint(t.Context()))
 				// A read transaction holds no place of the writer, and stays as it was.
 				rtx, err = startRead(t, a)
@@ -964,7 +964,7 @@ func TestLease_openTx(t *testing.T) {
 			for _, err := range tx.ScanIndex(t.Context(), "t1", core.IndexScan{}) {
 				isLeaseEnded(t, err)
 			}
-			isLeaseEnded(t, tx.Annotate(t.Context(), "insert", nil))
+			isLeaseEnded(t, tx.Annotate(t.Context(), "insert"))
 			isLeaseEnded(t, tx.Serving(t.Context()))
 			isLeaseEnded(t, tx.Release(t.Context()))
 			isLeaseEnded(t, tx.RollbackTo(t.Context()))

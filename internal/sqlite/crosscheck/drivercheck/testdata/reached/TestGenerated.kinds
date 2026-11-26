@@ -200,7 +200,10 @@
 10	reached: insert with a value of another type in the key: a value of another type
 10	reached: insert with a value of another type in another column: a value of another type
 5	reached: insert with two faults: NOT NULL constraint failed
-7	reached: insert with two faults: a value of another type
+# An insert with two faults, one of them a value of another type, left this file with the generated
+# workload of text of 2026-11-26: the texts of the mixed profile move its inserts, and it reaches the
+# kind twice, as do two other profiles, and no profile three times. TestGenerated requires it once,
+# and TestDifferential of the engine by profile.
 3	reached: insert with two faults: has no column named
 2	reached: insert with a column without a value: attempt to write a readonly database
 49	reached: select * of 1 columns ok

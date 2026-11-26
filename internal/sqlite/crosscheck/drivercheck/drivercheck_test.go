@@ -5405,12 +5405,15 @@ func TestGenerated(t *testing.T) {
 	// that the test runs, which the run must reach once at least: a value on the left of != in a
 	// select that finds rows, which the values on the left reach about 4 times in 100 sequences, and
 	// a column that the table does not have under IS NULL or IS NOT NULL alone in a WHERE, which the
-	// profile of the WHERE reaches about 3 times in 100; and an insert of NULL beside a value of another
-	// type in a column that does not take NULL, which the profiles reach 6 times in all, mixed twice.
+	// profile of the WHERE reaches about 3 times in 100; an insert of NULL beside a value of another
+	// type in a column that does not take NULL, which the profiles reach 6 times in all, mixed twice;
+	// and an insert with two faults, one a value of another type, which mixed, order, arithmetic, and
+	// several reach twice each.
 	for _, kind := range []string{
 		"reached: value on the left of != finds rows",
 		"reached: WHERE with a column that the table does not have under IS NULL or IS NOT NULL, alone no such column",
 		"reached: insert of NULL beside a value of another type NOT NULL constraint failed",
+		"reached: insert with two faults: a value of another type",
 	} {
 		if total[kind] == 0 {
 			t.Errorf("no profile reaches %q", kind)
