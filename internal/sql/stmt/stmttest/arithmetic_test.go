@@ -211,6 +211,10 @@ func TestMissingColumn_arithmetic(t *testing.T) {
 			{"select * from t where 1 + y < x * 2", "y"},
 			{"select * from t where k = i + y and z = 1", "y"},
 			{"select * from t where z is null and k + y = 1", "z"},
+			// A missing column inside a call does not end the walk: a later one replaces it.
+			{"select * from t where lower(x) = y", "y"},
+			{"select * from t where hex(x) || y = 1", "y"},
+			{"select * from t where lower(x) = 1", "x"},
 			{"select * from t where k = i", ""},
 		} {
 			s, err := stmt.Check(c.src)
