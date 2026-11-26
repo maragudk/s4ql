@@ -187,3 +187,5 @@ That `series.operand` writes only forms that the pass takes: no number, NULL, or
 ### Future work
 
 In `/docs/todo/hegel.md`: the next places for a Hegel test, the faults of related values that Hegel misses, and text longer than 8 bytes, which the series do not draw.
+
+The first CI run of the pull request failed in the job `crosscheck`, at its step "Check that go.mod and go.sum are tidy" (`go mod tidy && git diff --exit-code go.mod go.sum` in `/internal/sqlite/crosscheck`): that module requires the main one, so its `go.sum` needs the sums of Hegel, `purego`, and `x/sys` too. The trial had tidied only the main module. Fixed by `go mod tidy` there; `internal/simlint` needed nothing.
