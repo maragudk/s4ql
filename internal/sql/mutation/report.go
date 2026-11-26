@@ -150,6 +150,18 @@ func writeReport(w io.Writer, mutants []mutant, all map[string]bool, results map
 	for _, r := range unexplained {
 		_, _ = fmt.Fprintf(w, "\n%v:%v\n%v\n", r.File, r.Line, r.Key)
 	}
+	stale := staleEntries(mutants, all, results, eq)
+	if len(stale) > 0 {
+		_, _ = fmt.Fprintf(w, "\n%v entries of the list of equivalent mutants match no surviving mutant:\n", len(stale))
+		for _, k := range stale {
+			_, _ = fmt.Fprintf(w, "%v\n", k)
+		}
+	}
+}
+
+// staleEntries of the list of equivalent mutants eq, sorted: those whose mutant is among mutants,
+// has a result, and did not survive, and those whose key is not in all.
+func staleEntries(mutants []mutant, all map[string]bool, results map[string]result, eq map[string]string) []string {
 	selected := map[string]bool{}
 	for _, m := range mutants {
 		selected[m.Key] = true
@@ -162,12 +174,7 @@ func writeReport(w io.Writer, mutants []mutant, all map[string]bool, results map
 		}
 	}
 	slices.Sort(stale)
-	if len(stale) > 0 {
-		_, _ = fmt.Fprintf(w, "\n%v entries of the list of equivalent mutants match no surviving mutant:\n", len(stale))
-		for _, k := range stale {
-			_, _ = fmt.Fprintf(w, "%v\n", k)
-		}
-	}
+	return stale
 }
 
 // get the counts of the key k of m, made if needed.
