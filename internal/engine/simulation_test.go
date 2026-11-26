@@ -1171,7 +1171,7 @@ func arithmeticKinds(a *attempt, kind string) []string {
 // evaluation errors that no row justifies that follow from a write that changed rows wrongly.
 func arithmeticFinds(own string) []string {
 	finds := []string{own}
-	for _, f := range []string{", and in SQLite", "which began at commit", "the replay of the log holds", "for its key after the statements of the commit", "fails in SQLite", "rows in SQLite, and its caller was told",
+	for _, f := range []string{", and in SQLite", "which began at commit", "the replay of the log holds", "for its key after the statements of the commit", "for it after the statements of the commit", "fails in SQLite", "rows in SQLite, and its caller was told",
 		"justifies it for no row", "gives the rows of RETURNING", "is in no commit, and changes"} {
 		if f != own {
 			finds = append(finds, f)

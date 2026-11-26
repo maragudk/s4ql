@@ -112,3 +112,50 @@ Removing the draw `intn(n.host, 100)` of the core's simulation changes the rando
 ### Future work
 
 Outside my scope, for the lead: `docs/roadmap.md` lines 15, 146, 205, and 217 still describe the arguments in the annotation and eight bugs of several statements; `internal/sql/mutation/README.md` line 219 mentions the equivalent mutants of `annotateNext`; `internal/simulator/trace.go` (`Statement.Args`), `internal/simulator/README.md` (lines 613 and 948), and the fixtures of `internal/simulator/sitecheck/check.html` describe arguments of a commit's statements, and the public simulator shows `values (?)` where it showed the key.
+
+## Step 3: the runs at the nightly's sizes
+
+**Author:** builder (annotation-text)
+
+### Prompt Context
+
+**Verbatim prompt:** `make test` and the lint target pass; the whole engine package and the core package pass without `-short`; the night-sized runs pass, one at a time [...] Also the core's planted bugs at the nightly's size if you touch `internal/core` tests
+
+**Interpretation:** Run each long check once, one after another, on the merged branch.
+
+**Inferred intent:** That the change lands with the nightly green.
+
+### What I did
+
+A script, `/Volumes/990/s4ql/annotation-text/runs.sh`, ran the checks one at a time at `81d21d35` (the merge of main), with `GOTMPDIR` and `TMPDIR` on `/Volumes/990`: `make test` (261 s), `make lint` (19 s), `go test ./internal/engine/` (370 s), `go test ./internal/core/` (155 s), `S4QL_ENGINE_SIM_SEEDS=100` `TestSimulation` (401 s), `./drivercheck/` (71 s), `TestDifferential -sequences 400` (662 s), all green; the core's `TestSimulation_plantedBugs` with `S4QL_SIM_SEEDS=1000` in its four shards (922, 837, 1025, and 1002 s), green. The engine's `TestSimulation_plantedBugs` with `S4QL_ENGINE_SIM_SEEDS=1000` (11,925 s) failed in nine bugs, each on a seed that found it by a violation outside its list: `commitRows` ("it upserts the row ... and SQLite holds ... for its key after the statements of the commit") for `listOrder`, `zeroLeftOut`, `keepOldKey`, `nullDefault`, `unturnedBound`, `setFromNew`, `nullCompares`, and `copySelf`, and for `argsNext` "changes no row, is in no commit, and changes 1 rows in SQLite". Each bug writes a row that SQLite does not hold, which is what the check finds, so their lists took the symptom; `arithmeticFinds` took it for the bugs of arithmetic. A rerun of the nine at 1,000 seeds failed once more, in `nullCompares`, by "it deletes the key [text:\"é\"] of the table ReinDex, and SQLite holds ... for it after the statements of the commit": the bug deletes a row that SQLite keeps. `arithmeticFinds` took the delete's symptom too, and `nullCompares` then passed: 486 of 1,000 seeds, 397 of them by ", and in SQLite".
+
+The counts of the run at 1,000 seeds: `annotateText` 999 of 1,000, each by "whose own text is"; `argsNext` 439 of 1,000, 432 of them by `commitRows`; the other bugs of several statements as before.
+
+### Why
+
+The new check is stronger than the one it replaced, so it finds bugs that write wrong rows earlier than their own violations in some seeds. The rule of AGENTS.md is that a list of symptoms is widened only when the bug is shown to cause exactly that symptom, and each seed above shows it.
+
+### What worked
+
+Running the checks one after another from a script, with a summary line for each, kept to one test process at a time without watching each.
+
+### What didn't work
+
+- The first run of the planted bugs, as above.
+- I started the rerun while the script had moved on to the core's planted bugs, so two test processes ran at once; I stopped the rerun at once and started it after the script ended.
+
+### What I learned
+
+A stricter check changes which violation a planted bug is found by first, so it needs a run of all planted bugs at the nightly's size, not only of the bugs it was written for.
+
+### What was tricky
+
+Nothing beyond the above.
+
+### What warrants review
+
+The widened lists of the nine bugs in `/internal/engine/simulation_test.go`, and `arithmeticFinds`.
+
+### Future work
+
+None of my own.
