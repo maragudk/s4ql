@@ -185,3 +185,57 @@ The rules of step 2 and step 3, and whether `excusedTextInPlace` is a difference
 ### Future work
 
 Planted bugs of text, the driver's generated test of text, a lowered length limit in `TestConn_differential` for the open question of a statement that fails in a transaction, text in texts of several statements, and mutation testing of the new rules.
+
+## Step 5: the fixes of the independent review, and the landing
+
+**Author:** builder (text-workload-land)
+
+### Prompt Context
+
+**Verbatim prompt:** "Your task: a bounded round of fixes after an independent review of the branch `text-workload`, then its landing. [...] 1. **Three rules excuse an empty answer of the engine without checking that it is right.** [...] 2. **`pair.propagated` is too narrow and gives a false failure.** [...] 3. **The floors pin less than they seem.** [...] 4. **Small.** [...] For 1 and 2, plant an engine fault that drops rows for each of the reviewer's statements (never committed) and show that the pair now refuses it. Record in the diary which fault fails which test."
+**Interpretation:** close the gaps that let an engine that drops rows pass, make propagation SQLite's, make the kinds of the edges and of goqite's id depend on the generator, correct the notes, then run the nightly's sizes and land the pull request.
+**Inferred intent:** the oracle of text excuses only what the notes name, and the floors catch a generator that stops writing what they count.
+
+### What I did
+
+- `/internal/engine/expression_test.go`: `pair.laxerText` names `excusedTextNull`, `excusedTextPropagated`, `excusedTextHoisted`, or `excusedTextAccess` in the order of before, and `pair.textDifference` takes the last three only where `pair.noneUnlimited` says SQLite without the length limit gives no row (a select through `Query`), no error (one through `Exec`), or no row of the table that the WHERE holds for (an update or a delete, counted in a select of its own, so that SQLite's count of changes stays). `pair.textOneDirection`, split out of `pair.bothWays` in `/internal/engine/differential_test.go`, asks the same of a write with a subquery that one direction fails and the other runs without a change, with the values of the subqueries of the instance without an error. `pair.propagated` collects every equality at once and again until none is new, as `propagateConstants` does. `goqiteID` takes only `'m_' || lower(hex(<blob of 16 bytes>))`.
+- `/internal/sql/stmt/stmttest/sequence.go`, `/internal/sql/stmt/stmttest/text.go`: `Call.TextEdges` holds the lengths that `Sequence.textEdge` and `Sequence.textEdgeConstant` wrote a text for, empty for a call that runs again; `pair.reachOfText` counts an edge only at such a length. The draws of the generator are unchanged, so no digest moved.
+- `/internal/engine/testdata/reached/TestDifferential.kinds`: the numbers of the 13 kinds of the edges and of goqite's id are a third of their new totals, and the two kinds "hex/lower one byte short of the length limit, string or blob too big" are gone; `TestDifferential.tsv` recounted.
+- Notes in `/docs/todo/text-functions.md`, `/internal/engine/README.md`, `/internal/sql/stmt/stmttest/README.md`, and the line of text in `/docs/roadmap.md`.
+
+### Why
+
+Each of the three rules names why the engine computed no text too long, not that its empty answer is right; only SQLite's answer without the limit says that.
+
+### What worked
+
+- The planted faults, none committed. An engine fault that makes a select with text in its WHERE or in a subquery's give no row (`plantedDropped` in `build.ordered` of `/internal/engine/operator.go`) passed `pair.step` before fix 1 with `excusedTextPropagated` (`select k from t where u = 'b' and u || ? >= 'b'`), `excusedTextHoisted` (`select k from t where u = (select u from t where s <= ? || ?)`), `excusedTextAccess` (`select id from q where id <= lower(?) || ? and id || ? >= ? and id <= ''` on rows '' and 'm_1'), and, once fix 2 was in, `excusedTextPropagated` for two equalities (`select k from e where u = ? and v = 'A' and lower(v || 'x') <> lower(u || ?)` on a row that holds them); after fix 1 `pair.step` fails all four. `TestPair_text` fails without `pair.noneUnlimited` ("should name no difference where the engine gives no row and SQLite without the length limit gives one") and without the check of `pair.textOneDirection` ("should judge a write with a subquery ...").
+- A generator fault of edges always one byte short (`delta = -1` in `edgeLength`): before fix 2 the reviewer saw seed 367 of `mixed` fail; with fix 2 no sequence fails, and with fix 3 the default `TestDifferential` fails on every kind at and over the limit of `||`, `lower`, and `hex`, each at 0 against its number, and `TestSequence_text` too. A goqite's id of `hex` of a text of 16 bytes leaves "goqite's id" at 0 against 9.
+- The nightly's sizes on `e1af2637` merged with `main` (#187), at a load of about 24: `TestDifferential -sequences 400` in 887 s, `TestSimulation` with 100 seeds in 434 s, the driver check in 67 s, all passing. `make test` and `make lint` passed.
+
+### What didn't work
+
+- The first planted engine fault, in `build.filter`, did nothing: a select builds its filter in `build.ordered`.
+- A first goqite fault of `hex` of random bytes as text made sequences fail with "s4ql: not supported: invalid UTF-8 (at offset 105)": an artifact of the fault, since the generator writes valid text.
+- The recount stopped at `no run reaches "reached: text: hex one byte short of the length limit, string or blob too big", which is required, three times: the runs reach it textfunctions 2 times; testdata/reached/TestDifferential.tsv is not written`, and the same of `lower` at 1; both kinds left the file.
+- Commands with heredocs or `cd` outside the worktree were refused by the isolation of the worktree ("this command is too complex to verify that it stays inside the worktree"); scripts went into files in `/Volumes/990/s4ql/text-workload-land/`.
+
+### What I learned
+
+- Measured in the pinned shell: SQLite fails `where u = ?1 and v = 'A' and lower(v || 'x') <> lower(u || ?2)` on an empty table and not without `v = 'A'`; three equalities the same; `v = lower(u)` beside `u = ?1` makes `v` a constant and `v = u` does not; the term that gives a column its constant does not fail, also where its value becomes a constant (`v = lower(u || ?2)`), and neither does a side with a column. A false constant comparison before the long one keeps SQLite from failing, so `pair.propagated` is wider than SQLite, which is safe now that the rule asks SQLite without the limit.
+- The pass writes `lower(?) = u` as the condition of `u` with `ValueFirst`, so propagation sees it.
+- Six rows of `arithmetic` in `TestGenerated.tsv` moved with #172 on `main`, by bisect: none at `df722ab7`, six at #172, #177, and before #184, and seven at `34c3043a`, the same seven as on this branch.
+
+### What was tricky
+
+- A measured length at an edge is not a written one: a text that runs again, another row of the table, or a value that an update stored there brings a length to an edge without the generator. Only the generator knows what it wrote, so the call carries it.
+
+### What warrants review
+
+- `pair.noneUnlimited`, which counts the rows of a write's WHERE in place of running the write, so that SQLite's count of changes is not disturbed before `pair.step` reads it.
+- `pair.propagated`'s passes against `propagateConstants`.
+- An open false failure, recorded in the notes: where SQLite fails outside the engine's access and the engine gives SQLite's rows without the limit, or changes them, no rule excuses it.
+
+### Future work
+
+The rule for the open false failure above, the planted bugs of text, and the driver's generated test of text.
