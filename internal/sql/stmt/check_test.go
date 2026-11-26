@@ -2085,6 +2085,11 @@ var checkCases = []checkCase{
 	{name: "a column with the name of its table in arithmetic", src: "update t set v = t.v + 1", err: "s4ql: not supported: column with the name of a table (at offset 17)"},
 	{name: "a literal in parentheses in set", src: "update t set v = (1)", err: "s4ql: not supported: parentheses (at offset 17)"},
 	{name: "a negative literal in parentheses", src: "update t set v = (-1)", err: "s4ql: not supported: parentheses (at offset 17)"},
+	{name: "a + sign before a literal in parentheses", src: "update t set v = v * (+1)", err: "s4ql: not supported: + sign (at offset 22)"},
+	{name: "a ~ before a literal in parentheses", src: "update t set v = v * (~1)", err: "s4ql: not supported: ~ operator (at offset 22)"},
+	{name: "a negated column in parentheses", src: "update t set v = v * (-w)", want: &stmt.Update{Span: stmt.Span{Start: 0, End: 25}, Table: name("t", "t", 7),
+		Set: []stmt.Assignment{{Column: name("v", "v", 13), Value: ex(stmt.Expression{Kind: stmt.ExprMultiply, Span: stmt.Span{Start: 17, End: 25}, Operands: []stmt.Expression{
+			ec("v", 17), {Kind: stmt.ExprNegate, Span: stmt.Span{Start: 22, End: 24}, Operands: []stmt.Expression{ec("w", 23)}}}}, 17, 25)}}}},
 	{name: "a column in parentheses in set", src: "update t set v = (w)", err: "s4ql: not supported: parentheses (at offset 17)"},
 	{name: "a parameter in parentheses in arithmetic", src: "update t set v = v * (?)", err: "s4ql: not supported: parentheses (at offset 21)"},
 	{name: "parentheses around parentheses", src: "update t set v = ((v + 1))", err: "s4ql: not supported: parentheses (at offset 17)"},
