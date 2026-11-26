@@ -556,6 +556,7 @@ func TestEngine_upsert(t *testing.T) {
 				// row changes.
 				{"(k, n) values (#, 1) on conflict (k) do update set v = 9223372036854775807 + 1", nil, "s4ql: integer overflow in + (at offset 69)"},
 				{"(k, n) values (#, 1) on conflict (k) do update set v = 1 where v = 9223372036854775807 * 2", nil, "s4ql: integer overflow in * (at offset 81)"},
+				{"(k, n) values (#, 1) on conflict (k) do update set v = 9223372036854775807 + 1 where v = 9223372036854775807 * 2", nil, "s4ql: integer overflow in + (at offset 69)"},
 				// Text, with excluded.c as a column of its type: its class meets only TEXT, NULL, and text,
 				// and a number or a blob inside it is the evaluator's refusal, at its offset.
 				{"(k, n) values (#, 1) on conflict (k) do update set v = lower(excluded.s)", nil, "s4ql: not supported: an expression of type text for the column t.v of type INT"},
@@ -702,6 +703,8 @@ func TestEngine_upsert(t *testing.T) {
 				"set s = 'x' where lower(zz) = 'a' || s",
 				"set s = 'x' where hex(zz) || excluded.s = yy",
 				"set s = 'x' where lower(zz) = s and s is null",
+				"set s = 'x' where zz || 'a' = yy",
+				"set s = 'x' where 'a' = lower(zz) and yy is null",
 			} {
 				steps = append(steps, upsertStep{fmt.Sprint("insert into t (k, n) values (", key, ", 1) on conflict (k) do update ", clause), nil})
 			}
@@ -711,7 +714,7 @@ func TestEngine_upsert(t *testing.T) {
 		for range 2 {
 			for _, name := range []string{
 				"yy", "yy", "excluded.yy", "excluded.zz", "zz", "EXCLUDED.zz", "yy", "yy", "zz", "yy",
-				"yy", "zz", "zz", "excluded.yy", "zz", "excluded.xx", "zz", "zz", "excluded.zz", "zz", "yy", "zz", "yy", "zz",
+				"yy", "zz", "zz", "excluded.yy", "zz", "excluded.xx", "zz", "zz", "excluded.zz", "zz", "yy", "zz", "yy", "zz", "zz", "yy",
 			} {
 				want = append(want, "1/1: no such column: "+name+"; 1")
 			}
@@ -957,6 +960,27 @@ func TestPair_upsert(t *testing.T) {
 			is.True(t, !strings.HasPrefix(kind, "excused: "), kind)
 		}
 		is.Equal(t, 3+2*8*2, y2[comparedWithSQLite])
+
+		// A literal longer than the limit inside a call, which the engine refuses when it binds it, where
+		// SQLite computes it with the call: the rule of the pair takes the refusal, of an upsert with a
+		// conflict and without one, and of an update, and only the refusal.
+		long := strings.Repeat("z", limit+1)
+		for _, src := range []string{
+			"insert into q (id, a) values ('1', 'p') on conflict (id) do update set a = lower('" + long + "')",
+			"insert into q (id, a) values ('9', 'p') on conflict (id) do update set a = lower('" + long + "')",
+			"insert into q (id, a) values ('9', 'p') on conflict (id) do update set a = 'q' where a = lower('" + long + "')",
+			"update q set a = lower('" + long + "') where id = 'nosuch'",
+		} {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src}), src)
+			s, err := stmt.Check(src)
+			is.NotError(t, err)
+			excuse, failure := p.checkLength(stmttest.Call{Src: src}, answer{})
+			is.Equal(t, "", excuse+failure, src)
+			_, ok := s.(*stmt.Update)
+			is.Equal(t, 1, y2["excused: "+map[bool]string{false: excusedLong, true: excusedLongChange}[ok]], src)
+			delete(y2, "excused: "+excusedLong)
+			delete(y2, "excused: "+excusedLongChange)
+		}
 	})
 
 	t.Run("should fail a refusal that is none of the rules', a refusal that was due and not given, and an evaluation error that SQLite does not justify", func(t *testing.T) {

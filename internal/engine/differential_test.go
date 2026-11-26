@@ -3598,24 +3598,28 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 // checkLength of the call c, whose answer of the engine is got, against s4ql's rule for a literal
 // that is longer than the length limit: an insert, an update, or a delete that SQLite prepares fails
 // with SQLite's `string or blob too big`, after the names, for a literal of an insert, of SET, or of
-// a condition of an update or a delete, and of the row or of DO UPDATE of an upsert. SQLite meets such a literal only with a limit below the
-// length of the text that holds it, and then gives the error for a string literal only when it steps
-// the statement, which an update or a delete does only for a row that it finds, and turns a blob
-// literal into NULL, so the call is not run in SQLite. It gives [excusedLong] for an insert and
-// [excusedLongChange] for an update or a delete if the rule decides the call, or "", and what differs
-// from the rule, or "". A select with such a literal in a condition is compared with SQLite, as
-// [pair.longCondition] says.
+// a condition of an update or a delete, and of the row or of DO UPDATE of an upsert. SQLite meets
+// such a literal only with a limit below the length of the text that holds it, and then gives the
+// error for a string literal only when it steps the statement, which an update or a delete does only
+// for a row that it finds, and turns a blob literal into NULL, so the call is not run in SQLite. A
+// literal inside an expression of SET or WHERE that is longer than the limit fails when the engine
+// binds the expression, which is stricter than SQLite, which computes it where it computes its
+// operator: there `string or blob too big` is taken without SQLite, and any other answer is left to
+// the rules after. It gives [excusedLong] for an insert and [excusedLongChange] for an update or a
+// delete if the rule decides the call, or "", and what differs from the rule, or "". A select with
+// such a literal in a condition is compared with SQLite, as [pair.longCondition] says.
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
 	s, _ := stmt.Check(c.Src)
 	excuse = excusedLong
 	var terms []stmt.Term
+	var where []stmt.Condition
 	switch s := s.(type) {
 	case *stmt.Insert:
 		// An upsert measures the values of DO UPDATE after those of its row, as an update measures
 		// them.
-		terms = s.Values
+		terms, where = s.Values, s.Conflict.Where
 		for _, a := range s.Conflict.Set {
 			terms = append(terms, a.Value)
 		}
@@ -3625,14 +3629,24 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 	case *stmt.Update, *stmt.Delete:
 		excuse = excusedLongChange
 		terms = changeTerms(s)
+		_, where = tableWhere(s)
 	default:
 		return "", ""
 	}
-	var n int
+	var n, inner int
 	for _, v := range terms {
-		n = max(n, byteLength(v.Value))
+		n, inner = max(n, byteLength(v.Value)), max(inner, longestLiteral(v.Expression))
 	}
-	if p.i.limit == 0 || n <= p.i.limit || p.o.prepare(t, c.Src) != nil {
+	for _, c := range where {
+		inner = max(inner, longestLiteral(c.Expression))
+	}
+	if p.i.limit == 0 || max(n, inner) <= p.i.limit || p.o.prepare(t, c.Src) != nil {
+		return "", ""
+	}
+	if n <= p.i.limit {
+		if got.err == tooBig {
+			return excuse, ""
+		}
 		return "", ""
 	}
 	if _, where := tableWhere(s); subqueried(s) && correlatedRule(t, p.o, where, subqueriesIn(s)) != "" {
@@ -3698,6 +3712,15 @@ func changeTerms(s stmt.Statement) []stmt.Term {
 	}
 	// The values of a subquery, of slice 15, are measured where it is, before the types.
 	return append(terms, subqueryTerms(s)...)
+}
+
+// longestLiteral of the expression e: the length of its longest literal of text or blob, or 0.
+func longestLiteral(e stmt.Expression) int {
+	n := byteLength(e.Value)
+	for _, o := range e.Operands {
+		n = max(n, longestLiteral(o))
+	}
+	return n
 }
 
 // longChange of src, if it holds an update or a delete with a literal longer than the length limit
@@ -4787,6 +4810,7 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		"insert into t1 values (1) on conflict (v1) do update set v1 = excluded.v1 + 1",
 		`insert into "foo BAR" values (7) on conflict ("bar""X") do nothing returning *`,
 		"insert into t1 values (-1) on conflict (V1) do update set w = 1 where excluded.v1 * 9223372036854775807 > 0",
+		"insert into t1 values (1) on conflict (v1) do update set w = lower(?) || hex(excluded.v1) where ? || '' = lower(w) returning *",
 	} {
 		add(src, i%2 == 1)
 	}

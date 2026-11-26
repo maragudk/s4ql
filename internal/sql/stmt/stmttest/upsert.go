@@ -10,9 +10,9 @@ import (
 
 // The rules of the upserts, as s4ql's documents give them: DO UPDATE reads the row that the table
 // holds and the row that the insert proposes, and excluded.c is a column of the type of its column,
-// copied and compared as a column alone is, and in arithmetic and in text as a column is. The rules read DO
-// UPDATE as SET and WHERE over the columns of the table followed by a column for each of them under
-// the name that [excludedColumn] gives, so that the rules of an update give its refusals.
+// copied and compared as a column alone is, and in arithmetic and in text as a column is. The rules
+// read DO UPDATE as SET and WHERE over the columns of the table followed by a column for each of them
+// under the name that [excludedColumn] gives, so that the rules of an update give its refusals.
 
 // excludedPrefix starts the name of a column of the row that an upsert proposes, among the columns
 // that the rules read DO UPDATE over: a NUL byte, which no name of a statement holds.

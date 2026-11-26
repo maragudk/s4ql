@@ -3136,6 +3136,15 @@ func TestText(t *testing.T) {
 		sqliteError(t, 18, 18, "string or blob too big", err)
 		_, err = db.ExecContext(t.Context(), "update t set s = ? || ? || s where k = 99", strings.Repeat("a", 600), strings.Repeat("b", 600))
 		sqliteError(t, 18, 18, "string or blob too big", err)
+		// In DO UPDATE, also without a conflict where SQLite computes the text at the start of the
+		// statement, and only on the conflict where it computes it on the row.
+		_, err = db.ExecContext(t.Context(), "insert into t values (9, 'x') on conflict (k) do update set s = ? || ? || s", strings.Repeat("a", 600), strings.Repeat("b", 600))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		_, err = db.ExecContext(t.Context(), "insert into t values (1, 'x') on conflict (k) do update set s = lower(? || ?)", strings.Repeat("a", 600), strings.Repeat("b", 600))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		res, err := db.ExecContext(t.Context(), "insert into t values (9, 'x') on conflict (k) do update set s = lower(? || ?)", strings.Repeat("a", 600), strings.Repeat("b", 600))
+		is.Equal(t, int64(1), affected(t, res, err))
+		exec(t, db, "delete from t where k = 9")
 		tx := begin(t, db, nil)
 		_, err = tx.ExecContext(t.Context(), "update t set s = ? where k = 2", strings.Repeat("c", 600))
 		is.NotError(t, err)

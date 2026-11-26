@@ -2958,8 +2958,7 @@ func (p *pair) dueRefusal(src string, s stmt.Statement, args []any, r outcome, o
 // upsertRefusals of the upsert s of the text src, with the arguments args as SQLite binds them, on
 // o, where the call runs: where SQLite prepares the text, every "not supported" that s4ql's rules
 // give for it, as [stmttest.UpsertRefusals] gives them, but those of its types in a read-only
-// transaction, which refuses the write first; and where it does not, the refusal of its text, or
-// none, for SQLite's own error.
+// transaction, which refuses the write first; and where it does not, none, for SQLite's own error.
 func (p *pair) upsertRefusals(src string, s *stmt.Insert, args []any, o runner) []string {
 	tb := p.tb
 	tb.Helper()
@@ -4994,7 +4993,9 @@ func TestPair(t *testing.T) {
 		done := outcome{call: callExec, affected: "1", lastID: "0"}
 		check(text, [][]any{nil}, done, true)
 		check("insert into t4 (v1, v3) values (9, 0.5) on conflict (v1) do update set v4 = lower(excluded.v2)", [][]any{nil}, done, true)
-		check("insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = 'a' where lower(v2) = ?", [][]any{{int64(1)}}, done, true)
+		const due = "insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = 'a' where lower(v2) = ?"
+		failure := p.compare(due, callExec, false, [][]any{{int64(1)}}, outcome{call: callExec, affected: "0", lastID: "0"}, p.o)
+		is.True(t, strings.Contains(failure, "the rules refuse it"), failure)
 		check("insert into t4 (v1, v3) values (1, 2.0) on conflict (v1) do update set v4 = excluded.v3", [][]any{nil}, done, true)
 		check("insert into t4 (v1, v3, v4) values (9, 0.5, 2.0) on conflict (v1) do nothing", [][]any{nil}, done, true)
 		const runsOf = "insert into t4 (v1, v3, v4) values (?, ?, ?) on conflict (v1) do update set v4 = v4 + excluded.v4"
@@ -5002,7 +5003,7 @@ func TestPair(t *testing.T) {
 		failed := run(t, p.s, callExec, runsOf, runs[:1], s4qlText)
 		is.True(t, evaluated(failed), failed.String())
 		failed.call, failed.next = callPrepareExecRuns, []outcome{{affected: "1", lastID: "0"}}
-		failure := p.compare(runsOf, callPrepareExecRuns, false, runs, failed, p.o)
+		failure = p.compare(runsOf, callPrepareExecRuns, false, runs, failed, p.o)
 		is.True(t, strings.Contains(failure, "the rules refuse it"), failure)
 	})
 
