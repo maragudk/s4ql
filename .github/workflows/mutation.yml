@@ -212,12 +212,19 @@ jobs:
           pattern: mutation-shard-*
           path: shards
 
+      # download-artifact puts each artifact in a directory of its own only when it downloads more
+      # than one, so the files of a single shard are moved into one.
       - name: Merge the results of the shards
         id: merge
         if: ${{ needs.plan.outputs.mutants != '0' }}
         env:
           BASE: ${{ needs.plan.outputs.base }}
-        run: go run ./internal/sql/mutation -out merged -merge 'shards/*' -pkgs "$PKGS" -run "$RUN" -since "$BASE" -sample "$SAMPLE" -seed "$SEED"
+        run: |
+          if [ -f shards/fingerprint ]; then
+            mkdir shards/mutation-shard-1
+            find shards -maxdepth 1 -type f -exec mv {} shards/mutation-shard-1/ \;
+          fi
+          go run ./internal/sql/mutation -out merged -merge 'shards/*' -pkgs "$PKGS" -run "$RUN" -since "$BASE" -sample "$SAMPLE" -seed "$SEED"
 
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && steps.merge.outcome != 'skipped' }}
