@@ -222,8 +222,11 @@ func (r *runner) testPackages(pkg string) ([]string, error) {
 		}
 	}
 	if pkg == "." {
-		if _, err := os.Stat(filepath.Join(r.root, driverCheckPkg)); err == nil {
+		switch _, err := os.Stat(filepath.Join(r.root, driverCheckPkg)); {
+		case err == nil:
 			dirs = append(dirs, driverCheckPkg)
+		case !errors.Is(err, os.ErrNotExist):
+			return nil, err
 		}
 	}
 	slices.Sort(dirs)
@@ -458,7 +461,6 @@ func (r *runner) runIn(ctx context.Context, m mutant, dir string) result {
 	}
 	return result{Status: statusSurvived, Build: cost.Build, Stages: cost.Stages}
 }
-
 
 var (
 	failLine  = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
