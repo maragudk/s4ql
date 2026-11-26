@@ -2373,9 +2373,14 @@ func (r *run) verify(ctx context.Context) {
 		}
 		if k < len(log) {
 			for _, note := range log[k].notes {
+				of, given := r.noteOf(note)
+				if of == nil {
+					// The check of the IDs above reports a statement of no attempt, whose arguments are not
+					// known, so SQLite does not run it.
+					continue
+				}
 				// The value of an insert of the log has the type of its column, which SQLite would
 				// convert or refuse otherwise.
-				of, given := r.noteOf(note)
 				if want := typeRule(r.t, o, note, oracleValues(given)); want != "" {
 					r.violate(ctx, "commit %v, %q, stores a value of another type than its column: %v", k+1, note, want)
 				}
@@ -2395,22 +2400,20 @@ func (r *run) verify(ctx context.Context) {
 				}
 				// The count of changes of an update or a delete of its own, which its caller was given.
 				changes, _ := o.changes(r.t)
-				if of != nil {
-					if a := of; a.tx == nil && a.state == succeeded && a.query && !a.partial && hasReturning(a.src) {
-						// The rows of RETURNING that the caller of a statement of its own read are those of the
-						// change that the log holds, as SQLite gives them on the state before it.
-						if a.answer.String() != ran.String() {
-							r.violate(ctx, "commit %v, %q, gives the rows of RETURNING %v in SQLite, and its caller read %v", k+1, note, ran, a.answer)
-						}
-						r.event("statements with RETURNING of their own whose rows are compared with the log")
+				if a := of; a.tx == nil && a.state == succeeded && a.query && !a.partial && hasReturning(a.src) {
+					// The rows of RETURNING that the caller of a statement of its own read are those of the
+					// change that the log holds, as SQLite gives them on the state before it.
+					if a.answer.String() != ran.String() {
+						r.violate(ctx, "commit %v, %q, gives the rows of RETURNING %v in SQLite, and its caller read %v", k+1, note, ran, a.answer)
 					}
-					if a := of; a.tx == nil && a.state == succeeded && a.write {
-						if s, _ := stmt.Check(a.src); isChange(s) {
-							if a.changes != changes {
-								r.violate(ctx, "commit %v, %q, changes %v rows in SQLite, and its caller was told %v", k+1, note, changes, a.changes)
-							}
-							r.event("updates and deletes of their own whose count of changes is compared with SQLite")
+					r.event("statements with RETURNING of their own whose rows are compared with the log")
+				}
+				if a := of; a.tx == nil && a.state == succeeded && a.write {
+					if s, _ := stmt.Check(a.src); isChange(s) {
+						if a.changes != changes {
+							r.violate(ctx, "commit %v, %q, changes %v rows in SQLite, and its caller was told %v", k+1, note, changes, a.changes)
 						}
+						r.event("updates and deletes of their own whose count of changes is compared with SQLite")
 					}
 				}
 			}
@@ -2537,6 +2540,10 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 			for _, note := range c.notes {
 				// [run.verify] checks the values of the subqueries of the log on the same states.
 				of, given := r.noteOf(note)
+				if of == nil {
+					// [run.verify] reports a statement of no attempt, and does not run it.
+					continue
+				}
 				src, args, _ := r.flattened(o, of, note, oracleValues(given), "")
 				o.run(r.t, src, args...)
 			}

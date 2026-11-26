@@ -108,6 +108,21 @@ func TestCommitReader(t *testing.T) {
 		is.True(t, proto.Equal(a, items[0].annotation), "annotation differs")
 	})
 
+	t.Run("should hand out a statement whose field 2 holds bytes that are no value, text that is not valid UTF-8, or a varint, since it does not read the field", func(t *testing.T) {
+		a := statement("select ?")
+		s := a.GetStatement().ProtoReflect()
+		u := protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), []byte{0xff})
+		u = protowire.AppendBytes(protowire.AppendTag(u, 2, protowire.BytesType), []byte{0x1a, 0x01, 0xff})
+		u = protowire.AppendVarint(protowire.AppendTag(u, 2, protowire.VarintType), 1)
+		s.SetUnknown(u)
+		b := join(record(1, testHeader()), record(3, a))
+		_, items, err := readAll(b, nameOf(b))
+		is.NotError(t, err)
+		is.Equal(t, 1, len(items))
+		is.Equal(t, "select ?", items[0].annotation.GetStatement().GetSql())
+		is.True(t, proto.Equal(a, items[0].annotation), "annotation differs")
+	})
+
 	t.Run("should report a mismatch with the name at the end, after handing out what it read", func(t *testing.T) {
 		b := join(record(1, testHeader()), record(2, dropTable("t")))
 		r := format.NewCommitReader(bytes.NewReader(b), format.Name(sha256.Sum256([]byte("other"))))

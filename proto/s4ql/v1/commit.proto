@@ -252,6 +252,9 @@ message Annotation {
 // literal written into the text is in the log, and the argument of a
 // parameter is not.
 message Statement {
+  // The arguments of the parameters, by position. A commit object of
+  // version 0 can hold them, and a reader skips them as a field it does not
+  // know.
   reserved 2;
   reserved parameters;
 
