@@ -947,7 +947,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 <div class="bar" role="region" aria-label="Playback">
   <div class="wrap">
-    <button class="btn big play" type="button" id="play" disabled><span id="play-word">Play</span> <span class="bars" aria-hidden="true"></span></button>
+    <button class="btn big play" type="button" id="play" aria-keyshortcuts="Space" disabled><span id="play-word">Play</span> <span class="bars" aria-hidden="true"></span></button>
     <button class="btn big" type="button" id="turbo" aria-pressed="true" disabled><span class="led" aria-hidden="true"></span>Turbo 5×</button>
     <button class="btn big" type="button" id="sound" aria-pressed="false" disabled><span class="led" aria-hidden="true"></span>Sound</button>
     <button class="btn big" type="button" id="reset" disabled>Reset</button>
@@ -971,7 +971,7 @@ document.addEventListener("DOMContentLoaded", () => {
       <div>
         <span class="caps" id="requests-to">To</span>
         <div class="switch" role="group" aria-labelledby="requests-h requests-to">
-          <button class="btn" type="button" data-target="a" aria-pressed="true" aria-label="Instance a" disabled>a</button><button class="btn" type="button" data-target="b" aria-pressed="false" aria-label="Instance b" disabled>b</button>
+          <button class="btn" type="button" data-target="a" aria-pressed="true" aria-label="Instance a" aria-keyshortcuts="A" disabled>a</button><button class="btn" type="button" data-target="b" aria-pressed="false" aria-label="Instance b" aria-keyshortcuts="B" disabled>b</button>
         </div>
       </div>
       <dl>
