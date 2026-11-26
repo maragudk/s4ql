@@ -27,6 +27,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/sql/token"
+	"maragu.dev/s4ql/internal/store/s3test"
 )
 
 // call of database/sql that runs a text.
@@ -642,7 +643,7 @@ type world struct {
 
 func newWorld(tb testing.TB) *world {
 	tb.Helper()
-	isolate(tb)
+	s3test.Isolate(tb)
 	return &world{s3: newFakeS3(tb)}
 }
 
@@ -2543,8 +2544,9 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 			return "", false
 		}
 		for _, a := range s.Set {
-			if at := slices.IndexFunc(expressionNames(a.Value.Expression), func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 }); at >= 0 {
-				return p.quoted(src, got, expressionNames(a.Value.Expression)[at])
+			// SQLite walks the names of the value as stmttest.MissingName does, also inside a call.
+			if name, missing := stmttest.MissingName(columns, a.Value.Expression); missing {
+				return p.quoted(src, got, name)
 			}
 			if stmttest.ColumnOf(columns, a.Column) < 0 {
 				return "", false
@@ -3672,6 +3674,31 @@ var sequences = map[string][]step{
 		{callExec, "delete from t2 where -i2 < -100", "exec: 2 affected, last insert id 0"},
 		{callQuery, "select * from t2", `query: columns "v2,s2,i2,r2" of types "INT,TEXT,INT,REAL", rows ["int64:12" "string:b" "int64:4" "float64:1e+308"]`},
 		{callExec, "drop table t2", "exec: 2 affected, last insert id 0"},
+	},
+	// Text in expressions: what s4ql computes is SQLite's, and its refusals of types are those of its
+	// rules, also for a statement that is prepared and then run.
+	"text in expressions": {
+		{callExec, "create table t3 (v3 text primary key, w3 text, b3 blob, n3 int) strict, without rowid", "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t3 values ('m_00ff', 'A', x'00ff', 1)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t3 values ('b', 'Bc', x'', 2)", "exec: 1 affected, last insert id 0"},
+		{callPrepareExec, "update t3 set w3 = 'a' where lower(w3) = 'a'", "prepare, exec: 1 affected, last insert id 0"},
+		{callPrepareQuery, "select v3 from t3 where v3 = 'm_' || lower(hex(b3))", `prepare, query: columns "v3" of types "TEXT", rows ["string:m_00ff"]`},
+		{callQueryRow, "select v3 from t3 where lower(w3) || v3 = 'bcb'", `query row: row ["string:b"]`},
+		{callQuery, "select v3 from t3 where hex(b3) = ''", `query: columns "v3" of types "TEXT", rows ["string:b"]`},
+		{callExecArgument, "update t3 set w3 = lower(w3) || 'x' where n3 = ?", "exec with an argument: 1 affected, last insert id 0"},
+		{callQuery, "select v3 from t3 where n3 = lower(w3)", "query: query failed with s4ql: not supported: an expression of type text compared with the column t3.n3 of type INT"},
+		{callExec, "update t3 set w3 = n3 || 'a'", "exec: exec failed with s4ql: not supported: column of type INT in a concatenation (at offset 19)"},
+		{callPrepareExec, "update t3 set b3 = hex(b3)", "prepare, exec: exec failed with s4ql: not supported: an expression of type text for the column t3.b3 of type BLOB"},
+		{callBegin, "", "begin"},
+		{callExec, "update t3 set v3 = 'm_' || lower(hex(b3)) || v3 returning v3", ""},
+		{callQuery, "select * from t3 where lower(w3) = 'ax'", ""},
+		{callRollback, "", "rollback"},
+		{callQuery, "select * from t3", ""},
+		// SQLite walks on after a missing name inside a call, and a later one replaces it.
+		{callExec, `update t3 set w3 = lower("nosuch") || "nosuch2"`, ""},
+		{callExec, `update t3 set w3 = lower(nosuch) || "nosuch2"`, ""},
+		{callExec, `update t3 set w3 = lower("nosuch") || w3`, ""},
+		{callExec, "drop table t3", "exec: 2 affected, last insert id 0"},
 	},
 	"the example of slice 1": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},

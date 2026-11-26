@@ -369,7 +369,7 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	}
 	s, err := buildSink(ctx, w, p, args, planted, c.e.db.lengthLimit(), how)
 	if err != nil {
-		return Result{}, nil, err
+		return built(p, err), nil, err
 	}
 	r.reads(w, s)
 	if returns {

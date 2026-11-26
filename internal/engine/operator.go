@@ -193,7 +193,7 @@ type filter struct {
 // condition of a [filter] on a row: the value at position compared with value by op, or tested for
 // NULL, with a value of nil.
 //
-// With arithmetic, test computes the side that the condition tests, in place of the value at
+// With an expression, test computes the side that the condition tests, in place of the value at
 // position, and per computes the value, in place of value, for each row; a condition with either is
 // computed, as [condition.computed] says, and serves no access, as [bounds] says. constant computes
 // value once for each run of the statement, as [build.constants] does, before the access is chosen.
@@ -207,6 +207,18 @@ type condition struct {
 	valueFirst bool
 	// test, per, and constant are the expressions of the condition, each nil where it has none.
 	test, per, constant *expr.Bound
+	// hoisted are the subtrees of test and per that SQLite computes before any row, as [hoisted]
+	// says, in the order of the text.
+	hoisted []*expr.Bound
+	// lazy reports whether constant is text with a call, which SQLite computes when the first row
+	// reaches it, unless it serves its access; failed is SQLite's error for it, once [build.constants]
+	// found it too long there, which the condition gives on the first row that it is evaluated on.
+	lazy   bool
+	failed error
+	// text is the expression of constant where it is text, or the zero Expression, whose subtrees
+	// SQLite computes before any row of the statement also in a subquery that it does not compute, as
+	// [build.hoist] says.
+	text stmt.Expression
 	// paired reports whether the value of the condition is the column alone at pair of the row, as in
 	// `a = b`, in place of value.
 	paired bool
@@ -219,7 +231,7 @@ type condition struct {
 // columns of the row.
 func (c condition) perRow() bool {
 	// With the planted bug constantsServeNothing, unserved is set for a constant.
-	return c.test != nil || c.per != nil || c.paired || c.unserved
+	return c.test != nil || c.per != nil || c.paired || c.unserved || c.failed != nil
 }
 
 // bounds of the conditions: those that may serve the access, which are those that compare a column
@@ -280,6 +292,9 @@ func (f *filter) holds(row []*s4qlpb.Value) (bool, error) {
 // neither true nor false, as in SQLite, and gives false, as a WHERE leaves the row out for both. A
 // test for NULL is always true or false.
 func (c condition) holds(row []*s4qlpb.Value) (bool, error) {
+	if c.failed != nil {
+		return false, c.failed
+	}
 	if c.test != nil || c.per != nil {
 		ok, err := c.computed(row)
 		if err != nil && c.errorSkipsRow && errors.Is(err, expr.ErrEvaluation) {
@@ -339,7 +354,7 @@ func (c condition) holds(row []*s4qlpb.Value) (bool, error) {
 // and it gives false. The types of the two sides are one, which the checks of the statement made
 // sure of.
 func (c condition) computed(row []*s4qlpb.Value) (bool, error) {
-	var tested, value number
+	var tested, value scalar
 	var err error
 	if c.valueFirst {
 		if value, err = c.valueOf(row); err != nil {
@@ -351,7 +366,9 @@ func (c condition) computed(row []*s4qlpb.Value) (bool, error) {
 		if err != nil {
 			return false, fromExpr(err)
 		}
-		tested = numberOf(v)
+		if tested, err = scalarOf(v); err != nil {
+			return false, err
+		}
 	}
 	if !c.valueFirst {
 		if value, err = c.valueOf(row); err != nil {
@@ -362,7 +379,7 @@ func (c condition) computed(row []*s4qlpb.Value) (bool, error) {
 		if c.position < 0 || c.position >= len(row) {
 			return false, internalError("a condition of the column at %v of a row of %v values", c.position, len(row))
 		}
-		if tested, err = protoNumber(row[c.position]); err != nil {
+		if tested, err = protoScalar(row[c.position]); err != nil {
 			return false, err
 		}
 	}
@@ -370,7 +387,7 @@ func (c condition) computed(row []*s4qlpb.Value) (bool, error) {
 		// With the planted bug nullCompares, true.
 		return c.nullCompares, nil
 	}
-	n, err := compareNumbers(tested, value)
+	n, err := compareScalars(tested, value)
 	if err != nil {
 		return false, err
 	}
@@ -392,15 +409,15 @@ func (c condition) computed(row []*s4qlpb.Value) (bool, error) {
 }
 
 // valueOf the condition for the row: the value of per, or the value of the condition.
-func (c condition) valueOf(row []*s4qlpb.Value) (number, error) {
+func (c condition) valueOf(row []*s4qlpb.Value) (scalar, error) {
 	if c.per == nil {
-		return protoNumber(c.value)
+		return protoScalar(c.value)
 	}
 	v, err := c.per.Eval(row)
 	if err != nil {
-		return number{}, fromExpr(err)
+		return scalar{}, fromExpr(err)
 	}
-	return numberOf(v), nil
+	return scalarOf(v)
 }
 
 // compare the values a and b, which are of one type and not NULL, as SQLite compares them: integers
@@ -651,12 +668,16 @@ type update struct {
 	// each, and the expression that it comes from, for the messages of the errors of the check. The
 	// value is nil for a value that is computed for each row: an arithmetic expression with a column,
 	// whose bound expression is in computed, and a column alone, whose position is in copied. An
-	// expression without a column has its bound expression in computed and its value in values.
+	// expression without a column has its bound expression in computed and its value in values, but
+	// one of text that is too long, which SQLite computes for each row and the update computes so too.
 	positions []int
 	values    []*s4qlpb.Value
 	exprs     []Expr
 	computed  []*expr.Bound
 	copied    []int
+	// hoisted are the subtrees of the expressions of text that SQLite computes before any row, as
+	// [hoisted] says, in the order of the text.
+	hoisted []*expr.Bound
 	// order holds the indexes of positions in the order of the table.
 	order []int
 	// ret holds the rows of its RETURNING, or is nil for an update without one.
@@ -672,7 +693,7 @@ type update struct {
 // finds a row, as check reads it from the source. The type is s4ql's rule of the text, which holds
 // whether the update finds a row or not.
 //
-// A value of arithmetic has the class of its expression, as [comparable] says, whatever its rows, and
+// A value of an expression has the class of its expression, as [comparable] says, whatever its rows, and
 // a column alone that of its column. An update with a value that is computed for each row checks the
 // NOT NULL of every column that it sets on each row that it changes, in [update.run], so the
 // refusal of a type comes before it there.
@@ -706,7 +727,11 @@ func (u *update) check(ctx context.Context) error {
 				return fmt.Errorf("%w: %v for %v", stmt.ErrNotSupported, columnName(u.table, u.copied[i]), columnName(u.table, position))
 			}
 		case u.computed[i] != nil:
-			if c := arithmeticClass(u.computed[i]); !meetsArithmetic(into, c) {
+			arithmetic, ok := u.exprs[i].(*Arithmetic)
+			if !ok {
+				return internalError("a computed value of SET of type %T", u.exprs[i])
+			}
+			if c := expressionClass(arithmetic.Expression, u.computed[i]); !comparable(into, c) {
 				return fmt.Errorf("%w: %v for %v", stmt.ErrNotSupported, expressionName(c), columnName(u.table, position))
 			}
 		default:
@@ -1173,13 +1198,12 @@ func (b build) conditions(ctx context.Context, f *Filter, src source) (*scan, []
 func (b build) walk(ctx context.Context, f *Filter, t, outer *s4qlpb.CreateTable) ([]condition, error) {
 	of := columnPositions(t)
 	conditions := make([]condition, len(f.Conditions))
-	// missing is the column of a test for NULL that the table does not have, of the last such test
-	// since the last comparison, or nil.
-	var missing *stmt.Name
-	found := func(name stmt.Name) bool {
+	// n.pending is the column that the walk goes on with, of a test for NULL or of the argument of a
+	// call, as [resolver] says, or nil.
+	n := &resolver{found: func(name stmt.Name) bool {
 		_, ok := b.subs.lookup(of, outer, name)
 		return ok
-	}
+	}}
 	for i, c := range f.Conditions {
 		// A condition that tests an expression has no column of its own: its names are those of the
 		// expression, which come where the text has them.
@@ -1193,7 +1217,7 @@ func (b build) walk(ctx context.Context, f *Filter, t, outer *s4qlpb.CreateTable
 				return nil, internalError("a test for NULL with a value")
 			}
 			if !ok {
-				missing = &f.Conditions[i].Column
+				n.pending = &f.Conditions[i].Column
 			}
 		case stmt.OpEqual, stmt.OpNotEqual, stmt.OpLess, stmt.OpLessOrEqual, stmt.OpGreater, stmt.OpGreaterOrEqual:
 			if c.Value == nil {
@@ -1221,44 +1245,58 @@ func (b build) walk(ctx context.Context, f *Filter, t, outer *s4qlpb.CreateTable
 					return nil, rowValueMisused(offset)
 				}
 			}
-			if missing != nil {
-				return nil, noSuchResultColumn(*missing)
+			if n.pending != nil {
+				return nil, noSuchResultColumn(*n.pending)
+			}
+			// SQLite resolves the names of the two sides of a comparison in the order of the text. A
+			// subquery after a pending column looks its table and its column up, and then ends the walk
+			// with the pending column, as [subqueries.pendingNames] says.
+			subNames := func() error {
+				if n.pending != nil {
+					return b.subs.pendingNames(ctx, b, in, *n.pending)
+				}
+				return b.subs.names(ctx, b, in)
 			}
 			if subquery && c.ValueFirst {
-				if err := b.subs.names(ctx, b, in); err != nil {
+				if err := subNames(); err != nil {
 					return nil, err
 				}
 			}
-			// SQLite resolves the names of the two sides of a comparison in the order of the text.
 			arithmetic, _ := c.Value.(*Arithmetic)
 			if arithmetic != nil && c.ValueFirst {
-				if name, missing := missingName(arithmetic.Expression, found); missing {
+				if name, stop := n.resolve(arithmetic.Expression); stop {
 					return nil, noSuchResultColumn(name)
 				}
 			}
-			if name, missing := missingName(c.Expression, found); missing {
-				return nil, noSuchResultColumn(name)
+			if c.Expression.Present() {
+				if name, stop := n.resolve(c.Expression); stop {
+					return nil, noSuchResultColumn(name)
+				}
 			}
 			if !ok {
 				return nil, noSuchResultColumn(c.Column)
 			}
 			if arithmetic != nil && !c.ValueFirst {
-				if name, missing := missingName(arithmetic.Expression, found); missing {
+				if name, stop := n.resolve(arithmetic.Expression); stop {
 					return nil, noSuchResultColumn(name)
 				}
 			}
 			if subquery && !c.ValueFirst {
-				if err := b.subs.names(ctx, b, in); err != nil {
+				if err := subNames(); err != nil {
 					return nil, err
 				}
+			}
+			if plain := !subquery && arithmetic == nil; plain && !c.ValueFirst && n.pending != nil {
+				// A literal or a parameter after a pending column ends the walk.
+				return nil, noSuchResultColumn(*n.pending)
 			}
 		default:
 			return nil, internalError("a condition with the operator %v", int(c.Operator))
 		}
 		conditions[i] = condition{position: position, op: c.Operator, valueFirst: c.ValueFirst}
 	}
-	if missing != nil {
-		return nil, noSuchResultColumn(*missing)
+	if n.pending != nil {
+		return nil, noSuchResultColumn(*n.pending)
 	}
 	return conditions, nil
 }
@@ -1328,12 +1366,18 @@ func (b build) computeAndReach(ctx context.Context, f *Filter, s *scan, conditio
 	return filtered, nil
 }
 
-// constants computes the value of each condition whose value is an expression without a column, in
-// the order of the text: once for each run of the statement, after its checks, so that its value
-// serves the access as an argument does, and its error comes also where no row is read. The sink of a
-// write that is built only to look its names up, in a [readOnly] transaction, computes none, and
-// each such value is NULL.
-func (b build) constants(conditions []condition) error {
+// constants computes the value of each condition of the table t whose value is an expression without
+// a column, in the order of the text: once for each run of the statement, after its checks, so that
+// its value serves the access as an argument does, and its error comes also where no row is read. The
+// sink of a write that is built only to look its names up, in a [readOnly] transaction, computes
+// none, and each such value is NULL.
+//
+// Text with a call that is too long is the one exception, since SQLite computes such an expression
+// when the first row reaches it, unless its access needs it before. Where the condition may serve the
+// access, as [mayServe] says, SQLite's `string or blob too big` comes here, as for every other
+// constant; otherwise the condition keeps the error, serves no access, and gives the error on the
+// first row that it is evaluated on.
+func (b build) constants(ctx context.Context, t *s4qlpb.CreateTable, conditions []condition) error {
 	_, lookups := b.r.(readOnly)
 	for i := range conditions {
 		c := &conditions[i]
@@ -1345,10 +1389,81 @@ func (b build) constants(conditions []condition) error {
 			continue
 		}
 		v, err := c.constant.Eval(nil)
-		if err != nil {
-			return fromExpr(err)
+		if err == nil {
+			c.value = v.Proto()
+			continue
 		}
-		c.value = v.Proto()
+		if c.lazy && errors.Is(err, expr.ErrTooLong) {
+			serves, indexErr := mayServe(ctx, b.r, t, *c)
+			if indexErr != nil {
+				return indexErr
+			}
+			if !serves {
+				c.failed = fromExpr(err)
+				continue
+			}
+		}
+		return fromExpr(err)
+	}
+	return nil
+}
+
+// mayServe reports whether SQLite may compute the value of the condition c of the table t, which
+// compares a column alone with a constant, before it reads a row, to find the rows by the key or by an
+// index: where the operator is not != and the column is the key or a column of an index of t.
+func mayServe(ctx context.Context, r reader, t *s4qlpb.CreateTable, c condition) (bool, error) {
+	if c.test != nil || c.per != nil || c.paired || c.position < 0 || c.op == stmt.OpNotEqual {
+		return false, nil
+	}
+	for _, k := range t.GetPrimaryKey() {
+		if int(k) == c.position {
+			return true, nil
+		}
+	}
+	indexes, err := r.indexes(ctx, t.GetTable())
+	if err != nil {
+		return false, err
+	}
+	for _, ix := range indexes {
+		for _, column := range ix.GetColumns() {
+			if int(column.GetColumn()) == c.position {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// hoist computes the subtrees of the expressions of the conditions of the table t that SQLite
+// computes before any row, as [hoisted] says, in the order of the text, but in a [readOnly]
+// transaction, where SQLite refuses a write first. For the conditions of a subquery, which the
+// statement may not compute, it computes those subtrees of the constants of text too: of a constant
+// that may serve the access of the subquery, as [mayServe] says, which SQLite codes in place where
+// the subquery seeks, its operands, and of any other constant the constant itself where it has no
+// call, as for a side of a comparison. Each gives SQLite's `string or blob too big` where it is too
+// long; the value of a constant is computed again with the subquery.
+func (b build) hoist(ctx context.Context, t *s4qlpb.CreateTable, conditions []condition, subquery bool) error {
+	if _, lookups := b.r.(readOnly); lookups {
+		return nil
+	}
+	for _, c := range conditions {
+		if err := computeHoisted(c.hoisted); err != nil {
+			return err
+		}
+		if !subquery || !c.text.Present() {
+			continue
+		}
+		serves, err := mayServe(ctx, b.r, t, c)
+		if err != nil {
+			return err
+		}
+		hoisted, err := bindHoisted(t, c.text, serves, b.args, b.limit)
+		if err != nil {
+			return err
+		}
+		if err := computeHoisted(hoisted); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1356,7 +1471,7 @@ func (b build) constants(conditions []condition) error {
 // values of the conditions of the filter f, which it evaluates and puts in conditions: SQLite's error
 // for the first, in the order of the text, that is longer than the limit. The values of a subquery
 // are checked where it is, as [subqueries.lengths] says, and its own value is computed later. An
-// arithmetic expression gives a number, which has no length, and is checked by [build.types], but
+// expression is computed later, where a text that it makes may be too long, as [hoisted] says, but
 // the arguments of its parameters are checked here, on either side of the condition, as
 // [argumentLengths] says.
 func (b build) values(f *Filter, conditions []condition) error {
@@ -1399,11 +1514,12 @@ func (b build) values(f *Filter, conditions []condition) error {
 // value, in the order of the text, that is of another type than its column. A subquery is checked
 // where it is, as [subqueries.types] says.
 //
-// An arithmetic expression is checked and bound first, as [bindArithmetic] says, the side that the
-// condition tests and its value in the order of the text, and then the class of its values must be
-// that of the other side, as [comparable] says: so a column of type TEXT or BLOB compared with an
-// expression is refused, whatever the arguments, where SQLite converts the number to text or a blob
-// by the column's affinity. The expressions are put in conditions, to be computed later.
+// An expression is checked and bound first, as [bindExpression] says, the side that the condition
+// tests and its value in the order of the text, and then the class of its values must be that of the
+// other side, as [comparable] says: so a column of type TEXT or BLOB compared with arithmetic is
+// refused, whatever the arguments, where SQLite converts the number to text or a blob by the column's
+// affinity, and a number compared with text, where SQLite orders a number before text. The
+// expressions are put in conditions, to be computed later.
 func (b build) types(f *Filter, s *scan, conditions []condition) error {
 	for i := range conditions {
 		c, fc := &conditions[i], f.Conditions[i]
@@ -1431,7 +1547,11 @@ func (b build) types(f *Filter, s *scan, conditions []condition) error {
 			}
 		}
 		if sub, ok := fc.Value.(*Subquery); ok {
-			if err := b.subs.types(b, sub, s.table, c.position, c.test); err != nil {
+			tested := classAny
+			if c.test != nil {
+				tested = expressionClass(fc.Expression, c.test)
+			}
+			if err := b.subs.types(b, sub, s.table, c.position, c.test != nil, tested); err != nil {
 				return err
 			}
 			continue
@@ -1440,12 +1560,12 @@ func (b build) types(f *Filter, s *scan, conditions []condition) error {
 			continue
 		}
 		if c.test != nil {
-			if !meetsArithmetic(valueClass(c.value), arithmeticClass(c.test)) {
+			if tested := expressionClass(fc.Expression, c.test); !comparable(valueClass(c.value), tested) {
 				what, err := valueName(fc.Value, c.value)
 				if err != nil {
 					return err
 				}
-				return fmt.Errorf("%w: %v compared with %v", stmt.ErrNotSupported, what, expressionName(arithmeticClass(c.test)))
+				return fmt.Errorf("%w: %v compared with %v", stmt.ErrNotSupported, what, expressionName(tested))
 			}
 			continue
 		}
@@ -1467,14 +1587,18 @@ func (b build) arithmetic(fc Condition, t *s4qlpb.CreateTable, c *condition, val
 		if value == nil {
 			return nil
 		}
-		bound, err := bindArithmetic(t, value.Expression, b.args)
+		bound, err := bindExpression(t, value.Expression, b.args, b.limit)
 		if err != nil {
 			return err
 		}
 		if value.Expression.HasColumn() {
 			c.per = bound
 		} else {
-			c.constant = bound
+			text, call := isText(value.Expression), hasCall(value.Expression)
+			c.constant, c.lazy = bound, text && call
+			if text {
+				c.text = value.Expression
+			}
 		}
 		return nil
 	}
@@ -1484,7 +1608,7 @@ func (b build) arithmetic(fc Condition, t *s4qlpb.CreateTable, c *condition, val
 		}
 	}
 	if fc.Expression.Present() {
-		if c.test, err = bindArithmetic(t, fc.Expression, b.args); err != nil {
+		if c.test, err = bindExpression(t, fc.Expression, b.args, b.limit); err != nil {
 			return err
 		}
 	}
@@ -1493,6 +1617,19 @@ func (b build) arithmetic(fc Condition, t *s4qlpb.CreateTable, c *condition, val
 			return err
 		}
 	}
+	// The subtrees of the sides with a column; those of a constant are bound where it is computed, as
+	// [build.hoist] says.
+	sides := []stmt.Expression{fc.Expression}
+	if value != nil && value.Expression.HasColumn() {
+		sides = append(sides, value.Expression)
+	}
+	for _, e := range sides {
+		hoisted, err := bindHoisted(t, e, false, b.args, b.limit)
+		if err != nil {
+			return err
+		}
+		c.hoisted = append(c.hoisted, hoisted...)
+	}
 	if value == nil {
 		return nil
 	}
@@ -1500,17 +1637,19 @@ func (b build) arithmetic(fc Condition, t *s4qlpb.CreateTable, c *condition, val
 	if bound == nil {
 		bound = c.constant
 	}
+	class := expressionClass(value.Expression, bound)
 	var meets bool
 	var name string
 	if c.test != nil {
-		meets, name = comparable(arithmeticClass(c.test), arithmeticClass(bound)), expressionName(arithmeticClass(c.test))
+		tested := expressionClass(fc.Expression, c.test)
+		meets, name = comparable(tested, class), expressionName(tested)
 	} else {
-		meets, name = meetsArithmetic(columnClass(t.GetColumns()[c.position].GetType()), arithmeticClass(bound)), columnName(t, c.position)
+		meets, name = comparable(columnClass(t.GetColumns()[c.position].GetType()), class), columnName(t, c.position)
 	}
 	if meets {
 		return nil
 	}
-	return fmt.Errorf("%w: %v compared with %v", stmt.ErrNotSupported, expressionName(arithmeticClass(bound)), name)
+	return fmt.Errorf("%w: %v compared with %v", stmt.ErrNotSupported, expressionName(class), name)
 }
 
 // reach the rows of the scan s for a filter of the conditions and the ORDER BY of the build: give the
@@ -1881,7 +2020,8 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		// SQLite resolves the names of the value of an assignment before its column, as a select
 		// resolves them, with the question about quotes.
 		if arithmetic, ok := a.Value.(*Arithmetic); ok {
-			if name, missing := missingName(arithmetic.Expression, func(name stmt.Name) bool { _, ok := of[name.Fold()]; return ok }); missing {
+			n := &resolver{found: func(name stmt.Name) bool { _, ok := of[name.Fold()]; return ok }}
+			if name, missing := n.all(arithmetic.Expression); missing {
 				return nil, noSuchResultColumn(name)
 			}
 		}
@@ -1916,7 +2056,7 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 	for i, a := range set {
 		u.exprs[i], u.copied[i] = a.Value, -1
 		if arithmetic, ok := a.Value.(*Arithmetic); ok {
-			// A number has no length, but an argument of its parameters has.
+			// An expression is computed later, but the arguments of its parameters are checked here.
 			if err := argumentLengths(arithmetic.Expression, b.args, b.limit); err != nil {
 				return nil, err
 			}
@@ -1942,7 +2082,7 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 	// checks, so the expressions of SET are neither checked nor computed there.
 	_, lookups := w.(readOnly)
 	if !lookups {
-		if err := u.bind(of, set, b.args); err != nil {
+		if err := u.bind(of, set, b.args, b.limit); err != nil {
 			return nil, err
 		}
 	}
@@ -1952,13 +2092,25 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		}
 	}
 	// The expressions without a column of SET are computed once, after the checks, as those of WHERE
-	// are, before them. In a read-only transaction none is bound, and none is computed.
+	// are, before them, and before them the subtrees that SQLite computes before any row. In a
+	// read-only transaction none is bound, and none is computed. Text without a column that is too
+	// long is computed for each row, as SQLite computes it, and fails on the first.
+	if err := computeHoisted(u.hoisted); err != nil {
+		return nil, err
+	}
 	for i, bound := range u.computed {
-		if bound == nil || set[i].Value.(*Arithmetic).Expression.HasColumn() {
+		if bound == nil {
+			continue
+		}
+		e := set[i].Value.(*Arithmetic).Expression
+		if e.HasColumn() {
 			continue
 		}
 		v, err := bound.Eval(nil)
 		if err != nil {
+			if isText(e) && errors.Is(err, expr.ErrTooLong) {
+				continue
+			}
 			return nil, fromExpr(err)
 		}
 		u.values[i] = v.Proto()
@@ -1984,10 +2136,10 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 }
 
 // bind the values of the assignments set, whose columns are at the positions of the update in a table
-// whose columns are of, that are arithmetic expressions, in the order of the text: a column alone,
-// as in `set a = b`, is copied from the row, and every other expression is checked and bound to the
-// arguments args, as [bindArithmetic] says.
-func (u *update) bind(of map[string]int, set []Assignment, args []*s4qlpb.Value) error {
+// whose columns are of, that are expressions, in the order of the text: a column alone, as in `set a
+// = b`, is copied from the row, and every other expression is checked and bound to the arguments args
+// under the length limit, as [bindExpression] says, with its subtrees that [hoisted] gives.
+func (u *update) bind(of map[string]int, set []Assignment, args []*s4qlpb.Value, limit int) error {
 	for i, a := range set {
 		arithmetic, ok := a.Value.(*Arithmetic)
 		if !ok {
@@ -2001,11 +2153,16 @@ func (u *update) bind(of map[string]int, set []Assignment, args []*s4qlpb.Value)
 			u.copied[i] = position
 			continue
 		}
-		bound, err := bindArithmetic(u.table, arithmetic.Expression, args)
+		bound, err := bindExpression(u.table, arithmetic.Expression, args, limit)
 		if err != nil {
 			return err
 		}
 		u.computed[i] = bound
+		hoisted, err := bindHoisted(u.table, arithmetic.Expression, true, args, limit)
+		if err != nil {
+			return err
+		}
+		u.hoisted = append(u.hoisted, hoisted...)
 	}
 	return nil
 }

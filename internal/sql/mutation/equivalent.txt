@@ -1410,20 +1410,9 @@ internal/expr/expr.go magnitude constant: i < 0 => i < 1
 
 # Arithmetic in the engine, internal/engine, of pull requests #154 and #156.
 
-# The classes of the rule of exact types: text and blobs are only ever compared for equality and
-# refused alike beside arithmetic, so swapping or merging their classes changes no outcome.
-internal/engine/expression.go columnClass swap cases: case s4qlpb.Type_TYPE_TEXT: return classText case s4qlpb.Type_TYPE_BLOB: return classBlob => case s4qlpb.Type_TYPE_TEXT: return classBlob case s4qlpb.Type_TYPE_BLOB: return classText
-	The class of a column is compared only with that of another column, where the swap is one to one, and by meetsArithmetic, which refuses both classes alike; no message names the class of a column.
+# The classes of the rule of exact types.
 internal/engine/expression.go columnClass neighbour: return classAny => return classInteger
 	Every column of a table has one of the five types, which the storage formats check, so the default is never reached.
-internal/engine/expression.go valueClass swap cases: case s4qlpb.Value_Text_case: return classText case s4qlpb.Value_Blob_case: return classBlob => case s4qlpb.Value_Text_case: return classBlob case s4qlpb.Value_Blob_case: return classText
-	The class of a plain value is read only by meetsArithmetic, which refuses text and blobs alike.
-internal/engine/expression.go valueClass neighbour: return classText => return classBlob
-	As the swap above: meetsArithmetic refuses a value of either class alike.
-internal/engine/expression.go valueClass neighbour: return classBlob => return classText
-	As the swap above: meetsArithmetic refuses a value of either class alike.
-internal/engine/expression.go meetsArithmetic swap arguments: comparable(c, a) => comparable(a, c)
-	comparable is symmetric.
 
 # The bounds of the access.
 internal/engine/operator.go bounds condition: !slices.ContainsFunc(conditions, condition.perRow) => false
@@ -1509,8 +1498,6 @@ internal/engine/operator.go build.walk constant: -1 => -2
 	The position of a condition that tests an expression is never read as a position: the expression has its own columns, and the checks test only that it is negative.
 internal/engine/operator.go build.walk constant: -1 => -0
 	A condition that tests an expression reads its tested side from the expression, never at its position, and serves no access; only the planted bug noRowMatches reads it, which then tests the column at 0 for NOT NULL, as it does for -1.
-internal/engine/operator.go build.walk condition: !c.ValueFirst => true
-	The names of an expression of the value written first are then looked up a second time, after the column; they were all found the first time.
 internal/engine/operator.go build.values condition: !c.ValueFirst => true
 	The arguments of the tested expression are then also checked before a value written first: each check gives only SQLite's `string or blob too big`, at no offset, so the first too long of the two gives the same error.
 internal/engine/operator.go build.values condition: c.ValueFirst => true
@@ -1535,7 +1522,7 @@ internal/engine/operator.go build.arithmetic condition: c.constant != nil => tru
 	Only with the planted bug constantsServeNothing, which then marks also a condition with a side computed for each row, which serves no access anyway.
 internal/engine/operator.go build.arithmetic condition: !fc.ValueFirst => true
 	A value written first is then bound a second time, after the tested side, to an equal bound expression; its refusals came the first time.
-internal/engine/operator.go build.arithmetic swap arguments: comparable(arithmeticClass(c.test), arithmeticClass(bound)) => comparable(arithmeticClass(bound), arithmeticClass(c.test))
+internal/engine/operator.go build.arithmetic swap arguments: comparable(tested, class) => comparable(class, tested)
 	comparable is symmetric.
 internal/engine/operator.go build.change constant: -1 => -2
 	The mark of a value that copies no column is only tested for being negative.

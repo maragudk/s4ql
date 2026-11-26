@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
@@ -163,6 +162,35 @@ func (s *subqueries) at(sub *Subquery, outer *s4qlpb.CreateTable) (*inner, error
 	return s.list[sub.Number-1], nil
 }
 
+// all the subqueries, in the order of the text, or none for a nil *subqueries.
+func (s *subqueries) all() []*inner {
+	if s == nil {
+		return nil
+	}
+	return s.list
+}
+
+// pendingNames of the subquery in, in the transaction of the build b, where SQLite resolves its names
+// with the column pending missing already, as [resolver] says: SQLite's error for the first of its
+// names that SQLite looks up then, or else `no such column` for pending. A subquery whose table is not
+// found yet, as in an update and a delete, finds its table and looks none of its columns up, as SQLite
+// resolves no names after an error; one whose table is found, as in a select, looks the column of its
+// select list up, unless it has a LIMIT, which SQLite resolves before and stops at.
+func (s *subqueries) pendingNames(ctx context.Context, b build, in *inner, pending stmt.Name) error {
+	if in.s == nil {
+		if err := in.find(ctx, b.r); err != nil {
+			return err
+		}
+		return noSuchResultColumn(pending)
+	}
+	if in.limit == nil && !in.project.Star && len(in.project.Columns) == 1 {
+		if _, ok := s.lookup(columnPositions(in.s.table), s.outer, in.project.Columns[0]); !ok {
+			return noSuchResultColumn(in.project.Columns[0])
+		}
+	}
+	return noSuchResultColumn(pending)
+}
+
 func (s *subqueries) count() int {
 	if s == nil {
 		return 0
@@ -305,9 +333,9 @@ func (s *subqueries) lengths(b build, sub *Subquery) error {
 // or NULL, and SQLite compares it with the column of the statement by the affinities of the two,
 // which convert a value only where the two are of other types. So the rule of exact types holds for
 // the two columns, whatever the rows: INT and INTEGER are one type there, and every other two
-// types are refused. Where the condition tests an arithmetic expression, test, in place of a
-// column, the column of the subquery must be of the class of its values, as [comparable] says.
-func (s *subqueries) types(b build, sub *Subquery, t *s4qlpb.CreateTable, position int, test *expr.Bound) error {
+// types are refused. Where the condition tests an expression, test, in place of a column, the column
+// of the subquery must be of the class tested of its values, as [comparable] says.
+func (s *subqueries) types(b build, sub *Subquery, t *s4qlpb.CreateTable, position int, test bool, tested class) error {
 	in, err := s.at(sub, nil)
 	if err != nil {
 		return err
@@ -322,16 +350,16 @@ func (s *subqueries) types(b build, sub *Subquery, t *s4qlpb.CreateTable, positi
 		}
 	}
 	columns := in.s.table.GetColumns()
-	if test != nil {
+	if test {
 		if in.position < 0 || in.position >= len(columns) {
 			return internalError("a subquery of the column at %v compared with an expression", in.position)
 		}
 		inside := columns[in.position]
-		if meetsArithmetic(columnClass(inside.GetType()), arithmeticClass(test)) {
+		if comparable(columnClass(inside.GetType()), tested) {
 			return nil
 		}
 		return fmt.Errorf("%w: subquery %v, of the column %v.%v of type %v, compared with %v", stmt.ErrNotSupported,
-			in.number, in.s.table.GetTable(), inside.GetName(), typeName(inside.GetType()), expressionName(arithmeticClass(test)))
+			in.number, in.s.table.GetTable(), inside.GetName(), typeName(inside.GetType()), expressionName(tested))
 	}
 	if in.position < 0 || in.position >= len(columns) || position < 0 || position >= len(t.GetColumns()) {
 		return internalError("a subquery of the column at %v compared with the column at %v", in.position, position)
@@ -378,7 +406,25 @@ type subqueryRead struct {
 // The expressions without a column of the conditions are computed first, as [build.constants] says,
 // so that a value of NULL among them makes the statement give no row too.
 func (b build) compute(ctx context.Context, f *Filter, s *scan, conditions []condition, none bool) error {
-	if err := b.constants(conditions); err != nil {
+	// SQLite computes the subtrees that it hoists before any row, those of its subqueries too, whether
+	// it computes a subquery or not.
+	var t *s4qlpb.CreateTable
+	if s != nil {
+		t = s.table
+	}
+	if err := b.hoist(ctx, t, conditions, false); err != nil {
+		return err
+	}
+	for _, in := range b.subs.all() {
+		if in.s == nil {
+			// Only where the statement does not have the subquery, which the loop below refuses.
+			continue
+		}
+		if err := b.hoist(ctx, in.s.table, in.conditions, true); err != nil {
+			return err
+		}
+	}
+	if err := b.constants(ctx, t, conditions); err != nil {
 		return err
 	}
 	if b.subs == nil {
@@ -460,7 +506,7 @@ func (b build) value(ctx context.Context, in *inner) (*s4qlpb.Value, subqueryRea
 	// The values of the subquery are evaluated and checked already, so the build of its access needs
 	// neither the arguments nor the length limit.
 	// The expressions without a column of its conditions are computed when the subquery is.
-	if err := b.constants(in.conditions); err != nil {
+	if err := b.constants(ctx, in.s.table, in.conditions); err != nil {
 		return nil, subqueryRead{}, err
 	}
 	inside := build{r: b.r, how: b.how.inner(), order: in.by}

@@ -36,6 +36,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/store"
+	"maragu.dev/s4ql/internal/store/s3test"
 )
 
 func discard() *slog.Logger {
@@ -110,21 +111,11 @@ func TestNew(t *testing.T) {
 	})
 }
 
-// isolate the test from the AWS configuration of the machine that runs it: no shared files, no
-// settings of the SDK from the environment but those that a test sets after this, and static
-// credentials.
+// isolate the test from the AWS configuration of the machine that runs it, with [s3test.Isolate],
+// and give it static credentials.
 func isolate(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
-	for _, name := range []string{
-		"AWS_PROFILE", "AWS_SESSION_TOKEN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_CA_BUNDLE",
-		"AWS_DEFAULTS_MODE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
-	} {
-		t.Setenv(name, "")
-	}
+	s3test.Isolate(t)
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 }

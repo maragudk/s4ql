@@ -11,6 +11,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/core/coretest"
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
@@ -32,7 +33,7 @@ func TestFromCore(t *testing.T) {
 
 	t.Run("should refuse a table and an index whose statement in the cache is longer than the length limit as not supported, by its name", func(t *testing.T) {
 		h := sim.NewFree(sim.Buggify{})
-		d, err := core.Open(t.Context(), h, simstore.New(h, simstore.Options{}).Client("a", nil), filepath.Join(t.TempDir(), "a.db"), "db", core.Options{LengthLimit: 1000})
+		d, err := core.Open(t.Context(), h, simstore.New(h, simstore.Options{}).Client("a", nil), filepath.Join(t.TempDir(), "a.db"), "db", coretest.SyncOff(core.Options{LengthLimit: 1000}))
 		is.NotError(t, err)
 		defer func() { _ = d.Close(t.Context()) }()
 		is.NotError(t, d.Wait(t.Context()))

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -806,6 +807,140 @@ func TestParameters(t *testing.T) {
 		is.EqualSlice(t, want, values(t, db, select1))
 		_, err = db.ExecContext(t.Context(), insertParameter, 7)
 		is.Equal(t, "UNIQUE constraint failed: t1.v1", failed(t, err).Error())
+	})
+}
+
+// blobValuer is a [driver.Valuer] that gives its own bytes, which [driver.DefaultParameterConverter]
+// passes on as they are.
+type blobValuer []byte
+
+func (v blobValuer) Value() (driver.Value, error) {
+	return []byte(v), nil
+}
+
+// rawBytes is a type whose kind is a slice of bytes, which [driver.DefaultParameterConverter]
+// converts to a []byte over the same array.
+type rawBytes []byte
+
+func TestArgument(t *testing.T) {
+	t.Run("should give the blob that the insert stored in the row of its RETURNING, also when the caller changes the bytes of the argument before it reads the row", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, "create table r (k int primary key, b blob) strict, without rowid")
+
+		b := []byte{1}
+		rows, err := db.QueryContext(t.Context(), "insert into r values (1, ?) returning b", b)
+		is.NotError(t, err)
+		defer func() { _ = rows.Close() }()
+		// The statement has run and is committed. The bytes are the caller's again, such as a buffer
+		// that it fills for its next statement.
+		b[0] = 2
+
+		is.True(t, rows.Next(), "the insert gives a row")
+		var returned []byte
+		is.NotError(t, rows.Scan(&returned))
+		is.NotError(t, rows.Close())
+
+		var stored []byte
+		is.NotError(t, db.QueryRowContext(t.Context(), "select b from r where k = 1").Scan(&stored))
+		is.EqualSlice(t, []byte{1}, stored, "the row that is stored")
+		is.EqualSlice(t, []byte{1}, returned, "the row that RETURNING gives")
+	})
+
+	t.Run("should give the rows of a query for the blob that its argument was when the query ran, directly, prepared, and in a transaction, also when the caller changes the bytes before it reads the rows", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, "create table q (k blob primary key, v int) strict, without rowid", "insert into q values (x'01', 10)", "insert into q values (x'02', 20)")
+		const src = "select v from q where k = ?"
+		prepared, err := db.PrepareContext(t.Context(), src)
+		is.NotError(t, err)
+		defer func() { is.NotError(t, prepared.Close()) }()
+
+		for _, conv := range []struct {
+			name string
+			arg  func([]byte) any
+		}{
+			{"a []byte", func(k []byte) any { return k }},
+			{"a type whose kind is a slice of bytes", func(k []byte) any { return rawBytes(k) }},
+			{"a sql.RawBytes", func(k []byte) any { return sql.RawBytes(k) }},
+			{"a driver.Valuer of a []byte", func(k []byte) any { return blobValuer(k) }},
+		} {
+			for _, how := range []struct {
+				name string
+				run  func(tx *sql.Tx, k any) (*sql.Rows, error)
+			}{
+				{"directly", func(_ *sql.Tx, k any) (*sql.Rows, error) { return db.QueryContext(t.Context(), src, k) }},
+				{"prepared", func(_ *sql.Tx, k any) (*sql.Rows, error) { return prepared.QueryContext(t.Context(), k) }},
+				{"in a transaction", func(tx *sql.Tx, k any) (*sql.Rows, error) { return tx.QueryContext(t.Context(), src, k) }},
+				{"prepared in a transaction", func(tx *sql.Tx, k any) (*sql.Rows, error) {
+					return tx.StmtContext(t.Context(), prepared).QueryContext(t.Context(), k)
+				}},
+			} {
+				name := conv.name + " " + how.name
+				tx := begin(t, db, nil)
+				k := []byte{1}
+				rows, err := how.run(tx, conv.arg(k))
+				is.NotError(t, err, name)
+				k[0] = 2
+
+				var got []int64
+				for rows.Next() {
+					var v int64
+					is.NotError(t, rows.Scan(&v), name)
+					got = append(got, v)
+				}
+				is.NotError(t, rows.Err(), name)
+				is.NotError(t, rows.Close(), name)
+				is.NotError(t, tx.Rollback(), name)
+				is.EqualSlice(t, []int64{10}, got, name)
+			}
+		}
+	})
+
+	t.Run("should commit the blobs that the arguments were when each write ran, to the cache and to the commit object, also when the caller changes the bytes before the commit", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, "create table r (k int primary key, b blob) strict, without rowid")
+		prepared, err := db.PrepareContext(t.Context(), "insert into r values (?, ?)")
+		is.NotError(t, err)
+		defer func() { is.NotError(t, prepared.Close()) }()
+
+		tx := begin(t, db, nil)
+		b := []byte{1}
+		_, err = tx.ExecContext(t.Context(), "insert into r values (1, ?)", b)
+		is.NotError(t, err)
+		b[0] = 9
+		b = []byte{2}
+		_, err = tx.StmtContext(t.Context(), prepared).ExecContext(t.Context(), 2, rawBytes(b))
+		is.NotError(t, err)
+		b[0] = 9
+		b, c := []byte{3}, []byte{4}
+		_, err = tx.ExecContext(t.Context(), "insert into r values (3, ?); insert into r values (4, ?)", sql.RawBytes(b), blobValuer(c))
+		is.NotError(t, err)
+		b[0], c[0] = 9, 9
+		b = []byte{5}
+		rows, err := tx.QueryContext(t.Context(), "insert into r values (5, ?) returning b", b)
+		is.NotError(t, err)
+		b[0] = 9
+		is.True(t, rows.Next())
+		var returned []byte
+		is.NotError(t, rows.Scan(&returned))
+		is.NotError(t, rows.Close())
+		is.EqualSlice(t, []byte{5}, returned, "the row that RETURNING gives")
+		is.NotError(t, tx.Commit())
+
+		const want = "k INT, b BLOB: 1 [1]; 2 [2]; 3 [3]; 4 [4]; 5 [5]"
+		is.Equal(t, want, rowsText(t, db, "select * from r"), "the cache")
+		is.EqualSlice(t, []string{
+			"create table r (k int primary key, b blob) strict, without rowid",
+			"insert into r values (1, ?) with x'01'",
+			"insert into r values (?, ?) with 2 with x'02'",
+			"insert into r values (3, ?); with x'03'",
+			"insert into r values (4, ?) with x'04'",
+			"insert into r values (5, ?) returning b with x'05'",
+		}, annotations(t, w), "the commit object")
+		is.NotError(t, db.Close())
+		is.Equal(t, want, rowsText(t, w.serve(t, "b"), "select * from r"), "the cache of another instance")
 	})
 }
 
@@ -2909,17 +3044,105 @@ func TestArithmetic(t *testing.T) {
 		is.NotError(t, other.QueryRowContext(t.Context(), "select r from t").Scan(&r))
 		is.True(t, r == 0 && !math.Signbit(r))
 	})
+}
 
-	t.Run("should refuse text in expressions with ErrNotSupported, also when it is prepared, whatever the database holds", func(t *testing.T) {
+func TestText(t *testing.T) {
+	const table = "create table goqite (id text primary key, queue text not null, body blob not null) strict, without rowid"
+	// id is goqite's id of the 16 bytes of the blob b, as its default computes it from
+	// randomblob(16).
+	id := func(b []byte) string {
+		return "m_" + hex.EncodeToString(b)
+	}
+	first, second := []byte("0123456789abcdef"), []byte{0, 1, 2, 0xab, 0xcd, 0xef, 0xff, 9, 10, 11, 12, 13, 14, 15, 16, 17}
+
+	t.Run("should compute goqite's id, 'm_' || lower(hex(?)) of 16 random bytes, in SET and in WHERE, as SQLite does, directly, prepared, in a transaction, and after a restart with an empty cache", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
-		exec(t, db, table)
-		_, err := db.PrepareContext(t.Context(), "update goqite set id = 'm_' || lower(hex(body)) where queue = ?")
-		is.Equal(t, "concatenation (at offset 23)", typeRefused(t, err))
-		_, err = db.ExecContext(t.Context(), "delete from goqite where lower(queue) = ?", "default")
-		is.Equal(t, "call of lower (at offset 25)", typeRefused(t, err))
+		setUp := []string{table, "insert into goqite values ('m_', 'default', x'00')"}
+		exec(t, db, setUp...)
+		o := newOracle(t, setUp...)
+		same := func(src string, args ...any) []string {
+			t.Helper()
+			want, se := o.rows(t, src, args...)
+			is.True(t, se == nil, src)
+			got, err := rowsInOrder(t, db, src, args...)
+			is.NotError(t, err, src)
+			is.EqualSlice(t, want, got, src)
+			return got
+		}
+		is.EqualSlice(t, []string{fmt.Sprintf("string %q", id(first))}, same("update goqite set id = 'm_' || lower(hex(?)) where id = 'm_' returning id", first))
+		is.Equal(t, 1, len(same("select id, body from goqite where id = 'm_' || lower(hex(?))", first)))
+		is.EqualSlice(t, []string{}, same("select id from goqite where id = 'm_' || lower(hex(?))", second))
+
+		p, err := db.PrepareContext(t.Context(), "update goqite set id = 'm_' || lower(hex(?)) where id = 'm_' || lower(hex(?))")
+		is.NotError(t, err)
+		res, err := p.ExecContext(t.Context(), second, first)
+		is.Equal(t, int64(1), affected(t, res, err))
+		_, se := o.rows(t, "update goqite set id = 'm_' || lower(hex(?)) where id = 'm_' || lower(hex(?))", second, first)
+		is.True(t, se == nil)
+		res, err = p.ExecContext(t.Context(), second, first)
+		is.Equal(t, int64(0), affected(t, res, err))
+		is.NotError(t, p.Close())
+		same("select id from goqite")
+		is.Equal(t, "id TEXT: "+id(second), rowsText(t, db, "select id from goqite"))
+
+		// In a transaction, rolled back, and with the arguments of the driver's types: a string for
+		// lower, and nil, which || gives as NULL and hex as the empty text.
+		tx := begin(t, db, nil)
+		var got string
+		is.NotError(t, tx.QueryRowContext(t.Context(), "update goqite set queue = lower(?) || queue where id = ? returning queue", "OTHER_", id(second)).Scan(&got))
+		is.Equal(t, "other_default", got)
+		_, err = tx.ExecContext(t.Context(), "update goqite set queue = ? || queue", nil)
+		sqliteError(t, 19, 1299, "NOT NULL constraint failed: goqite.queue", err)
+		is.NotError(t, tx.QueryRowContext(t.Context(), "update goqite set queue = hex(?) returning queue", nil).Scan(&got))
+		is.Equal(t, "", got)
+		is.NotError(t, tx.Rollback())
+		is.Equal(t, "id TEXT, queue TEXT: "+id(second)+" default", rowsText(t, db, "select id, queue from goqite"))
+
+		// The commits hold the rows, which another instance replays into an empty cache.
+		is.NotError(t, db.Close())
+		other := w.serve(t, "b")
+		is.Equal(t, "id TEXT: "+id(second), rowsText(t, other, "select id from goqite where id = 'm_' || lower(hex(?))", second))
+	})
+
+	t.Run("should refuse text against a number, and a number in text, with ErrNotSupported, through Prepare, Exec, and Query", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table, "create table n (k int primary key, s text) strict, without rowid")
+		p, err := db.PrepareContext(t.Context(), "update goqite set id = 'm_' || lower(hex(body)) where queue = ?")
+		is.NotError(t, err)
+		is.NotError(t, p.Close())
+		_, err = db.ExecContext(t.Context(), "update n set k = lower(s)")
+		is.Equal(t, "an expression of type text for the column n.k of type INT", typeRefused(t, err))
+		_, err = rowsInOrder(t, db, "select k from n where lower(s) = ?", 1)
+		is.Equal(t, "argument 1, which is an integer, compared with an expression of type text", typeRefused(t, err))
+		_, err = rowsInOrder(t, db, "select k from n where s = hex(?)", 1.5)
+		is.Equal(t, "argument 1 in a call of hex, which is a real (at offset 30)", typeRefused(t, err))
+		_, err = db.ExecContext(t.Context(), "delete from n where k || s = 'a'")
+		is.Equal(t, "column of type INT in a concatenation (at offset 20)", typeRefused(t, err))
 		_, err = db.ExecContext(t.Context(), "delete from nosuch where lower(queue) = ?", "default")
-		is.Equal(t, "call of lower (at offset 25)", typeRefused(t, err))
+		is.Equal(t, "no such table: nosuch", sqliteMessage(t, err))
+	})
+
+	t.Run("should give SQLite's string or blob too big for text longer than the limit, change nothing, and keep the transaction usable", func(t *testing.T) {
+		const limit = 1000
+		w := newWorld(t)
+		co := coreOptions()
+		co.LengthLimit = limit
+		db := w.openOn(t, "a", w.client(), co)
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, "create table t (k int primary key, s text) strict, without rowid", "insert into t values (1, 'a')", "insert into t values (2, 'b')")
+		_, err := rowsInOrder(t, db, "select k from t where s = hex(?)", make([]byte, limit/2))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		_, err = db.ExecContext(t.Context(), "update t set s = ? || ? || s where k = 99", strings.Repeat("a", 600), strings.Repeat("b", 600))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		tx := begin(t, db, nil)
+		_, err = tx.ExecContext(t.Context(), "update t set s = ? where k = 2", strings.Repeat("c", 600))
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "update t set s = s || s")
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		is.Equal(t, "k INT, s TEXT: 1 a; 2 "+strings.Repeat("c", 600), rowsText(t, tx, "select * from t"))
+		is.NotError(t, tx.Commit())
 	})
 }
 
