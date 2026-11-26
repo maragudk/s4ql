@@ -1,9 +1,10 @@
-# The commit of the last completed round of mutation testing. A round with -since round, which the
-# weekly workflow .github/workflows/mutation.yml runs, mutates every declaration that changed since
-# this commit. Write the commit of a round here once each of its unexplained survivors is killed by
-# a test, removed with the code that nothing needs, or listed in equivalent.txt, and its stale
-# entries are gone: the summary of the round names the commit. The first line that is not empty and
-# does not start with # is the commit.
+# The commit of the last completed round of mutation testing that a builder worked through. A round
+# with -since round, which the workflow .github/workflows/mutation.yml runs by default, mutates every
+# declaration that changed since this commit, or since a later run whose whole round left no work.
+# Write the commit of a round here once each of its unexplained survivors is killed by a test,
+# removed with the code that nothing needs, or listed in equivalent.txt, and its stale entries are
+# gone: the summary of the round names the commit. The first line that is not empty and does not
+# start with # is the commit.
 #
 # 8c53a53f is #156, the last commit that the rounds of arithmetic in stmt, the evaluator, and the
 # engine mutated, which ran on their own machine before the workflow existed.

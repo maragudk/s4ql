@@ -30,6 +30,8 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 | `-pkgs` | the five packages | The packages to change, separated by commas. `all` is every package that the runner knows (`listedPkgs`). |
 | `-run` | | A regular expression. Only the mutants whose [key](#keys) or `file:line` matches it are run. |
 | `-since` | | A commit, or `round` for the commit in [`round.txt`](round.txt). Only the mutants of the declarations that changed since it are run. |
+| `-sample` | 1 | A fraction. Only a sample of that share of the mutants, drawn by `-seed`, is run. |
+| `-seed` | 1 | The seed of the draw of `-sample`. |
 | `-shard` | | `i/n`. Only the share of the i-th of n shards is run. |
 | `-list` | | Print the mutants and exit. |
 | `-report` | | Write the report of the results in `-out` again and exit. |
@@ -45,7 +47,9 @@ The target runs `go run ./internal/sql/mutation -out DIR` in the root of the mod
 
 `-since` selects by declaration: a function, or a spec of a declaration at package level. A declaration changed if it holds a line that `git diff -U0` of the working tree against the commit adds or changes, or the place of a removal. A `.go` file that git does not track counts as wholly new.
 
-`-shard` and `-merge` split a run over machines. Each shard runs with an `-out` of its own, and `-merge` gets the same `-pkgs`, `-run`, and `-since` as the shards, without `-shard`:
+`-sample` keeps each mutant by a hash of the seed and its key, so a sample is the same on every machine and in every shard, and the sample of a fraction is part of that of a larger one with the same seed.
+
+`-shard` and `-merge` split a run over machines. Each shard runs with an `-out` of its own, and `-merge` gets the same `-pkgs`, `-run`, `-since`, `-sample`, and `-seed` as the shards, without `-shard`:
 
 ```
 go run ./internal/sql/mutation -out shards/1 -pkgs . -run filelimit_unix.go -shard 1/2
@@ -60,7 +64,7 @@ Before you start a run, know these points:
 - **A run continues.** A run with the same `-out` skips the mutants that already have a result. A run that was stopped goes on where it stopped.
 - **Results belong to one state of the code.** The first run records a fingerprint of the files under `internal`, code and tests, without this directory, of `go.mod` and `go.sum`, and of the version of Go. A later run on anything else refuses the directory, and so does `-report`. Remove the directory or use another `-out` then.
 - **A run stops on a failure of its own.** If a test binary does not start, or a file changed since its mutants were made, the run stops without a result for that mutant.
-- **Rounds run in CI, once a week.** The workflow `.github/workflows/mutation.yml` runs them: see [The weekly round in CI](#the-weekly-round-in-ci). `make test` and CI's checks of a pull request run no mutants. A feature counts as done before its mutation testing, which follows in the weekly round. A developer's machine runs no round as a step of a feature.
+- **Rounds run in CI.** The workflow `.github/workflows/mutation.yml` runs them, started by hand: see [The round in CI](#the-round-in-ci). `make test` and CI's checks of a pull request run no mutants. A feature counts as done before its mutation testing, which follows in a round. A developer's machine runs no round as a step of a feature.
 - **The build cache grows.** Each mutant adds about 3 MB to the Go build cache, which is about 20 GB for a full run. `-gocache` gives the builds a cache of their own, which you can delete afterwards.
 - **The run reads the files while it runs.** For each mutant, it reads the file again from the module that it runs in. Do not edit `internal` during a run. To keep editing, run it on a copy of the tree.
 
@@ -138,7 +142,7 @@ The directory of the results holds:
 
 - `results.jsonl`, with one line for each mutant: its key, file, line, operator, the code before and after, the status, the layer, the test that failed with the start of its message, and the seconds it took. The status is `killed`, `survived`, `timeout`, or `uncompiled`.
 - `report.txt`, which the tool also prints.
-- `summary.md`, the report in Markdown, for the weekly round and its issue. It holds a table with a row for each package, the layers that killed first, and the number of mutants without a result. It shows each unexplained survivor with its `file:line`, declaration, operator, key, and the code before and after. It lists the mutants that timed out by `file:line`, with their keys, and the stale entries of the list: those that match no survivor.
+- `summary.md`, the report in Markdown, for the round in CI and its issue. It holds a table with a row for each package, the layers that killed first, and the number of mutants without a result. It shows each unexplained survivor with its `file:line`, declaration, operator, key, and the code before and after. It lists the mutants that timed out by `file:line`, with their keys, and the stale entries of the list: those that match no survivor.
 - `counts`, with a line `name=value` for each of `mutants`, `pending`, `unexplained`, `timeouts`, and `stale`. `pending` counts the mutants without a result.
 - `fingerprint`, `baseline`, and `work`, which the tool uses itself.
 
@@ -188,25 +192,30 @@ The entries are of these classes:
 - **The end of input.** The guard in `Tokens` that the tokenizer never reaches, the value of `kindEOF`, the empty semicolon after a semicolon, the offsets of the two end tokens, and the tail that `run` returns with an error.
 - **The pass after the parser.** In `childAt`, the test that a child starts before the token: the children of an accepted node are in the order of the text.
 
-## The weekly round in CI
+## The round in CI
 
-The workflow [`.github/workflows/mutation.yml`](../../../.github/workflows/mutation.yml) runs a round on Saturdays at 06:43 UTC. Nothing else in CI waits on it. Started by hand, it takes these inputs:
+The workflow [`.github/workflows/mutation.yml`](../../../.github/workflows/mutation.yml) runs a round when it is started by hand, which the lead does when a piece of work is complete. It has no schedule: runners are not free compute, and a schedule would spend it on work that is half done, and on survivors that an open issue already lists. Nothing else in CI waits on it. It takes these inputs:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
 | `since` | `round` | `round`, a commit, or `all` for every declaration. |
 | `pkgs` | `all` | The packages, as `-pkgs` takes them. |
 | `run` | | A regular expression, as `-run` takes it, such as `^internal/engine/several\.go` for a file. |
-| `shards` | 20 | The most shards. |
-| `issue` | true | Open or comment on the issue when the run leaves work. |
+| `sample` | 1 | A fraction, as `-sample` takes it. |
+| `seed` | 1 | The seed of the sample. |
+| `shards` | 6 | The most shards. |
+| `issue` | true | Open or update the issue when the run leaves work. |
 
-By default, a round mutates every declaration that changed since the commit in [`round.txt`](round.txt), the last completed round, in every package that the runner knows. The file is in the repository because only a builder knows when a round is worked through: a run that ended may still leave work. A run with another `since`, `pkgs`, or `run` than the default completes no round, and `round.txt` stays as it is.
+By default, a round mutates every declaration that changed since the last recorded round, in every package that the runner knows. That is the commit in [`round.txt`](round.txt), which a builder writes when it has worked through a round, because only a builder knows when that is done; or a later run of the default selection on `main` that left no work, which records its commit as the artifact `mutation-round`, kept for 90 days, and which the next run finds through GitHub's API if it lies between the commit of `round.txt` and its own. A run with another `since`, `pkgs`, `run`, or `sample` than the default completes no round.
+
+A sample is the cheap first pass: `sample` 0.2 runs a fifth of the mutants. The summary extrapolates its unexplained survivors to the whole selection in proportion. When it finds none among n mutants with a result, it says that the share of unexplained survivors in the selection is below 3/n at 95% confidence, by the rule of three. It cannot say which mutants outside it survive, nor that a declaration without a mutant in the sample has none; a whole round of the declarations where the sample finds survivors does.
 
 The workflow has three jobs:
 
-- **`plan` selects the mutants once.** It gives one shard for each 10 mutants, up to the input `shards`.
+- **`plan` selects the mutants once.** It gives one shard for each 150 mutants, up to the input `shards`. Every shard repeats the checkout, the restore of Go's cache, and the planning of its stages, so fewer shards use less compute in all, and the summary says what that setup cost.
 - **Each `shard` runs its share,** with three mutants at once on the four cores and 16 GB of a runner and a limit of 3 GiB on the memory of each test binary, and uploads its results as the artifact `mutation-shard-N`.
-- **`report` merges the results** with `-merge`. It writes the report into the summary of the run and uploads the merged results as the artifact `mutation-report`. On `main`, it opens an issue with the label `mutation` when the round leaves work, or comments on the one that is open. A round leaves work when it has an unexplained survivor, a stale entry, a mutant without a result, or a shard or a merge that failed. A round has one issue for all that it leaves.
+- **`report` merges the results** with `-merge`. It writes the report into the summary of the run and uploads the merged results as the artifact `mutation-report`. On `main`, it opens an issue with the label `mutation` when the round leaves work, or replaces the report in the body of the one that is open and comments that it did. A round leaves work when it has an unexplained survivor, a stale entry, a mutant without a result, or a shard or a merge that failed. A round has one issue for all that it leaves, and its title names the commit that the round counts from: until a round is recorded, each run counts from the same commit and reports the same survivors again. A run for which no declaration changed runs no shard and opens nothing.
+- **The summary says what the round cost:** the runner-minutes of the jobs `plan` and `shard`, the mutants a runner-minute, the unexplained survivors found, the minutes of each shard's setup and planning, and where the workers' time went: mutants that do not compile, builds, the stages of each layer, and the mutants that survive every stage.
 
 The runner deals the mutants out to the shards like cards, in the order of their keys, those that `equivalent.txt` lists first. The shards are therefore disjoint and together complete, and every shard computes the same split from the same tree and list. Each shard gets its share, within one, of the mutants of every file, and so of every package, and of the listed survivors. That balances the shards by expected cost without measuring it. Measured times cannot decide the split: each shard measures on its own runner, and runners differ. A shard runs the listed survivors first, because they run every stage and so take longest.
 
@@ -219,7 +228,7 @@ A builder works through the issue of a round:
 3. Run again what needs it. A few mutants run locally, with `go run ./internal/sql/mutation -out DIR -pkgs PKG -run 'FILE:LINE'`. A file runs in the workflow, started by hand with the input `run`. A mutant without a result means that a shard failed, so start the workflow again with the same inputs.
 4. In the same pull request, write the commit of the round, which the summary names, into `round.txt`. Then close the issue.
 
-A round that leaves no work opens no issue. Its summary names the commit to write into `round.txt` all the same, and whoever reads the weekly run writes it.
+A round that leaves no work opens no issue, and records itself.
 
 The next round mutates what changed since.
 

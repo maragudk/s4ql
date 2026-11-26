@@ -73,7 +73,6 @@ func start() error {
 	merge := flag.String("merge", "", "a pattern of the directories of the results of shards to merge into -out, which then gets the report")
 	sample := flag.Float64("sample", 1, "run only this fraction of the mutants, drawn by -seed")
 	seed := flag.Uint64("seed", 1, "the seed of the draw of -sample")
-	precheck := flag.Bool("precheck", true, "compile the mutated package alone before the first test binary of a mutant")
 	flag.Parse()
 
 	root, err := moduleRoot()
@@ -179,7 +178,7 @@ func start() error {
 	}
 	fmt.Fprintf(os.Stderr, "%v mutants, %v with a result already, %v to run with %v at once\n",
 		len(mutants), len(mutants)-len(todo), len(todo), *jobs)
-	r := &runner{root: root, out: *out, factor: *factor, minTime: *minTime, memory: *memory, procs: *procs, gocache: *gocache, noPrecheck: !*precheck}
+	r := &runner{root: root, out: *out, factor: *factor, minTime: *minTime, memory: *memory, procs: *procs, gocache: *gocache}
 	if *first != "" {
 		if r.first, err = regexp.Compile(*first); err != nil {
 			return err
