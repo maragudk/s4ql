@@ -58,7 +58,8 @@ func severalChain(r Rand) []string {
 // or, one time in 24, the statements of [severalChain], as many as the text has room for; or, as a
 // fault one time in 24 each, a text of [Others] or of [ArithmeticRefused], which SQLite does not
 // prepare, s4ql does not support, or that fails, also first, and which may hold a second statement,
-// or a string without its end that holds the rest of the text, or a [severalTrigger]. Before the first
+// or a string without its end that holds the rest of the text; or, as a fault one time in 48, a
+// [severalTrigger]. Before the first
 // statement, one time in four, and between two, stand spaces, comments, and empty statements, of
 // [severalLeads] and [severalSeparators], and after the last one of [severalEnds], or nothing. As
 // faults: the arguments lack the last one, one time in 16, or have one more, one time in 16; and

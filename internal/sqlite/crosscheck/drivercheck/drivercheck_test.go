@@ -5407,6 +5407,11 @@ func (p *pair) severalMattn(src string, parts []stmt.Part, stopped int, at outco
 		return p.severalRan(src, parts, args, got, o)
 	case at.failed != "":
 		p.y.compared()
+		if stopped == len(parts) {
+			// The walk ran the statement after the parts that Split refused without arguments, and
+			// mattn's Exec binds the arguments after those of the parts to it.
+			args = args[:parameters(parts)]
+		}
 		_, err := o.ExecContext(ctx, src, args...)
 		if err == nil {
 			return fmt.Sprintf("s4ql gives %v, and mattn's Exec runs the text to its end", got)
@@ -5574,6 +5579,11 @@ func (p *pair) severalWalk(src string, supported bool, parts []stmt.Part, failed
 		}
 		refusal := ""
 		if i < len(parts) {
+			if _, err := stmt.Check(text); err != nil {
+				// Not run in SQLite, where a statement of a transaction, such as a COMMIT, would end the
+				// savepoint of the walk.
+				return i, outcome{}, fmt.Sprintf("s4ql gives %v, and runs the statement %q, whose check alone refuses it with %v", got, text, err)
+			}
 			refusal = p.refusedAlone(text, a, o)
 		}
 		want := run(tb, o, callExec, text, [][]any{a}, severalMattnText)
@@ -5770,7 +5780,10 @@ func trimmedEndAt(src string, trimmed int) (int, bool) {
 // semicolons; a name in double quotes and a string that hold a semicolon; statements that depend on
 // each other, a create table and a later statement of its table, by the first of them, or the last
 // if the first is not the first of the text; and a comment that holds a semicolon before the
-// statements, between two, and after them.
+// statements, between two, and after them. It counts every such text of an Exec, also one that
+// [pair.several] leaves to the checks of a statement alone because [stmt.Split] refuses its first
+// statement, as it refuses a CREATE TRIGGER first: there s4ql's error must be the check's of the
+// whole text, which a split that read the trigger otherwise would not give.
 func (p *pair) reachForms(src string) {
 	ss := sqliteStatements(src)
 	if p.y == nil || len(ss) < 2 {
