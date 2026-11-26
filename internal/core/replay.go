@@ -43,8 +43,10 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // It calls tick, if it is not nil, before each change, and stops with its error.
 //
 // Its error wraps [format.ErrNewerVersion], [format.ErrMalformed], or [format.ErrNameMismatch] as
-// the reader reports them, and [ErrLogBroken] for a commit object that the reader accepts and that
-// does not fit the cache: another parent, a table that is there already or is not there, a column
+// the reader reports them; [errCacheMoved] for a commit object whose parent is not the position of
+// the cache, which the walk of a catch-up rules out unless another instance on the same cache has
+// committed to it meanwhile; and [ErrLogBroken] for a commit object that the reader accepts and that
+// does not fit the cache: a table that is there already or is not there, a column
 // position outside the table, a row or a key that does not fit the table, a value of the wrong
 // storage class, a row to change or delete that is not there, an index on a table that is not
 // there or on a column outside the table, an index whose name a table or an index has or that is
@@ -88,7 +90,7 @@ func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs b
 		return done, err
 	}
 	if parent != position {
-		return done, authentic(r, brokenf("the commit object %v has the parent %v, and the cache is at %v", name, parent, position))
+		return done, authentic(r, fmt.Errorf("%w: the commit object %v has the parent %v, and the cache is at %v", errCacheMoved, name, parent, position))
 	}
 
 	for {
@@ -135,8 +137,16 @@ func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs b
 // isFromBody reports whether err is an error of reading a commit object, and none of the cache or
 // of the checks of [replay].
 func isFromBody(err error) bool {
-	return classify(err) == kindOther && !isSQLite(err) && !errors.Is(err, ErrLogBroken) && !errors.Is(err, ErrCacheVersion)
+	return classify(err) == kindOther && !isSQLite(err) && !errors.Is(err, ErrLogBroken) && !errors.Is(err, ErrCacheVersion) && !errors.Is(err, errCacheMoved)
 }
+
+// errCacheMoved is wrapped by the error of [replay] for a cache that is not at the parent of the
+// commit object. The walk of a catch-up gives replay each commit object after the one before it, so
+// the cache has then moved since the catch-up read its position: another instance on the same cache
+// committed to it, such as a holder that lost its lease while it committed a transaction whose
+// manifest swap was applied. Replay applies nothing then, and the catch-up starts again from the
+// position that the cache records.
+var errCacheMoved = errors.New("the cache has moved since the catch-up read its position")
 
 // authentic returns refusal if the bytes of the commit object that r reads match its name, which r
 // knows at the end. Until then nothing that r handed out can be trusted, so a commit object that

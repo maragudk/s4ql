@@ -2,7 +2,6 @@ package core_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"testing/synctest"
@@ -14,37 +13,6 @@ import (
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
-
-// TestAdversarial_replacedCache reproduces a finding of the adversarial review of 2026-11-26
-// (docs/research/adversarial-core-2026-11-26.md). It FAILS on purpose: it shows a fault, and is
-// to pass once the fault is fixed.
-//
-// The files of the cache of a running holder are deleted, and a second instance of the same
-// database is opened on the same path, which makes a new, empty cache there and waits as a spare.
-// The holder's next reader opens the file at the path, which is the new cache, and its read
-// serves the empty cache as fresh, without the holder's acknowledged commits.
-func TestAdversarial_replacedCache(t *testing.T) {
-	t.Run("should not serve a read from a cache that another instance made at the path of the holder's cache", func(t *testing.T) {
-		bubble(t, func(t *testing.T, w *world) {
-			a := w.serve(t, "a", core.Options{})
-			transact(t, a, create("t1", 1, "k"))
-			head := w.manifest(t).Head
-
-			for _, suffix := range []string{"", "-wal", "-shm"} {
-				_ = os.Remove(filepath.Join(w.dir, "a.db"+suffix))
-			}
-			_ = w.open(t, "a", core.Options{})
-
-			r, err := startRead(t, a)
-			if err != nil {
-				return
-			}
-			position := r.Position()
-			is.NotError(t, r.Close(t.Context()))
-			is.Equal(t, head, position)
-		})
-	})
-}
 
 // stallHost is the host of an instance that, once armed, stalls for d at the first yield at site,
 // as a process does that the operating system pauses, and calls before as the stall begins.
@@ -66,18 +34,14 @@ func (h *stallHost) Yield(ctx context.Context, site string) {
 	h.Instance.Yield(ctx, site)
 }
 
-// TestAdversarial_sharedCacheTakeover reproduces a finding of the adversarial review of 2026-11-26
-// (docs/research/adversarial-core-2026-11-26.md). It FAILS on purpose: it shows a fault, and is
-// to pass once the fault is fixed.
-//
-// Two instances of one database run on one cache, which TestOpen_cacheDir in the root package
-// supports. Instance a's manifest swap of a commit is applied, and a then stalls, before the
-// commit of the cache, for longer than its lease, and its renewals do not reach the store. b takes
-// the lease, reads the position of the cache, which is the parent of a's commit, and plans to
-// replay a's commit object. a then commits the cache. b's replay finds the cache at the commit
-// object itself, not at its parent, and stops b for good with ErrLogBroken, although the log and
-// the cache are both right.
-func TestAdversarial_sharedCacheTakeover(t *testing.T) {
+func TestDB_catchUp(t *testing.T) {
+	// Two instances of one database run on one cache, which TestOpen_cacheDir in the root package
+	// supports. Instance a's manifest swap of a commit is applied, and a then stalls, before the
+	// commit of the cache, for longer than its lease, and its renewals do not reach the store. b takes
+	// the lease, reads the position of the cache, which is the parent of a's commit, and plans to
+	// replay a's commit object. a then commits the cache. The adversarial review of 2026-11-26 found
+	// that b's replay then found the cache at the commit object itself, not at its parent, and stopped
+	// b for good with ErrLogBroken, although the log and the cache were both right.
 	t.Run("should let a spare on the same cache serve after it takes over during the commit of the holder", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			s := sim.New(1, sim.Options{})
@@ -115,14 +79,25 @@ func TestAdversarial_sharedCacheTakeover(t *testing.T) {
 					_ = a.Close(cctx)
 				})
 
-				bErr := make(chan error, 1)
+				bErr, bState := make(chan error, 1), make(chan string, 1)
 				bTask := ib.Go(ctx, "b", func(ctx context.Context) {
 					is.NotError(t, ib.Sleep(ctx, time.Second))
 					b, err := core.Open(ctx, ib, st.Client("b", ib), path, "db", o)
 					is.NotError(t, err)
 					wctx, cancel := ib.WithTimeout(ctx, 3*time.Minute)
-					bErr <- b.Wait(wctx)
+					err = b.Wait(wctx)
 					cancel()
+					bErr <- err
+					if err == nil {
+						rd, err := b.Reader(ctx)
+						is.NotError(t, err)
+						r, err := rd.Read(ctx)
+						is.NotError(t, err)
+						state, err := dump(ctx, r)
+						is.NotError(t, err)
+						is.NotError(t, rd.Close(ctx))
+						bState <- show(state)
+					}
 					cctx, cancel := ib.WithTimeout(ctx, 5*time.Minute)
 					defer cancel()
 					_ = b.Close(cctx)
@@ -132,8 +107,9 @@ func TestAdversarial_sharedCacheTakeover(t *testing.T) {
 
 				// a's commit is in the log, and a acknowledged it.
 				is.NotError(t, <-aErr)
-				// b took over, and must serve.
+				// b took over, and serves at a's commit.
 				is.NotError(t, <-bErr)
+				is.Equal(t, "t(k*0,v): 1,1", <-bState)
 			}))
 		})
 	})

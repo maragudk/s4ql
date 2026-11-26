@@ -114,6 +114,16 @@ type ReadTx struct {
 // state is fixed would not do alone: an instance that fixed the state while it did not hold the
 // lease can take the lease and catch up before the check. The lease is checked once more then, so
 // that a read on an instance that has stopped serving meanwhile is refused and not served late.
+//
+// With that second check, the position of the state that the read fixed is compared with what the
+// write connection has made of the position of the cache ([cachePosition]): the position that it
+// last committed, or the one that it commits now. A reader whose connection is to the file that
+// the write connection writes to always sees one of the two. Any other position means that the file
+// at the path of the cache is another, as when the files of the cache were deleted and another
+// instance made a new cache there, and the instance stops for it as for a local I/O failure, with an
+// error that wraps [ErrStopped] and [ErrLocal]. If the write connection moved the cache between the
+// two checks, the state can be at a position that neither check named, so the read fixes its state
+// again.
 func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 	const operation = "read"
 	d, c := rd.d, rd.c
@@ -131,6 +141,7 @@ func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 	default:
 		rd.tx = r
 	}
+	before := d.cache
 	d.mu.Unlock()
 	if err != nil {
 		return nil, d.refused(ctx, operation, err)
@@ -151,22 +162,67 @@ func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 		d.racy++
 	}
 
-	if err := c.c.Exec("begin"); err != nil {
-		return nil, d.cacheError(ctx, operation, err)
+	for {
+		if err := c.c.Exec("begin"); err != nil {
+			return nil, d.cacheError(ctx, operation, err)
+		}
+		d.host.Yield(ctx, "core: a read before the state of the cache is fixed")
+		// SQLite fixes the state that a transaction sees at its first read, not when it begins.
+		if r.position, err = c.position(); err != nil {
+			return nil, d.cacheError(ctx, operation, err)
+		}
+		d.host.Yield(ctx, "core: a read before the check of the lease")
+		d.mu.Lock()
+		err = d.servingLocked()
+		now := d.cache
+		d.mu.Unlock()
+		if err != nil {
+			return nil, d.refused(ctx, operation, err)
+		}
+		// (With fixedOnce, the planted bug.)
+		if now.moves == before.moves || d.bugs.fixedOnce {
+			if r.position != now.at && r.position != now.next {
+				return nil, d.stop(ctx, fmt.Errorf("%w: %v: the cache is at %v, and this instance last committed %v to it, so the file at its path is not the one that the instance writes to, as after the files of the cache were deleted or replaced", ErrLocal, operation, r.position, now.at))
+			}
+			return r, nil
+		}
+		// The write connection moved the cache meanwhile, so the state that the read fixed can be at
+		// a position that neither look named. The read fixes its state again, after the check that
+		// passed just now, which counts for it as the one before.
+		if err := c.c.Exec("rollback"); err != nil {
+			return nil, d.cacheError(ctx, operation, err)
+		}
+		before = now
 	}
-	d.host.Yield(ctx, "core: a read before the state of the cache is fixed")
-	// SQLite fixes the state that a transaction sees at its first read, not when it begins.
-	if r.position, err = c.position(); err != nil {
-		return nil, d.cacheError(ctx, operation, err)
-	}
-	d.host.Yield(ctx, "core: a read before the check of the lease")
+}
+
+// cachePosition is what the write connection has made of the position of the cache: the state of
+// the cache that a read on a file that the write connection writes to can see.
+type cachePosition struct {
+	// at is the position that the write connection last committed to the cache, or read from it.
+	at format.Name
+	// next is the position of the transaction of the cache that the write connection commits now,
+	// and at when there is none. A read can see it before it is at.
+	next format.Name
+	// moves counts the changes of at and next.
+	moves uint64
+}
+
+// moving records that the write connection commits a transaction of the cache that moves the
+// cache to the position next.
+func (d *DB) moving(next format.Name) {
 	d.mu.Lock()
-	err = d.servingLocked()
-	d.mu.Unlock()
-	if err != nil {
-		return nil, d.refused(ctx, operation, err)
-	}
-	return r, nil
+	defer d.mu.Unlock()
+	d.cache.next = next
+	d.cache.moves++
+}
+
+// moved records that the cache is at the position at, as the write connection committed it or read
+// it.
+func (d *DB) moved(at format.Name) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.cache = cachePosition{at: at, next: at, moves: d.cache.moves + 1}
 }
 
 // Close the reader: end its read transaction, if one is open, and close its connection to the

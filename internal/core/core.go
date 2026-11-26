@@ -240,6 +240,9 @@ type DB struct {
 	writing *Tx
 	// sent is when the last renewal that is known to have happened was first sent.
 	sent sentAt
+	// cache is what the write connection has made of the position of the cache, which [Reader.Read]
+	// checks the state that a read fixes against.
+	cache cachePosition
 	// waiters are the waits that a change of stopped, holder, or serving ends, and a lease that is
 	// valid again by the clocks, by a number. changes counts those changes.
 	waiters map[uint64]context.CancelFunc

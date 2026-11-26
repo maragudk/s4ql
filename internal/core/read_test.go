@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -157,6 +158,50 @@ func TestReader_Read(t *testing.T) {
 		is.Equal(t, "t1(k*0,v): 1,10", show(state))
 		is.NotError(t, r.Close(t.Context()))
 		is.Equal(t, "t1(k*0,v): 1,11 | 2,20", read(t, d))
+	})
+
+	// The adversarial review of 2026-11-26 found that such a read served the new, empty cache as
+	// fresh.
+	t.Run("should stop the instance, and serve nothing, when another instance has made a new cache at the path of the holder's", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			a := w.serve(t, "a", core.Options{})
+			transact(t, a, create("t1", 1, "k"))
+
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				is.NotError(t, os.Remove(filepath.Join(w.dir, "a.db"+suffix)))
+			}
+			_ = w.open(t, "a", core.Options{})
+
+			_, err := startRead(t, a)
+			is.Error(t, core.ErrStopped, err)
+			is.Error(t, core.ErrLocal, err)
+			is.True(t, strings.Contains(err.Error(), "is not the one that the instance writes to"), err.Error())
+			is.True(t, isDone(a))
+			is.Error(t, core.ErrStopped, beginErr(t, a))
+		})
+	})
+
+	t.Run("should serve a read that fixes its state before a commit and is checked after it", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			h := &yieldHook{Host: w.host, site: "core: a read before the check of the lease"}
+			d := w.openWith(t, "a", h, w.client(), core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			transact(t, d, create("t1", 1, "k"))
+			before := w.manifest(t).Head
+
+			// The commit runs once, between the read of the position and the check after it.
+			var once sync.Once
+			commit := func() { once.Do(func() { transact(t, d, upsert("t1", 1)) }) }
+			h.f.Store(&commit)
+			r, err := startRead(t, d)
+			is.NotError(t, err)
+			after := w.manifest(t).Head
+			is.True(t, after != before)
+			// The read fixed its state again, after the commit.
+			is.Equal(t, after, r.Position())
+			is.NotError(t, r.Close(t.Context()))
+			is.True(t, !isDone(d))
+		})
 	})
 
 	t.Run("should run a read transaction on each of twenty readers at once, each on the state of its start, while writes commit", func(t *testing.T) {

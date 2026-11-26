@@ -73,6 +73,10 @@ type bugs struct {
 	// shortKey makes a scan by an index read by a key of the columns of the index alone, without the
 	// primary-key columns that the index does not hold.
 	shortKey bool
+	// fixedOnce makes a read check the position of the state that it fixed against what the write
+	// connection has made of the position after the read, also when the write connection moved the
+	// cache in between, and not fix its state again then.
+	fixedOnce bool
 	// unlockedCounter makes every read add to a counter without synchronisation, which is a data
 	// race.
 	unlockedCounter bool

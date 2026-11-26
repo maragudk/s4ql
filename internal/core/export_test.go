@@ -45,6 +45,7 @@ var plantable = map[string]func(b *bugs){
 	"keepIdleTx":           func(b *bugs) { b.keepIdleTx = true },
 	"turnDescBound":        func(b *bugs) { b.turnDescBound = true },
 	"shortKey":             func(b *bugs) { b.shortKey = true },
+	"fixedOnce":            func(b *bugs) { b.fixedOnce = true },
 	"unlockedCounter":      func(b *bugs) { b.unlockedCounter = true },
 }
 

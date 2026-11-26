@@ -1405,9 +1405,11 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 	}
 	if d.bugs.cacheFirst {
 		// The planted bug: the cache has the transaction before the log does.
+		d.moving(out.name)
 		if err := tx.c.c.Exec("commit"); err != nil {
 			return d.cacheError(ctx, "commit", err)
 		}
+		d.moved(out.name)
 	}
 
 	// The upload needs no lock, so the lease is renewed while a large commit object is on its way.
@@ -1424,10 +1426,13 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 		d.host.Yield(ctx, "core: a commit between the manifest swap and the cache")
 		outcome = "committed"
 		if !d.bugs.cacheFirst {
+			d.moving(out.name)
 			if err := tx.commitCache(ctx); err != nil && !d.bugs.ignoreCacheError {
 				_ = tx.c.c.Exec("rollback")
 				_ = d.stop(ctx, fmt.Errorf("%w: the commit of the cache after the manifest swap: %w", ErrLocal, err))
 				outcome = "committed_and_stopped"
+			} else if err == nil {
+				d.moved(out.name)
 			}
 		}
 		report.phase(clock.phase(attrDurationCache))

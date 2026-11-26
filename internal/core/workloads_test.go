@@ -1093,6 +1093,16 @@ var plantedBugs = []plantedBug{
 		workload: plant(calm(singleWorkload), "shortKey"),
 		symptoms: []string{"a transaction scanned", "scan by a key: "},
 	},
+	{
+		// A read finds the cache moved between its two looks only if a commit to the cache comes
+		// between the read of its position and the check of the lease after it, which the callers of
+		// the hammer, who never pause, make common: the first 4 seeds found it, and 4 of the first 113
+		// of the single workload.
+		bug:      "fixedOnce",
+		name:     "a read that does not fix its state again when the cache moved between its two looks",
+		workload: plant(calm(hammerWorkload), "fixedOnce"),
+		symptoms: []string{"is not the one that the instance writes to"},
+	},
 }
 
 // TestSimulation_plantedBugs runs the workload of each bug until four seeds have found the bug,
