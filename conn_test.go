@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -3043,17 +3044,105 @@ func TestArithmetic(t *testing.T) {
 		is.NotError(t, other.QueryRowContext(t.Context(), "select r from t").Scan(&r))
 		is.True(t, r == 0 && !math.Signbit(r))
 	})
+}
 
-	t.Run("should refuse text in expressions with ErrNotSupported, also when it is prepared, whatever the database holds", func(t *testing.T) {
+func TestText(t *testing.T) {
+	const table = "create table goqite (id text primary key, queue text not null, body blob not null) strict, without rowid"
+	// id is goqite's id of the 16 bytes of the blob b, as its default computes it from
+	// randomblob(16).
+	id := func(b []byte) string {
+		return "m_" + hex.EncodeToString(b)
+	}
+	first, second := []byte("0123456789abcdef"), []byte{0, 1, 2, 0xab, 0xcd, 0xef, 0xff, 9, 10, 11, 12, 13, 14, 15, 16, 17}
+
+	t.Run("should compute goqite's id, 'm_' || lower(hex(?)) of 16 random bytes, in SET and in WHERE, as SQLite does, directly, prepared, in a transaction, and after a restart with an empty cache", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
-		exec(t, db, table)
-		_, err := db.PrepareContext(t.Context(), "update goqite set id = 'm_' || lower(hex(body)) where queue = ?")
-		is.Equal(t, "concatenation (at offset 23)", typeRefused(t, err))
-		_, err = db.ExecContext(t.Context(), "delete from goqite where lower(queue) = ?", "default")
-		is.Equal(t, "call of lower (at offset 25)", typeRefused(t, err))
+		setUp := []string{table, "insert into goqite values ('m_', 'default', x'00')"}
+		exec(t, db, setUp...)
+		o := newOracle(t, setUp...)
+		same := func(src string, args ...any) []string {
+			t.Helper()
+			want, se := o.rows(t, src, args...)
+			is.True(t, se == nil, src)
+			got, err := rowsInOrder(t, db, src, args...)
+			is.NotError(t, err, src)
+			is.EqualSlice(t, want, got, src)
+			return got
+		}
+		is.EqualSlice(t, []string{fmt.Sprintf("string %q", id(first))}, same("update goqite set id = 'm_' || lower(hex(?)) where id = 'm_' returning id", first))
+		is.Equal(t, 1, len(same("select id, body from goqite where id = 'm_' || lower(hex(?))", first)))
+		is.EqualSlice(t, []string{}, same("select id from goqite where id = 'm_' || lower(hex(?))", second))
+
+		p, err := db.PrepareContext(t.Context(), "update goqite set id = 'm_' || lower(hex(?)) where id = 'm_' || lower(hex(?))")
+		is.NotError(t, err)
+		res, err := p.ExecContext(t.Context(), second, first)
+		is.Equal(t, int64(1), affected(t, res, err))
+		_, se := o.rows(t, "update goqite set id = 'm_' || lower(hex(?)) where id = 'm_' || lower(hex(?))", second, first)
+		is.True(t, se == nil)
+		res, err = p.ExecContext(t.Context(), second, first)
+		is.Equal(t, int64(0), affected(t, res, err))
+		is.NotError(t, p.Close())
+		same("select id from goqite")
+		is.Equal(t, "id TEXT: "+id(second), rowsText(t, db, "select id from goqite"))
+
+		// In a transaction, rolled back, and with the arguments of the driver's types: a string for
+		// lower, and nil, which || gives as NULL and hex as the empty text.
+		tx := begin(t, db, nil)
+		var got string
+		is.NotError(t, tx.QueryRowContext(t.Context(), "update goqite set queue = lower(?) || queue where id = ? returning queue", "OTHER_", id(second)).Scan(&got))
+		is.Equal(t, "other_default", got)
+		_, err = tx.ExecContext(t.Context(), "update goqite set queue = ? || queue", nil)
+		sqliteError(t, 19, 1299, "NOT NULL constraint failed: goqite.queue", err)
+		is.NotError(t, tx.QueryRowContext(t.Context(), "update goqite set queue = hex(?) returning queue", nil).Scan(&got))
+		is.Equal(t, "", got)
+		is.NotError(t, tx.Rollback())
+		is.Equal(t, "id TEXT, queue TEXT: "+id(second)+" default", rowsText(t, db, "select id, queue from goqite"))
+
+		// The commits hold the rows, which another instance replays into an empty cache.
+		is.NotError(t, db.Close())
+		other := w.serve(t, "b")
+		is.Equal(t, "id TEXT: "+id(second), rowsText(t, other, "select id from goqite where id = 'm_' || lower(hex(?))", second))
+	})
+
+	t.Run("should refuse text against a number, and a number in text, with ErrNotSupported, through Prepare, Exec, and Query", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, table, "create table n (k int primary key, s text) strict, without rowid")
+		p, err := db.PrepareContext(t.Context(), "update goqite set id = 'm_' || lower(hex(body)) where queue = ?")
+		is.NotError(t, err)
+		is.NotError(t, p.Close())
+		_, err = db.ExecContext(t.Context(), "update n set k = lower(s)")
+		is.Equal(t, "an expression of type text for the column n.k of type INT", typeRefused(t, err))
+		_, err = rowsInOrder(t, db, "select k from n where lower(s) = ?", 1)
+		is.Equal(t, "argument 1, which is an integer, compared with an expression of type text", typeRefused(t, err))
+		_, err = rowsInOrder(t, db, "select k from n where s = hex(?)", 1.5)
+		is.Equal(t, "argument 1 in a call of hex, which is a real (at offset 30)", typeRefused(t, err))
+		_, err = db.ExecContext(t.Context(), "delete from n where k || s = 'a'")
+		is.Equal(t, "column of type INT in a concatenation (at offset 20)", typeRefused(t, err))
 		_, err = db.ExecContext(t.Context(), "delete from nosuch where lower(queue) = ?", "default")
-		is.Equal(t, "call of lower (at offset 25)", typeRefused(t, err))
+		is.Equal(t, "no such table: nosuch", sqliteMessage(t, err))
+	})
+
+	t.Run("should give SQLite's string or blob too big for text longer than the limit, change nothing, and keep the transaction usable", func(t *testing.T) {
+		const limit = 1000
+		w := newWorld(t)
+		co := coreOptions()
+		co.LengthLimit = limit
+		db := w.openOn(t, "a", w.client(), co)
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, "create table t (k int primary key, s text) strict, without rowid", "insert into t values (1, 'a')", "insert into t values (2, 'b')")
+		_, err := rowsInOrder(t, db, "select k from t where s = hex(?)", make([]byte, limit/2))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		_, err = db.ExecContext(t.Context(), "update t set s = ? || ? || s where k = 99", strings.Repeat("a", 600), strings.Repeat("b", 600))
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		tx := begin(t, db, nil)
+		_, err = tx.ExecContext(t.Context(), "update t set s = ? where k = 2", strings.Repeat("c", 600))
+		is.NotError(t, err)
+		_, err = tx.ExecContext(t.Context(), "update t set s = s || s")
+		sqliteError(t, 18, 18, "string or blob too big", err)
+		is.Equal(t, "k INT, s TEXT: 1 a; 2 "+strings.Repeat("c", 600), rowsText(t, tx, "select * from t"))
+		is.NotError(t, tx.Commit())
 	})
 }
 
