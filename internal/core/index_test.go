@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2624,6 +2625,70 @@ func TestScanIndex_context(t *testing.T) {
 			is.Equal(t, int64(1), s.RowsRead()-before)
 		})
 
+		t.Run(fmt.Sprint("should stop the instance as for a local failure, and keep the cache what the log holds, when a read of the cache fails in a step whose context ends at the last look of SQLite in it, in a read transaction ", read), func(t *testing.T) {
+			// SQLite looks at the context once more on its way out of a step that failed, and a stop
+			// there would turn the I/O error, which has rolled back the whole transaction of the cache,
+			// into the error of the context (adversarial review of 2026-11-26, agy 13.1). A progress
+			// period of 1 makes SQLite look there in every step.
+			vfs, err := faultvfs.New()
+			is.NotError(t, err)
+			w := newWorld(t)
+			o := core.Options{VFS: vfs.Name()}
+			o.ProgressPeriod(1)
+			d := w.serve(t, "a", o)
+			transact(t, d, create("t1", 1, "k", "v"), upsert("t1", 1, 10), create("t2", 1, "k", "v"), upsert("t2", 1, 1))
+			// A new instance has new connections, which have read no page of t2 yet.
+			is.NotError(t, d.Close(t.Context()))
+			d = w.serve(t, "a", o)
+			var s interface {
+				Table(ctx context.Context, name string) (*s4qlpb.CreateTable, error)
+				ScanRange(ctx context.Context, name string, lower, upper core.Bound) iter.Seq2[[]*s4qlpb.Value, error]
+			}
+			var tx *core.Tx
+			if read {
+				r, err := startRead(t, d)
+				is.NotError(t, err)
+				defer func() { _ = r.Close(t.Context()) }()
+				s = r
+			} else {
+				tx, err = d.Begin(t.Context())
+				is.NotError(t, err)
+				defer func() { _ = tx.Rollback(t.Context()) }()
+				is.NotError(t, tx.Upsert(t.Context(), "t1", row(2, 20)))
+				s = tx
+			}
+			_, err = s.Table(t.Context(), "t2")
+			is.NotError(t, err)
+
+			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB | faultvfs.WAL})
+			n := 0
+			for row, err := range s.ScanRange(newFailedContext(t.Context(), vfs), "t2", core.Bound{}, core.Bound{}) {
+				n++
+				is.True(t, row == nil)
+				is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+				is.True(t, !errors.Is(err, context.Canceled), fmt.Sprint(err))
+			}
+			vfs.Fail(faultvfs.Fault{})
+			is.Equal(t, 1, n)
+			is.True(t, vfs.Failures() > 0, "no read of the cache failed")
+			is.True(t, isDone(d), "the instance stopped")
+			if tx != nil {
+				// No later write of the transaction reaches the cache, and nothing commits.
+				err := tx.Upsert(t.Context(), "t1", row(3, 30))
+				is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
+				is.True(t, tx.Commit(t.Context()) != nil)
+			}
+			_ = d.Close(t.Context())
+
+			// The cache, opened again, holds what the log holds, as a new cache that replays it does.
+			committed := "t1(k*0,v): 1,10\nt2(k*0,v): 1,1"
+			d = w.serve(t, "a", core.Options{})
+			is.Equal(t, committed, served(t, d))
+			is.NotError(t, d.Close(t.Context()))
+			is.Equal(t, committed, served(t, w.serve(t, "b", core.Options{})))
+			is.NotError(t, vfs.Close())
+		})
+
 		t.Run(fmt.Sprint("should stop the instance as for a local failure, count none of the rows, and fail a write transaction, when the count of the rows that a sort read and did not give cannot read the cache, in a read transaction ", read), func(t *testing.T) {
 			vfs, err := faultvfs.New()
 			is.NotError(t, err)
@@ -2657,6 +2722,38 @@ func TestScanIndex_context(t *testing.T) {
 			is.NotError(t, vfs.Close())
 		})
 	}
+}
+
+// failedContext ends at the first call of its Err after a file operation of its VFS has failed,
+// which with a progress period of 1 is the look of SQLite at the context on its way out of the step
+// whose read failed.
+type failedContext struct {
+	context.Context
+	vfs  *faultvfs.VFS
+	once sync.Once
+	done chan struct{}
+}
+
+func newFailedContext(parent context.Context, vfs *faultvfs.VFS) *failedContext {
+	return &failedContext{Context: parent, vfs: vfs, done: make(chan struct{})}
+}
+
+func (c *failedContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *failedContext) Err() error {
+	if c.vfs.Failures() == 0 {
+		return nil
+	}
+	c.once.Do(func() { close(c.done) })
+	return context.Canceled
+}
+
+// served is [read], for a test whose variable read hides it.
+func served(t *testing.T, d *core.DB) string {
+	t.Helper()
+	return read(t, d)
 }
 
 // indexFault is a transaction of the fault tests of indexes, on top of [indexFaultBase].

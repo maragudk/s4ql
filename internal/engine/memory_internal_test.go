@@ -74,6 +74,30 @@ func compareValues(a, b *s4qlpb.Value) int {
 	panic(fmt.Sprintf("engine: a key of kind %v", a.WhichKind()))
 }
 
+// compareBy compares the values a and b of the columns by, each in its direction, with NULL before
+// every value ascending and after every value descending, as SQLite orders the values of a column.
+func compareBy(by []core.KeyColumn, a, b []*s4qlpb.Value) int {
+	for i, c := range by {
+		var n int
+		switch {
+		case a[i].HasNull() && b[i].HasNull():
+		case a[i].HasNull():
+			n = -1
+		case b[i].HasNull():
+			n = 1
+		default:
+			n = compareValues(a[i], b[i])
+		}
+		if c.Descending {
+			n = -n
+		}
+		if n != 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 // sorted rows of the table, in the order of their keys.
 func (t *memTable) sorted() [][]*s4qlpb.Value {
 	k := t.ct.GetPrimaryKey()[0]
@@ -340,21 +364,46 @@ func (x *memTx) delete(_ context.Context, name string, key []*s4qlpb.Value) (boo
 }
 
 // keys runs f with a set of keys in memory, whose all gives the least key above the one before, each
-// time it looks.
-func (x *memTx) keys(_ context.Context, _ string, f func(keySet) error) error {
-	return f(&memKeys{keys: map[string]*s4qlpb.Value{}})
+// time it looks, or, for a set in the order of the columns by, the keys in that order, as
+// [compareBy] orders them.
+func (x *memTx) keys(_ context.Context, name string, by []core.KeyColumn, f func(keySet) error) error {
+	k := &memKeys{keys: map[string]*s4qlpb.Value{}, by: by, rows: map[string][]*s4qlpb.Value{}}
+	if by != nil {
+		k.at = slices.IndexFunc(by, func(c core.KeyColumn) bool { return c.Position == int(x.tables[fold(name)].ct.GetPrimaryKey()[0]) })
+	}
+	return f(k)
 }
 
 type memKeys struct {
 	keys map[string]*s4qlpb.Value
+	// by is the order of the set, and nil for the order of the key; rows holds the values of the
+	// columns of by of each key, and at is the place of the key in them.
+	by   []core.KeyColumn
+	rows map[string][]*s4qlpb.Value
+	at   int
 }
 
 func (k *memKeys) add(_ context.Context, key []*s4qlpb.Value) error {
+	if k.by != nil {
+		k.rows[memKey(key[k.at])] = key
+		return nil
+	}
 	k.keys[memKey(key[0])] = key[0]
 	return nil
 }
 
 func (k *memKeys) all(context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
+	if k.by != nil {
+		return func(yield func([]*s4qlpb.Value, error) bool) {
+			rows := slices.Collect(maps.Values(k.rows))
+			slices.SortFunc(rows, func(a, b []*s4qlpb.Value) int { return compareBy(k.by, a, b) })
+			for _, r := range rows {
+				if !yield([]*s4qlpb.Value{r[k.at]}, nil) {
+					return
+				}
+			}
+		}
+	}
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		var last *s4qlpb.Value
 		for {

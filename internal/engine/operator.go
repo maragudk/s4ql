@@ -14,6 +14,7 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
@@ -58,6 +59,26 @@ type sink interface {
 	check(ctx context.Context) error
 	// run the statement, and give the number of rows that it changed.
 	run(ctx context.Context) (int64, error)
+}
+
+// replayer is a sink whose run may change its rows in another order than SQLite, where the order
+// decides nothing but which error the statement gives when more than one of its rows fails. A run
+// that fails with an error for which replays reports true is taken back to the state before the
+// statement, and replay runs the statement again on that state in SQLite's order, for SQLite's
+// error, as [runSink] says. So the order costs a second run only where a row fails.
+type replayer interface {
+	sink
+	// mayReplay reports, before the run, whether a run that fails may need a replay, so that the
+	// state before the statement can be kept for it.
+	mayReplay() bool
+	// replays reports whether a run that failed with err needs a replay, which it does only where
+	// mayReplay reports true.
+	replays(err error) bool
+	// replay the statement in SQLite's order, on the state before its run, and give SQLite's error:
+	// that of the row that SQLite changes first and that fails, or that of the conditions of a row
+	// after it. It gives an error of the storage or of the context as it meets it, [errStopped] where
+	// the planted bug evalStops stops it, and nil only for a fault of the engine.
+	replay(ctx context.Context) (int64, error)
 }
 
 // scan gives the rows of a table as its access reads them: every row in the order of the primary
@@ -654,10 +675,12 @@ func (r *replaceTable) run(ctx context.Context) (int64, error) {
 
 // update sets columns of each row of its source: the rows that the statement finds, by a scan of a
 // table whose primary key is one column, below a filter if the statement has a WHERE. It changes them
-// as [changeRows] says, in the order of the key, and fails, as SQLite fails the row that it changes,
-// with `string or blob too big` for a row whose record is too long, and with SQLite's error of a key
-// that exists for a row whose new key another row has, also one that an earlier row of the statement
-// wrote.
+// as [changeRows] says, and fails, as SQLite fails the row that it changes, with `string or blob too
+// big` for a row whose record is too long, and with SQLite's error of a key that exists for a row
+// whose new key another row has, also one that an earlier row of the statement wrote. Where SQLite
+// changes the rows in the order of an index, as [changeOrder] says, the update changes them in the
+// order of the key, and replays a run that fails for a row in SQLite's order, as [replayer] says, for
+// SQLite's error.
 type update struct {
 	w     writer
 	table *s4qlpb.CreateTable
@@ -680,6 +703,9 @@ type update struct {
 	hoisted []*expr.Bound
 	// order holds the indexes of positions in the order of the table.
 	order []int
+	// changes is the order in which SQLite changes the rows, as [changeOrder] says, which the update
+	// follows in its run where it is the order of the key, and otherwise in a replay.
+	changes changeOrder
 	// ret holds the rows of its RETURNING, or is nil for an update without one.
 	ret *returning
 	// bugs planted in the update, for the tests of this package.
@@ -695,7 +721,7 @@ type update struct {
 //
 // A value of an expression has the class of its expression, as [comparable] says, whatever its rows, and
 // a column alone that of its column. An update with a value that is computed for each row checks the
-// NOT NULL of every column that it sets on each row that it changes, in [update.run], so the
+// NOT NULL of every column that it sets on each row that it changes, in [update.newRow], so the
 // refusal of a type comes before it there.
 func (u *update) check(ctx context.Context) error {
 	columns := u.table.GetColumns()
@@ -806,9 +832,54 @@ func (u *update) newRow(old []*s4qlpb.Value) ([]*s4qlpb.Value, error) {
 	return row, nil
 }
 
+// run the update in the order of the key, or in SQLite's order where that is the order of the key
+// too. Which rows fail does not depend on the order, so a run that changes every row is SQLite's,
+// and one that fails for a row is replayed in SQLite's order, as [update.replays] says.
 func (u *update) run(ctx context.Context) (int64, error) {
+	o := u.changes
+	if o.by != nil {
+		o = changeOrder{}
+	}
+	n, err := u.runIn(ctx, o)
+	if errors.Is(err, errStopped) {
+		return n, nil
+	}
+	return n, err
+}
+
+func (u *update) mayReplay() bool { return u.changes.by != nil }
+
+// replays reports whether the update, whose run failed with err, changes its rows in SQLite's order
+// in another order than its run, and whether err is that of a row, as [failsRow] says: then another
+// row may fail before it in SQLite's order, or that row may fail in its SET before the conditions
+// of a later one fail. An error of anything else, such as the storage or the context, is not
+// replayed.
+func (u *update) replays(err error) bool { return u.mayReplay() && failsRow(err) }
+
+// replay the update in SQLite's order, on the state before its run. It does not succeed: the rows of
+// the run are those of the replay, the rows that the update finds do not depend on the order in
+// which it changes them, and whether a row fails depends on that row alone, as SQLite reads it
+// before the update, since an update in the order of an index sets no column of the key or of the
+// index, and has no subquery: see [changeOrder]. So a replay without an error is a fault of the
+// engine, which [runSink] gives as an internal error. With the planted bug evalStops, the replay
+// ends with [errStopped] at its first evaluation error in SQLite's order.
+func (u *update) replay(ctx context.Context) (int64, error) {
+	return u.runIn(ctx, u.changes)
+}
+
+// failsRow reports whether err is an error that a row of an update gives, which SQLite gives for
+// the first row that fails in its order: one of the conditions of the row, as [ofRow] says, or a
+// constraint, a record that is too long, or an evaluation error of its SET, which [ofRow] tells too.
+func failsRow(err error) bool {
+	var e *sqlerr.Error
+	return ofRow(err) || errors.As(err, &e) && (e.Code == sqlerr.CodeConstraint || e.Code == sqlerr.CodeTooBig)
+}
+
+// runIn changes the rows of the update in the order o, as [changeRows] says, and ends with
+// [errStopped] where the planted bug evalStops stops it.
+func (u *update) runIn(ctx context.Context, o changeOrder) (int64, error) {
 	name := u.table.GetTable()
-	n, err := changeRows(ctx, u.w, name, u.key, u.src, u.bugs, func(key []*s4qlpb.Value) error {
+	return changeRows(ctx, u.w, name, u.key, u.src, o, u.bugs, func(key []*s4qlpb.Value) error {
 		old, err := u.w.get(ctx, name, key)
 		if err != nil {
 			return err
@@ -859,10 +930,6 @@ func (u *update) run(ctx context.Context) (int64, error) {
 		u.ret.add(given)
 		return nil
 	})
-	if errors.Is(err, errStopped) {
-		return n, nil
-	}
-	return n, err
 }
 
 // errStopped ends an update with the planted bug evalStops, which then succeeds.
@@ -886,7 +953,7 @@ func (r *remove) check(context.Context) error { return nil }
 
 func (r *remove) run(ctx context.Context) (int64, error) {
 	name := r.table.GetTable()
-	return changeRows(ctx, r.w, name, r.key, r.src, r.bugs, func(key []*s4qlpb.Value) error {
+	return changeRows(ctx, r.w, name, r.key, r.src, changeOrder{}, r.bugs, func(key []*s4qlpb.Value) error {
 		var old []*s4qlpb.Value
 		if r.ret != nil {
 			// The statement gives the values that the row had, so it reads them before it deletes it.
@@ -922,15 +989,22 @@ func finds(ctx context.Context, src source) (bool, error) {
 }
 
 // changeRows calls change with the primary key of each row of src, the rows that a statement finds
-// in the table with the name, whose key is the column at the position key, in the order of the key,
-// and gives the number of rows. It adds the key of each row that src gives to a [keySet] first, and
-// then calls change for each key of the set. So no cursor is open on the table while change changes
-// it, which SQLite leaves undefined, and a row that change writes, also under a new key, is not in
-// the set: each row that src gives is changed once, as SQLite changes each row that it finds once,
-// also when change writes the columns that the conditions of src read. The set is in the storage,
-// so a statement changes any number of rows without holding them in memory. The bugs b are those
-// planted in the statement.
-func changeRows(ctx context.Context, w writer, name string, key int, src source, b bugs, change func(key []*s4qlpb.Value) error) (int64, error) {
+// in the table with the name, whose key is the column at the position key, in the order that o
+// says, and gives the number of rows. It adds the key of each row that src gives to a [keySet]
+// first, and then calls change for each key of the set. So no cursor is open on the table while
+// change changes it, which SQLite leaves undefined, and a row that change writes, also under a new
+// key, is not in the set: each row that src gives is changed once, as SQLite changes each row that
+// it finds once, also when change writes the columns that the conditions of src read. The set is in
+// the storage, so a statement changes any number of rows without holding them in memory. The bugs
+// b are those planted in the statement.
+//
+// Where o is in one pass, an error of a row of src, of its conditions, comes after the changes of
+// the rows that src gave before it, as SQLite gives it when it changes each row as it finds it:
+// changeRows changes those rows first, in the order of o, and gives the error of the first of them
+// that fails, or else that of src. Where the tests force a path whose scan finds the rows in another
+// order than o, the rows before that row are those of the path, as the rows whose conditions are
+// evaluated at all are.
+func changeRows(ctx context.Context, w writer, name string, key int, src source, o changeOrder, b bugs, change func(key []*s4qlpb.Value) error) (int64, error) {
 	if b.changeNothing {
 		// The planted bug: the statement finds no row.
 		return 0, nil
@@ -939,12 +1013,17 @@ func changeRows(ctx context.Context, w writer, name string, key int, src source,
 		return changedOneByOne(ctx, key, f, change)
 	}
 	var n int64
-	err := w.keys(ctx, name, func(k keySet) error {
+	err := w.keys(ctx, name, o.by, func(k keySet) error {
+		var found error
 		for row, err := range src.rows(ctx) {
 			if err != nil {
-				return err
+				if !o.onePass || !ofRow(err) {
+					return err
+				}
+				found = err
+				break
 			}
-			if err := k.add(ctx, []*s4qlpb.Value{row[key]}); err != nil {
+			if err := k.add(ctx, o.keyOf(row, key)); err != nil {
 				return err
 			}
 		}
@@ -960,9 +1039,86 @@ func changeRows(ctx context.Context, w writer, name string, key int, src source,
 			}
 			n++
 		}
-		return nil
+		return found
 	})
 	return n, err
+}
+
+// changeOrder is the order in which SQLite changes the rows that an update finds, which an update
+// follows where it is the order of the key, and otherwise in a replay, as [update.run] says. SQLite
+// changes each row as its access finds it, in one pass, unless the update sets a column of
+// the primary key or of the index that the access reads by, its WHERE has a subquery, or it has
+// RETURNING; and otherwise it collects the keys of the rows first and changes the rows in the order
+// of the primary key. The access is the one that the rules choose, [chooseAccess], whatever path
+// the tests force, so that the order does not depend on the path. The zero value is the order of
+// the primary key, in which a delete deletes its rows, since no row of a delete fails on its own.
+type changeOrder struct {
+	// by is the key of the index whose order the rows change in, as [core.IndexKey] gives it, or nil
+	// for the order of the primary key.
+	by []core.KeyColumn
+	// onePass is whether SQLite changes each row as it finds it, so that an error of the conditions
+	// of a row comes after the changes of the rows before it, as [changeRows] says.
+	onePass bool
+}
+
+// keyOf the row, whose primary key is the column at the position key, as the [keySet] of the order
+// o takes it: the primary key, or the values of the columns of by.
+func (o changeOrder) keyOf(row []*s4qlpb.Value, key int) []*s4qlpb.Value {
+	if o.by == nil {
+		return []*s4qlpb.Value{row[key]}
+	}
+	values := make([]*s4qlpb.Value, len(o.by))
+	for i, c := range o.by {
+		values[i] = row[c.Position]
+	}
+	return values
+}
+
+// ofRow reports whether err is an error of the conditions of one row: an evaluation error, or
+// SQLite's `string or blob too big` of an expression that SQLite computes for each row.
+func ofRow(err error) bool {
+	var computed *computedTooBig
+	return errors.Is(err, expr.ErrEvaluation) || errors.As(err, &computed)
+}
+
+// changeOrder of an update of the table t, whose scan s finds its rows for a filter of the
+// conditions, and that sets the columns at the positions, with RETURNING if returning: SQLite's
+// order, as [changeOrder] says, by the access of the rules, which is that of s where the tests force
+// no path. Under a path that the tests force, it looks the indexes of the table up for the rules,
+// unless no condition may serve an access, which reads every row by the primary key.
+func (b build) changeOrder(ctx context.Context, t *s4qlpb.CreateTable, s *scan, conditions []condition, positions []int, returning bool) (changeOrder, error) {
+	if returning || b.subs != nil || slices.ContainsFunc(positions, func(p int) bool { return slices.Contains(t.GetPrimaryKey(), uint32(p)) }) {
+		return changeOrder{}, nil
+	}
+	a := s.access
+	if b.how.path != (path{}) {
+		a = access{}
+		if serving := bounds(conditions); len(serving) > 0 {
+			rules := b
+			rules.how.path = path{}
+			var err error
+			if a, err = rules.access(ctx, t, serving); err != nil {
+				return changeOrder{}, err
+			}
+		}
+	}
+	if a.none || a.point != nil || a.index == "" {
+		return changeOrder{onePass: true}, nil
+	}
+	indexes, err := b.r.indexes(ctx, t.GetTable())
+	if err != nil {
+		return changeOrder{}, err
+	}
+	i := slices.IndexFunc(indexes, func(ix *s4qlpb.CreateIndex) bool { return ix.GetIndex() == a.index })
+	if i < 0 {
+		return changeOrder{}, internalError("the access of an update by the index %v, which its table does not have", a.index)
+	}
+	for _, c := range indexes[i].GetColumns() {
+		if slices.Contains(positions, int(c.GetColumn())) {
+			return changeOrder{}, nil
+		}
+	}
+	return changeOrder{by: core.IndexKey(t, indexes[i]), onePass: true}, nil
 }
 
 // buildQuery: the source of the rows of the plan q, in the transaction of r, with args for the
@@ -2152,6 +2308,9 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 		return nil, internalError("an update that sets no column")
 	}
 	u.src = src
+	if u.changes, err = b.changeOrder(ctx, t, s, conditions, positions, returning != nil); err != nil {
+		return nil, err
+	}
 	u.order = make([]int, len(u.positions))
 	for i := range u.order {
 		u.order[i] = i

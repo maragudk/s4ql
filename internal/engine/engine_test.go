@@ -2771,6 +2771,188 @@ func TestEngine_update(t *testing.T) {
 	})
 }
 
+func TestEngine_updateOrder(t *testing.T) {
+	// SQLite changes the rows of an update in the order in which its access finds them, where the
+	// update sets no column of the key, none of the index that it reads by, has no subquery in its
+	// WHERE, and has no RETURNING; otherwise it collects the keys first and changes the rows in the
+	// order of the key. Each row of these tables fails with an error of its own, so the row that
+	// comes first decides the error of the statement. In t, the order of the key is 1, 2, 3, the
+	// order of ia is 2, 1, 3, and that of iad 3, 1, 2. The adversarial review of 2026-11-26 found the
+	// first two cases.
+	t.Run("should give SQLite's error when two rows of an update that reads by an index give NULL to different columns that do not take it", func(t *testing.T) {
+		w := newChangeTrio(t, 0,
+			"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, null, 1)",
+			"insert into t values (2, 10, 1, 1, 1, null)")
+
+		w.run("update t set x = nx, y = ny where a > 0")
+	})
+
+	t.Run("should give SQLite's error when one row of an update that reads by an index is too long and another gives NULL to a column that does not take it", func(t *testing.T) {
+		w := newChangeTrio(t, 1000,
+			"create table t (k int primary key, a int, x int not null, nx int, b text, c text) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, null, '', '')",
+			"insert into t values (2, 10, 1, 1, '"+strings.Repeat("b", 600)+"', '')")
+
+		w.run("update t set x = nx, c = ? where a > 0", strings.Repeat("c", 600))
+	})
+
+	t.Run("should give SQLite's error when the row that fails first in the order of the key is too long, and another gives NULL to a column that does not take it", func(t *testing.T) {
+		// In the order of the key, the record of the row of the key 1 is too long; in that of ia, the row
+		// of the key 2 comes first, and gives NULL to x.
+		w := newChangeTrio(t, 1000,
+			"create table t (k int primary key, a int, x int not null, nx int, b text, c text) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, '"+strings.Repeat("b", 600)+"', '')",
+			"insert into t values (2, 10, 1, null, '', '')")
+
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", w.run("update t set x = nx, c = ? where a > 0", strings.Repeat("c", 600)).err)
+	})
+
+	t.Run("should give SQLite's error when the row that fails first in the order of the key fails with an evaluation error of SET", func(t *testing.T) {
+		// In the order of the key, the row of the key 1 divides by 0; in that of ia, the row of the key 2
+		// comes first, and gives NULL to x.
+		w := newChangeTrio(t, 0,
+			"create table t (k int primary key, a int, x int not null, n int, d int) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, 0)",
+			"insert into t values (2, 10, 1, null, 1)")
+
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", w.run("update t set x = n / d where a > 0").err)
+	})
+
+	t.Run("should change the rows that an equality of an index pins in the order of the key, where the index has no other column", func(t *testing.T) {
+		// Both rows hold the same b, so only the primary key orders them in ib: the row of the key 1,
+		// which gives NULL to x, comes first.
+		w := newChangeTrio(t, 0,
+			"create table t (k int primary key, b int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+			"create index ib on t (b)",
+			"insert into t values (1, 5, 1, 1, null, 1)",
+			"insert into t values (2, 5, 1, 1, 1, null)")
+
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", w.run("update t set x = nx, y = ny where b = 5").err)
+	})
+
+	t.Run("should take back what an update changed before a row failed, before it changes the rows in SQLite's order", func(t *testing.T) {
+		// In the order of the key, the row of the key 1 changes, and takes NULL into nx, before the row
+		// of the key 2 fails; in that of ia, the row of the key 3 comes first, then that of the key 1,
+		// which gives NULL to x if it reads the nx that the first change left.
+		w := newChangeTrio(t, 0,
+			"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, 1, 1)",
+			"insert into t values (2, 30, 1, 1, 1, null)",
+			"insert into t values (3, 10, 1, 1, 1, 1)")
+
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.y", w.run("update t set x = nx, nx = null, y = ny where a > 0").err)
+	})
+
+	t.Run("should give SQLite's error in a transaction, keep what the statements before it did, and count the rows that its first run read", func(t *testing.T) {
+		// In the order of the key, the update changes the row of the key 1, and fails on that of the
+		// key 2; in the order of ia, it changes the rows of the keys 3 and 1 before it, and in a
+		// transaction the row of the key 4 comes last.
+		h := &events{}
+		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
+		for _, src := range []string{
+			"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, 1, 1)",
+			"insert into t values (2, 30, 1, 1, 1, null)",
+			"insert into t values (3, 10, 1, 1, 1, 1)",
+		} {
+			is.Equal(t, "", i.exec(src).err, src)
+		}
+		for _, inTx := range []bool{false, true} {
+			if inTx {
+				is.NotError(t, i.c.Begin(t.Context()))
+				is.Equal(t, "", i.exec("insert into t values (4, 40, 1, 1, 1, 1)").err)
+			}
+			is.Equal(t, "19/1299: NOT NULL constraint failed: t.y", i.exec("update t set x = 2, y = ny where a > 0").err)
+			is.Equal(t, int64(0), i.changes, "the count of changes of a failed update")
+			e, _ := h.last(t)
+			// The scan by ia reads the rows that it finds, and the run in the order of the key the rows
+			// of the keys 1 and 2; the replay reads them again, which the event does not count.
+			found := map[bool]int{false: 3, true: 4}[inTx]
+			is.Equal(t, fmt.Sprint(found+2), e[engine.AttrRowsRead], fmt.Sprint("in a transaction: ", inTx))
+			is.Equal(t, "index", e[engine.AttrAccess])
+			want := "1,20,1,1,1,1 2,30,1,1,1,null 3,10,1,1,1,1"
+			if inTx {
+				// The transaction goes on after the failed update.
+				is.Equal(t, "", i.exec("update t set x = 3 where k = 4").err)
+				is.NotError(t, i.c.Commit(t.Context()))
+				want += " 4,40,3,1,1,1"
+			}
+			is.Equal(t, want, strings.Join(i.queryValues("select * from t order by k", nil).rows, " "), fmt.Sprint("in a transaction: ", inTx))
+		}
+	})
+
+	// Each row of t gives NULL to a column of its own, which does not take it: the row of the key 1
+	// to x, 2 to y, and 3 to z. In the order of the key the rows are 1, 2, 3; in that of ia and of
+	// iab, which holds the same b in every row, 2, 1, 3; and in that of iad, in place of both, 3, 1,
+	// 2. u holds the value of a subquery.
+	setup := []string{
+		"create table t (k int primary key, a int, b int, x int not null, y int not null, z int not null, nx int, ny int, nz int) strict, without rowid",
+		"create index ia on t (a)", "create index iab on t (b, a)",
+		"insert into t values (1, 20, 5, 1, 1, 1, null, 1, 1)",
+		"insert into t values (2, 10, 5, 1, 1, 1, 1, null, 1)",
+		"insert into t values (3, 30, 5, 1, 1, 1, 1, 1, null)",
+		"create table u (k int primary key, v int) strict, without rowid", "insert into u values (1, 0)",
+	}
+	for _, c := range []struct {
+		name, src, want string
+	}{
+		{name: "should change the rows of a range of the key in the order of the key", src: "update t set x = nx, y = ny, z = nz where k > 0", want: "t.x"},
+		{name: "should change the rows of a range of an index in the order of the index", src: "update t set x = nx, y = ny, z = nz where a > 0 and a < 100", want: "t.y"},
+		{name: "should change the rows of an equality of an index in the order of the rest of its key", src: "update t set x = nx, y = ny, z = nz where b = 5", want: "t.y"},
+		{name: "should change the rows of a range of a descending index in the order of the index, backward", src: "update t set x = nx, y = ny, z = nz where a < 100 and a >= 0", want: "t.z"},
+		{name: "should change the rows of a scan in the order of the key", src: "update t set x = nx, y = ny, z = nz where x = 1", want: "t.x"},
+		{name: "should change the rows in the order of the key when the update changes the key", src: "update t set k = k + 10, x = nx, y = ny, z = nz where a > 0", want: "t.x"},
+		{name: "should change the rows in the order of the key when the update sets the key to itself", src: "update t set k = k, x = nx, y = ny, z = nz where a > 0", want: "t.x"},
+		{name: "should change the rows in the order of the key when the update sets a column of the index that it reads by", src: "update t set a = a, x = nx, y = ny, z = nz where a > 0", want: "t.x"},
+		{name: "should change the rows in the order of the index when the update sets a column of another index", src: "update t set b = b, x = nx, y = ny, z = nz where a > 0", want: "t.y"},
+		{name: "should change the rows in the order of the key when the WHERE has a subquery", src: "update t set x = nx, y = ny, z = nz where a > (select v from u where k = 1)", want: "t.x"},
+		{name: "should change the rows in the order of the key when the update has RETURNING", src: "update t set x = nx, y = ny, z = nz where a > 0 returning k", want: "t.x"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := setup
+			if strings.Contains(c.name, "descending") {
+				s = slices.Delete(slices.Clone(setup), 1, 2)
+				s[1] = "create index iad on t (a desc)"
+			}
+			w := newChangeTrio(t, 0, s...)
+			is.Equal(t, "19/1299: NOT NULL constraint failed: "+c.want, w.run(c.src).err, c.src)
+		})
+	}
+
+	// In one pass, SQLite finds, checks, and writes a row before it reads the next, so the error of
+	// the WHERE of a later row comes after that of the SET of an earlier one. In two passes, every
+	// WHERE is evaluated first. The row of the key 2 comes first in ia, and gives NULL to x; that of
+	// the key 1 is too long for the WHERE.
+	oneOrTwo := []string{
+		"create table t (k int primary key, a int, x int not null, nx int, s text) strict, without rowid",
+		"create index ia on t (a)",
+		"insert into t values (1, 20, 1, 1, '" + strings.Repeat("s", 600) + "')",
+		"insert into t values (2, 10, 1, null, '')",
+	}
+	t.Run("should give the error of the SET of a row before that of the WHERE of a later row, in one pass", func(t *testing.T) {
+		// The instance that reads every row reads the row of the key 1 first, whose WHERE fails before
+		// any row is found, as the rows whose WHERE is evaluated depend on the access.
+		w := newChangeTrio(t, 1000, oneOrTwo...)
+		src, arg := "update t set x = nx where a > 0 and s || ? > ''", strings.Repeat("c", 500)
+		want := w.o.run(t, src, arg)
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", want.err)
+		is.Equal(t, want.String(), w.byKey.execValues(src, values([]any{arg})).String())
+		is.Equal(t, w.o.state(t), w.byKey.state())
+	})
+
+	t.Run("should give the error of the WHERE of any row before that of a SET, in two passes", func(t *testing.T) {
+		w := newChangeTrio(t, 1000, oneOrTwo...)
+		is.Equal(t, "18/18: string or blob too big", w.run("update t set a = a, x = nx where a > 0 and s || ? > ''", strings.Repeat("c", 500)).err)
+	})
+}
+
 // flipContext is a context whose Err gives [context.Canceled] once it has been called n times, where
 // n is what is left of the count that it was made with, and nil before. Its Done is that of the
 // context that it wraps.
@@ -2846,6 +3028,68 @@ func TestEngine_cancelChange(t *testing.T) {
 				is.Equal(t, state, i.state(), "the state after a replay of the log into an empty cache")
 			})
 		}
+	}
+
+	for _, inTx := range []bool{false, true} {
+		t.Run(fmt.Sprint("should change nothing and give the context's error when the context is canceled midway through the run or the replay of an update by an index that fails for a row, in a transaction ", inTx, ", which goes on and commits"), func(t *testing.T) {
+			// In the order of the key, the run changes the rows of the keys 0 to 19 and fails on that of
+			// the key 20, which gives NULL to y; in that of ia, which is the reverse, the replay changes
+			// the rows of the keys 39 to 26 and fails on that of the key 25, which gives NULL to x.
+			i, o := newInstance(t, engine.Options{}), newOracle(t)
+			setup := []string{
+				"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+				"create index ia on t (a)",
+			}
+			for k := range 40 {
+				nx, ny := "1", "1"
+				switch k {
+				case 20:
+					ny = "null"
+				case 25:
+					nx = "null"
+				}
+				setup = append(setup, fmt.Sprintf("insert into t values (%v, %v, 0, 0, %v, %v)", k, 100-k, nx, ny))
+			}
+			for _, src := range setup {
+				is.Equal(t, "", o.run(t, src).err, src)
+				is.Equal(t, "", i.exec(src).err, src)
+			}
+			if inTx {
+				is.NotError(t, i.c.Begin(t.Context()))
+				is.Equal(t, "", o.run(t, "begin").err)
+				is.Equal(t, "", o.run(t, "insert into t values (50, 1, 1, 1, 1, 1)").err)
+				is.Equal(t, "", i.exec("insert into t values (50, 1, 1, 1, 1, 1)").err)
+			}
+			src := "update t set x = nx, y = ny where a > 0"
+			want := o.run(t, src).err
+			is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", want)
+			// The context is canceled at each call of its Err in turn, in the run and then in the replay,
+			// until the statement no longer calls it as often, and fails with SQLite's error.
+			canceled := 0
+			for n := int64(0); ; n++ {
+				_, err := i.c.Exec(newFlipContext(t.Context(), n), src)
+				is.True(t, err != nil, "the update fails")
+				if !errors.Is(err, context.Canceled) {
+					is.Equal(t, want, i.errAnswer(src, err).err, fmt.Sprint("the error once the context is no longer canceled, at the call ", n))
+					break
+				}
+				canceled++
+				is.Equal(t, o.run(t, "select * from t").String(), i.query("select * from t").String(), fmt.Sprint("the rows after a cancel at the call ", n))
+				is.True(t, n < 100_000, "the statement fails with SQLite's error once its context is no longer canceled")
+			}
+			// The run changes 20 rows before it fails, and the replay 14, each with a call of Err.
+			is.True(t, canceled > 20+14, fmt.Sprint("the statement is canceled in its run and in its replay: ", canceled))
+			if inTx {
+				is.Equal(t, "", o.run(t, "insert into t values (51, 2, 1, 1, 1, 1)").err)
+				is.Equal(t, "", i.exec("insert into t values (51, 2, 1, 1, 1, 1)").err)
+				is.NotError(t, i.c.Commit(t.Context()))
+				is.Equal(t, "", o.run(t, "commit").err)
+			}
+			state := o.state(t)
+			is.Equal(t, state, i.state(), "the state at the end")
+			i.restart(true, engine.Options{})
+			is.Equal(t, state, i.state(), "the state after a replay of the log into an empty cache")
+		})
 	}
 }
 

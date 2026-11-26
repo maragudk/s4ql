@@ -54,8 +54,10 @@ type writer interface {
 	// one.
 	delete(ctx context.Context, name string, key []*s4qlpb.Value) (bool, error)
 	// keys runs f with an empty set of primary keys of the table with the name, which lasts for the
-	// call of f, and gives the error of f: see [keySet].
-	keys(ctx context.Context, name string, f func(keySet) error) error
+	// call of f, and gives the error of f: see [keySet]. Its keys come in the order of the primary
+	// key for a nil by, and otherwise in the order of the columns by of their rows, as
+	// [core.Tx.KeysBy] says, which hold every column of the primary key.
+	keys(ctx context.Context, name string, by []core.KeyColumn, f func(keySet) error) error
 }
 
 // keySet is a set of primary keys of a table, of any size, for a statement that changes the rows
@@ -64,10 +66,13 @@ type writer interface {
 // because only the set changes, and all reads each key before the statement changes its row, so the
 // statement changes each row that it found once, and none that it wrote, as [core.Tx.Keys] says.
 type keySet interface {
-	// add the key to the set, unless the set has it.
+	// add the key to the set, unless the set has it: the values of the primary key, or, for a set in
+	// the order of the columns by, the values of those columns of the row of the key.
 	add(ctx context.Context, key []*s4qlpb.Value) error
 	// all keys of the set, in the order of the key, as SQLite compares keys. The table and the set can
-	// change between two keys, and all gives the least key of the set above the one before.
+	// change between two keys, and all gives the least key of the set above the one before. For a set
+	// in the order of the columns by, all gives the primary keys in that order, the table can change
+	// between two keys, and the set takes no key once all has begun.
 	all(ctx context.Context) iter.Seq2[[]*s4qlpb.Value, error]
 }
 
@@ -336,8 +341,12 @@ func (c coreTx) delete(ctx context.Context, name string, key []*s4qlpb.Value) (b
 	return found, fromCore(err)
 }
 
-func (c coreTx) keys(ctx context.Context, name string, f func(keySet) error) error {
-	return fromCore(c.tx.Keys(ctx, name, func(k *core.KeySet) error { return f(coreKeys{k: k}) }))
+func (c coreTx) keys(ctx context.Context, name string, by []core.KeyColumn, f func(keySet) error) error {
+	g := func(k *core.KeySet) error { return f(coreKeys{k: k}) }
+	if by == nil {
+		return fromCore(c.tx.Keys(ctx, name, g))
+	}
+	return fromCore(c.tx.KeysBy(ctx, name, by, g))
 }
 
 // coreKeys is the [keySet] of a [*core.KeySet].

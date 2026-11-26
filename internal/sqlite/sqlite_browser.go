@@ -94,7 +94,7 @@ type library struct {
 	free, openV2, closeV2, nextStmt, exec, prepareV3, extendedErrcode, errstr, errmsg, errorOffset,
 	dbHandle, limit, bindText, bindBlob, bindNull, step, columnCount, columnName, columnType, columnText,
 	columnBlob, columnBytes, reset, finalize, libversion, sourceid, complete, keywordCount, keywordName,
-	compileoptionGet, status64, dbConfigIP js.Value
+	compileoptionGet, status64, dbConfigIP, getAutocommit js.Value
 
 	// transfer is a Uint8Array of transferLen bytes. A method uses it only between two calls into
 	// JavaScript that cannot call back into Go, so no other goroutine can use it meanwhile.
@@ -151,7 +151,8 @@ var lib = sync.OnceValue(func() *library {
 		status64:         x.Get("sqlite3_status64"),
 		// The build exports sqlite3_db_config, which is variadic, through a wrapper of its own for
 		// the options that take an int and an int*.
-		dbConfigIP: x.Get("sqlite3__wasm_db_config_ip"),
+		dbConfigIP:    x.Get("sqlite3__wasm_db_config_ip"),
+		getAutocommit: x.Get("sqlite3_get_autocommit"),
 	}
 })
 
@@ -425,6 +426,25 @@ func (c *Conn) SetLengthLimit(n int) error {
 	}
 	lib().limit.Invoke(c.db, limitLength, min(n, math.MaxInt32))
 	return nil
+}
+
+// Autocommit reports whether the connection is outside a transaction that BEGIN started, as
+// sqlite3_get_autocommit says. A connection also leaves its transaction when SQLite rolls it back
+// for an error, such as an I/O error or a full disk, which
+// https://sqlite.org/c3ref/get_autocommit.html names. It panics on a closed connection.
+func (c *Conn) Autocommit() bool {
+	if c.db == 0 {
+		panic("sqlite: connection is closed")
+	}
+	return call(lib().getAutocommit, c.db) != 0
+}
+
+// SetProgressPeriod is that of the cgo binding, and changes nothing: [Stmt.StepContext] installs no
+// progress handler here. It panics for a period that is not positive, as the cgo binding does.
+func (c *Conn) SetProgressPeriod(n int) {
+	if n <= 0 {
+		panic("sqlite: progress period not positive")
+	}
 }
 
 // Exec one SQL statement to completion, discarding any rows it returns. The SQL is checked as by

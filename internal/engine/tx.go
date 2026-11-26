@@ -387,7 +387,7 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	if err := s.check(ctx); err != nil {
 		return checked(failed, err), nil, err
 	}
-	n, err := s.run(ctx)
+	n, err := runSink(ctx, r, w, s)
 	if err != nil {
 		return ran(failed, err), nil, err
 	}

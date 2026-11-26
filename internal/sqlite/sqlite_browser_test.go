@@ -176,6 +176,21 @@ func TestConn_Close(t *testing.T) {
 	})
 }
 
+func TestConn_Autocommit(t *testing.T) {
+	t.Run("should report a connection outside a transaction, in one after BEGIN, and outside again after COMMIT, and panic on a closed connection", func(t *testing.T) {
+		c, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		is.True(t, c.Autocommit())
+		is.NotError(t, c.Exec("begin"))
+		is.True(t, !c.Autocommit())
+		is.NotError(t, c.Exec("commit"))
+		is.True(t, c.Autocommit())
+		is.NotError(t, c.Close())
+		defer func() { is.Equal(t, "sqlite: connection is closed", recover()) }()
+		c.Autocommit()
+	})
+}
+
 func TestStmt_Step(t *testing.T) {
 	t.Run("should refuse to step a statement that finished until it is reset, as with SQLITE_OMIT_AUTORESET", func(t *testing.T) {
 		c := open(t, ":memory:")

@@ -554,7 +554,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	if err := s.check(ctx); err != nil {
 		return checked(failed, err), nil, err
 	}
-	n, err := s.run(ctx)
+	n, err := runSavepointed(ctx, r, tx, s)
 	if err != nil {
 		// The planted bug commitFailed commits what the statement changed.
 		ended = c.commitFailed(ctx, tx, sql)
@@ -589,6 +589,56 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	r.rows = n
 	return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
+}
+
+// runSavepointed runs the sink s of a statement of its own in the write transaction w, as [runSink]
+// says. Where s may replay, it marks the state of w before the run with a savepoint, which it
+// releases after the run, so that the transaction commits or rolls back as without it; otherwise it
+// runs s alone, and a statement that fails is taken back with the transaction.
+func runSavepointed(ctx context.Context, r *report, w writeTx, s sink) (int64, error) {
+	if rp, ok := s.(replayer); !ok || !rp.mayReplay() {
+		return s.run(ctx)
+	}
+	if err := w.savepoint(ctx); err != nil {
+		return 0, err
+	}
+	n, err := runSink(ctx, r, w, s)
+	if released := w.release(ctx); err == nil {
+		err = released
+	}
+	return n, err
+}
+
+// runSink runs the sink s of a statement in the write transaction w, which has a savepoint open from
+// before the statement where s may replay, as [replayer] says. Where the run fails with an error
+// that s replays, runSink rolls w back to the savepoint, which it opens again, and gives what the
+// replay gives: an error, SQLite's, and an internal error for a replay that succeeds, which is a
+// fault of the engine. The event of the statement counts the rows that the run read, and not those
+// that the replay read again, which the report r leaves out. The statement fails with the error of
+// the replay, and counts its changes and is taken back as any statement that fails with it.
+func runSink(ctx context.Context, r *report, w writeTx, s sink) (int64, error) {
+	n, err := s.run(ctx)
+	rp, ok := s.(replayer)
+	if err == nil || !ok || !rp.replays(err) {
+		return n, err
+	}
+	if err := w.rollbackTo(ctx); err != nil {
+		return 0, err
+	}
+	if err := w.savepoint(ctx); err != nil {
+		return 0, err
+	}
+	read := w.rowsRead()
+	n, err = rp.replay(ctx)
+	r.before += w.rowsRead() - read
+	switch {
+	case errors.Is(err, errStopped):
+		// The planted bug evalStops: the replay stops at its first evaluation error, and succeeds.
+		return n, nil
+	case err == nil:
+		return n, internalError("the replay of a statement that failed for a row changed its %v rows without an error", n)
+	}
+	return n, err
 }
 
 // order of the rows of the RETURNING of the plan p, as [Engine.reading] draws it for a query: the
@@ -752,8 +802,8 @@ func (readOnly) upsert(context.Context, string, []*s4qlpb.Value) error  { return
 func (readOnly) insertNew(context.Context, string, []*s4qlpb.Value) (bool, error) {
 	return false, nil
 }
-func (readOnly) delete(context.Context, string, []*s4qlpb.Value) (bool, error) { return false, nil }
-func (readOnly) keys(context.Context, string, func(keySet) error) error        { return nil }
+func (readOnly) delete(context.Context, string, []*s4qlpb.Value) (bool, error)            { return false, nil }
+func (readOnly) keys(context.Context, string, []core.KeyColumn, func(keySet) error) error { return nil }
 
 // query runs the plan q, with args for its parameters, in a read transaction of its own, and gives
 // its rows, which hold the transaction until they end. The transaction ends if the rows cannot be
