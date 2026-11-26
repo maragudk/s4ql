@@ -57,6 +57,18 @@ func (l *live) advance(ms float64) simulator.Live {
 	return l.do("advance", fmt.Sprintf(`{"by": %v}`, ms))
 }
 
+// act the action, given as JSON, at the time of the session.
+func (l *live) act(action string) simulator.Live {
+	l.t.Helper()
+	return l.do("act", action)
+}
+
+// end the session, and return its last answer.
+func (l *live) end() simulator.Live {
+	l.t.Helper()
+	return l.do("end", "{}")
+}
+
 // advanceTo the time t of the session.
 func (l *live) advanceTo(t float64) simulator.Live {
 	l.t.Helper()
