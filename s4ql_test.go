@@ -790,7 +790,7 @@ func TestRegister(t *testing.T) {
 // answers every request with an error, because the tests use no real bucket: it shows what the
 // options reach the store with, and that an instance whose store fails is a spare.
 func TestOpen_s3(t *testing.T) {
-	isolate(t)
+	s3test.Isolate(t)
 	// requests to the server, of which the test reads the first of each instance. It holds more
 	// than the instances of the test send before they are closed, and a request beyond it is dropped.
 	requests := make(chan string, 1000)
@@ -923,7 +923,7 @@ func TestOpen_realBucket(t *testing.T) {
 	is.NotError(t, err)
 	// The settings reach the store through the options only, so the SDK is left nothing else to take
 	// them from.
-	isolate(t)
+	s3test.Isolate(t)
 	dir := t.TempDir()
 	// options of the database under the prefix, with the cache directory of the given name among
 	// those of the database, since a cache directory is for one database. The close timeout is long,
@@ -1052,22 +1052,6 @@ func TestOpen_realBucket(t *testing.T) {
 		is.NotError(t, db.PingContext(t.Context()))
 		is.EqualSlice(t, []int64{1}, values(t, db, select1))
 	})
-}
-
-// isolate the test from the AWS configuration of the machine that runs it: no shared files, and no
-// settings of the SDK from the environment.
-func isolate(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
-	for _, name := range []string{
-		"AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
-		"AWS_CA_BUNDLE", "AWS_DEFAULTS_MODE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
-	} {
-		t.Setenv(name, "")
-	}
 }
 
 // faulty is a store that a test makes fail: it can be down, so that every request fails without
