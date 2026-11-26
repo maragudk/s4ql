@@ -149,6 +149,13 @@ func TestSubqueries(t *testing.T) {
 			in.position = c.inside
 			internal(t, fmt.Sprintf("a subquery of the column at %v compared with the column at %v", c.inside, c.outside), s.types(build{}, &Subquery{Number: 1}, outer, c.outside, nil))
 		}
+		// The same compared with an expression that the condition tests, k + 1.
+		test, err := bindArithmetic(outer, stmt.Expression{Kind: stmt.ExprAdd, Operands: []stmt.Expression{{Kind: stmt.ExprColumn, Column: stmt.Name{Value: "k"}}, {Kind: stmt.ExprValue, Value: stmt.Integer(1)}}}, nil)
+		is.NotError(t, err)
+		for _, position := range []int{-1, 2} {
+			in.position = position
+			internal(t, fmt.Sprintf("a subquery of the column at %v compared with an expression", position), s.types(build{}, &Subquery{Number: 1}, outer, -1, test))
+		}
 		for _, position := range []int{-1, 2} {
 			in.position = position
 			_, _, err := build{r: fakeTx{f}}.value(t.Context(), in)

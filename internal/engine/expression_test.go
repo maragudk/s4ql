@@ -1389,6 +1389,7 @@ func TestEngine_arithmetic(t *testing.T) {
 			{"select k from t where k * 1 = r * 1", "not supported: an expression of type real compared with an expression of type integer"},
 			{"select k from t where k = s", "not supported: the column t.s of type TEXT compared with the column t.k of type INT"},
 			{"select k from t where k + 0 = (select s from t)", "not supported: subquery 1, of the column t.s of type TEXT, compared with an expression of type integer"},
+			{"select k from t where k + ? = (select s from t)", "not supported: subquery 1, of the column t.s of type TEXT, compared with an expression of type null"},
 			{"update t set s = k + 1", "not supported: an expression of type integer for the column t.s of type TEXT"},
 			{"update t set a = r + 1", "not supported: an expression of type real for the column t.a of type INT"},
 			{"update t set a = s", "not supported: the column t.s of type TEXT for the column t.a of type INT"},
@@ -1405,6 +1406,14 @@ func TestEngine_arithmetic(t *testing.T) {
 				text = strings.TrimPrefix(got.message, "s4ql: ")
 			}
 			is.Equal(t, c.want, text, c.src)
+		}
+		// The two sides of a comparison are checked in the order of the text: the column of type TEXT
+		// on the left before the argument that is text on the right, and the other way round.
+		for _, c := range []struct{ src, want string }{
+			{"select k from t where s + 1 = k + ?", "s4ql: not supported: column of type TEXT in arithmetic (at offset 22)"},
+			{"select k from t where k + ? = s + 1", "s4ql: not supported: argument 1 in arithmetic, which is text (at offset 26)"},
+		} {
+			is.Equal(t, c.want, i.execValues(c.src, values([]any{"x"})).message, c.src)
 		}
 		// SQLite gives row value misused at the first leaf of the expression, after the sign of a
 		// literal, as the shell shows it.

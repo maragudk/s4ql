@@ -3252,7 +3252,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// The values of SET computed from the row as the assignments before left it: 334 seeds, 278 of
 		// them by their own violation.
 		{"setFromNew", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
-		// A comparison with a side that is NULL true: 262 seeds, 244 of them by their own violation.
+		// A comparison with a side that is NULL true: 262 seeds, 244 of them by their own violation,
+		// counted before it was planted in a comparison of two columns too, on 2026-11-26.
 		{"nullCompares", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
 		// An update that stops at its evaluation error and succeeds with the rows before it: 202 seeds,
 		// 168 of them by their own violation; its commit in the log fails in SQLite, which computes the
