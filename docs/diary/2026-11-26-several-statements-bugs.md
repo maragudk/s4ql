@@ -147,3 +147,51 @@ Nothing new.
 ### Future work
 
 None from this step.
+
+## Step 4: fixes after the review of the simulation
+
+**Author:** several-statements-bugs (finisher)
+
+### Prompt Context
+
+**Verbatim prompt:** "You finish and land a reviewed branch in s4ql (`maragu.dev/s4ql`, repository `maragudk/s4ql`): `several-statements-bugs`, the engine's simulation for several statements in one `Exec` with eight planted bugs. The task is small: four fixes from an independent review, the night-sized runs, the status texts, and the landing. Do nothing beyond it. … 1. **A thin margin.** … 2. **The result of a failed call is never checked.** … 3. **A wrong comment.** … 4. **A wrong word.** …"
+**Interpretation:** make the four fixes in `/internal/engine/simulation_test.go` (and the README of the engine and the files of `testdata/reached`), prove the second with a planted wrong result, run the four night-sized commands, update the roadmap, and land the branch.
+**Inferred intent:** the review's findings closed before the branch reaches `main`, without new scope.
+
+### What I did
+
+- Raised the cell `{stmttest.Several, 10}` of the default environment to 30 seeds, recounted with `S4QL_RECOUNT=1`, and set the kinds of texts of several statements in `/internal/engine/testdata/reached/TestSimulation.kinds` at a third of their new totals. "Whose call did not return after a statement succeeded" is now reached 10 times, with a floor of 3.
+- `run.severalEnded` checks the result of a failed call: that of the last statement before the failed one that sets the count of changes, by its event, or `{Changes: 0, SetsChanges: true}` where the failed statement is an insert, update, or delete that was not skipped.
+- Rewrote the comment of the planted bugs of several statements: a seed needs one violation of its list, and the violations that follow from another are not listed.
+- Renamed "acknowledged" to "committed" in the simulation's names (`run.committed`, `attempt.committed`, `txRecord.committed`), messages, kinds, and the engine's README, and the lists of `oneCommit` and `commitLater` with them.
+- The roadmap's line and table of the driver; the fixes and an open item in `/docs/todo/several-statements.md`.
+
+### Why
+
+The review found a floor that would fail at random, a claim of the README that no check enforced, a comment that said more than the test does, and a word that claimed the caller knew.
+
+### What worked
+
+The proof: `return Result{Changes: res.Changes + 7, SetsChanges: true}, err` in place of `return res, err` in the loop of `/internal/engine/several.go` failed `TestSimulation -short` at once (seed 3200032: `ExecAll of the text of the statements 29 gives the result {Changes:7 SetsChanges:true} and the error UNIQUE constraint failed: …`); reverted with `git checkout -- internal/engine/several.go`.
+
+Night sizes, one at a time: `TestDifferential -sequences 400` ok in 317 s; `TestSimulation` with 100 seeds ok in 152 s; `TestSimulation_plantedBugs` with 1,000 seeds ok in 4,355 s, with every count as before but `firstResult`, now 983 of 1,000 (976), each by its own violation, since a failed call's result is checked too; the driver check ok in 22 s.
+
+### What didn't work
+
+A compound shell command that rebuilt `TestSimulation.kinds` from the counts of the `.tsv` was refused by the worktree's guard as "too complex to verify that it stays inside the worktree"; I edited the 17 lines by hand.
+
+### What I learned
+
+The engine's result of a failed write is `Result{}` when it fails before its sink is built (a table that is not there, no lease) and `{0, true}` after; the simulation cannot tell those apart from the error alone, so it accepts either, and the differential tests, which run the statements alone, check which.
+
+### What was tricky
+
+The rename crosses the check of statements alone too, since `r.committed` is one list for both; "committed" is true for both, where "acknowledged" was true only for a statement whose call returned.
+
+### What warrants review
+
+The two accepted results of a failed call in `run.severalEnded`. The self-review (`code-review`, medium) found no bug and four nits, all fixed: the README and the comment of `succeeded` now say "outside a transaction", the comment of `attempt.committed` says what it holds for a statement of a transaction, and the comment of the result check says what it cannot tell.
+
+### Future work
+
+Recorded as open in `/docs/todo/several-statements.md`: a statement of a text whose commit was durable but whose event was not logged before a crash stays pending, and may be missing from the log. Mutation testing of the loop of `ExecAll`.

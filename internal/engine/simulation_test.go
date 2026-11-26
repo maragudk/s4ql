@@ -3775,8 +3775,8 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// writer was free while the caller's transaction was open, that its commit lost the writes
 		// before the failure, or that its later statements saw a newer state.
 		{"undoInTx", hammerWorkload, "hammer", stmttest.Several, []string{"whose statements that succeeded and write are", "while the write transaction", "is not in the log", "saw the states"}},
-		// The result of the first statement that sets the count of changes: 976 seeds, all by their own
-		// violation.
+		// The result of the first statement that sets the count of changes: 983 seeds, all by their own
+		// violation, 976 before the result of a call that failed was checked too.
 		{"firstResult", hammerWorkload, "hammer", stmttest.Several, []string{"and the events of its statements"}},
 	}
 	shard := testshard.Get(t)
