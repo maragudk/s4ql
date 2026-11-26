@@ -159,3 +159,47 @@ The widened lists of the nine bugs in `/internal/engine/simulation_test.go`, and
 ### Future work
 
 None of my own.
+
+## Step 4: two more merges of main
+
+**Author:** builder (annotation-text)
+
+### Prompt Context
+
+**Verbatim prompt:** before you hand in, `git merge main` and resolve conflicts in `internal/simulator` in favour of main's version, then reapply your minimal change.
+
+**Interpretation:** Bring the branch up to main, and run again what the merge can change.
+
+**Inferred intent:** A branch that merges cleanly and stays green.
+
+### What I did
+
+The merge at `55e37d07` conflicted in `/docs/todo/storage-formats.md` (main added the item of a random value in the header; I kept it and dropped the old not-built item of the annotation) and in `/internal/engine/README.md` (main's wording of arithmetic and text, without the annotation's arguments). Main's new test of blob arguments in `/conn_test.go` expected `with x'01'` and the like in the annotations; it now expects the texts, and the rows stay checked by the cache of a second instance. At `55e37d07`, `S4QL_ENGINE_SIM_SEEDS=100` `TestSimulation` passed (388 s), and `S4QL_ENGINE_SIM_SEEDS=1000` `TestSimulation_plantedBugs` passed (11,903 s): `argsNext` 439 of 1,000, 432 by its own violation; `annotateText` 999 of 1,000, each by its own. The merge at `1a43e814` (main's text in the generated workload) had no conflict; `make test`, `make lint`, and `TestSimulation` with 100 seeds (331 s) passed there. `internal/simulator` merged without a conflict each time, and my change there is the same lines.
+
+### Why
+
+Main's text engine and its workload change what the simulation generates, which the new check of the commit's rows sees.
+
+### What worked
+
+The 100-seed simulation is the guard against a false finding of `commitRows`, at a twentieth of the cost of the planted bugs.
+
+### What didn't work
+
+The first `make test` after the merge at `55e37d07` failed: `conn_test.go:917: Expected "insert into r values (1, ?) with x'01'", but got "insert into r values (1, ?)"`.
+
+### What I learned
+
+Nothing new.
+
+### What was tricky
+
+Nothing.
+
+### What warrants review
+
+The planted bugs at 1,000 seeds ran at `55e37d07`, not after the last merge of main's workload of text; the nightly runs them next.
+
+### Future work
+
+None of my own.
