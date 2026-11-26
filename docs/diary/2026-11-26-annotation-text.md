@@ -56,3 +56,59 @@ The planted bug `annotateText` was found before by " and commit " (a statement i
 ### Future work
 
 `Statement.Args` in `/internal/simulator/trace.go` is now always empty; its owner may remove it with the site's display of arguments.
+
+## Step 2: planted faults, self-review, and a check of each commit's rows
+
+**Author:** builder (annotation-text)
+
+### Prompt Context
+
+**Verbatim prompt:** Prove with planted faults of your own, one at a time and reverted, that the tests still catch: a statement's text annotated in the wrong commit; two statements' annotations swapped; a statement that ran with another call's arguments. [...] Run the `fabrik:code-review` skill over your diff and fix what matters.
+
+**Interpretation:** Plant each fault in a copy of the tree, see which check finds it, revert; then let two reviewers read the diff and fix what they agree on or what is serious.
+
+**Inferred intent:** Evidence that removing the annotation's arguments weakened no check.
+
+### What I did
+
+The faults ran in a copy of the worktree at `/Volumes/990/s4ql/annotation-text/fault` (rsync without `.git`), with a file `internal/engine/fault.go` of helpers, so the worktree stayed clean for the reviewers:
+
+- **Wrong commit:** `Conn.write` annotated each statement of its own with the text of the statement before it on the connection. `go test -count=1 -p 4 -run '^TestSimulation$' ./internal/engine/` failed in every workload: "the committed statement 77, ..., is not in the log" and "the replay of the log holds". `TestDifferential`, `TestEngine_annotations`, and `TestConn_ExecAll` failed too.
+- **Two annotations swapped:** the core's commit path swapped the first two annotations of a commit object. `TestSimulation` failed with "commit 5 holds the statements [53 52 54 55 57] of the transaction 7, whose statements that succeeded and write are [52 53 54 55 57]", in each workload.
+- **Another call's arguments:** `Conn.write` ran the sink with the arguments of the call before it on the connection with as many arguments. `TestSimulation` failed in each workload, by statements that gave another answer than SQLite ("at commit 12 gives ..., and in SQLite ..."). A second variant, each integer argument plus one, was found with `S4QL_ENGINE_SIM_SEEDS=10` by "the replay of the log holds" in 2 seeds of 3.
+
+The two reviewers both found that the third kind was now found only by after-effects: the removed check compared every commit's arguments with the caller's, and the replay compares only the final state. So I added `commitRows` in `/internal/engine/simulation_test.go`: after SQLite ran the statements of commit k with the callers' arguments, it must hold each row that the commit upserts, by its key, and no row of a key that it deletes, for each table that no later change of the commit creates or drops. With it, the plus-one variant was found in 10 places by "it upserts the row 505,2,3 of the table tIEs, and SQLite holds ... rows [\"504,2,2\"] for its key after the statements of the commit". The swapped-arguments variant still showed no such line in 10 seeds: its swaps mostly made inserts fail on UNIQUE, which the answers find first. To keep a guard, the planted bug `argsNext` runs a statement of its own with each integer argument plus one: `S4QL_ENGINE_SIM_SEEDS=200 go test -run '^TestSimulation_plantedBugs$/^argsNext$' -v ./internal/engine/` gave "97 of 200 seeds of the profile arguments find the bug, 95 of them by \"for its key after the statements of the commit\"". The first run of it failed on "seed 2825 finds the bug by another violation: [... gives 19/1555: UNIQUE constraint failed: ..., and in SQLite ...]", so its list of violations has the usual others.
+
+Other fixes from the review: the doc comments of `noteOf`, `ownText`, and `Tx.Annotate` no longer lean on their callers; the proto comments of `Annotation.statement` and `Statement` say "a statement that ran in the commit"; `bugs.annotation` checks the bug before it looks the text up; the duplicate ID lookups in `run.verify` use `of`; two test names in `/conn_test.go`; the refusal of the old shape in `/internal/format/writer_test.go` pins "holds field 2"; the sentence on parameters in the -0.0 rule of the format's README; the engine's README describes `commitRows` and `argsNext`.
+
+Then `git merge main`: `docs/todo/storage-formats.md` conflicted, since main had changed the not-built item when the spec got its sentence ("without their parameters"); I kept my built item without its sentence about the spec. `internal/simulator/run.go` merged on its own; my change there is the same lines as before.
+
+### Why
+
+The brief asked that every check that judged the annotation's arguments still judge something real. `commitRows` judges the same thing per commit, from the rows instead of the annotation, and is stronger: it also finds a statement whose wrong rows a later commit overwrites.
+
+### What worked
+
+Planting faults in a copy of the tree kept the reviewers' view of the worktree clean, and the copy builds on its own since the module has no paths outside it.
+
+### What didn't work
+
+- Running a JSON file with tabs through my replace script: "json.decoder.JSONDecodeError: Invalid control character at: line 1 column 4 (char 3)". I used Edit for those.
+- A `sed -i` with a multi-line replacement was refused by the harness as too complex; Edit again.
+
+### What I learned
+
+Removing the draw `intn(n.host, 100)` of the core's simulation changes the random stream of every core seed, as both reviewers said. Keeping it would not keep the runs the same anyway, since the commit objects are smaller and their names differ, so I kept the removal and ran the core's full simulation and its planted bugs at the nightly's size.
+
+### What was tricky
+
+`commitRows` must leave out a table that a later change of the same commit creates or drops, since SQLite then holds the table as that change leaves it; and an upsert that does not list every column, which `verifyRows` reports.
+
+### What warrants review
+
+- `commitRows`: the net effect of a commit holds each key at most once, which the check assumes.
+- The new planted bug `argsNext` and its row in the README tables.
+
+### Future work
+
+Outside my scope, for the lead: `docs/roadmap.md` lines 15, 146, 205, and 217 still describe the arguments in the annotation and eight bugs of several statements; `internal/sql/mutation/README.md` line 219 mentions the equivalent mutants of `annotateNext`; `internal/simulator/trace.go` (`Statement.Args`), `internal/simulator/README.md` (lines 613 and 948), and the fixtures of `internal/simulator/sitecheck/check.html` describe arguments of a commit's statements, and the public simulator shows `values (?)` where it showed the key.

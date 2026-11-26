@@ -1171,7 +1171,7 @@ func arithmeticKinds(a *attempt, kind string) []string {
 // evaluation errors that no row justifies that follow from a write that changed rows wrongly.
 func arithmeticFinds(own string) []string {
 	finds := []string{own}
-	for _, f := range []string{", and in SQLite", "which began at commit", "the replay of the log holds", "fails in SQLite", "rows in SQLite, and its caller was told",
+	for _, f := range []string{", and in SQLite", "which began at commit", "the replay of the log holds", "for its key after the statements of the commit", "fails in SQLite", "rows in SQLite, and its caller was told",
 		"justifies it for no row", "gives the rows of RETURNING", "is in no commit, and changes"} {
 		if f != own {
 			finds = append(finds, f)
@@ -3625,7 +3625,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// value of the profile of the arguments is a parameter: 97 of 200 seeds find the bug, 95 of them
 		// by its own violation, a row of the commit that SQLite does not hold after the statements of the
 		// commit.
-		{"argsNext", defaultWorkload, "default", stmttest.Arguments, []string{"for its key after the statements of the commit", "for it after the statements of the commit", ", and in SQLite", "the replay of the log holds", "fails in SQLite", "rows in SQLite, and its caller was told"}},
+		{"argsNext", defaultWorkload, "default", stmttest.Arguments, []string{"for its key after the statements of the commit", "for it after the statements of the commit", ", and in SQLite", "the replay of the log holds", "fails in SQLite", "rows in SQLite, and its caller was told", "is in no commit, and changes"}},
 		// A failed statement that is kept is in the commit object of its transaction, whose replay in
 		// SQLite then fails. What it changed before it failed is kept too: an update that changes the key
 		// of a row that the transaction inserted, and fails with UNIQUE after the delete of the old key,
@@ -3662,7 +3662,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// rule refuses nothing. The log holds no such value, since the check of the type sees the values
 		// in the columns where the bug puts them. The profile of the tables weighs the inserts and
 		// their lists of columns: 127 of 200 seeds find the bug, 35 of them by its own violation.
-		{"listOrder", defaultWorkload, "default", stmttest.Tables, []string{"the replay of the log holds", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit"}},
+		{"listOrder", defaultWorkload, "default", stmttest.Tables, []string{"the replay of the log holds", "for its key after the statements of the commit", "fails in SQLite", ", and in SQLite", "and the rule for the type of a value", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit"}},
 		// A column left out of a list that holds the zero value of its type where SQLite has NULL: a
 		// query of the row gives other rows than in SQLite, which runs the statements of the log, and
 		// so does the replay of the log into an empty cache, which writes its rows. No check of a value
@@ -3672,7 +3672,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// only a column without a default, and no shape of the profile of the tables has one; the
 		// hammer environment runs more statements than the default one: 64 of 200 seeds find the bug,
 		// 60 of them by its own violation.
-		{"zeroLeftOut", hammerWorkload, "hammer", stmttest.Tables, []string{", and in SQLite", "the replay of the log holds", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
+		{"zeroLeftOut", hammerWorkload, "hammer", stmttest.Tables, []string{", and in SQLite", "the replay of the log holds", "for its key after the statements of the commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "which began at commit", "fails in SQLite"}},
 		// A scan by one or two bounds of the key that leaves out the row of a closed bound: a select with
 		// WHERE, of its own or in a transaction, gives fewer rows than in SQLite. Nothing else sees it:
 		// the select writes nothing, and fails nothing. An engine that reads every row, as some engines
@@ -3704,7 +3704,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// then in no commit object, and not in the log that its caller was told of. The profile of the
 		// updates and deletes weighs the updates, some of which change the key of a row: 90 of 200
 		// seeds find the bug, 38 of them by its own violation.
-		{"keepOldKey", defaultWorkload, "default", stmttest.Changes, []string{"the replay of the log holds", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "is not in the log"}},
+		{"keepOldKey", defaultWorkload, "default", stmttest.Changes, []string{"the replay of the log holds", "for its key after the statements of the commit", ", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "is not in the log"}},
 		// A create table with IF NOT EXISTS of a table that exists, which replaces the table with the
 		// one of the statement, empty, where SQLite does nothing: the commit object holds the drop and
 		// the create, so the replay of the log into an empty cache, which writes them, differs from
@@ -3721,7 +3721,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// write in a transaction plants it too. Every shape of the profile of the defaults has a
 		// default, and the list of an insert leaves a column with a default out one time in two: 137
 		// of 200 seeds find the bug, each by its own violation.
-		{"nullDefault", defaultWorkload, "default", stmttest.Defaults, []string{", and in SQLite", "the replay of the log holds", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
+		{"nullDefault", defaultWorkload, "default", stmttest.Defaults, []string{", and in SQLite", "the replay of the log holds", "for its key after the statements of the commit", "which began at commit", "rows in SQLite, and its caller was told", "fails in SQLite", "is in no commit, and changes", "and the rule for the type of a value"}},
 		// A scan whose bound from a condition with its value on the left, of slice 12, is the operator as
 		// the text writes it, so that `5 < k` reads the keys below 5: a select with WHERE gives fewer
 		// rows than in SQLite, since the filter above the scan drops the rows that the scan read wrongly
@@ -3730,7 +3730,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// the one engine of the hammer environment reads as the rules choose. One comparison in two of
 		// the profile of the values on the left has its value there: 130 of 200 seeds find the bug, 92
 		// of them by its own violation.
-		{"unturnedBound", hammerWorkload, "hammer", stmttest.ValueFirst, []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "fails in SQLite"}},
+		{"unturnedBound", hammerWorkload, "hammer", stmttest.ValueFirst, []string{", and in SQLite", "which began at commit", "rows in SQLite, and its caller was told", "is in no commit, and changes", "the replay of the log holds", "for its key after the statements of the commit", "fails in SQLite"}},
 		// A key delivers an ORDER BY of mixed directions as if each were in the direction of its first
 		// column, so a select gives its rows in another order than SQLite's where they tie in the first.
 		// The profile of the ORDER BY draws ORDER BY of the leading columns of the key of an index with
@@ -3860,9 +3860,9 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// by their own violation; in 296 of them, a statement is lost whose call never returned because
 		// its instance crashed after it, as the crash of [run.crash] aims at such a text.
 		{"commitLater", defaultWorkload, "default", stmttest.Several, []string{"is not in the log", "was committed before it began", "was committed before it started"}},
-		// The annotation of each statement holds the whole text, whose first ID is that of the first
-		// statement: 995 seeds, 992 of them by their own violation, and the others by a statement that
-		// is then in no commit.
+		// The annotation of each statement holds the whole text, which is not the statement's own text,
+		// and whose first ID is that of the first statement, which is then in two commits: 999 seeds,
+		// each by its own violation.
 		{"annotateText", hammerWorkload, "hammer", stmttest.Several, []string{"whose own text is", " and commit ", "is not in the log"}},
 		// A failure after the first statement of a text in a write transaction rolls it back and begins a
 		// new one: 987 seeds, 510 of them by their own violation. The others find that the place of the
