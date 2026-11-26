@@ -16,7 +16,9 @@
 // what happened: a success, or one of the errors of [store.Store]. Any other answer, or none, fails
 // the call with an error that wraps the [context.Canceled] or [context.DeadlineExceeded] of the
 // context, since the end of the context may be what broke the answer. So does a read of the content
-// that fails after the end of the context.
+// that fails after the end of the context. As [store.Store] requires, such an error wraps nothing
+// else, and its text does not hold the text of the cause of the end, with which the read of an
+// answer that the end broke off fails.
 //
 // A write with a checksum is checked by the store: the request is signed with the checksum as the
 // SHA-256 of its payload, which the store compares with the bytes it receives before it stores
@@ -28,7 +30,10 @@
 // as the content is read, so that content that does not match it fails at its end.
 //
 // The client owns the HTTP transport that [New] makes for it, and [Client.Close] closes every
-// connection of that transport once the last request of the client has ended.
+// connection of that transport once the last request of the client has ended. The requests of the
+// SDK's default chain for credentials, such as to the endpoint of a container or to STS, go through
+// an HTTP client of the SDK's own type, with the same roots, no proxy, and HTTP/1.1 only, and not
+// through that transport, so Close does not close their connections.
 package s3store
 
 import (
@@ -96,7 +101,11 @@ type Options struct {
 	PathStyle bool
 
 	// RootCAs that the store's certificate must chain to. If it is nil, the system's roots are
-	// used. The SDK's own setting for this, AWS_CA_BUNDLE or ca_bundle, makes [New] fail.
+	// used. The SDK's own setting for this, AWS_CA_BUNDLE or else ca_bundle of the shared
+	// configuration, names a PEM file whose certificates are added to a copy of RootCAs, so that
+	// both are trusted and RootCAs is not changed. Without RootCAs, the bundle replaces the
+	// system's roots, as it does in the SDK's own HTTP client. A bundle that is missing or holds no
+	// certificate makes [New] fail.
 	RootCAs *x509.CertPool
 
 	// Logger receives one event for each request to the store. If it is nil, the events are
@@ -144,28 +153,27 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 		}
 	}
 
-	// The transport has no timeout of its own: a call ends when its context does, and every
-	// error of a write but those that mean "not applied" means that its outcome is unknown anyway.
-	// It speaks HTTP/1.1 only, so that the retries of net/http that can happen are those of
-	// HTTP/1.1, and goes through no proxy, which could send a request again.
-	c := &Client{bucket: opts.Bucket}
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	c.transport = &http.Transport{
-		Protocols:             protocols,
-		TLSClientConfig:       &tls.Config{RootCAs: opts.RootCAs, MinVersion: tls.VersionTLS12},
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       90 * time.Second,
-		ExpectContinueTimeout: time.Second,
+	// The SDK adds the certificates of a CA bundle of its configuration to the roots of an HTTP
+	// client of its own type alone. It gets one whose roots are a copy of RootCAs, and the roots
+	// that come out of the configuration are those of the transport below. The SDK's default
+	// chain sends its requests for credentials through that client, which goes through no proxy
+	// and speaks HTTP/1.1 only, as the transport below does.
+	var roots *x509.CertPool
+	if opts.RootCAs != nil {
+		roots = opts.RootCAs.Clone()
 	}
-	httpClient := &http.Client{
-		Transport: c.transport,
-		// A redirect is answered as it is, as an error, and not followed with a second request.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	sdkClient := awshttp.NewBuildableClient().WithTransportOptions(func(tr *http.Transport) {
+		tr.Proxy = nil
+		tr.Protocols = new(http.Protocols)
+		tr.Protocols.SetHTTP1(true)
+		if tr.TLSClientConfig == nil {
+			tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		tr.TLSClientConfig.RootCAs = roots
+	})
 
 	loads := []func(*config.LoadOptions) error{
-		config.WithHTTPClient(httpClient),
+		config.WithHTTPClient(sdkClient),
 		config.WithLogger(logging.Nop{}),
 		config.WithClientLogMode(0),
 	}
@@ -181,6 +189,33 @@ func New(ctx context.Context, opts Options) (*Client, error) {
 	}
 	if cfg.Region == "" {
 		return nil, errors.New("s3store: no region, in the options or from the SDK's default chain")
+	}
+	configured, ok := cfg.HTTPClient.(*awshttp.BuildableClient)
+	if !ok {
+		return nil, fmt.Errorf("s3store: configuration: an HTTP client of the type %T, whose roots are unknown", cfg.HTTPClient)
+	}
+	if tc := configured.GetTransport().TLSClientConfig; tc != nil {
+		roots = tc.RootCAs
+	}
+
+	// The transport has no timeout of its own: a call ends when its context does, and every
+	// error of a write but those that mean "not applied" means that its outcome is unknown anyway.
+	// It speaks HTTP/1.1 only, so that the retries of net/http that can happen are those of
+	// HTTP/1.1, and goes through no proxy, which could send a request again.
+	c := &Client{bucket: opts.Bucket}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	c.transport = &http.Transport{
+		Protocols:             protocols,
+		TLSClientConfig:       &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	httpClient := &http.Client{
+		Transport: c.transport,
+		// A redirect is answered as it is, as an error, and not followed with a second request.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
 	c.s3 = s3.NewFromConfig(cfg, func(o *s3.Options) {
@@ -363,15 +398,26 @@ func (c *Client) put(ctx context.Context, op, key string, from store.Version, co
 	return version, nil
 }
 
-// ended is err, the failure of a call with the context ctx, and if ctx has ended, also the error of
-// its end, which err may not wrap: net/http takes an answer that comes in as the context ends, and
-// the end may be what made the answer one that the client cannot use, so the call is reported as one
-// whose context ended, and not as one that the store failed alone.
+// ended is err, the failure of a call with the context ctx, and if ctx has ended, an error with the
+// text of err that wraps the error of the end, ctx.Err, and nothing else: net/http takes an answer
+// that comes in as the context ends, and the end may be what made the answer one that the client
+// cannot use, so the call is reported as one whose context ended, and not as one that the store
+// failed alone. And the read of an answer that the end broke off fails with the cause of the end,
+// which can be any error, such as one that wraps an error of [store.Store] that means "not
+// applied", so err is not wrapped, and the text of that cause in it is replaced.
 func ended(ctx context.Context, err error) error {
-	if done := ctx.Err(); done != nil && !errors.Is(err, done) {
-		return fmt.Errorf("%w, after the context ended: %w", err, done)
+	done := ctx.Err()
+	if done == nil {
+		return err
 	}
-	return err
+	text := err.Error()
+	if cause := context.Cause(ctx); cause != done && cause.Error() != "" && errors.Is(err, cause) {
+		text = strings.ReplaceAll(text, cause.Error(), "the end of the context")
+	}
+	if !errors.Is(err, done) {
+		text += ", after the context ended: " + done.Error()
+	}
+	return textOf{text: text, err: done}
 }
 
 // unknown is the error of a write whose outcome is unknown because of err. It has the text of err,
@@ -512,8 +558,16 @@ func (r *request) trace(o *s3.Options) {
 	})
 }
 
-// failed records what the error of the SDK says about the answer.
+// failed records what the error of the SDK says about the answer. An error that wraps the cause of
+// the end of the context, when that cause is another error than the end's, says nothing about it:
+// the end broke the answer, and the cause, which can be any error, can hold a status or a code of
+// its own.
 func (r *request) failed(err error) {
+	if done := r.ctx.Err(); done != nil {
+		if cause := context.Cause(r.ctx); cause != done && errors.Is(err, cause) {
+			return
+		}
+	}
 	var re *awshttp.ResponseError
 	if errors.As(err, &re) {
 		r.status = re.HTTPStatusCode()

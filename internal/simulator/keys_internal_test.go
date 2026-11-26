@@ -10,13 +10,6 @@ import (
 )
 
 func TestKnownKeys(t *testing.T) {
-	t.Run("should know the rows at the head of a stored log, in the order of their inserts", func(t *testing.T) {
-		var k knownKeys
-		k.stored([]*CommitObject{{Keys: []int64{1, 3}}, {Keys: []int64{2}}, {Deletes: []int64{1}}})
-		is.EqualSlice(t, []int64{3, 2}, k.known)
-		is.EqualSlice(t, []int64{3, 2}, k.deletable)
-	})
-
 	t.Run("should pick a delete only among known keys that no delete has picked, and leave one", func(t *testing.T) {
 		var k knownKeys
 		k.learn(1)

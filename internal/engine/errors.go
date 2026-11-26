@@ -165,7 +165,7 @@ func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr, use
 	default:
 		return internalError("a value of an expression of type %T", e)
 	}
-	return fmt.Errorf("%w: %v %v the column %v.%v of type %v", stmt.ErrNotSupported, what, use, t.GetTable(), c.GetName(), typeName(c.GetType()))
+	return fmt.Errorf("%w: %v %v %v", stmt.ErrNotSupported, what, use, columnName(t, position))
 }
 
 // limitCount is the number of rows of a LIMIT whose expression e, a literal or a parameter, has the
@@ -314,6 +314,29 @@ func tooBig() error {
 	return &sqlerr.Error{Code: sqlerr.CodeTooBig, ExtendedCode: sqlerr.CodeTooBig, Message: "string or blob too big", Offset: -1}
 }
 
+// computedTooBig is SQLite's `string or blob too big` of a text that an expression computes, which
+// SQLite gives when it steps the statement, also where the engine gives it before it reads a row, so
+// a failed update or delete sets the count of changes to 0 then, as [built] says. It matches
+// [*sqlerr.Error] with [errors.As].
+type computedTooBig struct {
+	err error
+}
+
+func (e *computedTooBig) Error() string { return e.err.Error() }
+
+func (e *computedTooBig) Unwrap() error { return e.err }
+
+// built is the result of a statement whose sink's build failed with err: that of a statement that
+// changed nothing and leaves the count of changes, as SQLite's errors of preparing and of binding
+// leave it, but for a text of an expression that is too long, which SQLite gives when it steps the
+// statement, and which sets the count to 0 for a statement that sets it, as the plan p says.
+func built(p Plan, err error) Result {
+	if _, ok := errors.AsType[*computedTooBig](err); ok {
+		return Result{SetsChanges: setsChanges(p)}
+	}
+	return Result{}
+}
+
 // schemaTooBig reports whether SQLite refuses the create table of the table with the name, which
 // keeps the text sql, as too big under the length limit. SQLite writes the table into its schema
 // with an UPDATE of sqlite_schema whose text it formats under the limit, with the name twice and
@@ -354,6 +377,12 @@ func tooLongForCache(what, name string) error {
 // would write on a connection under `pragma query_only = 1`, when it steps the statement.
 func readOnlyDatabase() error {
 	return &sqlerr.Error{Code: sqlerr.CodeReadOnly, ExtendedCode: sqlerr.CodeReadOnly, Message: "attempt to write a readonly database", Offset: -1}
+}
+
+// conflictTarget is `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint`, for an
+// upsert whose conflict target is not the primary key of its table.
+func conflictTarget() error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint", Offset: -1}
 }
 
 // noSuchSetColumn is `no such column: %s`, for a column of the SET of an update that the table does

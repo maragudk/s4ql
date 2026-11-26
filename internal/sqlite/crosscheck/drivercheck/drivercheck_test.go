@@ -23,10 +23,12 @@ import (
 
 	"maragu.dev/s4ql"
 	"maragu.dev/s4ql/internal/engine"
+	"maragu.dev/s4ql/internal/expr"
 	sqloracle "maragu.dev/s4ql/internal/sql/oracle"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/sql/token"
+	"maragu.dev/s4ql/internal/store/s3test"
 )
 
 // call of database/sql that runs a text.
@@ -642,7 +644,7 @@ type world struct {
 
 func newWorld(tb testing.TB) *world {
 	tb.Helper()
-	isolate(tb)
+	s3test.Isolate(tb)
 	return &world{s3: newFakeS3(tb)}
 }
 
@@ -1443,6 +1445,11 @@ const (
 	// than its column, which SQLite converts, compares as it is, or refuses with an error of its own:
 	// it is checked against s4ql's rule by [pair.checkRefused], and not run in SQLite.
 	excusedType = "a value of another type than its column, checked against s4ql's rule"
+	// excusedUpsert is an upsert that s4ql refuses by the rule of exact types, of its proposed row or of
+	// DO UPDATE, also of its arithmetic and its text, where SQLite converts by affinity or orders by
+	// type: it is checked against s4ql's rules by [pair.checkRefused], as [stmttest.UpsertRefusals]
+	// gives them, and not run in SQLite.
+	excusedUpsert = "an upsert refused by the rules of its types, checked against s4ql's rules"
 	// excusedLevel is a begin with another isolation level than the default and serializable, which
 	// s4ql refuses by its rule, where mattn ignores the level: it is checked against the rule by
 	// [pair.begin], and nothing is begun in SQLite.
@@ -1878,7 +1885,7 @@ func (p *pair) reopened(src string, args []any, err error, where string) string 
 	if !ok || !stmttest.HasExpression(s) || !sel.Limited() && sel.Subqueries == nil {
 		return fmt.Sprintf("%q with the arguments %#v: s4ql's query run again in the transaction, whose rows are left open, fails with %q", src, args, text)
 	}
-	if why := p.justify(s, args, text, inTx{Tx: p.tx.o, outer: p.o}); why != "" {
+	if why := p.justify(src, s, args, text, inTx{Tx: p.tx.o, outer: p.o}); why != "" {
 		return fmt.Sprintf("%q with the arguments %#v: s4ql's query run again in the transaction, whose rows are left open, fails with %q, which %v", src, args, text, why)
 	}
 	if p.y != nil {
@@ -2218,7 +2225,7 @@ func (p *pair) finish() string {
 func (p *pair) compare(src string, c call, supported bool, runs [][]any, got outcome, o runner) string {
 	tb := p.tb
 	tb.Helper()
-	if s, err := stmt.Check(src); err == nil && s != nil && stmttest.HasExpression(s) && slices.ContainsFunc(got.runs(), evaluated) {
+	if s, err := stmt.Check(src); err == nil && s != nil && (stmttest.HasExpression(s) || upsertOf(s) != nil) && slices.ContainsFunc(got.runs(), evaluated) {
 		// Also where another run is refused.
 		return p.checkEvaluation(src, c, s, runs, got, o)
 	}
@@ -2241,6 +2248,15 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 		for _, args := range runs {
 			if !reaches(src, args) {
 				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, args, got)
+			}
+		}
+	}
+	if !byText {
+		for i, r := range got.runs() {
+			if i < len(runs) {
+				if failure := p.dueRefusal(src, s, runs[i], r, o); failure != "" {
+					return failure
+				}
 			}
 		}
 	}
@@ -2540,8 +2556,9 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 			return "", false
 		}
 		for _, a := range s.Set {
-			if at := slices.IndexFunc(expressionNames(a.Value.Expression), func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 }); at >= 0 {
-				return p.quoted(src, got, expressionNames(a.Value.Expression)[at])
+			// SQLite walks the names of the value as stmttest.MissingName does, also inside a call.
+			if name, missing := stmttest.MissingName(columns, a.Value.Expression); missing {
+				return p.quoted(src, got, name)
 			}
 			if stmttest.ColumnOf(columns, a.Column) < 0 {
 				return "", false
@@ -2674,6 +2691,16 @@ func (p *pair) checkRefused(src string, s stmt.Statement, runs [][]any, got outc
 		switch {
 		case want != "":
 			kind = excusedArgument
+		case len(args) == s.Parameters() && upsertOf(s) != nil:
+			// The engine gives the refusals of an upsert in an order of its own too.
+			refusals := p.upsertRefusals(src, upsertOf(s), boundArgs(args), o)
+			want = fmt.Sprintf("one of %q", refusals)
+			if slices.Contains(refusals, r.err) {
+				want = r.err
+			}
+			if kind == excusedType {
+				kind = excusedUpsert
+			}
 		case len(args) == s.Parameters() && stmttest.HasExpression(s):
 			// The engine gives the refusals of arithmetic in an order of its own, so the rule is that the
 			// refusal is one of them.
@@ -2905,6 +2932,45 @@ func (p *pair) arithmeticRefusals(src string, s stmt.Statement, args []any, o ru
 	return stmttest.ArithmeticRefusals(name, columns, s, args, p.tx != nil && p.tx.readOnly, func(name string) (string, []stmttest.TableColumn) { return p.columnsIn(o, name) })
 }
 
+// upsertOf the statement s: s, if it is an insert with ON CONFLICT, or nil.
+func upsertOf(s stmt.Statement) *stmt.Insert {
+	if i, ok := s.(*stmt.Insert); ok && i.Conflict.Present() {
+		return i
+	}
+	return nil
+}
+
+// dueRefusal of the run r of the statement s of the text src, with the arguments args, on o, where
+// the call runs: where s is an upsert and r gives no error, what is wrong if one of s4ql's refusals
+// was due, as [pair.upsertRefusals] gives them, or "". SQLite's outcome cannot show such a refusal
+// where it converts a value that s4ql refuses.
+func (p *pair) dueRefusal(src string, s stmt.Statement, args []any, r outcome, o runner) string {
+	u := upsertOf(s)
+	if u == nil || r.failed != "" {
+		return ""
+	}
+	if refusals := p.upsertRefusals(src, u, boundArgs(args), o); len(refusals) > 0 {
+		return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and the rules refuse it with one of %q", src, args, r, refusals)
+	}
+	return ""
+}
+
+// upsertRefusals of the upsert s of the text src, with the arguments args as SQLite binds them, on
+// o, where the call runs: where SQLite prepares the text, every "not supported" that s4ql's rules
+// give for it, as [stmttest.UpsertRefusals] gives them, but those of its types in a read-only
+// transaction, which refuses the write first; and where it does not, none, for SQLite's own error.
+func (p *pair) upsertRefusals(src string, s *stmt.Insert, args []any, o runner) []string {
+	tb := p.tb
+	tb.Helper()
+	ps, err := o.PrepareContext(tb.Context(), firstStatement(src))
+	if err != nil {
+		return nil
+	}
+	is.NotError(tb, ps.Close())
+	name, columns := p.columnsIn(o, s.Table.Value)
+	return stmttest.UpsertRefusals(name, columns, s, args, p.tx != nil && p.tx.readOnly)
+}
+
 // evaluated reports whether the run r failed with s4ql's evaluation error of arithmetic.
 func evaluated(r outcome) bool {
 	_, ok := stmttest.EvaluationOf(r.err)
@@ -2945,6 +3011,9 @@ func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]an
 			if !reaches(src, runs[i]) {
 				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, runs[i], got)
 			}
+			if failure := p.dueRefusal(src, s, runs[i], r, o); failure != "" {
+				return failure
+			}
 			var w outcome
 			if res, err := o.ExecContext(tb.Context(), firstStatement(src), runs[i]...); err != nil {
 				w.failed, w.err = "exec", mattnText(tb, err)
@@ -2960,7 +3029,7 @@ func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]an
 		if p.tx != nil && p.tx.readOnly && !isSelect {
 			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v in a read-only transaction, which computes nothing for a write", src, runs[i], r)
 		}
-		if why := p.justify(s, runs[i], r.err, o); why != "" {
+		if why := p.justify(src, s, runs[i], r.err, o); why != "" {
 			return fmt.Sprintf("%q with the arguments %#v: s4ql gives %q, which %v", src, runs[i], r.err, why)
 		}
 		if p.y != nil {
@@ -2981,7 +3050,7 @@ func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]an
 // on o, where the statement runs, as SQLite has the tables that the statement saw: what is wrong
 // with it, or "" for an evaluation error that SQLite's own result of its operator justifies, as
 // [stmttest.Justify] says.
-func (p *pair) justify(s stmt.Statement, args []any, text string, o runner) string {
+func (p *pair) justify(src string, s stmt.Statement, args []any, text string, o runner) string {
 	tb := p.tb
 	tb.Helper()
 	e, ok := stmttest.EvaluationOf(text)
@@ -2996,7 +3065,96 @@ func (p *pair) justify(s stmt.Statement, args []any, text string, o runner) stri
 		is.NotError(tb, rs.Err())
 		return found
 	}
+	if u := upsertOf(s); u != nil {
+		return p.justifyUpsert(src, u, args, e, o)
+	}
 	return stmttest.Justify(s, boundArgs(args), e.Kind, e.Op, e.Span.Start, nil, rows)
+}
+
+// justifyUpsert is [pair.justify] of the upsert s of the text src, with the arguments args, whose evaluation error is
+// e, on o, as SQLite has the tables before the call: SQLite's result of the operator of e alone, on
+// its operands, must show the quirk of its kind, for its one value where the operator has no column,
+// and otherwise on the row of the conflict that the documented rule evaluates it on, as
+// [stmttest.UpsertQuirkQuery] gives the query. The queries of a row write, so they run in a
+// transaction of their own, or in a savepoint of the open one, that is rolled back.
+func (p *pair) justifyUpsert(src string, s *stmt.Insert, args []any, e *expr.Error, o runner) string {
+	tb := p.tb
+	tb.Helper()
+	ctx := tb.Context()
+	bound := boundArgs(args)
+	_, columns := p.columnsIn(o, s.Table.Value)
+	var key string
+	for _, c := range columns {
+		if c.PrimaryKey {
+			key = c.Name
+		}
+	}
+	// probe runs q on o, rolled back, and gives whether it gave a row, how many it changed, and
+	// SQLite's error, or "".
+	probe := func(q string, args []any) (bool, int64, string) {
+		r := o
+		var end func()
+		switch o := o.(type) {
+		case queryer:
+			tx, err := o.BeginTx(ctx, nil)
+			is.NotError(tb, err)
+			r, end = tx, func() { is.NotError(tb, tx.Rollback()) }
+		default:
+			_, err := o.ExecContext(ctx, "savepoint s4ql_quirk")
+			is.NotError(tb, err)
+			end = func() {
+				for _, q := range []string{"rollback to s4ql_quirk", "release s4ql_quirk"} {
+					_, err := o.ExecContext(ctx, q)
+					is.NotError(tb, err)
+				}
+			}
+		}
+		defer end()
+		rows, err := r.QueryContext(ctx, q, args...)
+		if err != nil {
+			return false, 0, mattnText(tb, err)
+		}
+		found := rows.Next()
+		for rows.Next() {
+		}
+		if err := rows.Err(); err != nil {
+			is.NotError(tb, rows.Close())
+			return false, 0, mattnText(tb, err)
+		}
+		is.NotError(tb, rows.Close())
+		var changes int64
+		is.NotError(tb, r.QueryRowContext(ctx, "select changes()").Scan(&changes))
+		return found, changes, ""
+	}
+	// The rule evaluates an expression with a column only on a conflict, where SQLite takes the
+	// proposed row, which the engine checks before it computes such an expression.
+	q, qArgs := stmttest.UpsertConflictQuery(s, src, key, bound)
+	_, inserted, failed := probe(q, qArgs)
+	conflict := failed == "" && inserted == 0
+	at := false
+	for _, site := range stmttest.UpsertSites(s.Conflict) {
+		for _, n := range stmttest.Operators(site.Root) {
+			if n.Span.Start != e.Span.Start || n.Kind.String() != e.Op.String() {
+				continue
+			}
+			at = true
+			if !conflict && site.Root.HasColumn() {
+				continue
+			}
+			q, qArgs := stmttest.UpsertQuirkQuery(s, src, key, site, n, e.Kind, bound)
+			found, _, failed := probe(q, qArgs)
+			if failed != "" {
+				tb.Fatalf("%q: SQLite gives %v", q, failed)
+			}
+			if found {
+				return ""
+			}
+		}
+	}
+	if !at {
+		return "is at no operator of the statement"
+	}
+	return "SQLite's result of its operator justifies it for no value that the rule evaluates"
 }
 
 // subqueriesIn the select, the update, or the delete s: its scalar subqueries, of slice 15, in the
@@ -3661,6 +3819,31 @@ var sequences = map[string][]step{
 		{callExec, "delete from t2 where -i2 < -100", "exec: 2 affected, last insert id 0"},
 		{callQuery, "select * from t2", `query: columns "v2,s2,i2,r2" of types "INT,TEXT,INT,REAL", rows ["int64:12" "string:b" "int64:4" "float64:1e+308"]`},
 		{callExec, "drop table t2", "exec: 2 affected, last insert id 0"},
+	},
+	// Text in expressions: what s4ql computes is SQLite's, and its refusals of types are those of its
+	// rules, also for a statement that is prepared and then run.
+	"text in expressions": {
+		{callExec, "create table t3 (v3 text primary key, w3 text, b3 blob, n3 int) strict, without rowid", "exec: 0 affected, last insert id 0"},
+		{callExec, "insert into t3 values ('m_00ff', 'A', x'00ff', 1)", "exec: 1 affected, last insert id 0"},
+		{callExec, "insert into t3 values ('b', 'Bc', x'', 2)", "exec: 1 affected, last insert id 0"},
+		{callPrepareExec, "update t3 set w3 = 'a' where lower(w3) = 'a'", "prepare, exec: 1 affected, last insert id 0"},
+		{callPrepareQuery, "select v3 from t3 where v3 = 'm_' || lower(hex(b3))", `prepare, query: columns "v3" of types "TEXT", rows ["string:m_00ff"]`},
+		{callQueryRow, "select v3 from t3 where lower(w3) || v3 = 'bcb'", `query row: row ["string:b"]`},
+		{callQuery, "select v3 from t3 where hex(b3) = ''", `query: columns "v3" of types "TEXT", rows ["string:b"]`},
+		{callExecArgument, "update t3 set w3 = lower(w3) || 'x' where n3 = ?", "exec with an argument: 1 affected, last insert id 0"},
+		{callQuery, "select v3 from t3 where n3 = lower(w3)", "query: query failed with s4ql: not supported: an expression of type text compared with the column t3.n3 of type INT"},
+		{callExec, "update t3 set w3 = n3 || 'a'", "exec: exec failed with s4ql: not supported: column of type INT in a concatenation (at offset 19)"},
+		{callPrepareExec, "update t3 set b3 = hex(b3)", "prepare, exec: exec failed with s4ql: not supported: an expression of type text for the column t3.b3 of type BLOB"},
+		{callBegin, "", "begin"},
+		{callExec, "update t3 set v3 = 'm_' || lower(hex(b3)) || v3 returning v3", ""},
+		{callQuery, "select * from t3 where lower(w3) = 'ax'", ""},
+		{callRollback, "", "rollback"},
+		{callQuery, "select * from t3", ""},
+		// SQLite walks on after a missing name inside a call, and a later one replaces it.
+		{callExec, `update t3 set w3 = lower("nosuch") || "nosuch2"`, ""},
+		{callExec, `update t3 set w3 = lower(nosuch) || "nosuch2"`, ""},
+		{callExec, `update t3 set w3 = lower("nosuch") || w3`, ""},
+		{callExec, "drop table t3", "exec: 2 affected, last insert id 0"},
 	},
 	"the example of slice 1": {
 		{callExec, t1, "exec: 0 affected, last insert id 0"},
@@ -4689,6 +4872,139 @@ func TestPair(t *testing.T) {
 			}
 			p.close()
 		}
+	})
+
+	t.Run("should run upserts as SQLite does, through Exec, Query with RETURNING, Prepare, in transactions, and among several statements, and judge their refusals and evaluation errors by s4ql's rules", func(t *testing.T) {
+		w := newWorld(t)
+		for _, pinned := range []bool{true, false} {
+			p := newPair(t, w, pinned, nil)
+			for _, src := range []string{t4, "insert into t4 values (1, 'a', 1.5, null)", "insert into t4 values (2, 'b', 2.5, 7)"} {
+				_, failure := p.step(src, callExec, false)
+				is.Equal(t, "", failure)
+			}
+			for _, c := range []struct {
+				src  string
+				call call
+				runs [][]any
+				want string
+			}{
+				{"insert into t4 values (3, 'c', 3.5, 3) on conflict (v1) do nothing", callExec, nil, "exec: 1 affected, last insert id 0"},
+				{"insert into t4 values (3, 'd', 4.5, 4) on conflict (v1) do nothing", callExec, nil, "exec: 0 affected, last insert id 0"},
+				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = excluded.v2 || '', v4 = 1 returning *", callQuery, nil, `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:1" "<nil>:<nil>" "float64:1.5" "int64:1"]`},
+				{"insert into t4 (v1, v2, v3) values (1, 'B', 0.5) on conflict (v1) do update set v2 = lower(excluded.v2) || v2 returning v2", callQuery, nil, `query: columns "v2" of types "TEXT", rows ["<nil>:<nil>"]`},
+				{"insert into t4 (v1, v2, v3) values (1, 'B', 0.5) on conflict (v1) do update set v2 = lower(excluded.v2) returning v2", callQuery, nil, `query: columns "v2" of types "TEXT", rows ["string:b"]`},
+				{"insert into t4 (v1, v2, v3) values (1, 'b', 0.5) on conflict (v1) do update set v2 = excluded.v2, v4 = 1 returning *", callQuery, nil, `query: columns "v1,v2,v3,v4" of types "INT,TEXT,REAL,INT", rows ["int64:1" "string:b" "float64:1.5" "int64:1"]`},
+				{"insert into t4 (v1, v3, v4) values (?, ?, ?) on conflict (v1) do update set v4 = v4 + excluded.v4 where v4 < ? returning v1, v4", callPrepareQuery, [][]any{{int64(2), 0.5, int64(10), int64(100)}}, `prepare, query: columns "v1,v4" of types "INT,INT", rows ["int64:2" "int64:17"]`},
+				{"insert into t4 (v1, v3, v4) values (?, ?, ?) on conflict (v1) do update set v4 = v4 + excluded.v4 where v4 < ?", callPrepareExecRuns, [][]any{{int64(2), 0.5, int64(10), int64(100)}, {int64(2), 0.5, int64(10), int64(20)}, {int64(5), 0.5, int64(1), int64(0)}, {int64(2), 0.5, int64(9223372036854775807), int64(100)}},
+					"prepare, exec several times: 1 affected, last insert id 0; then: 0 affected, last insert id 0; then: 1 affected, last insert id 0; then: exec failed with s4ql: integer overflow in + (at offset 81)"},
+				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = excluded.v3", callExec, nil, "exec: exec failed with s4ql: not supported: the column excluded.v3 of type REAL for the column t4.v4 of type INT"},
+				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = lower(excluded.v2)", callPrepareExec, nil, "prepare, exec: 1 affected, last insert id 0"},
+				{"insert into t4 (v1, v3) values (?, ?) on conflict (v1) do update set v2 = lower(excluded.v2)", callPrepareExec, [][]any{{int64(1), math.NaN()}}, "prepare, exec: exec failed with s4ql: not supported: argument 2, which is a real that is not a number"},
+				// Text of both rows, prepared and run several times, with NULL, and its refusals.
+				{"insert into t4 (v1, v2, v3) values (?, ?, 0.5) on conflict (v1) do update set v2 = 'm_' || lower(hex(?)) || v2 where excluded.v2 || '' = ? returning v2", callPrepareQuery, [][]any{{int64(2), "q", []byte{0xab}, "q"}}, `prepare, query: columns "v2" of types "TEXT", rows ["string:m_abb"]`},
+				{"insert into t4 (v1, v2, v3) values (?, ?, 0.5) on conflict (v1) do update set v2 = v2 || excluded.v2", callPrepareExecRuns, [][]any{{int64(2), "c"}, {int64(2), nil}, {int64(1), "d"}, {int64(2), "e"}},
+					"prepare, exec several times: 1 affected, last insert id 0; then: 1 affected, last insert id 0; then: 1 affected, last insert id 0; then: 1 affected, last insert id 0"},
+				{"insert into t4 (v1, v3) values (2, 0.5) on conflict (v1) do update set v4 = lower(excluded.v2)", callExec, nil, "exec: exec failed with s4ql: not supported: an expression of type text for the column t4.v4 of type INT"},
+				{"insert into t4 (v1, v3) values (2, 0.5) on conflict (v1) do update set v2 = 'a' where lower(v2) = excluded.v3", callExec, nil, "exec: exec failed with s4ql: not supported: an expression of type real compared with an expression of type text"},
+				{"insert into t4 (v1, v3) values (2, 0.5) on conflict (v1) do update set v2 = ? || v2", callPrepareExecRuns, [][]any{{int64(1)}, {2.5}},
+					"prepare, exec several times: exec failed with s4ql: not supported: argument 1 in a concatenation, which is an integer (at offset 76); then: exec failed with s4ql: not supported: argument 1 in a concatenation, which is a real (at offset 76)"},
+				{"insert into t4 (v1, v3) values (?, ?) on conflict (v1) do update set v2 = lower(excluded.v2)", callExec, [][]any{{int64(1), math.NaN()}}, "exec: exec failed with s4ql: not supported: argument 2, which is a real that is not a number"},
+				{"insert into t4 (v1) values (1) on conflict (v1) do update set v4 = 9223372036854775807 + 1, v3 = v3 * 2.0", callExec, nil, "exec: exec failed with s4ql: integer overflow in + (at offset 67)"},
+				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v2) do nothing", callExec, nil, "exec: exec failed with 1/1: ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint"},
+				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = 9223372036854775807 + v1", callExec, nil, "exec: exec failed with s4ql: integer overflow in + (at offset 76)"},
+				{"insert into t4 (v1, v3) values (1, null) on conflict (v1) do nothing", callExec, nil, "exec: exec failed with 19/1299: NOT NULL constraint failed: t4.v3"},
+				{"", callBegin, nil, ""},
+				{"insert into t4 (v1, v2, v3) values (1, 'q', 0.5) on conflict (v1) do update set v2 = excluded.v2 returning v2", callQuery, nil, `query: columns "v2" of types "TEXT", rows ["string:q"]`},
+				{"insert into t4 (v1, v2, v3) values (9, 'q', 0.5) on conflict (v1) do nothing", callExec, nil, "exec: 1 affected, last insert id 0"},
+				{"", callRollback, nil, ""},
+				{"", callBeginReadOnly, nil, ""},
+				{"insert into t4 (v1, v2, v3) values (1, 'q', 0.5) on conflict (v1) do nothing", callExec, nil, "exec: exec failed with 8/8: attempt to write a readonly database"},
+				{"", callRollback, nil, ""},
+				{"insert into t4 (v1, v2, v3) values (1, 'r', 0.5) on conflict (v1) do nothing; insert into t4 (v1, v2, v3) values (1, 's', 0.5) on conflict (v1) do update set v2 = excluded.v2 || excluded.v2", callExec, nil, "exec: 1 affected, last insert id 0"},
+				{"insert into t4 (v1, v2, v3) values (1, 'r', 0.5) on conflict (v1) do nothing; insert into t4 (v1, v2, v3) values (1, 's', 0.5) on conflict (v1) do update set v2 = excluded.v2; insert into t4 (v1, v2, v3) values (8, 't', 0.5) on conflict (v1) do nothing", callExec, nil, "exec: 1 affected, last insert id 0"},
+			} {
+				runs := c.runs
+				if runs == nil {
+					runs = fixedRuns(c.call)
+				}
+				got, failure := p.stepRuns(c.src, c.call, false, runs)
+				is.Equal(t, "", failure, c.src)
+				if c.want != "" {
+					is.Equal(t, c.want, got.String(), c.src)
+				}
+			}
+			is.Equal(t, "", p.compareTables())
+			p.restart(true)
+			is.Equal(t, "", p.compareTables())
+			p.close()
+		}
+	})
+
+	t.Run("should fail an upsert's refusal that is none of the rules', a refusal that was due and not given, and an evaluation error that SQLite does not justify", func(t *testing.T) {
+		p := newPair(t, newWorld(t), true, nil)
+		for _, src := range []string{t4, "insert into t4 values (1, 'a', 1.5, null)", "insert into t4 values (2, 'b', 2.5, 7)"} {
+			_, failure := p.step(src, callExec, false)
+			is.Equal(t, "", failure)
+		}
+		// check compares s4ql's outcome got of src with the runs, and requires that it fails where fails.
+		check := func(src string, runs [][]any, got outcome, fails bool) {
+			t.Helper()
+			failure := p.compare(src, callExec, false, runs, got, p.o)
+			is.Equal(t, fails, failure != "", fmt.Sprint(src, " with the runs ", runs, " and the outcome ", got, ": ", failure))
+		}
+		const refused = "insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = excluded.v3"
+		refusal := run(t, p.s, callExec, refused, [][]any{nil}, s4qlText)
+		is.Equal(t, "exec: exec failed with s4ql: not supported: the column excluded.v3 of type REAL for the column t4.v4 of type INT", refusal.String())
+		check(refused, [][]any{nil}, refusal, false)
+
+		// A refusal that is none of the rules', of a statement that the rules refuse, and of one that
+		// they take.
+		wrong := refusal
+		wrong.err = "s4ql: not supported: the column excluded.v2 of type TEXT for the column t4.v4 of type INT"
+		check(refused, [][]any{nil}, wrong, true)
+		check("insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = excluded.v4", [][]any{nil}, refusal, true)
+
+		// An evaluation error of an expression with a column, which SQLite justifies on the row of the
+		// conflict and not for another value or where the table has no row of the key, and of a constant.
+		const onRow = "insert into t4 (v1, v3, v4) values (?, 0.5, ?) on conflict (v1) do update set v4 = v4 + excluded.v4"
+		overflow := run(t, p.s, callExec, onRow, [][]any{{int64(2), int64(math.MaxInt64)}}, s4qlText)
+		is.Equal(t, "exec: exec failed with s4ql: integer overflow in + (at offset 83)", overflow.String())
+		check(onRow, [][]any{{int64(2), int64(math.MaxInt64)}}, overflow, false)
+		check(onRow, [][]any{{int64(2), int64(1)}}, overflow, true)
+		check(onRow, [][]any{{int64(9), int64(math.MaxInt64)}}, overflow, true)
+		const constant = "insert into t4 (v1, v3, v4) values (9, 0.5, 1) on conflict (v1) do update set v4 = ? + 1"
+		overflow = run(t, p.s, callExec, constant, [][]any{{int64(math.MaxInt64)}}, s4qlText)
+		is.True(t, evaluated(overflow), overflow.String())
+		check(constant, [][]any{{int64(math.MaxInt64)}}, overflow, false)
+		check(constant, [][]any{{int64(1)}}, overflow, true)
+
+		// A refusal of text, by the rules of text in an update, and one that the rules do not give.
+		const text = "insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = excluded.v4 || v2"
+		refusal = run(t, p.s, callExec, text, [][]any{nil}, s4qlText)
+		is.Equal(t, "exec: exec failed with s4ql: not supported: column of type INT in a concatenation (at offset 76)", refusal.String())
+		check(text, [][]any{nil}, refusal, false)
+		wrong = refusal
+		wrong.err = "s4ql: not supported: an expression of type text for the column t4.v2 of type TEXT"
+		check(text, [][]any{nil}, wrong, true)
+
+		// No error where a refusal was due, where SQLite converts the value that s4ql refuses, of DO
+		// UPDATE and of the proposed row, also in a run of a prepared statement after one with an
+		// evaluation error. They come last, since a rule that missed them would run them in SQLite.
+		done := outcome{call: callExec, affected: "1", lastID: "0"}
+		check(text, [][]any{nil}, done, true)
+		check("insert into t4 (v1, v3) values (9, 0.5) on conflict (v1) do update set v4 = lower(excluded.v2)", [][]any{nil}, done, true)
+		const due = "insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = 'a' where lower(v2) = ?"
+		failure := p.compare(due, callExec, false, [][]any{{int64(1)}}, outcome{call: callExec, affected: "0", lastID: "0"}, p.o)
+		is.True(t, strings.Contains(failure, "the rules refuse it"), failure)
+		check("insert into t4 (v1, v3) values (1, 2.0) on conflict (v1) do update set v4 = excluded.v3", [][]any{nil}, done, true)
+		check("insert into t4 (v1, v3, v4) values (9, 0.5, 2.0) on conflict (v1) do nothing", [][]any{nil}, done, true)
+		const runsOf = "insert into t4 (v1, v3, v4) values (?, ?, ?) on conflict (v1) do update set v4 = v4 + excluded.v4"
+		runs := [][]any{{int64(2), 0.5, int64(math.MaxInt64)}, {int64(1), 0.5, 2.0}}
+		failed := run(t, p.s, callExec, runsOf, runs[:1], s4qlText)
+		is.True(t, evaluated(failed), failed.String())
+		failed.call, failed.next = callPrepareExecRuns, []outcome{{affected: "1", lastID: "0"}}
+		failure = p.compare(runsOf, callPrepareExecRuns, false, runs, failed, p.o)
+		is.True(t, strings.Contains(failure, "the rules refuse it"), failure)
 	})
 
 	t.Run("should run goqite's receive with its scalar subquery, through Query and a prepared statement run several times, with rows that tie broken by goqite's index, and none on an empty queue", func(t *testing.T) {

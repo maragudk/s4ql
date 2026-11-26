@@ -181,10 +181,30 @@ func ended(ctx context.Context, err error) bool {
 	return ctxErr != nil && errors.Is(err, ctxErr)
 }
 
+// endedError is the error of ctx, which has ended: [context.Canceled] or [context.DeadlineExceeded],
+// as ctx.Err gives them, and [context.DeadlineExceeded] for a context that was canceled with exactly
+// that cause, which is how a timeout can end a context derived from it. Any other cause of the end is neither wrapped nor
+// named: a context can be ended with any error, such as one that an earlier call of this package
+// returned, and an error of a call must not match it, nor read as if it said what the cause says.
+func endedError(ctx context.Context) error {
+	err := ctx.Err()
+	if errors.Is(err, context.Canceled) && context.Cause(ctx) == context.DeadlineExceeded {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
 // isTooBig reports whether err is SQLite's SQLITE_TOOBIG, "string or blob too big".
 func isTooBig(err error) bool {
 	var sqliteErr *sqlite.Error
 	return errors.As(err, &sqliteErr) && sqliteErr.Code.Primary() == 18
+}
+
+// isLocked reports whether err is SQLite's SQLITE_LOCKED, "database table is locked": a conflict
+// within one connection, such as a statement that is still open.
+func isLocked(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code.Primary() == 6
 }
 
 // invalidf is an error that wraps [ErrInvalid].

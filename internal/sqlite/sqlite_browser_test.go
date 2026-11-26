@@ -421,6 +421,56 @@ func firstColumnName(t *testing.T, c *sqlite.Conn, sql string) string {
 	return s.ColumnName(0)
 }
 
+func TestConn_NoCheckpointOnClose(t *testing.T) {
+	// wal opens a database in WAL mode at a new path, with a row in the log, which a checkpoint at
+	// the close would copy into the file.
+	wal := func(t *testing.T) (*sqlite.Conn, string) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "a.db")
+		c, err := sqlite.Open(path)
+		is.NotError(t, err)
+		is.NotError(t, c.Exec("pragma journal_mode = wal"))
+		is.NotError(t, c.Exec("pragma wal_autocheckpoint = 0"))
+		is.NotError(t, c.Exec("create table t (k integer primary key) strict"))
+		is.NotError(t, c.Exec("insert into t values (1)"))
+		return c, path
+	}
+	walSize := func(t *testing.T, path string) int64 {
+		t.Helper()
+		info, err := os.Stat(path + "-wal")
+		if errors.Is(err, os.ErrNotExist) {
+			return -1
+		}
+		is.NotError(t, err)
+		return info.Size()
+	}
+
+	t.Run("should checkpoint and delete the write-ahead log at the close without it, as the cgo binding does", func(t *testing.T) {
+		c, path := wal(t)
+		is.True(t, walSize(t, path) > 0)
+		is.NotError(t, c.Close())
+		is.Equal(t, int64(-1), walSize(t, path))
+	})
+
+	t.Run("should leave the write-ahead log at the close, and the next open should recover the row from it", func(t *testing.T) {
+		c, path := wal(t)
+		before := walSize(t, path)
+		is.NotError(t, c.NoCheckpointOnClose())
+		is.NotError(t, c.Close())
+		is.Equal(t, before, walSize(t, path))
+
+		c = open(t, path)
+		is.Equal(t, int64(1), queryInt64(t, c, "select k from t"))
+	})
+
+	t.Run("should refuse a closed connection", func(t *testing.T) {
+		c, err := sqlite.Open(":memory:")
+		is.NotError(t, err)
+		is.NotError(t, c.Close())
+		is.Equal(t, sqlite.ResultCode(codeMisuse), code(t, c.NoCheckpointOnClose()))
+	})
+}
+
 func TestWAL(t *testing.T) {
 	t.Run("should share a database in WAL mode between connections, with snapshots and one writer", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "a.db")

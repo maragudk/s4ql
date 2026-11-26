@@ -1315,7 +1315,8 @@ func zeroValue(typ s4qlpb.Type) *s4qlpb.Value {
 // transaction of the cache, which records that name as the position of the cache. The swap is the
 // commit: the transaction is committed when the swap is applied, and not before. If the cache then
 // fails to commit, Commit still returns nil, and the instance stops, so that no read starts on a
-// cache that lacks the transaction. A transaction that changed nothing writes no commit object,
+// cache that lacks the transaction. The same holds when the checkpoint of the cache that may follow
+// the commit fails. A transaction that changed nothing writes no commit object,
 // and commits if the lease is valid by the clocks, as a read does.
 //
 // If the swap ends without an answer, the instance asks the store until it knows: it sends the
@@ -1429,6 +1430,11 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 				_ = d.stop(ctx, fmt.Errorf("%w: the commit of the cache after the manifest swap: %w", ErrLocal, err))
 				outcome = "committed_and_stopped"
 			}
+		}
+		// The transaction is committed in the log and in the cache, so a checkpoint that fails stops
+		// the instance and still leaves the commit acknowledged. The phase of the cache includes it.
+		if outcome == "committed" && d.checkpoint(ctx) != nil {
+			outcome = "committed_and_stopped"
 		}
 		report.phase(clock.phase(attrDurationCache))
 		return nil
@@ -1587,7 +1593,7 @@ func (tx *Tx) publish(ctx context.Context, name format.Name, attempts *int) (pub
 		if ctx.Err() != nil {
 			if !f.unknown {
 				// Every attempt was refused, or none was sent.
-				return unpublished, after(context.Cause(ctx), last)
+				return unpublished, after(endedError(ctx), last)
 			}
 			if d.bugs.ackUnknown {
 				// The planted bug.
@@ -1602,7 +1608,7 @@ func (tx *Tx) publish(ctx context.Context, name format.Name, attempts *int) (pub
 			}
 			d.wakeLocked()
 			d.mu.Unlock()
-			return unknown, after(context.Cause(ctx), last)
+			return unknown, after(endedError(ctx), last)
 		}
 
 		*attempts++
@@ -1685,7 +1691,7 @@ func (tx *Tx) inLog(ctx context.Context, head, name format.Name) (publishing, er
 			d.mu.Lock()
 			d.unresolved = true
 			d.mu.Unlock()
-			return unknown, after(context.Cause(ctx), err)
+			return unknown, after(endedError(ctx), err)
 		}
 		_ = d.host.Sleep(ctx, wait)
 		wait = min(2*wait, retryAfter)

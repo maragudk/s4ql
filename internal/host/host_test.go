@@ -3,6 +3,7 @@ package host_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -86,6 +87,22 @@ func TestNew(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		is.Error(t, context.Canceled, s.Acquire(ctx))
+	})
+
+	t.Run("should give the error of the context, and not its cause, from each wait whose context ended with a cause", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			h := host.New()
+			release := make(chan struct{})
+			defer close(release)
+			task := h.Go(t.Context(), "worker", func(context.Context) { <-release })
+			s := h.NewSemaphore("s", 1)
+			cause := errors.New("another goroutine failed")
+			ctx, cancel := context.WithCancelCause(t.Context())
+			cancel(cause)
+			for name, err := range map[string]error{"wait": task.Wait(ctx), "sleep": h.Sleep(ctx, time.Hour), "acquire": s.Acquire(ctx)} {
+				is.True(t, errors.Is(err, context.Canceled) && !errors.Is(err, cause), name, fmt.Sprint(err))
+			}
+		})
 	})
 
 	t.Run("should panic on the release of a semaphore that is not held", func(t *testing.T) {

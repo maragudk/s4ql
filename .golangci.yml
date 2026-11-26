@@ -21,3 +21,9 @@ linters:
           deny:
             - pkg: maragu.dev/s4ql/internal/sqlite/faultvfs
               desc: it makes the files of SQLite fail on demand, which only tests may do
+        coretest:
+          files:
+            - "!$test"
+          deny:
+            - pkg: maragu.dev/s4ql/internal/core/coretest
+              desc: it turns the syncs of the cache off, which only tests may do

@@ -26,6 +26,7 @@ import (
 
 	"maragu.dev/s4ql"
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/core/coretest"
 	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
@@ -53,9 +54,12 @@ type world struct {
 }
 
 // newWorld, with a directory for the caches. When the test ends, after the cleanups that close the
-// instances, it fails the test for each cache whose write-ahead log is left, which SQLite deletes
-// when the last connection to a cache closes: an instance that is not closed, or the rows of a query
-// that still hold a read. A test that has failed already is not checked.
+// instances, it fails the test for each cache that a connection still holds: an instance that is not
+// closed, or the rows of a query that still hold a read. SQLite deletes the write-ahead log when the
+// last connection to a cache closes, but the log of an instance that stopped for a local failure
+// can stay after its close. So for each cache with a log, the check opens a
+// connection of its own, reads the cache, and closes the connection, which deletes the log if no
+// other connection holds the cache. A test that has failed already is not checked.
 func newWorld(t *testing.T) *world {
 	t.Helper()
 	h := sim.NewFree(sim.Buggify{})
@@ -65,10 +69,24 @@ func newWorld(t *testing.T) *world {
 			return
 		}
 		is.NotError(t, filepath.WalkDir(w.dir, func(path string, _ fs.DirEntry, err error) error {
-			if strings.HasSuffix(path, "-wal") {
-				t.Errorf("a connection to the cache %v is still open", path)
+			cache, ok := strings.CutSuffix(path, "-wal")
+			if err != nil || !ok {
+				return err
 			}
-			return err
+			c, err := sqlite.OpenExistingVFS(cache, "")
+			if err != nil {
+				return err
+			}
+			if err := errors.Join(c.Exec("select count(*) from sqlite_schema"), c.Close()); err != nil {
+				return err
+			}
+			switch _, err := os.Stat(path); {
+			case err == nil:
+				t.Errorf("a connection to the cache %v is still open", cache)
+			case !errors.Is(err, fs.ErrNotExist):
+				return err
+			}
+			return nil
 		}))
 	})
 	return w
@@ -77,8 +95,15 @@ func newWorld(t *testing.T) *world {
 // options of the storage core for the tests. A slow machine must not make the cache busy or the
 // lease run out, so the waits for both are far longer than any test takes, and an instance that
 // has the lease keeps it until it closes. A spare looks often for a lease that was released, so that
-// no test waits long for it.
+// no test waits long for it. SQLite does not sync the cache to disk, which a test that neither fails
+// a sync nor crashes the operating system cannot tell from syncs; [syncedCoreOptions] syncs.
 func coreOptions() core.Options {
+	return coretest.SyncOff(syncedCoreOptions())
+}
+
+// syncedCoreOptions are [coreOptions] with the syncs of the cache that [s4ql.Open] has: the storage
+// core's default.
+func syncedCoreOptions() core.Options {
 	return core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Watch: 10 * time.Millisecond}
 }
 
@@ -618,6 +643,54 @@ func cacheIdentity(t *testing.T, dir string) string {
 	return identity
 }
 
+func TestOpen_sync(t *testing.T) {
+	// synced opens an instance with the syncs of the cache that Open has, through a VFS that fails
+	// operations on demand, and waits until it serves.
+	synced := func(t *testing.T) (*world, *sql.DB, *faultvfs.VFS) {
+		t.Helper()
+		w := newWorld(t)
+		vfs, err := faultvfs.New()
+		is.NotError(t, err)
+		// The VFS is closed after the instance, whose cleanup is registered later.
+		t.Cleanup(func() { is.NotError(t, vfs.Close()) })
+		co := syncedCoreOptions()
+		co.VFS = vfs.Name()
+		db := w.openOn(t, "a", w.client(), co)
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, "create table t2 (k int primary key, b blob) strict, without rowid")
+		return w, db, vfs
+	}
+	stopped := func(t *testing.T, db *sql.DB, cause string) {
+		t.Helper()
+		err := db.PingContext(t.Context())
+		is.Error(t, s4ql.ErrStopped, failed(t, err))
+		is.True(t, strings.Contains(err.Error(), "local I/O failure: "+cause), err.Error())
+		is.True(t, strings.Contains(err.Error(), "(code 1034)"), "not SQLITE_IOERR_FSYNC: "+err.Error())
+	}
+
+	t.Run("should stop the instance at the commit whose sync of the write-ahead log fails, which synchronous = full makes at every commit", func(t *testing.T) {
+		_, db, vfs := synced(t)
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.WAL, Times: 1})
+		// The store has taken the commit before the cache meets the failure, so the insert succeeds.
+		_, err := db.ExecContext(t.Context(), "insert into t2 (k, b) values (1, x'00')")
+		is.NotError(t, err)
+		is.Equal(t, 1, vfs.Failures())
+		stopped(t, db, "the commit of the cache after the manifest swap")
+	})
+
+	t.Run("should stop the instance when the core's checkpoint of the cache fails, from 1000 frames in the write-ahead log", func(t *testing.T) {
+		_, db, vfs := synced(t)
+		// Only a checkpoint that copies the whole log syncs the file of the cache. A blob of 5 MB
+		// fills more than 1000 pages of 4096 bytes, so the commit of the cache leaves more than
+		// 1000 frames in the log, and the core checkpoints after it.
+		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.MainDB, Times: 1})
+		_, err := db.ExecContext(t.Context(), "insert into t2 (k, b) values (1, ?)", make([]byte, 5<<20))
+		is.NotError(t, err)
+		is.Equal(t, 1, vfs.Failures())
+		stopped(t, db, "a checkpoint of the cache")
+	})
+}
+
 func TestOptions_Logger(t *testing.T) {
 	t.Run("should log the open, the close, and the first answer of a stop, with the events of the core and of the engine", func(t *testing.T) {
 		w := newWorld(t)
@@ -790,7 +863,7 @@ func TestRegister(t *testing.T) {
 // answers every request with an error, because the tests use no real bucket: it shows what the
 // options reach the store with, and that an instance whose store fails is a spare.
 func TestOpen_s3(t *testing.T) {
-	isolate(t)
+	s3test.Isolate(t)
 	// requests to the server, of which the test reads the first of each instance. It holds more
 	// than the instances of the test send before they are closed, and a request beyond it is dropped.
 	requests := make(chan string, 1000)
@@ -923,7 +996,7 @@ func TestOpen_realBucket(t *testing.T) {
 	is.NotError(t, err)
 	// The settings reach the store through the options only, so the SDK is left nothing else to take
 	// them from.
-	isolate(t)
+	s3test.Isolate(t)
 	dir := t.TempDir()
 	// options of the database under the prefix, with the cache directory of the given name among
 	// those of the database, since a cache directory is for one database. The close timeout is long,
@@ -1052,22 +1125,6 @@ func TestOpen_realBucket(t *testing.T) {
 		is.NotError(t, db.PingContext(t.Context()))
 		is.EqualSlice(t, []int64{1}, values(t, db, select1))
 	})
-}
-
-// isolate the test from the AWS configuration of the machine that runs it: no shared files, and no
-// settings of the SDK from the environment.
-func isolate(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
-	for _, name := range []string{
-		"AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
-		"AWS_CA_BUNDLE", "AWS_DEFAULTS_MODE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
-	} {
-		t.Setenv(name, "")
-	}
 }
 
 // faulty is a store that a test makes fail: it can be down, so that every request fails without

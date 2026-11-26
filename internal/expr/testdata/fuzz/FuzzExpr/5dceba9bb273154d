@@ -1,0 +1,5 @@
+go test fuzz v1
+string("lower(heX(\"s\"))")
+[]byte("200000000200000000200000000200000000000\x860\x93Z\xbfZ\xac0\xa90\xd60\xec0\x840\xb0Z\xdbZ")
+[]byte("")
+uint16(0)

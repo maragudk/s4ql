@@ -505,8 +505,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	if nothing, err := c.nothingToWrite(ctx, r, p, args); nothing {
 		return Result{}, nil, err
 	}
-	_, insert := p.(*Insert)
-	if insert && e.bugs.checkOutside {
+	if insert, ok := p.(*Insert); ok && insert.Conflict == nil && e.bugs.checkOutside {
 		// The planted bug: the checks of the insert, in a read transaction of their own.
 		if err := c.checkOutside(ctx, r, p, args); err != nil {
 			return Result{}, nil, err
@@ -529,7 +528,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	order := e.order(p)
 	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit(), e.reading(false))
 	if err != nil {
-		return Result{}, nil, err
+		return built(p, err), nil, err
 	}
 	r.reads(tx, s)
 	if returns {

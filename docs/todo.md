@@ -15,7 +15,7 @@ The list is in the directory [todo](todo), one file per area, one per slice of s
 - [driver.md](todo/driver.md): the public package and the `database/sql` driver.
 - [storage-core.md](todo/storage-core.md): what is open or not built in the storage core.
 - [storage-core-tests.md](todo/storage-core-tests.md): what the tests of the storage core and the simulation harness do not show yet.
-- [ci.md](todo/ci.md): faults seen in CI's jobs that are not fixed.
+- [ci.md](todo/ci.md): faults seen in CI's jobs that are not fixed, and what is open in the rounds of mutation testing in CI.
 - [performance.md](todo/performance.md): performance measurement.
 - [wal-index.md](todo/wal-index.md): the memory-mapped wal-index.
 - [storage-formats.md](todo/storage-formats.md): the manifest and the commit object.
@@ -36,5 +36,9 @@ The list is in the directory [todo](todo), one file per area, one per slice of s
 - [slice-14.md](todo/slice-14.md): slice 14 of the roadmap, `returning` on `insert`, `update`, and `delete`.
 - [slice-15.md](todo/slice-15.md): slice 15 of the roadmap, a scalar subquery in a `where`.
 - [arithmetic.md](todo/arithmetic.md): the piece of work arithmetic, `+`, `-`, `*`, and `/` in `set` and in `where`.
+- [text-functions.md](todo/text-functions.md): the piece of work text functions, `||`, `lower`, and `hex` in `set` and in `where`.
 - [generated-workload.md](todo/generated-workload.md): the profiles and the random streams of the generated checks.
 - [several-statements.md](todo/several-statements.md): the piece of work several statements in one `Exec`.
+- [upserts.md](todo/upserts.md): the piece of work upserts, `insert ... on conflict (key) do nothing` and `do update`.
+- [cache-checkpoints.md](todo/cache-checkpoints.md): the piece of work checkpoints and syncs of the cache, `synchronous = full`.
+- [hegel.md](todo/hegel.md): the property-based tests with Hegel, beside the seeded checks.

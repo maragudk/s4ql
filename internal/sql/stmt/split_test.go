@@ -731,6 +731,9 @@ func FuzzSplit(f *testing.F) {
 	for _, src := range splitNotSaidTexts {
 		f.Add(src)
 	}
+	// Upserts, whose clause the part holds.
+	f.Add("insert into t values (1, 2) on conflict (k) do nothing; insert into t values (?, ?) on conflict (k) do update set v = excluded.v + ? where excluded.v > v returning *")
+	f.Add("insert into t values (1) on conflict (k) do update set v = excluded.v;\n update t set v = ? ; insert into t values (?) on conflict do nothing")
 	f.Fuzz(func(t *testing.T, src string) {
 		parts, err := stmt.Split(src)
 		checkSplit(t, src, parts, err)

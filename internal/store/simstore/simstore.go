@@ -331,6 +331,18 @@ func short(v store.Version) string {
 	return string(v[:min(len(v), 8)])
 }
 
+// ended is the error of ctx if it has ended, as a store gives it: [context.Canceled] or
+// [context.DeadlineExceeded], and never another cause, which [store.Store] rules out. A context
+// that was canceled with exactly the cause [context.DeadlineExceeded], which is how a timeout can
+// end a context derived from it, gives [context.DeadlineExceeded].
+func ended(ctx context.Context) error {
+	err := ctx.Err()
+	if errors.Is(err, context.Canceled) && context.Cause(ctx) == context.DeadlineExceeded {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
 // errorf is an error of a fault.
 func errorf(format string, args ...any) error {
 	return fmt.Errorf("%w: %v", ErrFault, fmt.Sprintf(format, args...))

@@ -90,6 +90,10 @@ func TestRunner_run(t *testing.T) {
 			is.Equal(t, test.layer, res.Layer)
 			is.True(t, strings.Contains(res.Detail, test.detail), res.Detail)
 			is.Equal(t, m.Key, res.Key)
+			is.True(t, res.Build > 0, "no time of the builds")
+			if test.status != statusUncompiled {
+				is.True(t, len(res.Stages) > 0 && res.Stages[0].Layer == layerHand, "no time of the stages")
+			}
 		})
 	}
 
