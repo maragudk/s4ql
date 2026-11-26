@@ -38,6 +38,14 @@ import (
 // that Split read have run, the text fails with the error of the first statement that Split refused,
 // SQLite's syntax error or "not supported", if there is one. The offsets of all errors are in src.
 func (c *Conn) ExecAll(ctx context.Context, src string, args ...*s4qlpb.Value) (Result, error) {
+	if c.e.bugs.oneCommit && c.tx == nil {
+		return c.inOneCommit(ctx, src, args)
+	}
+	return c.execAll(ctx, src, args)
+}
+
+// execAll is [Conn.ExecAll] of src with args.
+func (c *Conn) execAll(ctx context.Context, src string, args []*s4qlpb.Value) (Result, error) {
 	start := c.e.host.Monotonic()
 	parts, failed := c.split(ctx, src, start)
 	if err := before(parts, failed, len(args)); err != nil {
@@ -45,11 +53,23 @@ func (c *Conn) ExecAll(ctx context.Context, src string, args ...*s4qlpb.Value) (
 		return Result{}, err
 	}
 	one := len(parts) == 1 && failed == nil
+	var text *textRun
+	if c.e.bugs.ofText() && !one {
+		text = &textRun{src: src, args: args}
+		ctx = context.WithValue(ctx, textKey{}, text)
+		defer text.commit(ctx)
+	}
 	var res Result
+	// first is the error of the first statement that failed, with the planted bug goOn.
+	var first error
 	used := 0
 	for i, p := range parts {
 		if i > 0 {
 			start = c.e.host.Monotonic()
+		}
+		if text != nil {
+			text.commit(ctx)
+			text.follows = i < len(parts)-1
 		}
 		n := p.Statement.Parameters()
 		take := args[used:min(len(args), used+n)]
@@ -63,8 +83,20 @@ func (c *Conn) ExecAll(ctx context.Context, src string, args ...*s4qlpb.Value) (
 		}
 		r, err := c.execPart(ctx, src, p, take, count, start)
 		used += len(take)
-		if r.SetsChanges {
+		// The planted bug firstResult keeps the result of the first statement that sets one.
+		if r.SetsChanges && (!c.e.bugs.firstResult || !res.SetsChanges) {
 			res = r
+		}
+		if err != nil && c.e.bugs.undoInTx && i > 0 && c.tx != nil && c.tx.write != nil {
+			// The planted bug: the failure undoes the transaction.
+			c.undo(ctx)
+		}
+		if err != nil && c.e.bugs.goOn {
+			// The planted bug: the statements after the one that failed run.
+			if first == nil {
+				first = err
+			}
+			continue
 		}
 		if err != nil {
 			return res, err
@@ -72,9 +104,12 @@ func (c *Conn) ExecAll(ctx context.Context, src string, args ...*s4qlpb.Value) (
 	}
 	if failed != nil {
 		c.refuse(ctx, src[parts[len(parts)-1].Span.End:], c.e.host.Monotonic(), failed)
+		if first != nil {
+			return res, first
+		}
 		return res, failed
 	}
-	return res, nil
+	return res, first
 }
 
 // split src with [stmt.Split], and log the event of a statement of the whole text that started at
