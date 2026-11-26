@@ -933,7 +933,7 @@ func TestTypes(t *testing.T) {
 		is.Equal(t, len(typedTables), len(commits(t, w)))
 	})
 
-	t.Run("should store -0.0 as 0.0, give it back as 0.0, take it for the key 0.0, and annotate the argument as given", func(t *testing.T) {
+	t.Run("should store -0.0 as 0.0, give it back as 0.0, take it for the key 0.0, and annotate the statement by its text", func(t *testing.T) {
 		w := newWorld(t)
 		db := w.serve(t, "a")
 		exec(t, db, typedTables[2])
