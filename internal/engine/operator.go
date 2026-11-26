@@ -696,6 +696,12 @@ func (u *update) check(ctx context.Context) error {
 		}
 		break
 	}
+	return u.checkTypes()
+}
+
+// checkTypes of the values that the update sets, in the order of the table, as [update.check] says.
+func (u *update) checkTypes() error {
+	columns := u.table.GetColumns()
 	for _, i := range u.order {
 		position := u.positions[i]
 		into := columnClass(columns[position].GetType())
@@ -1795,6 +1801,12 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 		case n != len(p.Columns):
 			return nil, valuesForColumns(n, len(p.Columns))
 		}
+		key := int(t.GetPrimaryKey()[0])
+		if p.Conflict != nil {
+			if err := conflictNames(t, key, p.Conflict); err != nil {
+				return nil, err
+			}
+		}
 		ret, err := buildReturning(t, p.Returning, b)
 		if err != nil {
 			return nil, err
@@ -1829,7 +1841,17 @@ func buildSink(ctx context.Context, w writer, p Plan, args []*s4qlpb.Value, b bu
 				}
 			}
 		}
-		return &insert{w: w, table: t, key: int(t.GetPrimaryKey()[0]), src: src, exprs: exprs, ret: ret, skipUnique: b.skipUnique, convertReal: b.convertReal}, nil
+		i := insert{w: w, table: t, key: key, src: src, exprs: exprs, ret: ret, skipUnique: b.skipUnique, convertReal: b.convertReal}
+		if p.Conflict == nil {
+			return &i, nil
+		}
+		u := &upsert{insert: i, nothing: p.Conflict.Action == stmt.DoNothing}
+		if !u.nothing {
+			if u.set, u.where, err = (build{r: w, args: args, limit: limit, how: how}).doUpdate(ctx, w, t, p.Conflict); err != nil {
+				return nil, err
+			}
+		}
+		return u, nil
 	}
 	return nil, internalError("a plan of type %T", p)
 }

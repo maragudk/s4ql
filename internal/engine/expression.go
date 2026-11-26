@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -26,18 +27,15 @@ import (
 //     the key or a bound of an index as an argument does. An expression with a column is computed for
 //     each row that the statement reads or changes, and never serves the access.
 
-// textRefusal of the statement s: for an insert with ON CONFLICT, the refusal of [upsertRefusal];
-// for a select, an update, or a delete with a concatenation or a call of a function in an expression,
-// which the engine does not compute yet, the "not supported" of the first such node in the order of
-// the text, the outer one of two at one offset, as `concatenation`, `call of lower`, or `call of
+// textRefusal of the statement s: for a select, an update, a delete, or an upsert with a
+// concatenation or a call of a function in an expression, which the engine does not compute yet, the
+// "not supported" of the first such node in the order of the text, in SET and WHERE or in those of
+// DO UPDATE, the outer one of two at one offset, as `concatenation`, `call of lower`, or `call of
 // hex`; and nil for any other statement. It comes after the checks of the text and of the
 // arguments, and before the database is read, so its answer does not depend on what the database
 // holds: SQLite looks the names inside a call up in an order of its own, which the engine does not
 // copy.
 func textRefusal(s stmt.Statement) error {
-	if err := upsertRefusal(s); err != nil {
-		return err
-	}
 	var roots []stmt.Expression
 	var where []stmt.Condition
 	var subqueries []stmt.Select
@@ -51,6 +49,11 @@ func textRefusal(s stmt.Statement) error {
 		}
 	case *stmt.Delete:
 		where, subqueries = s.Where, s.Subqueries
+	case *stmt.Insert:
+		where = s.Conflict.Where
+		for _, a := range s.Conflict.Set {
+			roots = append(roots, a.Value.Expression)
+		}
 	}
 	for _, q := range subqueries {
 		where = append(where[:len(where):len(where)], q.Where...)
@@ -278,9 +281,13 @@ func valueName(e Expr, v *s4qlpb.Value) (string, error) {
 }
 
 // columnName of the column at position of the table t in a message: "the column t.a of type INT",
-// with the names as the table stores them.
+// with the names as the table stores them, or "the column excluded.a of type INT" for a column of the
+// row that an upsert proposes, of its combined table, as [excludedName] names it.
 func columnName(t *s4qlpb.CreateTable, position int) string {
 	c := t.GetColumns()[position]
+	if name, ok := strings.CutPrefix(c.GetName(), excludedPrefix); ok {
+		return fmt.Sprintf("the column excluded.%v of type %v", name, typeName(c.GetType()))
+	}
 	return fmt.Sprintf("the column %v.%v of type %v", t.GetTable(), c.GetName(), typeName(c.GetType()))
 }
 

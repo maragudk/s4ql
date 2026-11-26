@@ -165,7 +165,7 @@ func checkType(t *s4qlpb.CreateTable, position int, v *s4qlpb.Value, e Expr, use
 	default:
 		return internalError("a value of an expression of type %T", e)
 	}
-	return fmt.Errorf("%w: %v %v the column %v.%v of type %v", stmt.ErrNotSupported, what, use, t.GetTable(), c.GetName(), typeName(c.GetType()))
+	return fmt.Errorf("%w: %v %v %v", stmt.ErrNotSupported, what, use, columnName(t, position))
 }
 
 // limitCount is the number of rows of a LIMIT whose expression e, a literal or a parameter, has the
@@ -354,6 +354,19 @@ func tooLongForCache(what, name string) error {
 // would write on a connection under `pragma query_only = 1`, when it steps the statement.
 func readOnlyDatabase() error {
 	return &sqlerr.Error{Code: sqlerr.CodeReadOnly, ExtendedCode: sqlerr.CodeReadOnly, Message: "attempt to write a readonly database", Offset: -1}
+}
+
+// noSuchExcluded is `no such column: excluded.%s`, for excluded.c of DO UPDATE whose column the table
+// does not have, with the values of the two names as the statement writes them, and at the offset of
+// the first.
+func noSuchExcluded(e stmt.Expression) error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "no such column: " + e.Table.Value + "." + e.Column.Value, Offset: e.Table.Offset}
+}
+
+// conflictTarget is `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint`, for an
+// upsert whose conflict target is not the primary key of its table.
+func conflictTarget() error {
+	return &sqlerr.Error{Code: sqlerr.CodeError, ExtendedCode: sqlerr.CodeError, Message: "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint", Offset: -1}
 }
 
 // noSuchSetColumn is `no such column: %s`, for a column of the SET of an update that the table does
