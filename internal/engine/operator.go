@@ -65,16 +65,19 @@ type sink interface {
 // decides nothing but which error the statement gives when more than one of its rows fails. A run
 // that fails with an error for which replays reports true is taken back to the state before the
 // statement, and replay runs the statement again on that state in SQLite's order, for SQLite's
-// error, as [runSink] says. So the order costs nothing unless a row fails.
+// error, as [runSink] says. So the order costs a second run only where a row fails.
 type replayer interface {
 	sink
 	// mayReplay reports, before the run, whether a run that fails may need a replay, so that the
 	// state before the statement can be kept for it.
 	mayReplay() bool
-	// replays reports whether a run that failed with err needs a replay.
+	// replays reports whether a run that failed with err needs a replay, which it does only where
+	// mayReplay reports true.
 	replays(err error) bool
-	// replay the statement in SQLite's order, on the state before its run, and give the error of the
-	// row that SQLite changes first and that fails, or an internal error if no row fails.
+	// replay the statement in SQLite's order, on the state before its run, and give SQLite's error:
+	// that of the row that SQLite changes first and that fails, or that of the conditions of a row
+	// after it. It gives an error of the storage or of the context as it meets it, [errStopped] where
+	// the planted bug evalStops stops it, and nil only for a fault of the engine.
 	replay(ctx context.Context) (int64, error)
 }
 
@@ -700,7 +703,8 @@ type update struct {
 	hoisted []*expr.Bound
 	// order holds the indexes of positions in the order of the table.
 	order []int
-	// changes is the order in which the update changes its rows, SQLite's, as [changeOrder] says.
+	// changes is the order in which SQLite changes the rows, as [changeOrder] says, which the update
+	// follows in its run where it is the order of the key, and otherwise in a replay.
 	changes changeOrder
 	// ret holds the rows of its RETURNING, or is nil for an update without one.
 	ret *returning
@@ -717,7 +721,7 @@ type update struct {
 //
 // A value of an expression has the class of its expression, as [comparable] says, whatever its rows, and
 // a column alone that of its column. An update with a value that is computed for each row checks the
-// NOT NULL of every column that it sets on each row that it changes, in [update.run], so the
+// NOT NULL of every column that it sets on each row that it changes, in [update.newRow], so the
 // refusal of a type comes before it there.
 func (u *update) check(ctx context.Context) error {
 	columns := u.table.GetColumns()
@@ -836,7 +840,11 @@ func (u *update) run(ctx context.Context) (int64, error) {
 	if o.by != nil {
 		o = changeOrder{}
 	}
-	return u.runIn(ctx, o)
+	n, err := u.runIn(ctx, o)
+	if errors.Is(err, errStopped) {
+		return n, nil
+	}
+	return n, err
 }
 
 func (u *update) mayReplay() bool { return u.changes.by != nil }
@@ -844,7 +852,8 @@ func (u *update) mayReplay() bool { return u.changes.by != nil }
 // replays reports whether the update, whose run failed with err, changes its rows in SQLite's order
 // in another order than its run, and whether err is that of a row, as [failsRow] says: then another
 // row may fail before it in SQLite's order, or that row may fail in its SET before the conditions
-// of a later one fail. An error of anything else, such as the cache or the context, is not replayed.
+// of a later one fail. An error of anything else, such as the storage or the context, is not
+// replayed.
 func (u *update) replays(err error) bool { return u.mayReplay() && failsRow(err) }
 
 // replay the update in SQLite's order, on the state before its run. It does not succeed: the rows of
@@ -852,27 +861,25 @@ func (u *update) replays(err error) bool { return u.mayReplay() && failsRow(err)
 // which it changes them, and whether a row fails depends on that row alone, as SQLite reads it
 // before the update, since an update in the order of an index sets no column of the key or of the
 // index, and has no subquery: see [changeOrder]. So a replay without an error is a fault of the
-// engine, and gives an internal error.
+// engine, which [runSink] gives as an internal error. With the planted bug evalStops, the replay
+// ends with [errStopped] at its first evaluation error in SQLite's order.
 func (u *update) replay(ctx context.Context) (int64, error) {
-	n, err := u.runIn(ctx, u.changes)
-	if err == nil {
-		return n, internalError("the replay of an update that failed for a row changed its %v rows in SQLite's order without an error", n)
-	}
-	return n, err
+	return u.runIn(ctx, u.changes)
 }
 
 // failsRow reports whether err is an error that a row of an update gives, which SQLite gives for
 // the first row that fails in its order: one of the conditions of the row, as [ofRow] says, or a
-// constraint, a record that is too long, or an evaluation error of its SET.
+// constraint, a record that is too long, or an evaluation error of its SET, which [ofRow] tells too.
 func failsRow(err error) bool {
 	var e *sqlerr.Error
 	return ofRow(err) || errors.As(err, &e) && (e.Code == sqlerr.CodeConstraint || e.Code == sqlerr.CodeTooBig)
 }
 
-// runIn changes the rows of the update in the order o, as [changeRows] says.
+// runIn changes the rows of the update in the order o, as [changeRows] says, and ends with
+// [errStopped] where the planted bug evalStops stops it.
 func (u *update) runIn(ctx context.Context, o changeOrder) (int64, error) {
 	name := u.table.GetTable()
-	n, err := changeRows(ctx, u.w, name, u.key, u.src, o, u.bugs, func(key []*s4qlpb.Value) error {
+	return changeRows(ctx, u.w, name, u.key, u.src, o, u.bugs, func(key []*s4qlpb.Value) error {
 		old, err := u.w.get(ctx, name, key)
 		if err != nil {
 			return err
@@ -923,10 +930,6 @@ func (u *update) runIn(ctx context.Context, o changeOrder) (int64, error) {
 		u.ret.add(given)
 		return nil
 	})
-	if errors.Is(err, errStopped) {
-		return n, nil
-	}
-	return n, err
 }
 
 // errStopped ends an update with the planted bug evalStops, which then succeeds.

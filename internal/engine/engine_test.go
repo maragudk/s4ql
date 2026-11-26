@@ -2809,6 +2809,30 @@ func TestEngine_updateOrder(t *testing.T) {
 		w.run("update t set x = nx, c = ? where a > 0", strings.Repeat("c", 600))
 	})
 
+	t.Run("should give SQLite's error when the row that fails first in the order of the key is too long, and another gives NULL to a column that does not take it", func(t *testing.T) {
+		// In the order of the key, the record of the row of the key 1 is too long; in that of ia, the row
+		// of the key 2 comes first, and gives NULL to x.
+		w := newChangeTrio(t, 1000,
+			"create table t (k int primary key, a int, x int not null, nx int, b text, c text) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, '"+strings.Repeat("b", 600)+"', '')",
+			"insert into t values (2, 10, 1, null, '', '')")
+
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", w.run("update t set x = nx, c = ? where a > 0", strings.Repeat("c", 600)).err)
+	})
+
+	t.Run("should give SQLite's error when the row that fails first in the order of the key fails with an evaluation error of SET", func(t *testing.T) {
+		// In the order of the key, the row of the key 1 divides by 0; in that of ia, the row of the key 2
+		// comes first, and gives NULL to x.
+		w := newChangeTrio(t, 0,
+			"create table t (k int primary key, a int, x int not null, n int, d int) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, 0)",
+			"insert into t values (2, 10, 1, null, 1)")
+
+		is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", w.run("update t set x = n / d where a > 0").err)
+	})
+
 	t.Run("should change the rows that an equality of an index pins in the order of the key, where the index has no other column", func(t *testing.T) {
 		// Both rows hold the same b, so only the primary key orders them in ib: the row of the key 1,
 		// which gives NULL to x, comes first.
@@ -2836,37 +2860,39 @@ func TestEngine_updateOrder(t *testing.T) {
 	})
 
 	t.Run("should give SQLite's error in a transaction, keep what the statements before it did, and count the rows that its first run read", func(t *testing.T) {
-		// The update changes the rows in the order of the key, fails on the row of the key 1, and is
-		// replayed in the order of ia, in which the row of the key 2 fails first.
+		// In the order of the key, the update changes the row of the key 1, and fails on that of the
+		// key 2; in the order of ia, it changes the rows of the keys 3 and 1 before it, and in a
+		// transaction the row of the key 4 comes last.
 		h := &events{}
 		i := newInstanceLogged(t, engine.Options{Logger: slog.New(h)}, nil)
 		for _, src := range []string{
 			"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
 			"create index ia on t (a)",
-			"insert into t values (1, 20, 1, 1, null, 1)",
-			"insert into t values (2, 10, 1, 1, 1, null)",
+			"insert into t values (1, 20, 1, 1, 1, 1)",
+			"insert into t values (2, 30, 1, 1, 1, null)",
+			"insert into t values (3, 10, 1, 1, 1, 1)",
 		} {
 			is.Equal(t, "", i.exec(src).err, src)
 		}
 		for _, inTx := range []bool{false, true} {
 			if inTx {
 				is.NotError(t, i.c.Begin(t.Context()))
-				is.Equal(t, "", i.exec("insert into t values (3, 30, 1, 1, 1, 1)").err)
+				is.Equal(t, "", i.exec("insert into t values (4, 40, 1, 1, 1, 1)").err)
 			}
-			is.Equal(t, "19/1299: NOT NULL constraint failed: t.y", i.exec("update t set x = nx, y = ny where a > 0").err)
+			is.Equal(t, "19/1299: NOT NULL constraint failed: t.y", i.exec("update t set x = 2, y = ny where a > 0").err)
 			is.Equal(t, int64(0), i.changes, "the count of changes of a failed update")
 			e, _ := h.last(t)
-			// The scan by ia reads the rows that it finds, and the run in the order of the key the row of
-			// the key 1, which fails; the replay reads them again, which the event does not count.
-			found := map[bool]int{false: 2, true: 3}[inTx]
-			is.Equal(t, fmt.Sprint(found+1), e[engine.AttrRowsRead], fmt.Sprint("in a transaction: ", inTx))
+			// The scan by ia reads the rows that it finds, and the run in the order of the key the rows
+			// of the keys 1 and 2; the replay reads them again, which the event does not count.
+			found := map[bool]int{false: 3, true: 4}[inTx]
+			is.Equal(t, fmt.Sprint(found+2), e[engine.AttrRowsRead], fmt.Sprint("in a transaction: ", inTx))
 			is.Equal(t, "index", e[engine.AttrAccess])
+			want := "1,20,1,1,1,1 2,30,1,1,1,null 3,10,1,1,1,1"
 			if inTx {
+				// The transaction goes on after the failed update.
+				is.Equal(t, "", i.exec("update t set x = 3 where k = 4").err)
 				is.NotError(t, i.c.Commit(t.Context()))
-			}
-			want := "1,20,1,1,null,1 2,10,1,1,1,null"
-			if inTx {
-				want += " 3,30,1,1,1,1"
+				want += " 4,40,3,1,1,1"
 			}
 			is.Equal(t, want, strings.Join(i.queryValues("select * from t order by k", nil).rows, " "), fmt.Sprint("in a transaction: ", inTx))
 		}

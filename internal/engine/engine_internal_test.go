@@ -656,7 +656,7 @@ func TestEngine_write(t *testing.T) {
 
 // replaying is a [replayer] on the transaction tx whose run reads a row, writes the table "run", and
 // fails with err, and whose replay reads two rows, sees whether the table "run" is there, and gives
-// replayed. It replays an error that matches errReplayed, if may.
+// replayed. It may replay if may, and replays an error that matches errReplayed.
 type replaying struct {
 	tx            *memTx
 	may           bool
@@ -668,6 +668,35 @@ type replaying struct {
 }
 
 var errReplayed = errors.New("a row fails")
+
+// failingTx is a [memTx] whose savepoint, release, and roll back to the savepoint fail with fails
+// where they say so.
+type failingTx struct {
+	*memTx
+	fails                                       error
+	savepointFails, releaseFails, rollbackFails bool
+}
+
+func (x *failingTx) savepoint(ctx context.Context) error {
+	if x.savepointFails {
+		return x.fails
+	}
+	return x.memTx.savepoint(ctx)
+}
+
+func (x *failingTx) release(ctx context.Context) error {
+	if x.releaseFails {
+		return x.fails
+	}
+	return x.memTx.release(ctx)
+}
+
+func (x *failingTx) rollbackTo(ctx context.Context) error {
+	if x.rollbackFails {
+		return x.fails
+	}
+	return x.memTx.rollbackTo(ctx)
+}
 
 func (s *replaying) check(context.Context) error { return nil }
 func (s *replaying) mayReplay() bool             { return s.may }
@@ -727,6 +756,12 @@ func TestRunSink(t *testing.T) {
 			is.True(t, errors.Is(err, ErrInternal), fmt.Sprint(err))
 		})
 
+		t.Run(fmt.Sprint("should succeed with the planted bug evalStops when the replay stops, of its own: ", own), func(t *testing.T) {
+			_, _, n, err := newReplaying(t, own, errReplayed, errStopped)
+			is.NotError(t, err)
+			is.Equal(t, int64(2), n)
+		})
+
 		t.Run(fmt.Sprint("should not replay a run that succeeds, or that fails with an error that it does not replay, of its own: ", own), func(t *testing.T) {
 			s, _, n, err := newReplaying(t, own, nil, nil)
 			is.NotError(t, err)
@@ -737,6 +772,34 @@ func TestRunSink(t *testing.T) {
 			is.Equal(t, 0, s.replayCount+s2.replayCount)
 		})
 	}
+
+	t.Run("should give the errors of the savepoint, of its release, and of the roll back to it", func(t *testing.T) {
+		sqlites, fails := errors.New("SQLite's error"), errors.New("the call fails")
+		for _, c := range []struct {
+			name string
+			// savepoint, release, and rollbackTo are the calls that fail, and err the run's error.
+			savepoint, release, rollbackTo bool
+			err                            error
+			want                           error
+			replays                        int
+		}{
+			{name: "a savepoint before the run", savepoint: true, want: fails},
+			{name: "a release after a run that succeeds", release: true, want: fails},
+			{name: "a release after a replay, which gives the replay's error", release: true, err: errReplayed, want: sqlites, replays: 1},
+			{name: "a roll back before the replay", rollbackTo: true, err: errReplayed, want: fails},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				m := &memory{tables: map[string]*memTable{}}
+				w, err := m.begin(t.Context())
+				is.NotError(t, err)
+				tx := &failingTx{memTx: w.(*memTx), fails: fails, savepointFails: c.savepoint, releaseFails: c.release, rollbackFails: c.rollbackTo}
+				s := &replaying{tx: tx.memTx, may: true, err: c.err, replayed: sqlites}
+				_, err = runSavepointed(t.Context(), &report{}, tx, s)
+				is.Equal(t, c.want, err)
+				is.Equal(t, c.replays, s.replayCount)
+			})
+		}
+	})
 
 	t.Run("should take no savepoint for a statement of its own that may not replay", func(t *testing.T) {
 		m := &memory{tables: map[string]*memTable{}}

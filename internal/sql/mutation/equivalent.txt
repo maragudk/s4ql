@@ -1494,8 +1494,10 @@ internal/engine/operator.go update.runIn condition: err != nil => false #3
 	The comparison of the new key with the old cannot fail: update.check gives the new key the class of the key column, and only the planted bug copyAcross copies another class into it, which its other symptoms find.
 internal/engine/operator.go update.runIn remove statement: return err => #3
 	As the mutant above: the comparison of the new key with the old cannot fail outside the planted bug copyAcross.
-internal/engine/operator.go update.runIn swap arguments: errors.Is(err, errStopped) => errors.Is(errStopped, err)
+internal/engine/operator.go update.run swap arguments: errors.Is(err, errStopped) => errors.Is(errStopped, err)
 	changeRows gives the error of the change as it is, so the error is errStopped itself or no errStopped, and errors.Is answers the same both ways.
+internal/engine/engine.go runSink swap arguments: errors.Is(err, errStopped) => errors.Is(errStopped, err)
+	The replay of an update gives the error of changeRows as it is, as the mutant above says.
 internal/engine/operator.go build.walk constant: -1 => -2
 	The position of a condition that tests an expression is never read as a position: the expression has its own columns, and the checks test only that it is negative.
 internal/engine/operator.go build.walk constant: -1 => -0

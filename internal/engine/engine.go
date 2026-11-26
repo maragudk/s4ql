@@ -617,10 +617,10 @@ func runSavepointed(ctx context.Context, r *report, w writeTx, s sink) (int64, e
 // runSink runs the sink s of a statement in the write transaction w, which has a savepoint open from
 // before the statement where s may replay, as [replayer] says. Where the run fails with an error
 // that s replays, runSink rolls w back to the savepoint, which it opens again, and gives what the
-// replay gives: an error, SQLite's. The event of the statement counts the rows that the run read,
-// and not those that the replay read again, which the report r leaves out. A failed statement sets
-// the count of changes to 0, whatever the replay changed, and w is taken back after it, as after
-// any statement that fails.
+// replay gives: an error, SQLite's, and an internal error for a replay that succeeds, which is a
+// fault of the engine. The event of the statement counts the rows that the run read, and not those
+// that the replay read again, which the report r leaves out. The statement fails with the error of
+// the replay, and counts its changes and is taken back as any statement that fails with it.
 func runSink(ctx context.Context, r *report, w writeTx, s sink) (int64, error) {
 	n, err := s.run(ctx)
 	rp, ok := s.(replayer)
@@ -635,11 +635,13 @@ func runSink(ctx context.Context, r *report, w writeTx, s sink) (int64, error) {
 	}
 	read := w.rowsRead()
 	n, err = rp.replay(ctx)
-	if r.reader != nil {
-		r.before += w.rowsRead() - read
-	}
-	if err == nil {
-		return n, internalError("the replay of a statement that failed succeeded")
+	r.before += w.rowsRead() - read
+	switch {
+	case errors.Is(err, errStopped):
+		// The planted bug evalStops: the replay stops at its first evaluation error, and succeeds.
+		return n, nil
+	case err == nil:
+		return n, internalError("the replay of a statement that failed for a row changed its %v rows without an error", n)
 	}
 	return n, err
 }
