@@ -2781,6 +2781,35 @@ func TestEngine_update(t *testing.T) {
 	})
 }
 
+func TestEngine_updateOrder(t *testing.T) {
+	// SQLite changes the rows of an update in the order in which its access finds them, where the
+	// update sets no column of the key, none of the index that it reads by, has no subquery in its
+	// WHERE, and has no RETURNING; otherwise it collects the keys first and changes the rows in the
+	// order of the key. Each row of these tables fails with an error of its own, so the row that
+	// comes first decides the error of the statement. In t, the order of the key is 1, 2, 3, the
+	// order of ia is 2, 1, 3, and that of iad 3, 1, 2. The adversarial review of 2026-11-26 found the
+	// first two cases.
+	t.Run("should give SQLite's error when two rows of an update that reads by an index give NULL to different columns that do not take it", func(t *testing.T) {
+		w := newChangeTrio(t, 0,
+			"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, 1, null, 1)",
+			"insert into t values (2, 10, 1, 1, 1, null)")
+
+		w.run("update t set x = nx, y = ny where a > 0")
+	})
+
+	t.Run("should give SQLite's error when one row of an update that reads by an index is too long and another gives NULL to a column that does not take it", func(t *testing.T) {
+		w := newChangeTrio(t, 1000,
+			"create table t (k int primary key, a int, x int not null, nx int, b text, c text) strict, without rowid",
+			"create index ia on t (a)",
+			"insert into t values (1, 20, 1, null, '', '')",
+			"insert into t values (2, 10, 1, 1, '"+strings.Repeat("b", 600)+"', '')")
+
+		w.run("update t set x = nx, c = ? where a > 0", strings.Repeat("c", 600))
+	})
+}
+
 // flipContext is a context whose Err gives [context.Canceled] once it has been called n times, where
 // n is what is left of the count that it was made with, and nil before. Its Done is that of the
 // context that it wraps.
