@@ -29,9 +29,6 @@ type bugs struct {
 	keepOpen bool
 	// keepRead makes [Rows.Close] of rows that no loop has read leave the read transaction open.
 	keepRead bool
-	// annotateNext makes a statement annotate its transaction with each integer argument plus one,
-	// while it runs with the argument.
-	annotateNext bool
 	// keepFailed makes a statement that fails in a write transaction after its savepoint annotate
 	// the transaction and release the savepoint, so that the statement is kept as if it had
 	// succeeded.
@@ -184,9 +181,6 @@ type bugs struct {
 	// annotateText makes each statement of a text of several annotate its write with the whole text,
 	// and not with its own.
 	annotateText bool
-	// argsFromStart makes each statement of a text of several annotate its write with the arguments of
-	// the text from the first on, as many as it has parameters, and not with its own.
-	argsFromStart bool
 	// undoInTx makes a statement of a text of several in a write transaction that fails after the
 	// first statement of the text roll the transaction back, with what the statements before it did,
 	// and begin a new one.
@@ -199,18 +193,17 @@ type bugs struct {
 // ofText reports whether a bug is planted that needs the text of several statements that
 // [Conn.ExecAll] runs in the context of each of its statements: see [textRun].
 func (b bugs) ofText() bool {
-	return b.commitFailed || b.commitLater || b.annotateText || b.argsFromStart
+	return b.commitFailed || b.commitLater || b.annotateText
 }
 
 // textKey is the key of the context of a statement of [Conn.ExecAll] that holds its text, while a
 // planted bug that needs it is: see [bugs.ofText].
 type textKey struct{}
 
-// textRun is a text of several statements that [Conn.ExecAll] runs, with its arguments, for the
-// planted bugs of its loop.
+// textRun is a text of several statements that [Conn.ExecAll] runs, for the planted bugs of its
+// loop.
 type textRun struct {
-	src  string
-	args []*s4qlpb.Value
+	src string
 	// follows is set while a statement runs that another statement of the text follows.
 	follows bool
 	// later is the commit of the write transaction of a statement before, which the planted bug
@@ -233,32 +226,20 @@ func (t *textRun) commit(ctx context.Context) {
 	}
 }
 
-// annotation of a statement of the text of ctx with the text sql and the arguments args: with the
-// planted bug annotateText the whole text, and with argsFromStart the arguments of the text from the
-// first on, as many as args.
-func (b bugs) annotation(ctx context.Context, sql string, args []*s4qlpb.Value) (string, []*s4qlpb.Value) {
-	if !b.annotateText && !b.argsFromStart {
-		return sql, args
+// annotation of a statement of the text of ctx whose own text is sql: sql, or with the planted bug
+// annotateText the whole text.
+func (b bugs) annotation(ctx context.Context, sql string) string {
+	if t := textOf(ctx); b.annotateText && t != nil {
+		return t.src
 	}
-	t := textOf(ctx)
-	if t == nil {
-		return sql, args
-	}
-	if b.annotateText {
-		sql = t.src
-	}
-	if b.argsFromStart {
-		args = t.args[:len(args)]
-	}
-	return sql, args
+	return sql
 }
 
 // commitFailed commits the write transaction tx of a statement of a text of several that failed while
-// it ran, with its annotation of the text sql and the arguments args, and reports whether it ended the
-// transaction so: the planted bug commitFailed. A transaction whose annotation fails is left to be
-// rolled back.
-func (c *Conn) commitFailed(ctx context.Context, tx writeTx, sql string, args []*s4qlpb.Value) bool {
-	if !c.e.bugs.commitFailed || textOf(ctx) == nil || tx.annotate(ctx, sql, args) != nil {
+// it ran, with its annotation of the text sql, and reports whether it ended the transaction so: the
+// planted bug commitFailed. A transaction whose annotation fails is left to be rolled back.
+func (c *Conn) commitFailed(ctx context.Context, tx writeTx, sql string) bool {
+	if !c.e.bugs.commitFailed || textOf(ctx) == nil || tx.annotate(ctx, sql) != nil {
 		return false
 	}
 	_ = tx.commit(ctx)

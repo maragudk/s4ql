@@ -104,9 +104,8 @@ type writeTx interface {
 	writer
 	// position of the state that the transaction began from: the parent of its commit object.
 	position() format.Name
-	// annotate the transaction with a statement that it ran: its SQL text, and the arguments of its
-	// parameters, by position.
-	annotate(ctx context.Context, sql string, args []*s4qlpb.Value) error
+	// annotate the transaction with a statement that it ran: its SQL text, and nothing else.
+	annotate(ctx context.Context, sql string) error
 	// serving checks that the instance serves now, as a new write transaction needs it, before a
 	// further statement of a transaction that spans statements.
 	serving(ctx context.Context) error
@@ -358,8 +357,8 @@ func (c coreTx) position() format.Name {
 	return c.tx.Position()
 }
 
-func (c coreTx) annotate(ctx context.Context, sql string, args []*s4qlpb.Value) error {
-	return fromCore(c.tx.Annotate(ctx, sql, args))
+func (c coreTx) annotate(ctx context.Context, sql string) error {
+	return fromCore(c.tx.Annotate(ctx, sql))
 }
 
 func (c coreTx) serving(ctx context.Context) error {

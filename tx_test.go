@@ -78,7 +78,7 @@ func TestTx(t *testing.T) {
 		is.NotError(t, tx.Commit())
 		is.EqualSlice(t, []int64{1, 2, 3}, values(t, db, select1))
 		is.Equal(t, before+1, len(commits(t, w)))
-		is.EqualSlice(t, []string{t1, insert1, "insert into t1 (v1) values (2)", "insert into t1 (v1) values (?) with 3"}, annotations(t, w))
+		is.EqualSlice(t, []string{t1, insert1, "insert into t1 (v1) values (2)", "insert into t1 (v1) values (?)"}, annotations(t, w))
 
 		is.NotError(t, db.Close())
 		is.EqualSlice(t, []int64{1, 2, 3}, values(t, w.serve(t, "b"), select1))
@@ -201,7 +201,7 @@ func TestTx(t *testing.T) {
 		is.NotError(t, tx.Commit())
 
 		is.EqualSlice(t, []int64{424201, 424202, 424203}, values(t, db, select1))
-		is.EqualSlice(t, []string{t1, "insert into t1 (v1) values (?) with 424201", "insert into t1 (v1) values (?) with 424202", "insert into t1 (v1) values (?) with 424203"}, annotations(t, w))
+		is.EqualSlice(t, []string{t1, "insert into t1 (v1) values (?)", "insert into t1 (v1) values (?)", "insert into t1 (v1) values (?)"}, annotations(t, w))
 		// The statement prepared on the database still runs on it, outside the transaction.
 		res, err = outside.ExecContext(t.Context(), 424204)
 		is.Equal(t, int64(1), affected(t, res, err))
@@ -792,7 +792,7 @@ func TestTx_instance(t *testing.T) {
 		is.NotError(t, db.PingContext(t.Context()))
 		is.EqualSlice(t, []int64{1, 2}, values(t, db, select1))
 		is.Equal(t, 2, len(commits(t, w)))
-		is.EqualSlice(t, []string{t1, insert1, "insert into t1 (v1) values (?) with 2"}, annotations(t, w))
+		is.EqualSlice(t, []string{t1, insert1, "insert into t1 (v1) values (?)"}, annotations(t, w))
 		tx = begin(t, db, nil)
 		is.NotError(t, tx.Commit())
 	})

@@ -449,12 +449,8 @@ func (x fakeTx) position() format.Name {
 	return format.EmptyLog
 }
 
-func (x fakeTx) annotate(_ context.Context, sql string, args []*s4qlpb.Value) error {
-	call := "annotate " + sql
-	for _, a := range args {
-		call += fmt.Sprint(" with ", a.GetInteger())
-	}
-	x.f.calls = append(x.f.calls, call)
+func (x fakeTx) annotate(_ context.Context, sql string) error {
+	x.f.calls = append(x.f.calls, "annotate "+sql)
 	return x.f.annotateFails
 }
 

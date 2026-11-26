@@ -554,7 +554,7 @@ func TestEngine_types(t *testing.T) {
 		is.Equal(t, `columns "v INT", rows []`, i.query("select * from a").String())
 	})
 
-	t.Run("should store -0.0 as 0.0, take it for the key 0.0, and annotate the argument as given", func(t *testing.T) {
+	t.Run("should store -0.0 as 0.0, take it for the key 0.0, and annotate the statement by its text", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		is.Equal(t, "", i.exec("create table t (v real primary key) strict, without rowid").err)
 		negative := []*s4qlpb.Value{s4qlpb.Value_builder{Real: new(math.Copysign(0, -1))}.Build()}
@@ -562,7 +562,7 @@ func TestEngine_types(t *testing.T) {
 		is.Equal(t, `columns "v REAL", rows ["real 0"]`, i.query("select * from t").String())
 		is.Equal(t, "19/1555: UNIQUE constraint failed: t.v", i.exec("insert into t (v) values (0.0)").err)
 		is.Equal(t, "19/1555: UNIQUE constraint failed: t.v", i.exec("insert into t (v) values (-0.0)").err)
-		is.Equal(t, "insert into t (v) values (?) with real -0", logAnnotations(t, i.store)[1][0])
+		is.Equal(t, "insert into t (v) values (?)", logAnnotations(t, i.store)[1][0])
 		i.restart(true, engine.Options{})
 		is.Equal(t, "t (v REAL): real 0\n", i.state())
 	})
@@ -1009,7 +1009,8 @@ func readFree(t *testing.T, c *engine.Conn) {
 }
 
 // logAnnotations of the database in the store s, in the order of the log, each commit object as its
-// annotations: the text of each, and " with " and the value of each of its parameters.
+// annotations: the text of each. An annotation that holds a field that this version does not know
+// fails the test, since s4ql writes the text of a statement and nothing else.
 func logAnnotations(t testing.TB, s *simstore.Store) [][]string {
 	t.Helper()
 	data, _, ok := s.Object("db/manifest.json")
@@ -1034,11 +1035,8 @@ func logAnnotations(t testing.TB, s *simstore.Store) [][]string {
 			}
 			is.NotError(t, err)
 			if a != nil {
-				note := a.GetStatement().GetSql()
-				for _, p := range a.GetStatement().GetParameters() {
-					note += " with " + valueText(t, p)
-				}
-				notes = append(notes, note)
+				is.Equal(t, 0, len(a.ProtoReflect().GetUnknown())+len(a.GetStatement().ProtoReflect().GetUnknown()), "an annotation with a field that s4ql does not write")
+				notes = append(notes, a.GetStatement().GetSql())
 			}
 		}
 		commits = append(commits, notes)
@@ -1128,7 +1126,7 @@ func TestEngine_annotations(t *testing.T) {
 		}), fmt.Sprint(logAnnotations(t, i.store)))
 	})
 
-	t.Run("should annotate each commit with the arguments of its statement, and commit nothing for a statement that fails", func(t *testing.T) {
+	t.Run("should annotate each commit with the text of its statement and not the arguments of its parameters, and commit nothing for a statement that fails", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		is.Equal(t, "", i.exec(t1).err)
 		is.Equal(t, "", i.exec("insert into t1 (v1) values (?);", -9223372036854775808).err)
@@ -1137,13 +1135,14 @@ func TestEngine_annotations(t *testing.T) {
 		is.Equal(t, "", i.query("insert into t1 (v1) values ( ? ) -- q", 9223372036854775807).err)
 		is.Equal(t, fmt.Sprint([][]string{
 			{"create table t1 (v1 int primary key) strict, without rowid"},
-			{"insert into t1 (v1) values (?); with -9223372036854775808"},
+			{"insert into t1 (v1) values (?);"},
 			{"insert into t1 (v1) values (1)"},
-			{"insert into t1 (v1) values ( ? ) with 9223372036854775807"},
+			{"insert into t1 (v1) values ( ? )"},
 		}), fmt.Sprint(logAnnotations(t, i.store)))
+		is.Equal(t, "t1 (v1 INT): -9223372036854775808 1 9223372036854775807\n", i.state(), "the arguments are in the rows")
 	})
 
-	t.Run("should annotate an insert of several values with all its arguments, in the order of its parameters", func(t *testing.T) {
+	t.Run("should annotate an insert of several values with its text, whose arguments are in its row and not in the annotation", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		is.Equal(t, "", i.exec(t3).err)
 		is.Equal(t, "", i.execValues("insert into t3 (v3, v1, v2) values (?, 1, ?)", values([]any{1.5, "a"})).err)
@@ -1151,8 +1150,8 @@ func TestEngine_annotations(t *testing.T) {
 		is.Equal(t, "19/1299: NOT NULL constraint failed: t3.v3", i.execValues("insert into t3 (v1, v2) values (?, ?)", values([]any{int64(3), "c"})).err)
 		is.Equal(t, fmt.Sprint([][]string{
 			{t3},
-			{`insert into t3 (v3, v1, v2) values (?, 1, ?) with real 1.5 with "a"`},
-			{`insert into t3 values (?, ?, ?) with 2 with "b" with real 2.5`},
+			{`insert into t3 (v3, v1, v2) values (?, 1, ?)`},
+			{`insert into t3 values (?, ?, ?)`},
 		}), fmt.Sprint(logAnnotations(t, i.store)))
 		want := "t3 (v1 INT, v2 TEXT, v3 REAL): 1,\"a\",real 1.5 2,\"b\",real 2.5\n"
 		is.Equal(t, want, i.state())
@@ -2023,7 +2022,7 @@ func TestEngine_nulls(t *testing.T) {
 		is.Equal(t, o.state(t), i.state())
 	})
 
-	t.Run("should take NULL as a literal, as a nil argument, and for a column that the list leaves out, give it back as NULL, and annotate the nil argument as NULL", func(t *testing.T) {
+	t.Run("should take NULL as a literal, as a nil argument, and for a column that the list leaves out, give it back as NULL, and keep the nil argument in the row and out of the annotation", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		o := newOracle(t)
 		cases := []struct {
@@ -2060,16 +2059,7 @@ func TestEngine_nulls(t *testing.T) {
 			is.NotError(t, err)
 			is.True(t, row[0].HasNull() || row[0].GetText() == "", fmt.Sprint(row[0]))
 		}
-		is.Equal(t, fmt.Sprint([]string{"insert into t values (?, 2, 2.5, ?) with null with null"}), fmt.Sprint(logAnnotations(t, i.store)[2]))
-		var params []string
-		for _, c := range readLog(i.store) {
-			for _, ps := range c.params {
-				for _, p := range ps {
-					params = append(params, fmt.Sprint(p.WhichKind()))
-				}
-			}
-		}
-		is.Equal(t, "[null null blob integer real integer text real]", fmt.Sprint(params))
+		is.Equal(t, fmt.Sprint([]string{"insert into t values (?, 2, 2.5, ?)"}), fmt.Sprint(logAnnotations(t, i.store)[2]))
 		want := o.state(t)
 		is.Equal(t, want, i.state())
 		i.restart(true, engine.Options{})
@@ -2168,7 +2158,7 @@ func TestEngine_nulls(t *testing.T) {
 		is.Equal(t, want, i.state())
 		is.Equal(t, fmt.Sprint([][]string{
 			{create},
-			{`insert into t values (?, ?, ?, ?) with "a" with 1 with real 1.5 with null`, "insert into t (k, b) values (2, 2.5)"},
+			{`insert into t values (?, ?, ?, ?)`, "insert into t (k, b) values (2, 2.5)"},
 		}), fmt.Sprint(logAnnotations(t, i.store)))
 		i.restart(true, engine.Options{})
 		is.Equal(t, want, i.state(), "after a replay of the log")

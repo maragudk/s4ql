@@ -1941,13 +1941,40 @@ func (r *run) readsFree(ctx context.Context, live []*node) {
 	}
 }
 
-// logCommit is a commit object of the log: its name, its changes, and the texts of its annotations
-// and their parameters.
+// logCommit is a commit object of the log: its name, its changes, and the texts of its annotations.
 type logCommit struct {
 	name    format.Name
 	changes []*s4qlpb.Change
 	notes   []string
-	params  [][]*s4qlpb.Value
+}
+
+// noteOf the annotation of the log whose text is note: the attempt of the statement whose ID the text
+// carries, and the arguments that its caller gave, which the annotation does not hold; or nil and no
+// arguments for a text that carries the ID of no attempt. Each attempt has an ID of its own, which
+// the run wrote into the text of its statement, so the text of an annotation leads to the one call
+// of the statement, as long as [run.verify] finds that it is the attempt's own text.
+func (r *run) noteOf(note string) (*attempt, []*s4qlpb.Value) {
+	m := idPattern.FindStringSubmatch(note)
+	if m == nil {
+		return nil, nil
+	}
+	id, _ := strconv.ParseUint(m[1], 10, 64)
+	a := r.attempts[id]
+	if a == nil {
+		return nil, nil
+	}
+	return a, a.args
+}
+
+// ownText of the statement of the text src, from its first token to its end, as the engine annotates
+// it, or src if [stmt.Check] refuses it.
+func ownText(src string) string {
+	s, err := stmt.Check(src)
+	if err != nil || s == nil {
+		return src
+	}
+	span := s.Bounds()
+	return src[span.Start:span.End]
 }
 
 // verifyRows checks the rows of the changes of the log against the tables of the log before them:
@@ -2048,10 +2075,13 @@ func fold(name string) string {
 //     instance crashed; the commit object holds exactly the statements of the transaction that
 //     succeeded and that write, in order, and its parent is the state that the transaction began
 //     from, so no commit landed while it was open. No attempt and no transaction is in the log
-//     twice. The parameters of each statement are exactly the arguments that the caller gave.
+//     twice. The annotation of each statement is its own text, from its first token to its end:
+//     the arguments that its caller gave come from the attempt whose ID the text carries, as
+//     [run.noteOf] says, since the annotation holds none.
 //   - Every write that was committed is in the log: a statement of its own when it succeeded,
 //     and the writes of a transaction when its commit succeeded.
-//   - The statements of the log, run in SQLite in their order with their parameters, each succeed,
+//   - The statements of the log, run in SQLite in their order with the arguments that their callers
+//     gave, each succeed,
 //     and the value of each insert has the type of its column there, which SQLite would convert or
 //     refuse otherwise, as [typeRule] says.
 //   - Each insert of its own that the engine refused for the type of its value is refused so by
@@ -2146,8 +2176,8 @@ func (r *run) verify(ctx context.Context) {
 			if a.nothing {
 				r.violate(ctx, "the statement %v, %q, did nothing, and is in commit %v", id, a.src, k+1)
 			}
-			if valuesText(c.params[i]) != valuesText(a.args) {
-				r.violate(ctx, "commit %v holds the parameters %v of the statement %v, %q, and its caller gave the arguments %v", k+1, valuesText(c.params[i]), id, a.src, valuesText(a.args))
+			if want := ownText(a.src); c.notes[i] != want {
+				r.violate(ctx, "commit %v holds the text %q of the statement %v, whose own text is %q", k+1, c.notes[i], id, want)
 			}
 			inLog[id] = k + 1
 		}
@@ -2266,24 +2296,20 @@ func (r *run) verify(ctx context.Context) {
 			}
 		}
 		if k < len(log) {
-			for i, note := range log[k].notes {
+			for _, note := range log[k].notes {
 				// The value of an insert of the log has the type of its column, which SQLite would
 				// convert or refuse otherwise.
-				if want := typeRule(r.t, o, note, oracleValues(log[k].params[i])); want != "" {
+				of, given := r.noteOf(note)
+				if want := typeRule(r.t, o, note, oracleValues(given)); want != "" {
 					r.violate(ctx, "commit %v, %q, stores a value of another type than its column: %v", k+1, note, want)
 				}
 				if s, _ := stmt.Check(note); s != nil && expressed(s) {
-					if refusals := arithmeticRefusals(r.t, o, s, oracleValues(log[k].params[i]), false); len(refusals) > 0 {
+					if refusals := arithmeticRefusals(r.t, o, s, oracleValues(given), false); len(refusals) > 0 {
 						r.violate(ctx, "commit %v, %q, has arithmetic that the rules of its types refuse: %q", k+1, note, refusals)
 					}
 					r.event("writes with arithmetic in the log")
 				}
-				var of *attempt
-				if m := idPattern.FindStringSubmatch(note); m != nil {
-					id, _ := strconv.ParseUint(m[1], 10, 64)
-					of = r.attempts[id]
-				}
-				src, args, failure := r.flattened(o, of, note, oracleValues(log[k].params[i]), "of the log")
+				src, args, failure := r.flattened(o, of, note, oracleValues(given), "of the log")
 				if failure != "" {
 					r.violate(ctx, "commit %v: %v", k+1, failure)
 				}
@@ -2430,14 +2456,10 @@ func (r *run) verifyTxs(ctx context.Context, log []logCommit, index map[string]i
 		}
 		o := newOracle(r.t)
 		for _, c := range log[:at] {
-			for i, note := range c.notes {
+			for _, note := range c.notes {
 				// [run.verify] checks the values of the subqueries of the log on the same states.
-				var of *attempt
-				if m := idPattern.FindStringSubmatch(note); m != nil {
-					id, _ := strconv.ParseUint(m[1], 10, 64)
-					of = r.attempts[id]
-				}
-				src, args, _ := r.flattened(o, of, note, oracleValues(c.params[i]), "")
+				of, given := r.noteOf(note)
+				src, args, _ := r.flattened(o, of, note, oracleValues(given), "")
 				o.run(r.t, src, args...)
 			}
 		}
@@ -2819,7 +2841,6 @@ func readLog(s *simstore.Store) []logCommit {
 			}
 			if a != nil {
 				c.notes = append(c.notes, a.GetStatement().GetSql())
-				c.params = append(c.params, a.GetStatement().GetParameters())
 			}
 		}
 		log = append(log, c)
@@ -3158,7 +3179,7 @@ func tallyOf(s simulation) map[string]int {
 	counts["values of a default in the log"] = r.defaults
 	counts["create tables with a default in the log"] = r.defaultTables
 	for _, c := range log {
-		if slices.ContainsFunc(c.params, func(ps []*s4qlpb.Value) bool { return len(ps) > 0 }) {
+		if slices.ContainsFunc(c.notes, func(note string) bool { _, given := r.noteOf(note); return len(given) > 0 }) {
 			counts["commits with a parameter"]++
 		}
 		if len(c.notes) > 1 {
@@ -3524,11 +3545,6 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// connection. The profile of the selects with WHERE weighs the queries, some of which a caller
 		// closes unread: 149 of 200 seeds find the bug, 78 of them by its own violation.
 		{"keepRead", defaultWorkload, "default", stmttest.Where, []string{"a read transaction left open after the end of the workload", "the reader has a read transaction open", "the rows of an earlier query of the connection are open"}},
-		// An annotation with the wrong parameters gives a log that, replayed, inserts other rows than
-		// the callers did, and maybe one that a later insert of the log meets. Every value of the
-		// profile of the arguments is a parameter: 154 of 200 seeds find the bug, each by its own
-		// violation.
-		{"annotateNext", defaultWorkload, "default", stmttest.Arguments, []string{"and its caller gave the arguments", "the replay of the log holds", "fails in SQLite: 19/1555: UNIQUE constraint failed"}},
 		// A failed statement that is kept is in the commit object of its transaction, whose replay in
 		// SQLite then fails. What it changed before it failed is kept too: an update that changes the key
 		// of a row that the transaction inserted, and fails with UNIQUE after the delete of the old key,
@@ -3766,10 +3782,7 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// The annotation of each statement holds the whole text, whose first ID is that of the first
 		// statement: 995 seeds, 992 of them by their own violation, and the others by a statement that
 		// is then in no commit.
-		{"annotateText", hammerWorkload, "hammer", stmttest.Several, []string{" and commit ", "is not in the log"}},
-		// The annotation holds the arguments of the text from the first on, which differ from a
-		// statement's own after a statement with parameters: 507 seeds, all by their own violation.
-		{"argsFromStart", hammerWorkload, "hammer", stmttest.Several, []string{"and its caller gave the arguments"}},
+		{"annotateText", hammerWorkload, "hammer", stmttest.Several, []string{"whose own text is", " and commit ", "is not in the log"}},
 		// A failure after the first statement of a text in a write transaction rolls it back and begins a
 		// new one: 987 seeds, 510 of them by their own violation. The others find that the place of the
 		// writer was free while the caller's transaction was open, that its commit lost the writes

@@ -852,7 +852,7 @@ func TestConn_isolation(t *testing.T) {
 }
 
 func TestConn_Commit(t *testing.T) {
-	t.Run("should write one commit object for a transaction, annotated in order with each statement that succeeded and wrote, with its arguments", func(t *testing.T) {
+	t.Run("should write one commit object for a transaction, annotated in order with each statement that succeeded and wrote, by its text", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
 		is.Equal(t, "", i.exec(t1).err)
 		is.NotError(t, i.c.Begin(t.Context()))
@@ -874,7 +874,7 @@ func TestConn_Commit(t *testing.T) {
 		is.NotError(t, i.c.Commit(t.Context()))
 		is.Equal(t, fmt.Sprint([][]string{
 			{t1},
-			{insert1, insertP + "; with 5", "create table t2 (v int primary key) strict, without rowid", "drop table t2", "create table t3 (v int primary key) strict, without rowid"},
+			{insert1, insertP + ";", "create table t2 (v int primary key) strict, without rowid", "drop table t2", "create table t3 (v int primary key) strict, without rowid"},
 		}), fmt.Sprint(logAnnotations(t, i.store)))
 		want := "t1 (v1 INT): 1 5\nt3 (v INT): \n"
 		is.Equal(t, want, i.state())

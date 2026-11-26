@@ -27,7 +27,7 @@ func TestCommitReader(t *testing.T) {
 		b := join(
 			record(1, testHeader()),
 			record(2, createTable("t", []string{"a"}, []uint32{0})),
-			record(3, statement("insert into t values (1)", integer(1))),
+			record(3, statement("insert into t values (1)")),
 			record(2, upsertRows("t", []uint32{0}, []*s4qlpb.Value{integer(1)})),
 			record(3, statement("delete from t")),
 			record(2, deleteRows("t", []*s4qlpb.Value{integer(1)})),
@@ -98,14 +98,14 @@ func TestCommitReader(t *testing.T) {
 		}
 	})
 
-	t.Run("should hand out a statement with the parameters -0.0, an infinity, and text with NUL as they are", func(t *testing.T) {
-		b := join(record(1, testHeader()), record(3, statement("select ?, ?, ?", realValue(math.Copysign(0, -1)), realValue(math.Inf(1)), text("a\x00b"))))
+	t.Run("should hand out a statement of the shape before version 0 lost its parameters with its text, and the parameters as a field it does not know", func(t *testing.T) {
+		a := oldStatement("select ?, ?, ?", realValue(math.Copysign(0, -1)), realValue(math.NaN()), text("a\x00b"))
+		b := join(record(1, testHeader()), record(3, a))
 		_, items, err := readAll(b, nameOf(b))
 		is.NotError(t, err)
-		parameters := items[0].annotation.GetStatement().GetParameters()
-		is.True(t, math.Signbit(parameters[0].GetReal()), "negative zero lost its sign")
-		is.True(t, math.IsInf(parameters[1].GetReal(), 1), "not an infinity")
-		is.Equal(t, "a\x00b", parameters[2].GetText())
+		is.Equal(t, 1, len(items))
+		is.Equal(t, "select ?, ?, ?", items[0].annotation.GetStatement().GetSql())
+		is.True(t, proto.Equal(a, items[0].annotation), "annotation differs")
 	})
 
 	t.Run("should report a mismatch with the name at the end, after handing out what it read", func(t *testing.T) {
@@ -210,22 +210,14 @@ func TestCommitReader(t *testing.T) {
 	})
 
 	t.Run("should hand out an annotation with fields it does not know, at any depth", func(t *testing.T) {
-		a := statement("select ?", withUnknown(&s4qlpb.Value{}, 6, protowire.VarintType), integer(1))
+		a := oldStatement("select ?", withUnknown(&s4qlpb.Value{}, 6, protowire.VarintType), withUnknown(integer(1), 7, protowire.BytesType))
 		withUnknown(a, 9, protowire.Fixed64Type)
 		withUnknown(a.GetStatement(), 3, protowire.VarintType)
-		withUnknown(a.GetStatement().GetParameters()[1], 7, protowire.BytesType)
 		b := join(record(1, testHeader()), record(3, a))
 		_, items, err := readAll(b, nameOf(b))
 		is.NotError(t, err)
 		is.Equal(t, 1, len(items))
 		is.True(t, proto.Equal(a, items[0].annotation), "annotation differs")
-	})
-
-	t.Run("should hand out a statement with a NaN parameter", func(t *testing.T) {
-		b := join(record(1, testHeader()), record(3, statement("select ?", realValue(math.NaN()))))
-		_, items, err := readAll(b, nameOf(b))
-		is.NotError(t, err)
-		is.Equal(t, 1, len(items))
 	})
 
 	newer := []struct {
@@ -694,8 +686,26 @@ func deleteRows(table string, keys ...[]*s4qlpb.Value) *s4qlpb.Change {
 	return s4qlpb.Change_builder{DeleteRows: s4qlpb.DeleteRows_builder{Table: &table, PrimaryKeys: ks}.Build()}.Build()
 }
 
-func statement(sql string, parameters ...*s4qlpb.Value) *s4qlpb.Annotation {
-	return s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: &sql, Parameters: parameters}.Build()}.Build()
+func statement(sql string) *s4qlpb.Annotation {
+	return s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: &sql}.Build()}.Build()
+}
+
+// oldStatement is a statement of the shape that version 0 had before its field 2, the parameters,
+// was taken out of the format: the text sql, and the values of parameters in field 2, which this
+// version does not know.
+func oldStatement(sql string, parameters ...*s4qlpb.Value) *s4qlpb.Annotation {
+	a := statement(sql)
+	s := a.GetStatement().ProtoReflect()
+	b := s.GetUnknown()
+	for _, p := range parameters {
+		v, err := proto.Marshal(p)
+		if err != nil {
+			panic(err)
+		}
+		b = protowire.AppendBytes(protowire.AppendTag(b, 2, protowire.BytesType), v)
+	}
+	s.SetUnknown(b)
+	return a
 }
 
 func integer(i int64) *s4qlpb.Value {
@@ -760,7 +770,7 @@ func commitSamples() []commitSample {
 					w.UpsertRow("users", []uint32{0, 1}, []*s4qlpb.Value{integer(2), null()}),
 					w.CreateIndex(createIndex("users_age", "users", ascending(1)).GetCreateIndex()),
 					w.Annotate(statement("create table users (id int primary key, age int) strict")),
-					w.Annotate(statement("insert into users values (?, ?), (?, ?)", integer(1), integer(42), integer(2), null())),
+					w.Annotate(statement("insert into users values (?, ?), (?, ?)")),
 				)
 			},
 			want: []item{
@@ -768,7 +778,7 @@ func commitSamples() []commitSample {
 				{change: upsertRows("users", []uint32{0, 1}, []*s4qlpb.Value{integer(1), integer(42)}, []*s4qlpb.Value{integer(2), null()})},
 				{change: createIndex("users_age", "users", ascending(1))},
 				{annotation: statement("create table users (id int primary key, age int) strict")},
-				{annotation: statement("insert into users values (?, ?), (?, ?)", integer(1), integer(42), integer(2), null())},
+				{annotation: statement("insert into users values (?, ?), (?, ?)")},
 			},
 		},
 		{
@@ -791,9 +801,9 @@ func commitSamples() []commitSample {
 					w.UpsertRow("every", []uint32{0, 1, 2, 3, 4}, []*s4qlpb.Value{integer(0), integer(-1), realValue(0), text(""), blob([]byte{0})}),
 					w.DeleteRow("every", []*s4qlpb.Value{integer(1)}),
 					w.CreateIndex(createIndex("kv_c_a", "kv", descending(2), ascending(0)).GetCreateIndex()),
-					w.Annotate(statement("update kv set c = ? where a = ?", null(), integer(-7))),
-					w.Annotate(statement("select ?, ?, ?, ?, ?", integer(math.MaxInt64), realValue(-0.5), text("t"), blob([]byte("b")), null())),
-					w.Annotate(statement("insert into every (c) values (?)", realValue(math.Copysign(0, -1)))),
+					w.Annotate(statement("update kv set c = ? where a = ?")),
+					w.Annotate(statement("select ?, ?, ?, ?, ?")),
+					w.Annotate(statement("insert into every (c) values (?)")),
 				)
 			},
 			want: []item{
@@ -812,9 +822,9 @@ func commitSamples() []commitSample {
 					[]*s4qlpb.Value{integer(0), integer(-1), realValue(0), text(""), blob([]byte{0})})},
 				{change: deleteRows("every", []*s4qlpb.Value{integer(1)})},
 				{change: createIndex("kv_c_a", "kv", descending(2), ascending(0))},
-				{annotation: statement("update kv set c = ? where a = ?", null(), integer(-7))},
-				{annotation: statement("select ?, ?, ?, ?, ?", integer(math.MaxInt64), realValue(-0.5), text("t"), blob([]byte("b")), null())},
-				{annotation: statement("insert into every (c) values (?)", realValue(math.Copysign(0, -1)))},
+				{annotation: statement("update kv set c = ? where a = ?")},
+				{annotation: statement("select ?, ?, ?, ?, ?")},
+				{annotation: statement("insert into every (c) values (?)")},
 			},
 		},
 	}

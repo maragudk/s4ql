@@ -847,7 +847,7 @@ func (r *run) write(ctx context.Context, n *node, d *core.DB) {
 	m := newTx(before)
 	id := n.host.Uint64()
 	world.Trace(ctx, "transaction %v begins at %v", id, short(tx.Position()))
-	if err := tx.Annotate(ctx, fmt.Sprint("transaction ", id), row(int64(intn(n.host, 100)), "text", nil)); err != nil {
+	if err := tx.Annotate(ctx, fmt.Sprint("transaction ", id)); err != nil {
 		if !expected(err) {
 			o.violate(ctx, world, "annotate: %v", err)
 		}

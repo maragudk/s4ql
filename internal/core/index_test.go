@@ -2678,7 +2678,7 @@ func indexFaults() []indexFault {
 		{name: "drop and create index", steps: []step{dropIndex("i0"), createIndex("i1", "t", 2), createIndex("i0", "t", desc(1))}},
 		{name: "create table and index", steps: []step{create("u", 1, "k", "v"), upsert("u", 1, 10), upsert("u", 2, 20), createIndex("iu", "u", 1)}},
 		{name: "rows beside indexes", steps: []step{
-			upsert("t", 100, 7, long), upsert("t", 3, 30, "y"), remove("t", true, 4), dropIndex("i0"), createIndex("i1", "t", desc(1)), note("insert", 1),
+			upsert("t", 100, 7, long), upsert("t", 3, 30, "y"), remove("t", true, 4), dropIndex("i0"), createIndex("i1", "t", desc(1)), note("insert"),
 		}},
 	}
 }

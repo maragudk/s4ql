@@ -1520,11 +1520,7 @@ func readCommit(content []byte, name format.Name) (*CommitObject, error) {
 			return nil, err
 		}
 		if s := annotation.GetStatement(); s != nil {
-			st := Statement{SQL: s.GetSql()}
-			for _, v := range s.GetParameters() {
-				st.Args = append(st.Args, argValue(v))
-			}
-			c.Statements = append(c.Statements, st)
+			c.Statements = append(c.Statements, Statement{SQL: s.GetSql()})
 		}
 		if change == nil {
 			continue
@@ -1547,23 +1543,6 @@ func readCommit(content []byte, name format.Name) (*CommitObject, error) {
 				}
 			}
 		}
-	}
-}
-
-// argValue of an argument of a statement as JSON: an integer, a real, or text as itself, a blob as
-// hexadecimal text, and NULL as null.
-func argValue(v *s4qlpb.Value) any {
-	switch v.WhichKind() {
-	case s4qlpb.Value_Integer_case:
-		return v.GetInteger()
-	case s4qlpb.Value_Real_case:
-		return v.GetReal()
-	case s4qlpb.Value_Text_case:
-		return v.GetText()
-	case s4qlpb.Value_Blob_case:
-		return hex.EncodeToString(v.GetBlob())
-	default:
-		return nil
 	}
 }
 

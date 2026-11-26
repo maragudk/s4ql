@@ -340,7 +340,7 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 		case kept:
 		case c.e.bugs.keepFailed:
 			// The planted bug: the statement is kept as if it had succeeded.
-			_ = w.annotate(ctx, sql, args)
+			_ = w.annotate(ctx, sql)
 			_ = w.release(ctx)
 		default:
 			_ = w.rollbackTo(ctx)
@@ -391,9 +391,8 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	if err != nil {
 		return ran(failed, err), nil, err
 	}
-	// The planted bugs annotateText and argsFromStart annotate with the text or its arguments.
-	note, annotated := c.e.bugs.annotation(ctx, sql, args)
-	if err := w.annotate(ctx, note, annotated); err != nil {
+	// The planted bug annotateText annotates with the whole text.
+	if err := w.annotate(ctx, c.e.bugs.annotation(ctx, sql)); err != nil {
 		return failed, nil, err
 	}
 	// The release ends the savepoint whatever it gives, and a release that fails leaves a
