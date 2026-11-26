@@ -884,9 +884,10 @@ const (
 	// statement in the cache is longer than the limit, which s4ql refuses as not supported. See
 	// [pair.tooLongForCache].
 	excusedCacheLimit = "a create table whose statement in the cache is longer than the length limit, checked against the length of that statement"
-	// excusedUpsert is an insert with ON CONFLICT, which the engine refuses before it reads the
-	// database, as [stmttest.UpsertRefusal] says, until it runs one.
-	excusedUpsert = "an insert with ON CONFLICT, which the engine does not run yet, checked against the refusal"
+	// excusedUpsertType is an upsert that the engine refuses by s4ql's rules of its types, of the
+	// proposed row and of DO UPDATE, also of its arithmetic and its text, checked against
+	// [stmttest.UpsertRefusals]. See [pair.checkUpsert].
+	excusedUpsertType = "an upsert refused by the rule of exact types, checked against s4ql's rules"
 	// excusedSortTooBig is a select with ORDER BY that SQLite refuses under the length limit with
 	// `string or blob too big`, for the record of what it sorts of a row, and that s4ql answers with
 	// rows: the known difference of slice 13, by the decision of the lead in docs/todo/slice-13.md.
@@ -1077,6 +1078,8 @@ type pair struct {
 	walking bool
 	// severalFailed is set after a text of several statements failed in the transaction that is open.
 	severalFailed bool
+	// lastText is the text of the last call with text of ||, lower, or hex, for [pair.reachOfText].
+	lastText string
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -1157,14 +1160,9 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	// An upsert is refused before the database is read, whatever it holds, also
-	// one with a value longer than the length limit.
-	if refusal := stmttest.UpsertRefusal(s); refusal != "" && len(c.Args) == s.Parameters() {
-		if got.err != "not supported" || got.message != refusal {
-			return fmt.Sprintf("%q: the engine gives %v, and the rule %q", src, got, refusal)
-		}
-		p.y.excused(excusedUpsert)
-		return ""
+	upsert, _ := s.(*stmt.Insert)
+	if upsert != nil && !upsert.Conflict.Present() {
+		upsert = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
 		if failure == "" {
@@ -1175,7 +1173,10 @@ func (p *pair) step(c stmttest.Call) string {
 	// A statement with arithmetic has rules of its own for its types and its evaluation errors, as
 	// [pair.checkArithmetic] says.
 	check := p.checkType
-	if s != nil && expressed(s) {
+	switch {
+	case upsert != nil:
+		check = func(c stmttest.Call, args []any, got answer) (string, string) { return p.checkUpsert(c, upsert, args, got) }
+	case s != nil && expressed(s):
 		check = func(c stmttest.Call, args []any, got answer) (string, string) { return p.checkArithmetic(c, s, args, got) }
 	}
 	if kind, failure := check(c, args, got); kind != "" || failure != "" {
@@ -1284,7 +1285,10 @@ func (p *pair) step(c stmttest.Call) string {
 	}
 	if differs {
 		gap := knownGap(src, got, want)
+		textGap := p.textDifference(c, got, want)
 		switch {
+		case textGap != "":
+			p.y.excused(textGap)
 		case startedTable(t, p.empty, src, got, want):
 			p.y.excused(acceptedStartedTable)
 		case want.err == tooBig && got.err == "" && c.Query && p.sortTooBig(src, args, got):
@@ -2294,6 +2298,57 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, which %v", c.Src, c.Args, path, all.message, why)
 		}
 		p.count("evaluation error by one path and not by another")
+		return ""
+	}
+	if isSelect && textIn(s) && (got.err == tooBig || all.err == tooBig) && all.err != got.err {
+		// Which rows a select with text computes depends on its access too, and a text that is too
+		// long by one path may be on a row that the other does not read: a text too long of the other
+		// instance must be one that SQLite finds too long for a row that the rule may evaluate, as
+		// [pair.textTooLong] says, and one of the instance is judged by [pair.step], where the other
+		// instance must give no error and SQLite's rows without the limit.
+		if all.err != tooBig {
+			// The other instance read no row whose text is too long: it gives no error, and SQLite's
+			// answer without the length limit.
+			if all.err != "" {
+				return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, where it gives %q as the rules choose", c.Src, c.Args, path, all.message, got.message)
+			}
+			want := p.o.unlimited(p.t, c.Src, oracleArgs(c.Args)...)
+			bad := want.err != ""
+			if q := orderedOf(s.(*stmt.Select), oracleArgs(c.Args)); !bad && c.Query {
+				if q.plain() {
+					bad = all.String() != want.String()
+				} else {
+					bad = q.compare(p.t, p.o, all, want) != ""
+				}
+			}
+			if bad {
+				return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives\n%v\nand SQLite without the length limit\n%v", c.Src, c.Args, path, all, want)
+			}
+			p.count("text too long by one path and not by another")
+			return ""
+		}
+		if !p.textTooLong(s, oracleArgs(c.Args)) {
+			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, and SQLite finds no text of it too long for a row that the rule may evaluate", c.Src, c.Args, path, all.message)
+		}
+		p.count("text too long by one path and not by another")
+		return ""
+	}
+	if subqueried(s) && textIn(s) && (got.err == tooBig) != (all.err == tooBig) && got.err+all.err == tooBig && changes == 0 && allChanges == 0 {
+		// The first row of a subquery without an ORDER BY that decides it is the first of the direction
+		// that each instance draws, and so are the rows that it reads before it, whose text may be too
+		// long. Where a statement fails so by one direction and changes nothing by the other, both
+		// instances hold what they held, as [pair.textOneDirection] judges.
+		computed := p.computed
+		if got.err != "" {
+			computed = otherComputed
+			if computed != nil && p.force != nil {
+				computed = p.force
+			}
+		}
+		if failure := p.textOneDirection(c, s, computed); failure != "" {
+			return failure
+		}
+		p.count("text too long in a subquery by one direction and not by another")
 		return ""
 	}
 	if failed, ok := subqueryErrorOfOne(s, got, all); ok && changes == 0 && allChanges == 0 {
@@ -3599,33 +3654,55 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 // checkLength of the call c, whose answer of the engine is got, against s4ql's rule for a literal
 // that is longer than the length limit: an insert, an update, or a delete that SQLite prepares fails
 // with SQLite's `string or blob too big`, after the names, for a literal of an insert, of SET, or of
-// a condition of an update or a delete. SQLite meets such a literal only with a limit below the
-// length of the text that holds it, and then gives the error for a string literal only when it steps
-// the statement, which an update or a delete does only for a row that it finds, and turns a blob
-// literal into NULL, so the call is not run in SQLite. It gives [excusedLong] for an insert and
-// [excusedLongChange] for an update or a delete if the rule decides the call, or "", and what differs
-// from the rule, or "". A select with such a literal in a condition is compared with SQLite, as
-// [pair.longCondition] says.
+// a condition of an update or a delete, and of the row or of DO UPDATE of an upsert. SQLite meets
+// such a literal only with a limit below the length of the text that holds it, and then gives the
+// error for a string literal only when it steps the statement, which an update or a delete does only
+// for a row that it finds, and turns a blob literal into NULL, so the call is not run in SQLite. A
+// literal inside an expression of SET or WHERE that is longer than the limit fails when the engine
+// binds the expression, which is stricter than SQLite, which computes it where it computes its
+// operator: there `string or blob too big` is taken without SQLite, and any other answer is left to
+// the rules after. It gives [excusedLong] for an insert and [excusedLongChange] for an update or a
+// delete if the rule decides the call, or "", and what differs from the rule, or "". A select with
+// such a literal in a condition is compared with SQLite, as [pair.longCondition] says.
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
 	s, _ := stmt.Check(c.Src)
 	excuse = excusedLong
 	var terms []stmt.Term
+	var where []stmt.Condition
 	switch s := s.(type) {
 	case *stmt.Insert:
-		terms = s.Values
+		// An upsert measures the values of DO UPDATE after those of its row, as an update measures
+		// them.
+		terms, where = s.Values, s.Conflict.Where
+		for _, a := range s.Conflict.Set {
+			terms = append(terms, a.Value)
+		}
+		for _, c := range s.Conflict.Where {
+			terms = append(terms, c.Value)
+		}
 	case *stmt.Update, *stmt.Delete:
 		excuse = excusedLongChange
 		terms = changeTerms(s)
+		_, where = tableWhere(s)
 	default:
 		return "", ""
 	}
-	var n int
+	var n, inner int
 	for _, v := range terms {
-		n = max(n, byteLength(v.Value))
+		n, inner = max(n, byteLength(v.Value)), max(inner, longestLiteral(v.Expression))
 	}
-	if p.i.limit == 0 || n <= p.i.limit || p.o.prepare(t, c.Src) != nil {
+	for _, c := range where {
+		inner = max(inner, longestLiteral(c.Expression))
+	}
+	if p.i.limit == 0 || max(n, inner) <= p.i.limit || p.o.prepare(t, c.Src) != nil {
+		return "", ""
+	}
+	if n <= p.i.limit {
+		if got.err == tooBig {
+			return excuse, ""
+		}
 		return "", ""
 	}
 	if _, where := tableWhere(s); subqueried(s) && correlatedRule(t, p.o, where, subqueriesIn(s)) != "" {
@@ -3656,7 +3733,14 @@ func (p *pair) recordSlips(u *stmt.Update, args []any) bool {
 	key := columns[slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })].Name
 	found, foundArgs, one, oneArgs := stmttest.RowQueries(u, key, args)
 	is.Equal(t, "", o.run(t, "savepoint s4ql_rows").err)
-	is.Equal(t, "", o.run(t, found, foundArgs...).err, found)
+	foundErr := o.run(t, found, foundArgs...).err
+	if foundErr == tooBig && textIn(u) {
+		// A text of the WHERE that is too long for a row, which the rules of text judge, and no record.
+		is.Equal(t, "", o.run(t, "rollback to s4ql_rows").err)
+		is.Equal(t, "", o.run(t, "release s4ql_rows").err)
+		return false
+	}
+	is.Equal(t, "", foundErr, found)
 	n, err := strconv.Atoi(o.run(t, "select count(*) from temp.s4ql_found").rows[0])
 	is.NotError(t, err)
 	// The rows change one at a time, in the order of the key, as the engine changes them, and the
@@ -3691,6 +3775,15 @@ func changeTerms(s stmt.Statement) []stmt.Term {
 	}
 	// The values of a subquery, of slice 15, are measured where it is, before the types.
 	return append(terms, subqueryTerms(s)...)
+}
+
+// longestLiteral of the expression e: the length of its longest literal of text or blob, or 0.
+func longestLiteral(e stmt.Expression) int {
+	n := byteLength(e.Value)
+	for _, o := range e.Operands {
+		n = max(n, longestLiteral(o))
+	}
+	return n
 }
 
 // longChange of src, if it holds an update or a delete with a literal longer than the length limit
@@ -3989,7 +4082,7 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several, stmttest.TextFunctions:
 		n *= 2
 	}
 	return uint64(n)
@@ -4774,9 +4867,13 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		"select * from t1 where v1 = (select v1 from t1 where lower(v1) = 'a')",
 		"delete from t1 where hex(nosuch) = ?",
 		"select * from t1 where v1 || ? = 'x'",
-		// Upserts, which the engine refuses before it reads the database.
+		// Upserts, which the pair judges by the rules of upsert_test.go.
 		"insert into t1 values (1) on conflict (v1) do nothing",
 		"insert into t1 values (2) on conflict (v1) do update set w = excluded.v1 + 1 where excluded.v1 > 0 returning *",
+		"insert into t1 values (1) on conflict (v1) do update set v1 = excluded.v1 + 1",
+		`insert into "foo BAR" values (7) on conflict ("bar""X") do nothing returning *`,
+		"insert into t1 values (-1) on conflict (V1) do update set w = 1 where excluded.v1 * 9223372036854775807 > 0",
+		"insert into t1 values (1) on conflict (v1) do update set w = lower(?) || hex(excluded.v1) where ? || '' = lower(w) returning *",
 	} {
 		add(src, i%2 == 1)
 	}

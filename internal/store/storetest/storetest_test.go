@@ -99,6 +99,11 @@ func TestCases(t *testing.T) {
 			},
 			finds: identity,
 		},
+		{
+			name:  "errors that wrap the cause of the end of the context",
+			wrap:  func(c store.Store) store.Store { return &wrapsCause{Store: c} },
+			finds: "should not wrap the cause of the end of a context in the error of a call or of a read of its content",
+		},
 	} {
 		t.Run("should fail for "+wrong.name, func(t *testing.T) {
 			found := failures(t, 5, wrong.wrap)
@@ -266,4 +271,30 @@ func failures(t *testing.T, seeds int, wrap func(store.Store) store.Store) map[s
 		}
 	}
 	return found
+}
+
+// wrapsCause wraps the cause of the end of a call's context in the error of the call, as net/http
+// can.
+type wrapsCause struct{ store.Store }
+
+func (s *wrapsCause) Get(ctx context.Context, key string) (io.ReadCloser, store.Version, error) {
+	body, v, err := s.Store.Get(ctx, key)
+	return body, v, s.wrap(ctx, err)
+}
+
+func (s *wrapsCause) Create(ctx context.Context, key string, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
+	v, err := s.Store.Create(ctx, key, content, checksum)
+	return v, s.wrap(ctx, err)
+}
+
+func (s *wrapsCause) Swap(ctx context.Context, key string, from store.Version, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
+	v, err := s.Store.Swap(ctx, key, from, content, checksum)
+	return v, s.wrap(ctx, err)
+}
+
+func (s *wrapsCause) wrap(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w", err, context.Cause(ctx))
 }

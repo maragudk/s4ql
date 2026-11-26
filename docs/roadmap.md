@@ -10,7 +10,7 @@ A piece of work is named by its feature, such as "upserts", and no longer by a n
 | --- | --- | --- |
 | [Expressions and functions](#expressions-and-functions) | Literals, `null`, and `?`. Arithmetic: `+`, `-`, `*`, `/`, and a unary `-` on integers and reals, in `set` and in `where`, with generated checks, seven planted bugs, a driver test, and mutation testing of the statement pass, the evaluator, and the engine. | More operators and functions, and expressions in more places. The evaluator is s4ql's own, in Go. SQLite's answer or an error. Time and randomness from the host. |
 | [Reading](#reading) | `select` from one table, with `where`, `order by`, `limit`, and a scalar subquery in the `where`. | Operators of s4ql's own for grouping and joining. |
-| [Writing](#writing) | `insert` of one row, `update`, `delete`, and `returning`. | `on conflict (key) do nothing` and `do update`. Several rows per `insert`. |
+| [Writing](#writing) | `insert` of one row, `update`, `delete`, `returning`, and upserts: `on conflict (key) do nothing` and `do update`, checked against SQLite case by case. | The generated checks of upserts. Several rows per `insert`. |
 | [Schema](#schema) | `strict, without rowid` tables with one key column, defaults, indexes, and `if not exists`. | `strict, without rowid` with a primary key stays required. |
 | [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and several statements in one `Exec`, with hand-written tests, a generated workload, the driver's generated comparison with mattn, the engine's differential tests, and the simulation with eight planted bugs. | Mutation testing of several statements. |
 | [Limits of the core](#limits-of-the-core) | A commit that is too large fails. The rows of a `returning` are held in memory without a bound. | A limit on the memory of an operator, with a clear error. Spooling later. |
@@ -64,7 +64,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
   - Text and blobs never meet arithmetic. An integer against a real across a comparison or a `set` is refused.
   - A column may be compared with, or copied from, a column of the same type.
   - Checked with the evaluator against SQLite with generated expressions and a fuzz test, the engine's differential tests, and independent reviews. Its generated workload, simulation with planted bugs (seven), and driver test are built (2026-11-25); the statement pass and the evaluator are mutation-tested (2026-11-26: 645 and 649 mutants, none unexplained), and so is the engine (2026-11-26: 2,488 mutants, none unexplained).
-- Text, built on 2026-11-26, with the notes in [todo/text-functions.md](todo/text-functions.md): the statement pass reads `||`, `lower`, and `hex`, and the evaluator, the engine, and the `database/sql` driver compute them, where arithmetic runs. The evaluator is compared with SQLite by generated expressions and a fuzz target, and the engine by `TestEngine_text`; the generated checks of text are next. No other function. A `where` compares values and expressions; see [Reading](#reading).
+- Text, built on 2026-11-26, with the notes in [todo/text-functions.md](todo/text-functions.md): the statement pass reads `||`, `lower`, and `hex`, and the evaluator, the engine, and the `database/sql` driver compute them, where arithmetic runs. The evaluator is compared with SQLite by generated expressions and a fuzz target, and the engine by `TestEngine_text`; since 2026-11-26 the generated workload writes text, and the engine's differential test compares it with SQLite, also at the edges of a lowered length limit. The planted bugs of text and the driver's generated test of text are next. No other function. A `where` compares values and expressions; see [Reading](#reading).
 
 **Decided,** with the details in [todo/expressions.md](todo/expressions.md):
 
@@ -110,7 +110,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 
 **Decided,** with the details in [todo/writing.md](todo/writing.md):
 
-- Upserts. An `insert` without a clause fails on a conflict and changes nothing, as today, which is SQLite's `abort`. `insert ... on conflict (key) do nothing` and `insert ... on conflict (key) do update set ...` are built when they are next. Agreed by Markus on 2026-11-24. The statement pass reads both forms, with `excluded.<column>` (2026-11-26); the engine and its checks are still to come, so no upsert runs yet.
+- Upserts. An `insert` without a clause fails on a conflict and changes nothing, as today, which is SQLite's `abort`. `insert ... on conflict (key) do nothing` and `insert ... on conflict (key) do update set ...` are built when they are next. Agreed by Markus on 2026-11-24. The statement pass reads both forms, with `excluded.<column>`, and the engine and the driver run them, with arithmetic and text in DO UPDATE, checked against SQLite case by case (2026-11-26); the generated checks of upserts are still to come.
 - Several rows per `insert`, and `insert ... select`, are details, built when they are next. Decided by the lead on 2026-11-24.
 
 **Undecided:** `insert ... default values`, `update ... from`, and `set (a, b) = (...)`.

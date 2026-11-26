@@ -55,8 +55,12 @@ func numeric(classes ...string) bool {
 	return !slices.Contains(classes, "text") && !slices.Contains(classes, "blob")
 }
 
-// columnNamed of the column of the table of the name, as the engine names it in a message.
+// columnNamed of the column of the table of the name, as the engine names it in a message, and a
+// column of the row that an upsert proposes as excluded.c, as [UpsertClause] names it.
 func columnNamed(table string, c TableColumn) string {
+	if name, ok := excludedName(c.Name); ok {
+		return fmt.Sprintf("the column excluded.%v of type %v", name, c.Type)
+	}
 	return fmt.Sprintf("the column %v.%v of type %v", table, c.Name, c.Type)
 }
 

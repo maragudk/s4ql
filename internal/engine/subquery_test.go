@@ -15,6 +15,7 @@ import (
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
+	"maragu.dev/s4ql/internal/sqlite"
 )
 
 // subquerySetUp is the tables of the tests of subqueries, with rows: t of a column of each type, u
@@ -631,6 +632,22 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 		run = o.unlimited
 	}
 	alone := run(t, src[q.Span.Start:q.Span.End], bound...)
+	constantTooLong := slices.ContainsFunc(q.Where, func(c stmt.Condition) bool {
+		e := c.Value.Expression
+		if e.Kind != stmt.ExprConcat && e.Kind != stmt.ExprCall || e.HasColumn() {
+			return false
+		}
+		text, textArgs := stmttest.ExpressionText(e, args)
+		return o.run(t, "select "+text, textArgs...).err == tooBig
+	})
+	if alone.err == tooBig && q.OrderBy == nil && !constantTooLong && !long(q.Limit.Value) && !slices.ContainsFunc(bound, long) && !slices.ContainsFunc(q.Where, func(c stmt.Condition) bool { return long(c.Value.Value) }) {
+		// A text with a column of the subquery that is too long for a row that SQLite reads before it
+		// finds its first row, which an engine that reads in another direction may not read: its
+		// candidates are those that SQLite gives without the limit. A text without a column that is
+		// too long fails on any row that reaches it, and so in every direction.
+		run = o.unlimited
+		alone = run(t, src[q.Span.Start:q.Span.End], bound...)
+	}
 	if alone.err != "" {
 		// SQLite refuses the subquery, as for a value of another type than its column, which s4ql
 		// refuses, and SQLite may not.
@@ -883,6 +900,30 @@ func goValue(v *s4qlpb.Value) any {
 	return nil
 }
 
+// wideRule of the select, the update, or the delete s with scalar subqueries, which SQLite does not
+// prepare, with the error err: s4ql's refusal of the second of two subqueries of `*` of more than one
+// column of an update or a delete, whose error SQLite gives for one that its plan chooses, or "".
+func wideRule(t testing.TB, o *oracle, s stmt.Statement, err *sqlite.Error) string {
+	t.Helper()
+	if _, isSelect := s.(*stmt.Select); isSelect || err.Message != "row value misused" && !strings.HasPrefix(err.Message, "sub-select returns ") {
+		return ""
+	}
+	_, where := tableWhere(s)
+	subs := subqueriesIn(s)
+	var wide []stmt.Term
+	for _, c := range where {
+		if q := c.Value.Subquery; q > 0 {
+			if _, columns := o.columns(t, subs[q-1].Table.Value); subs[q-1].Columns == nil && len(columns) > 1 {
+				wide = append(wide, c.Value)
+			}
+		}
+	}
+	if len(wide) < 2 {
+		return ""
+	}
+	return fmt.Sprintf("s4ql: not supported: second subquery of * of more than one column (at offset %v)", wide[1].Span.Start)
+}
+
 // subqueryRule of the select, the update, or the delete s of the text src, with scalar subqueries,
 // with the arguments args as SQLite binds them, on the database of o: s4ql's "not supported", or "",
 // in the order in which the engine checks them. For a statement that SQLite does not prepare, it is
@@ -905,21 +946,7 @@ func subqueryRule(t testing.TB, o *oracle, src string, s stmt.Statement, args []
 	table, where := tableWhere(s)
 	subs := subqueriesIn(s)
 	if err := o.prepare(t, src); err != nil {
-		if _, isSelect := s.(*stmt.Select); isSelect || err.Message != "row value misused" && !strings.HasPrefix(err.Message, "sub-select returns ") {
-			return ""
-		}
-		var wide []stmt.Term
-		for _, c := range where {
-			if q := c.Value.Subquery; q > 0 {
-				if _, columns := o.columns(t, subs[q-1].Table.Value); subs[q-1].Columns == nil && len(columns) > 1 {
-					wide = append(wide, c.Value)
-				}
-			}
-		}
-		if len(wide) < 2 {
-			return ""
-		}
-		return fmt.Sprintf("s4ql: not supported: second subquery of * of more than one column (at offset %v)", wide[1].Span.Start)
+		return wideRule(t, o, s, err)
 	}
 	name, columns := o.columns(t, table.Value)
 	if rule := correlatedRule(t, o, where, subs); rule != "" {

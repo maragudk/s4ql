@@ -2336,6 +2336,8 @@ var checkCases = []checkCase{
 	{name: "excluded with COLLATE", src: "insert into t values (1) on conflict (k) do update set v = excluded.v collate nocase", err: "s4ql: not supported: COLLATE (at offset 59)"},
 	{name: "a division of excluded by zero", src: "insert into t values (1) on conflict (k) do update set v = excluded . v / 0", err: "s4ql: not supported: division by zero (at offset 74)"},
 	{name: "a value compared with a value in the where of DO UPDATE", src: "insert into t values (1) on conflict (k) do update set v = 1 where 1 = 1", err: "s4ql: not supported: value compared with a value (at offset 71)"},
+	{name: "a parameter compared with a value in the where of DO UPDATE", src: "insert into t values (1) on conflict (k) do update set v = 1 where ? = 1", err: "s4ql: not supported: value compared with a value (at offset 71)"},
+	{name: "an expression without a column compared with a value in the where of DO UPDATE", src: "insert into t values (1) on conflict (k) do update set v = 1 where 1 + 0 = 1", err: "s4ql: not supported: value compared with a value (at offset 75)"},
 	{name: "excluded IS a value other than NULL", src: "insert into t values (1) on conflict (k) do update set v = 1 where excluded.v is 1", err: "s4ql: not supported: IS with a value other than NULL (at offset 81)"},
 	{name: "excluded IS DISTINCT FROM", src: "insert into t values (1) on conflict (k) do update set v = 1 where excluded.v is distinct from 1", err: "s4ql: not supported: IS DISTINCT FROM (at offset 81)"},
 	{name: "excluded ISNULL", src: "insert into t values (1) on conflict (k) do update set v = 1 where excluded.v isnull", err: "s4ql: not supported: NULL test (at offset 67)"},
