@@ -2222,6 +2222,10 @@ type Call struct {
 	// Each reports, of a text of several statements, whether each of them is a statement of the slices
 	// that a Sequence writes, which s4ql supports, as Supported reports it of a text of one.
 	Each bool
+	// Supports reports, of a text of several statements, for each of the texts that
+	// [Sequence.several] joined, in order, whether it is a statement of the slices that a Sequence
+	// writes, as Supported reports it of a text of one; Each is whether all of them are.
+	Supports []bool
 }
 
 // Integers of args, and true, if each is a Go integer without a name that fits a signed 64-bit

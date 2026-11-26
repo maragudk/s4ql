@@ -3,6 +3,7 @@ package stmttest
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,6 +36,8 @@ func TestSequence_several(t *testing.T) {
 				if !c.Each {
 					reached["a text that is no statement of the sequence"]++
 				}
+				is.Equal(t, c.Statements, len(c.Supports), "one of Supports for each statement")
+				is.Equal(t, c.Each, !slices.Contains(c.Supports, false), "Each is whether all of Supports are")
 				parts, err := stmt.Split(c.Src)
 				if ns, ok := errors.AsType[*stmt.NotSupportedError](err); ok && strings.HasPrefix(ns.What, "space ") {
 					reached[ns.What]++

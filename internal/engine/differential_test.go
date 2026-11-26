@@ -531,6 +531,9 @@ type instance struct {
 	opens uint64
 	// planted is set for an instance whose engine has a planted bug, which can cause an internal error.
 	planted bool
+	// events records the events of the statements of the engines of the instance whose options have
+	// no logger of their own, while it is on, or is nil before the first such engine.
+	events *recorder
 }
 
 // seeded gives the instance the seed of the flag -directions, or one that it draws, and logs it if
@@ -547,10 +550,17 @@ func (i *instance) seeded() {
 	})
 }
 
-// directed is options with the seed of the next engine of the instance, unless they have one.
+// directed is options with the seed of the next engine of the instance, unless they have one, and
+// with the logger of [instance.events], unless they have one.
 func (i *instance) directed(options engine.Options) engine.Options {
 	if !options.Seeded() {
 		options.Seed(i.seed + i.opens)
+	}
+	if options.Logger == nil {
+		if i.events == nil {
+			i.events = &recorder{}
+		}
+		options.Logger = slog.New(i.events)
 	}
 	i.opens++
 	return options

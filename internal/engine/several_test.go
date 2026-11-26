@@ -68,6 +68,61 @@ func (h *canceling) count() int {
 	return h.events
 }
 
+// recorder is a logger that records the events of statements while it is on, each by its kind, its
+// outcome, and the kind of its transaction, and is not enabled while it is off.
+type recorder struct {
+	mu     sync.Mutex
+	on     bool
+	events []string
+}
+
+func (h *recorder) Enabled(context.Context, slog.Level) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.on
+}
+
+func (h *recorder) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recorder) WithGroup(string) slog.Handler      { return h }
+
+func (h *recorder) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != engine.EventStatement {
+		return nil
+	}
+	m := map[string]string{}
+	r.Attrs(func(a slog.Attr) bool {
+		m[a.Key] = a.Value.String()
+		return true
+	})
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.on {
+		h.events = append(h.events, eventOf(m[engine.AttrKind], m[engine.AttrOutcome], m[engine.AttrTxKind]))
+	}
+	return nil
+}
+
+// eventOf a statement of the kind, with the outcome, in a transaction of the kind tx, or "" for
+// none, as [recorder] records it.
+func eventOf(kind, outcome, tx string) string {
+	return fmt.Sprintf("%q %v %q", kind, outcome, tx)
+}
+
+// start recording, from no event.
+func (h *recorder) start() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.on, h.events = true, nil
+}
+
+// stop recording, and give the events recorded since [recorder.start].
+func (h *recorder) stop() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.on = false
+	return h.events
+}
+
 func TestConn_ExecAll(t *testing.T) {
 	t.Run("should run the statements one after another, each as a transaction of its own, with the arguments in order", func(t *testing.T) {
 		i := newInstance(t, engine.Options{})
@@ -646,8 +701,23 @@ func (p *pair) several(c stmttest.Call) string {
 	// the tables, folded, that a statement of the text that ran before created, or changed rows of.
 	before := i.changes
 	created, changed := map[string]bool{}, map[string]bool{}
+	// The events of the statements that the instance logs in the walk, and the statements that it
+	// counts in the transaction that is open, which the other instance must log and count in ExecAll.
+	recorded := i.events != nil && other.events != nil
+	var walked []string
+	iTx := i.c.TxStatements()
+	if refused {
+		// One event of the whole text, without a kind, as that of a text that fails its check.
+		walked = []string{eventOf("", outcomeOf(want.err), p.txKind())}
+		if iTx >= 0 {
+			iTx--
+		}
+	}
 	if !refused {
 		p.walking = true
+		if recorded {
+			i.events.start()
+		}
 		used := 0
 		for j, part := range parts {
 			alone := src[part.span.Start:part.span.End]
@@ -662,7 +732,12 @@ func (p *pair) several(c stmttest.Call) string {
 			}
 			before = i.changes
 			setsBefore := i.sets
-			failure := p.step(stmttest.Call{Src: alone, Args: take, Supported: c.Each})
+			if j >= len(c.Supports) {
+				p.walking = false
+				return fail("the walk reaches its statement %v of %v, and the generator wrote %v texts, so the oracle cannot tell whether s4ql supports it", j+1, len(parts), len(c.Supports))
+			}
+			// Each statement is judged by whether it itself is one that s4ql supports, as a text of one.
+			failure := p.step(stmttest.Call{Src: alone, Args: take, Supported: c.Supports[j]})
 			if failure != "" {
 				p.walking = false
 				return fail("its statement %v of %v alone: %v", j+1, len(parts), failure)
@@ -681,12 +756,25 @@ func (p *pair) several(c stmttest.Call) string {
 			p.reachDependent(s, created, changed, i.sets > setsBefore && i.changes > 0)
 		}
 		p.walking = false
+		if recorded {
+			walked = i.events.stop()
+		}
 	}
+	iTx = i.c.TxStatements() - iTx
 	// The other instance reads as the rules choose, and computes its own subqueries, which no
 	// statement of the walk forces.
 	other.e.SetPath(engine.Path{})
 	other.e.ObserveSubqueries(func(_ context.Context, vs []*s4qlpb.Value) []*s4qlpb.Value { return vs })
+	otherTx := other.c.TxStatements()
+	if recorded {
+		other.events.start()
+	}
 	res, err := other.c.ExecAll(t.Context(), src, values(c.Args)...)
+	var execAllEvents []string
+	if recorded {
+		execAllEvents = other.events.stop()
+	}
+	otherTx = other.c.TxStatements() - otherTx
 	if res.SetsChanges {
 		other.changes = res.Changes
 	}
@@ -723,6 +811,15 @@ func (p *pair) several(c stmttest.Call) string {
 	if res != wantRes {
 		return fail("ExecAll gives the result %+v, and the statements one after another %+v", res, wantRes)
 	}
+	// Each statement runs once, in order, as alone: its event, by its kind, its outcome, and its
+	// transaction, and its count in the transaction that is open, also where a second run of it would
+	// change nothing else, as a select does.
+	if recorded && fmt.Sprint(execAllEvents) != fmt.Sprint(walked) {
+		return fail("ExecAll logs the events of statements\n%v\nand the statements one after another\n%v", execAllEvents, walked)
+	}
+	if otherTx != iTx {
+		return fail("ExecAll counts %v statements in the transaction, and the statements one after another %v", otherTx, iTx)
+	}
 	if failure := p.tablesAfter(src, parts); failure != "" {
 		return fail("%v", failure)
 	}
@@ -747,6 +844,32 @@ func (p *pair) several(c stmttest.Call) string {
 	}
 	p.reachSeveral(src, parts, stopped, want, ran, i.sets > sets, before)
 	return ""
+}
+
+// outcomeOf the event of a text that the rules refuse before any statement runs with the error err,
+// as an [answer] names it.
+func outcomeOf(err string) string {
+	switch err {
+	case "not supported":
+		return "not_supported"
+	case wrongArguments:
+		return "wrong_arguments"
+	case "no statement":
+		return "no_statement"
+	}
+	panic("no outcome of a refusal before any statement runs is " + err)
+}
+
+// txKind of the transaction of the pair that is open, as the event of a statement in it names it, or
+// "" if none is open.
+func (p *pair) txKind() string {
+	switch {
+	case !p.inTx:
+		return ""
+	case p.readOnly:
+		return "read_only"
+	}
+	return "write"
 }
 
 // reachDependent counts in the tally a statement s of a text of several statements that ran on a

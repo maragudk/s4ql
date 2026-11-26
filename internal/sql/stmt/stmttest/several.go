@@ -103,6 +103,8 @@ func (q *Sequence) several() Call {
 	// texts and args of the statements that the text holds, for one that runs again.
 	var texts []string
 	var args [][]any
+	// supports holds whether each of texts is a statement that a Sequence writes.
+	var supports []bool
 	// chain holds the statements of [severalChain] that the text has yet to write.
 	var chain []string
 	each := true
@@ -127,25 +129,26 @@ func (q *Sequence) several() Call {
 		}
 		var text string
 		var a []any
+		supported := true
 		switch d := r.IntN(12); {
 		case len(chain) > 0:
 			text, chain = chain[0], chain[1:]
 		case d == 0 && j > 0:
 			i := r.IntN(len(texts))
-			text, a = texts[i], args[i]
+			text, a, supported = texts[i], args[i], supports[i]
 		case d == 1 && q.fault(r, areaSeveral, 2):
 			text, a = q.other(r)
-			each = false
+			supported = false
 		case d == 2 && q.profile.on(areaArithmetic) && q.fault(r, areaSeveral, 2):
 			form := ArithmeticRefused[r.IntN(len(ArithmeticRefused))]
 			text = fmt.Sprintf(form, q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))])
-			each = false
+			supported = false
 		case d == 3 && r.IntN(2) == 0:
 			chain = severalChain(r)
 			text, chain = chain[0], chain[1:]
 		case d == 3 && q.fault(r, areaSeveral, 2):
 			text = fmt.Sprintf(severalTrigger, r.IntN(3), q.tables[r.IntN(len(q.tables))])
-			each = false
+			supported = false
 		default:
 			// One last statement in three that can have RETURNING has it.
 			q.received = j == n-1 && q.profile.on(areaReturning) && r.IntN(3) == 0
@@ -153,7 +156,8 @@ func (q *Sequence) several() Call {
 			q.received = false
 			text, a = c.Src, c.Args
 		}
-		texts, args = append(texts, text), append(args, a)
+		texts, args, supports = append(texts, text), append(args, a), append(supports, supported)
+		each = each && supported
 		b.WriteString(text)
 		if openComment(text) {
 			// A line comment at the end would hold what follows.
@@ -185,7 +189,7 @@ func (q *Sequence) several() Call {
 	} else if q.fault(r, areaSeveral, 16) {
 		all = append(all, q.anyValue(r))
 	}
-	return Call{Src: b.String(), Args: all, Query: r.IntN(8) == 0, Statements: n, Each: each}
+	return Call{Src: b.String(), Args: all, Query: r.IntN(8) == 0, Statements: n, Each: each, Supports: supports}
 }
 
 // other is a text of [othersWithStatement] at random from r, with a table and a column of the
