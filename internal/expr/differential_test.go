@@ -2,13 +2,17 @@ package expr_test
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"maragu.dev/is"
 
@@ -33,48 +37,59 @@ var schema = []struct {
 	typ  s4qlpb.Type
 }{
 	{"a", s4qlpb.Type_TYPE_INT}, {"b", s4qlpb.Type_TYPE_INTEGER}, {"c", s4qlpb.Type_TYPE_REAL}, {"d", s4qlpb.Type_TYPE_REAL},
-	{"s", s4qlpb.Type_TYPE_TEXT}, {"x", s4qlpb.Type_TYPE_BLOB},
+	{"s", s4qlpb.Type_TYPE_TEXT}, {"x", s4qlpb.Type_TYPE_BLOB}, {"t", s4qlpb.Type_TYPE_TEXT}, {"y", s4qlpb.Type_TYPE_BLOB},
 }
+
+// maxLength is SQLite's default length limit, and its largest.
+const maxLength = 1_000_000_000
 
 // prefix of the statement that holds an expression of the tests, as the value of its assignment.
 const prefix = "update t set k = "
 
 // exprCase of the tests: the text of an expression, without [prefix], the row, which holds a value
-// for each column of [schema], and the arguments of its parameters.
+// for each column of [schema], the arguments of its parameters, and the length limit, or 0 for
+// [maxLength].
 type exprCase struct {
-	src  string
-	row  []*s4qlpb.Value
-	args []*s4qlpb.Value
+	src   string
+	row   []*s4qlpb.Value
+	args  []*s4qlpb.Value
+	limit int
 }
 
-// String of the case, for a message of a failure.
+// String of the case, for a message of a failure, with long texts shortened.
 func (c exprCase) String() string {
-	return fmt.Sprintf("%q with the row %v and the arguments %v", c.src, values(c.row), values(c.args))
+	return fmt.Sprintf("%q with the row %v, the arguments %v, and the limit %v", short(c.src), values(c.row), values(c.args), c.limit)
 }
 
-// values as text, for a message: each as [expr.Value.String] writes it, text and blobs quoted.
+// short of the text s, for a message: s, or its first 200 bytes and its length.
+func short(s string) string {
+	if len(s) <= 200 {
+		return s
+	}
+	return fmt.Sprintf("%v... (%v bytes)", s[:200], len(s))
+}
+
+// values as text, for a message: each as [expr.Value.String] writes it, with long texts and blobs
+// shortened.
 func values(vs []*s4qlpb.Value) string {
 	texts := make([]string, len(vs))
 	for i, v := range vs {
-		switch v.WhichKind() {
-		case s4qlpb.Value_Text_case:
-			texts[i] = fmt.Sprintf("%q", v.GetText())
-		case s4qlpb.Value_Blob_case:
-			texts[i] = fmt.Sprintf("x'%x'", v.GetBlob())
-		default:
-			texts[i] = valueOf(v).String()
-		}
+		texts[i] = short(valueOf(v).String())
 	}
 	return "[" + strings.Join(texts, ", ") + "]"
 }
 
-// valueOf v, an integer, a real, or NULL, as an [expr.Value].
+// valueOf v, an integer, a real, text, a blob, or NULL, as an [expr.Value].
 func valueOf(v *s4qlpb.Value) expr.Value {
 	switch v.WhichKind() {
 	case s4qlpb.Value_Integer_case:
 		return expr.IntegerValue(v.GetInteger())
 	case s4qlpb.Value_Real_case:
 		return expr.RealValue(v.GetReal())
+	case s4qlpb.Value_Text_case:
+		return expr.TextValue(v.GetText())
+	case s4qlpb.Value_Blob_case:
+		return expr.BlobValue(v.GetBlob())
 	}
 	return expr.Value{}
 }
@@ -163,17 +178,30 @@ func newOracle(t testing.TB) *oracle {
 	return &oracle{conn: conn}
 }
 
+// errTooBig is the error of [oracle.value] where SQLite fails with SQLITE_TOOBIG, `string or blob
+// too big`.
+var errTooBig = errors.New("string or blob too big")
+
 // value that SQLite gives the expression of the text src over the row of the columns of [schema],
-// with args bound to its parameters, in the order of the text: an integer, a real, which may be
-// infinite, or NULL. The columns are those of a common table expression, which have no affinity,
-// so that each has the value of the row as it is.
-func (o *oracle) value(src string, row, args []*s4qlpb.Value) (expr.Value, error) {
+// with args bound to its parameters, in the order of the text, under the length limit: an integer, a
+// real, which may be infinite, text, a blob, or NULL; or [errTooBig] where SQLite fails with
+// SQLITE_TOOBIG. The columns are those of a common table expression, which have no affinity, so that
+// each has the value of the row as it is.
+func (o *oracle) value(src string, row, args []*s4qlpb.Value, limit int) (expr.Value, error) {
 	names := make([]string, len(schema))
 	params := make([]string, len(schema))
 	for i, c := range schema {
 		names[i], params[i] = c.name, fmt.Sprint("?", i+1)
 	}
-	q := fmt.Sprintf("with v(%v) as (select %v) select %v from v", strings.Join(names, ", "), strings.Join(params, ", "), src)
+	// The result column has a name, since SQLite fails with `string or blob too big` for a column
+	// whose name, the text of its expression, is longer than the limit.
+	q := fmt.Sprintf("with v(%v) as (select %v) select %v as r from v", strings.Join(names, ", "), strings.Join(params, ", "), src)
+	if err := o.conn.SetLengthLimit(limit); err != nil {
+		return expr.Value{}, err
+	}
+	defer func() {
+		_ = o.conn.SetLengthLimit(maxLength)
+	}()
 	s, err := o.conn.Prepare(q)
 	if err != nil {
 		return expr.Value{}, fmt.Errorf("prepare %q: %w", q, err)
@@ -187,6 +215,9 @@ func (o *oracle) value(src string, row, args []*s4qlpb.Value) (expr.Value, error
 		}
 	}
 	ok, err := s.Step()
+	if se, isSQLite := errors.AsType[*sqlite.Error](err); isSQLite && se.Code == 18 {
+		return expr.Value{}, errTooBig
+	}
 	if err != nil || !ok {
 		return expr.Value{}, fmt.Errorf("step %q: %v, %w", q, ok, err)
 	}
@@ -195,6 +226,10 @@ func (o *oracle) value(src string, row, args []*s4qlpb.Value) (expr.Value, error
 		return expr.IntegerValue(s.ColumnInt64(0)), nil
 	case sqlite.TypeFloat:
 		return expr.RealValue(s.ColumnDouble(0)), nil
+	case sqlite.TypeText:
+		return expr.TextValue(s.ColumnText(0)), nil
+	case sqlite.TypeBlob:
+		return expr.BlobValue(s.ColumnBlob(0)), nil
 	case sqlite.TypeNull:
 		return expr.Value{}, nil
 	}
@@ -225,10 +260,12 @@ type refError struct {
 // reference computes the value of an expression apart from the evaluator, by the rules that s4ql
 // takes from SQLite: integers with math/big, exactly, which shows an overflow; reals as the real
 // nearest to the exact result, which math/big computes, with the sign of a zero as IEEE 754 gives
-// it; an integer operand of a real operation converted to the nearest real by math/big; and - as
-// 0 minus its operand, as SQLite computes it. It counts what each node reaches with tally.
+// it; an integer operand of a real operation converted to the nearest real by math/big; - as 0
+// minus its operand, as SQLite computes it; and text by the rules of [reference.text]. It counts
+// what each node reaches with tally.
 type reference struct {
 	row, args []*s4qlpb.Value
+	limit     int
 	tally     func(kind string)
 	// computed holds the value of each node that has one, by its span, which no two nodes of a tree
 	// share.
@@ -253,6 +290,10 @@ func (r *reference) compute(e stmt.Expression) (expr.Value, *refError) {
 			return expr.IntegerValue(int64(v)), nil
 		case stmt.Real:
 			return expr.RealValue(float64(v)), nil
+		case stmt.Text:
+			return expr.TextValue(string(v)), nil
+		case stmt.Blob:
+			return expr.BlobValue(v), nil
 		}
 		panic(fmt.Sprintf("a literal %#v", e.Value))
 	case stmt.ExprParameter:
@@ -288,6 +329,8 @@ func (r *reference) compute(e stmt.Expression) (expr.Value, *refError) {
 		}
 		r.tally("- of real")
 		return expr.RealValue(-f), nil
+	case stmt.ExprConcat, stmt.ExprCall:
+		return r.text(e)
 	}
 	l, err := r.value(e.Operands[0])
 	if err != nil {
@@ -386,6 +429,115 @@ func (r *reference) compute(e stmt.Expression) (expr.Value, *refError) {
 	return expr.RealValue(f), nil
 }
 
+// text of the concatenation or the call e, by the rules that s4ql takes from SQLite: || joins the
+// bytes of its operands, and is NULL if one is NULL; lower changes the bytes A to Z to a to z, as
+// [unicode.ToLower] changes them, and leaves every other byte, and NULL, as it is; hex writes each
+// byte of a text or a blob in two digits, as [hex.EncodeToString] does, in upper case, and is the
+// empty text for NULL. SQLite refuses to make a text longer than the limit, and asks for one byte
+// more than lower and hex give, for the NUL at its end. Both operands of || are computed, the left
+// first, before it joins them.
+func (r *reference) text(e stmt.Expression) (expr.Value, *refError) {
+	l, err := r.value(e.Operands[0])
+	if err != nil {
+		return expr.Value{}, err
+	}
+	bytesOf := func(v expr.Value) []byte {
+		if t, ok := v.Text(); ok {
+			return []byte(t)
+		}
+		if b, ok := v.Blob(); ok {
+			return b
+		}
+		if v.Null() {
+			return nil
+		}
+		panic(fmt.Sprintf("%v in a text expression", v))
+	}
+	name := e.Function.String()
+	if e.Kind == stmt.ExprConcat {
+		name = "||"
+	}
+	// size is the length of what SQLite allocates for the result, which it refuses where it is larger
+	// than the limit.
+	fits := func(size int) *refError {
+		switch {
+		case size > r.limit:
+			r.tally(name + ": text longer than the length limit")
+			return &refError{kind: expr.ErrTooLong, node: e}
+		case size == r.limit:
+			r.tally(name + ": at the limit")
+		}
+		return nil
+	}
+	switch e.Function {
+	case stmt.FuncLower:
+		if l.Null() {
+			r.tally("lower of null")
+			return expr.Value{}, nil
+		}
+		b := bytesOf(l)
+		if err := fits(len(b) + 1); err != nil {
+			return expr.Value{}, err
+		}
+		changed, ascii := false, true
+		for i, c := range b {
+			if c >= utf8.RuneSelf {
+				ascii = false
+				continue
+			}
+			if lc := byte(unicode.ToLower(rune(c))); lc != c {
+				b[i], changed = lc, true
+			}
+		}
+		r.tally(fmt.Sprintf("lower of text, ASCII %v, changed %v", ascii, changed))
+		if t, _ := l.Text(); strings.ContainsFunc(t, func(c rune) bool { return c >= utf8.RuneSelf && unicode.ToLower(c) != c }) {
+			r.tally("lower of a letter that is not ASCII and has a lower case in Unicode")
+		}
+		return expr.TextValue(string(b)), nil
+	case stmt.FuncHex:
+		kind := "text"
+		switch {
+		case l.Null():
+			kind = "null"
+		case l.Type() == expr.TypeBlob:
+			kind = "a blob"
+		}
+		b := bytesOf(l)
+		if len(b) == 0 && !l.Null() {
+			kind += " that is empty"
+		}
+		r.tally("hex of " + kind)
+		if err := fits(2*len(b) + 1); err != nil {
+			return expr.Value{}, err
+		}
+		return expr.TextValue(strings.ToUpper(hex.EncodeToString(b))), nil
+	}
+	rv, err := r.value(e.Operands[1])
+	if err != nil {
+		if l.Null() {
+			r.tally("||: an error on the right of null")
+		}
+		return expr.Value{}, err
+	}
+	if l.Null() || rv.Null() {
+		r.tally("|| with null")
+		return expr.Value{}, nil
+	}
+	a, b := bytesOf(l), bytesOf(rv)
+	if err := fits(len(a) + len(b)); err != nil {
+		return expr.Value{}, err
+	}
+	switch {
+	case len(a) == 0 && len(b) == 0:
+		r.tally("|| of two empty texts")
+	case len(a) == 0 || len(b) == 0:
+		r.tally("|| with an empty text")
+	default:
+		r.tally("|| of two texts")
+	}
+	return expr.TextValue(string(append(a, b...))), nil
+}
+
 // float of v, an integer or a real, for an operation of reals: the real itself, or the real nearest
 // to the integer, the even one of two that are as near, which side counts as a conversion.
 func (r *reference) float(v expr.Value, side string) float64 {
@@ -454,35 +606,58 @@ func argumentsOf(e stmt.Expression, args []*s4qlpb.Value) []*s4qlpb.Value {
 }
 
 // refusalOf the case c with the tree e: the refusal that s4ql must give, at [expr.Check] for the
-// first column of type TEXT or BLOB in the order of the text, or else at [expr.Program.Bind] for
-// the first parameter whose argument is text or a blob; and whether it comes at the check.
+// first column in the order of the text of a type that its place does not take, or else at
+// [expr.Program.Bind] for the first parameter whose argument is of such a type; and whether it comes
+// at the check. Arithmetic takes integers and reals, || and lower take text, and hex takes text and
+// blobs, and NULL from an argument meets each; a column alone takes every type.
 func refusalOf(e stmt.Expression, c exprCase) (*stmt.NotSupportedError, bool) {
 	var column, argument *stmt.NotSupportedError
-	var walk func(e stmt.Expression)
-	walk = func(e stmt.Expression) {
+	var walk func(e stmt.Expression, place string)
+	walk = func(e stmt.Expression, place string) {
+		takes := map[string][]string{
+			"in arithmetic":      {"INT", "INTEGER", "REAL", "an integer", "a real"},
+			"in a concatenation": {"TEXT", "text"},
+			"in a call of lower": {"TEXT", "text"},
+			"in a call of hex":   {"TEXT", "BLOB", "text", "a blob"},
+		}[place]
 		switch e.Kind {
 		case stmt.ExprColumn:
 			col, _ := resolve(e.Column)
-			if t := col.Type; column == nil && (t == s4qlpb.Type_TYPE_TEXT || t == s4qlpb.Type_TYPE_BLOB) {
-				column = &stmt.NotSupportedError{What: fmt.Sprintf("column of type %v in arithmetic", strings.TrimPrefix(t.String(), "TYPE_")), Offset: e.Span.Start}
+			t := strings.TrimPrefix(col.Type.String(), "TYPE_")
+			if column == nil && place != "" && !slices.Contains(takes, t) {
+				column = &stmt.NotSupportedError{What: fmt.Sprintf("column of type %v %v", t, place), Offset: e.Span.Start}
 			}
 		case stmt.ExprParameter:
 			var which string
 			switch c.args[e.Parameter-1].WhichKind() {
+			case s4qlpb.Value_Integer_case:
+				which = "an integer"
+			case s4qlpb.Value_Real_case:
+				which = "a real"
 			case s4qlpb.Value_Text_case:
 				which = "text"
 			case s4qlpb.Value_Blob_case:
 				which = "a blob"
 			}
-			if argument == nil && which != "" {
-				argument = &stmt.NotSupportedError{What: fmt.Sprintf("argument %v in arithmetic, which is %v", e.Parameter, which), Offset: e.Span.Start}
+			if place == "" {
+				place, takes = "in arithmetic", []string{"an integer", "a real"}
+			}
+			if argument == nil && which != "" && !slices.Contains(takes, which) {
+				argument = &stmt.NotSupportedError{What: fmt.Sprintf("argument %v %v, which is %v", e.Parameter, place, which), Offset: e.Span.Start}
 			}
 		}
+		place = "in arithmetic"
+		switch e.Kind {
+		case stmt.ExprConcat:
+			place = "in a concatenation"
+		case stmt.ExprCall:
+			place = "in a call of " + e.Function.String()
+		}
 		for _, o := range e.Operands {
-			walk(o)
+			walk(o, place)
 		}
 	}
-	walk(e)
+	walk(e, "")
 	if column != nil {
 		return column, true
 	}
@@ -526,19 +701,16 @@ func (k *checker) check(c exprCase) string {
 		return ""
 	}
 
-	if e.Kind == stmt.ExprConcat || e.Kind == stmt.ExprCall {
-		// Text, which the evaluator refuses at its root, the one place where the pass puts it.
-		x, err := expr.Check(e, resolve)
-		var ns *stmt.NotSupportedError
-		want := "concatenation"
-		if e.Kind == stmt.ExprCall {
-			want = "call of " + e.Function.String()
+	limit := c.limit
+	if limit == 0 {
+		limit = maxLength
+	}
+	for _, v := range slices.Concat(c.row, c.args) {
+		if len(v.GetText()) > limit || len(v.GetBlob()) > limit {
+			// SQLite refuses to bind it.
+			k.tally["not a case: a value longer than the limit"]++
+			return ""
 		}
-		if !errors.As(err, &ns) || ns.Offset != e.Span.Start || ns.What != want {
-			return fmt.Sprintf("%v: the check gives %v and %v, and not the refusal of text", c, x, err)
-		}
-		k.tally["case: refused, text"]++
-		return ""
 	}
 	refusal, atCheck := refusalOf(e, c)
 	x, err := expr.Check(e, resolve)
@@ -547,19 +719,33 @@ func (k *checker) check(c exprCase) string {
 		if !errors.As(err, &ns) || *ns != *refusal || !errors.Is(err, stmt.ErrNotSupported) {
 			return fmt.Sprintf("%v: the check gives %v, and not %v", c, err, refusal)
 		}
-		k.tally["case: refused, "+refusal.What[:strings.Index(refusal.What, " in ")]]++
+		k.tally["case: refused, "+refusal.What]++
 		return ""
 	}
 	if err != nil {
 		return fmt.Sprintf("%v: the check gives %v", c, err)
 	}
-	b, err := x.Bind(c.args)
+	b, err := x.Bind(c.args, limit)
 	if refusal != nil {
 		var ns *stmt.NotSupportedError
 		if !errors.As(err, &ns) || *ns != *refusal || !errors.Is(err, stmt.ErrNotSupported) {
 			return fmt.Sprintf("%v: the binding gives %v, and not %v", c, err, refusal)
 		}
-		k.tally["case: refused, argument that is "+refusal.What[strings.Index(refusal.What, "which is ")+len("which is "):]]++
+		k.tally["case: refused, argument "+refusal.What[strings.Index(refusal.What, " in ")+1:]]++
+		return ""
+	}
+	if long := longLiteral(e, limit); long != nil {
+		// SQLite fails for a text literal longer than the limit, and reads a blob literal as NULL.
+		var ee *expr.Error
+		if !errors.As(err, &ee) || ee.Kind != expr.ErrTooLong || ee.Op != stmt.ExprValue || ee.Span != long.Span {
+			return fmt.Sprintf("%v: the binding gives %v, and not %v at the literal at %v", c, err, expr.ErrTooLong, long.Span.Start)
+		}
+		quirk, err := k.o.value(full[long.Span.Start:long.Span.End], nil, nil, limit)
+		_, isText := long.Value.(stmt.Text)
+		if isText && err != errTooBig || !isText && (err != nil || !quirk.Null()) {
+			return fmt.Sprintf("%v: SQLite gives %v and %v for the literal at %v", c, short(quirk.String()), err, long.Span.Start)
+		}
+		k.tally[fmt.Sprintf("case: literal longer than the limit, text %v", isText)]++
 		return ""
 	}
 	if err != nil {
@@ -570,20 +756,28 @@ func (k *checker) check(c exprCase) string {
 	}
 	got, gotErr := b.Eval(c.row)
 
-	ref := &reference{row: c.row, args: c.args, tally: func(kind string) { k.tally[kind]++ }, computed: map[stmt.Span]expr.Value{}}
+	ref := &reference{row: c.row, args: c.args, limit: limit, tally: func(kind string) { k.tally[kind]++ }, computed: map[stmt.Span]expr.Value{}}
 	want, wantErr := ref.value(e)
 	if wantErr != nil {
 		var ee *expr.Error
 		node := wantErr.node
-		if !errors.As(gotErr, &ee) || ee.Kind != wantErr.kind || ee.Span != node.Span || ee.Op != node.Kind ||
+		if !errors.As(gotErr, &ee) || ee.Kind != wantErr.kind || ee.Span != node.Span || ee.Op != node.Kind || ee.Function != node.Function ||
 			!errors.Is(gotErr, expr.ErrEvaluation) || !errors.Is(gotErr, wantErr.kind) {
-			return fmt.Sprintf("%v: s4ql gives %v and %v, where %v is due at %q", c, got, gotErr, wantErr.kind, full[node.Span.Start:node.Span.End])
+			return fmt.Sprintf("%v: s4ql gives %v and %v, where %v is due at %q", c, short(got.String()), gotErr, wantErr.kind, short(full[node.Span.Start:node.Span.End]))
 		}
 		// SQLite's answer for the operation that fails shows the quirk that s4ql refuses: a real
 		// from integer operands for an overflow, NULL from operands that are not NULL for a
-		// division by zero, and an infinity for a real result that is not finite.
-		quirk, err := k.o.value(full[node.Span.Start:node.Span.End], c.row, argumentsOf(node, c.args))
-		if err != nil {
+		// division by zero, and an infinity for a real result that is not finite. For a text longer
+		// than the limit, SQLite fails, for the operation and for the whole expression, which
+		// computes every operand of every operation.
+		quirk, err := k.o.value(full[node.Span.Start:node.Span.End], c.row, argumentsOf(node, c.args), limit)
+		if wantErr.kind == expr.ErrTooLong {
+			whole, wholeErr := k.o.value(full[e.Span.Start:e.Span.End], c.row, argumentsOf(e, c.args), limit)
+			if err != errTooBig || wholeErr != errTooBig {
+				return fmt.Sprintf("%v: SQLite gives %v and %v for %q, and %v and %v for the whole, which fails with %v in s4ql", c,
+					short(quirk.String()), err, short(full[node.Span.Start:node.Span.End]), short(whole.String()), wholeErr, wantErr.kind)
+			}
+		} else if err != nil {
 			return fmt.Sprintf("%v: %v", c, err)
 		}
 		f, isReal := quirk.Real()
@@ -595,6 +789,8 @@ func (k *checker) check(c exprCase) string {
 			shown = quirk.Null()
 		case expr.ErrNotFinite:
 			shown = isReal && math.IsInf(f, 0)
+		case expr.ErrTooLong:
+			shown = true
 		}
 		if !shown {
 			return fmt.Sprintf("%v: SQLite gives %v for %q, which fails with %v in s4ql", c, quirk, full[node.Span.Start:node.Span.End], wantErr.kind)
@@ -602,15 +798,15 @@ func (k *checker) check(c exprCase) string {
 		k.tally[fmt.Sprintf("case: %v", strings.TrimPrefix(wantErr.kind.Error(), "s4ql: "))]++
 		return ""
 	}
-	sqliteValue, err := k.o.value(full[e.Span.Start:e.Span.End], c.row, argumentsOf(e, c.args))
+	sqliteValue, err := k.o.value(full[e.Span.Start:e.Span.End], c.row, argumentsOf(e, c.args), limit)
 	if err != nil {
 		return fmt.Sprintf("%v: %v", c, err)
 	}
 	if sqliteValue != want {
-		return fmt.Sprintf("%v: SQLite gives %v, and the reference %v", c, sqliteValue, want)
+		return fmt.Sprintf("%v: SQLite gives %v, and the reference %v", c, short(sqliteValue.String()), short(want.String()))
 	}
 	if gotErr != nil || got != want {
-		return fmt.Sprintf("%v: s4ql gives %v and %v, and SQLite %v", c, got, gotErr, want)
+		return fmt.Sprintf("%v: s4ql gives %v and %v, and SQLite %v", c, short(got.String()), gotErr, short(want.String()))
 	}
 	if !got.Null() && got.Type() != b.Type() || b.Type() == expr.TypeNull && !got.Null() {
 		return fmt.Sprintf("%v: s4ql gives %v of the type %v", c, got, b.Type())
@@ -623,7 +819,41 @@ func (k *checker) check(c exprCase) string {
 	if e.Kind == stmt.ExprColumn {
 		k.tally["case: column alone"]++
 	}
+	if depth(e) > 900 {
+		k.tally["case: deeper than 900"]++
+	}
 	return ""
+}
+
+// longLiteral of e: the first literal in the order of the text that is a text or a blob longer than
+// limit, or nil.
+func longLiteral(e stmt.Expression, limit int) *stmt.Expression {
+	switch v := e.Value.(type) {
+	case stmt.Text:
+		if len(v) > limit {
+			return &e
+		}
+	case stmt.Blob:
+		if len(v) > limit {
+			return &e
+		}
+	}
+	for _, o := range e.Operands {
+		if l := longLiteral(o, limit); l != nil {
+			return l
+		}
+	}
+	return nil
+}
+
+// depth of e, as the pass counts it: 1 for a leaf, and one more than its deepest operand for an
+// operator or a call.
+func depth(e stmt.Expression) int {
+	d := 0
+	for _, o := range e.Operands {
+		d = max(d, depth(o))
+	}
+	return d + 1
 }
 
 // walkColumns of e, the names of its columns in the order of the text.
@@ -639,7 +869,7 @@ func walkColumns(e stmt.Expression, f func(stmt.Name)) {
 // The number of seeds of [TestDifferential], and of cases of each.
 const (
 	differentialSeeds = 8
-	differentialCases = 2500
+	differentialCases = 3600
 )
 
 // TestDifferential checks the evaluator against SQLite and [reference] with the cases of
@@ -683,19 +913,28 @@ func TestDifferential(t *testing.T) {
 }
 
 // FuzzExpr checks the evaluator against SQLite and [reference], as [TestDifferential] does, for the
-// text of an expression, the values of the columns a, b, c, and d of the row, and the arguments,
-// which [decode] reads. A text that is not an expression over [schema] alone is no case. The seeds
-// are cases of [generator].
+// text of an expression, the values of the columns of the row and the arguments, which [decode]
+// reads, and the length limit, which is 0 for [maxLength], and otherwise from 30, SQLite's least,
+// to 4,000 bytes. A text that is not an expression over [schema] alone is no case, and neither is a
+// value longer than the limit, nor a text with more than eight calls of hex. The seeds are cases of
+// [generator], but its deep trees, and the inputs in testdata/fuzz/FuzzExpr.
 func FuzzExpr(f *testing.F) {
 	g := newGenerator(1)
-	for range 200 {
+	for range 300 {
 		c := g.next()
-		f.Add(c.src, encode(c.row[:4]), encode(c.args))
+		if len(c.src) > 2000 {
+			// The deep trees, which are slow to mutate.
+			continue
+		}
+		limit := uint16(0)
+		if c.limit > 0 {
+			limit = uint16(1 + c.limit - 30)
+		}
+		f.Add(c.src, encode(c.row), encode(c.args), limit)
 	}
-	// Text, which the evaluator refuses.
-	f.Add("'m_' || lower(hex(x))", []byte(nil), []byte(nil))
-	f.Add("hex(? || s)", []byte(nil), encode([]*s4qlpb.Value{text("1")}))
-	f.Fuzz(func(t *testing.T, src string, row, args []byte) {
+	f.Add("'m_' || lower(hex(x))", encode([]*s4qlpb.Value{null(), null(), null(), null(), null(), blob([]byte("\x00\x01\xfeZ"))}), []byte(nil), uint16(0))
+	f.Add("hex(? || s)", []byte(nil), encode([]*s4qlpb.Value{text("aÀ")}), uint16(0))
+	f.Fuzz(func(t *testing.T, src string, row, args []byte, limit uint16) {
 		c := exprCase{src: src, row: make([]*s4qlpb.Value, len(schema)), args: decode(args)}
 		values := decode(row)
 		for i := range schema {
@@ -710,6 +949,14 @@ func FuzzExpr(f *testing.F) {
 				c.args = append(c.args, integer(1))
 			}
 		}
+		if limit > 0 {
+			c.limit = 30 + (int(limit)-1)%3971
+		}
+		if strings.Count(strings.ToLower(src), "hex") > 8 {
+			// hex doubles the length of its argument, so that nine of them make gigabytes of a
+			// short text under the default limit, three times over.
+			return
+		}
 		k := &checker{o: newOracle(t), tally: map[string]int{}}
 		if failure := k.check(c); failure != "" {
 			t.Error(failure)
@@ -717,65 +964,89 @@ func FuzzExpr(f *testing.F) {
 	})
 }
 
-// encode the values vs for [FuzzExpr]: for each, a byte of its kind and eight of its value.
+// encode the values vs for [FuzzExpr]: for each, a byte of its kind, and eight bytes of an integer
+// or a real, or two of the length of a text or a blob and its bytes.
 func encode(vs []*s4qlpb.Value) []byte {
 	var b []byte
 	for _, v := range vs {
 		var kind byte
 		var bits uint64
+		var bytes []byte
 		switch v.WhichKind() {
 		case s4qlpb.Value_Integer_case:
 			kind, bits = 1, uint64(v.GetInteger())
 		case s4qlpb.Value_Real_case:
 			kind, bits = 2, math.Float64bits(v.GetReal())
 		case s4qlpb.Value_Text_case:
-			kind = 3
+			kind, bytes = 3, []byte(v.GetText())
 		case s4qlpb.Value_Blob_case:
-			kind = 4
+			kind, bytes = 4, v.GetBlob()
 		}
-		b = binary.LittleEndian.AppendUint64(append(b, kind), bits)
+		b = append(b, kind)
+		if kind == 3 || kind == 4 {
+			b = append(binary.LittleEndian.AppendUint16(b, uint16(len(bytes))), bytes...)
+			continue
+		}
+		b = binary.LittleEndian.AppendUint64(b, bits)
 	}
 	return b
 }
 
-// decode the values of [encode]: NULL, an integer, a real, the text '1', or the blob x'31', by the
-// first byte modulo 5, with a real that is not finite as 0.0, which no row or argument holds.
+// decode the values of [encode]: NULL, an integer, a real, a text, or a blob, by the first byte
+// modulo 5, with a real that is not finite as 0.0, and a text as valid UTF-8 without the character
+// NUL, which no row or argument holds. The bytes of a text or a blob end where b ends.
 func decode(b []byte) []*s4qlpb.Value {
 	var vs []*s4qlpb.Value
-	for ; len(b) >= 9; b = b[9:] {
-		bits := binary.LittleEndian.Uint64(b[1:9])
-		switch b[0] % 5 {
+	for len(b) > 0 {
+		kind := b[0] % 5
+		b = b[1:]
+		if kind == 3 || kind == 4 {
+			if len(b) < 2 {
+				break
+			}
+			n := min(int(binary.LittleEndian.Uint16(b)), len(b)-2)
+			bytes := b[2 : 2+n]
+			b = b[2+n:]
+			if kind == 3 {
+				vs = append(vs, text(strings.ReplaceAll(strings.ToValidUTF8(string(bytes), "�"), "\x00", "")))
+			} else {
+				vs = append(vs, blob(bytes))
+			}
+			continue
+		}
+		if len(b) < 8 {
+			break
+		}
+		bits := binary.LittleEndian.Uint64(b)
+		b = b[8:]
+		switch kind {
 		case 0:
 			vs = append(vs, null())
 		case 1:
 			vs = append(vs, integer(int64(bits)))
-		case 2:
+		default:
 			f := math.Float64frombits(bits)
 			if math.IsInf(f, 0) || math.IsNaN(f) {
 				f = 0
 			}
 			vs = append(vs, float(f))
-		case 3:
-			vs = append(vs, text("1"))
-		default:
-			vs = append(vs, blob([]byte("1")))
 		}
 	}
 	return vs
 }
 
 // columnOf the value v, or nil, for the column at the position i of [schema], which holds only NULL
-// and values of its type: v if it is NULL or of the type, an integer or a real of the bits of v
-// otherwise, 0 for nil, and the text '4' or the blob x'35' for a column of type TEXT or BLOB.
+// and values of its type: v if it is NULL or of the type; for a column of a number, an integer or a
+// real of the bits of v otherwise, or 0 for nil; and for a column of type TEXT or BLOB, the text '4'
+// or the blob x'35' otherwise.
 func columnOf(i int, v *s4qlpb.Value) *s4qlpb.Value {
-	switch schema[i].typ {
-	case s4qlpb.Type_TYPE_TEXT:
-		return text("4")
-	case s4qlpb.Type_TYPE_BLOB:
-		return blob([]byte("5"))
-	}
-	if v.HasNull() {
+	switch typ := schema[i].typ; {
+	case v.HasNull(), typ == s4qlpb.Type_TYPE_TEXT && v.HasText(), typ == s4qlpb.Type_TYPE_BLOB && v.HasBlob():
 		return v
+	case typ == s4qlpb.Type_TYPE_TEXT:
+		return text("4")
+	case typ == s4qlpb.Type_TYPE_BLOB:
+		return blob([]byte("5"))
 	}
 	var bits uint64
 	switch v.WhichKind() {
