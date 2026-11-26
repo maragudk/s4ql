@@ -75,7 +75,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 
 **Undecided:**
 
-- How the annotation of a statement records the time and the random bytes that it used. The spec asks for "the time and random seeds", and the commit format has no field for them yet.
+- Whether the annotation of a statement records the time that it read and the random bytes that it drew: all of them without a cap, or none (Markus on 2026-11-26: "Either all or nothing").
 - Other literals, such as `+1`, `0x10`, `1_000`, and `true`.
 
 **Rejected,** where SQLite's answer is a quirk (agreed by Markus on 2026-11-24): arithmetic on text, such as `'1' + 1` and `'abc' + 1`; an integer overflow, where SQLite silently gives a float; a division by zero, where SQLite gives null; and a comparison of values of different types by SQLite's order of types.
