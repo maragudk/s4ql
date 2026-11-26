@@ -919,7 +919,7 @@ func TestDB_stop(t *testing.T) {
 
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
-		err = tx.Annotate(t.Context(), "select 1", nil)
+		err = tx.Annotate(t.Context(), "select 1")
 		is.Error(t, core.ErrLocal, err)
 		is.Error(t, core.ErrStopped, tx.Commit(t.Context()))
 		is.True(t, isDone(d))
@@ -977,7 +977,7 @@ func TestDB_stop(t *testing.T) {
 		tx, err := d.Begin(t.Context())
 		is.NotError(t, err)
 		upsert("t1", 1)(t, tx)
-		note("insert into t1 values (?)", 1)(t, tx)
+		note("insert into t1 values (?)")(t, tx)
 		err = tx.Commit(t.Context())
 		is.Equal(t, 1, faults.failures())
 		stoppedBySpool(t, w, d, err, head, "t1(k*0): ")

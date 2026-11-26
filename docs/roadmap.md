@@ -12,7 +12,7 @@ A piece of work is named by its feature, such as "upserts", and no longer by a n
 | [Reading](#reading) | `select` from one table, with `where`, `order by`, `limit`, and a scalar subquery in the `where`. | Operators of s4ql's own for grouping and joining. |
 | [Writing](#writing) | `insert` of one row, `update`, `delete`, `returning`, and upserts: `on conflict (key) do nothing` and `do update`, checked against SQLite case by case. | The generated checks of upserts. Several rows per `insert`. |
 | [Schema](#schema) | `strict, without rowid` tables with one key column, defaults, indexes, and `if not exists`. | `strict, without rowid` with a primary key stays required. |
-| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and several statements in one `Exec`, with hand-written tests, a generated workload, the driver's generated comparison with mattn, the engine's differential tests, and the simulation with eight planted bugs. | Mutation testing of several statements. |
+| [The driver](#the-driver) | `s4ql.Open`, `?`, five kinds of argument, transactions, and several statements in one `Exec`, with hand-written tests, a generated workload, the driver's generated comparison with mattn, the engine's differential tests, and the simulation with seven planted bugs. | Mutation testing of several statements. |
 | [Limits of the core](#limits-of-the-core) | A commit that is too large fails. The rows of a `returning` are held in memory without a bound. | A limit on the memory of an operator, with a clear error. Spooling later. |
 
 ## Principles
@@ -143,7 +143,7 @@ A milestone is a goal that several pieces of work lead to. It helps to choose wh
 - A plain `?`, directly and through prepared statements (slice 2).
 - Arguments: Go integers, a `float64` or `float32`, a `string`, a `[]byte` that is not nil, and nil, also through a `driver.Valuer` (slices 2, 4, and 6).
 - Transactions with `db.BeginTx`: a write transaction, which waits for the single writer, and a read-only one, at `sql.LevelDefault` or `sql.LevelSerializable`. A statement outside a transaction is a transaction of its own (slice 3).
-- Several statements in one `Exec`, built on 2026-11-25, with the notes in [todo/several-statements.md](todo/several-statements.md): they mean the same as running them one after another, inside a transaction as part of it, and outside one each committing on its own, as in SQLite and mattn's driver (agreed by Markus on 2026-11-24). `Query` and `Prepare` take one statement. Checked with hand-written tests and a comparison with mattn's driver, and since 2026-11-26 with a generated workload of texts of several statements, which the driver's generated test runs in one `Exec` on both sides and compares with mattn's own `Exec`, and since 2026-11-26 the split is compared with SQLite by a differential test and a fuzz target, and the engine's differential tests run each text in one `ExecAll` and compare it with its statements run one after another (built 2026-11-26), and the engine's simulation runs the texts through `ExecAll` with crashes between their statements and finds eight planted bugs of its loop and commit path (built 2026-11-26). Mutation testing is still to come.
+- Several statements in one `Exec`, built on 2026-11-25, with the notes in [todo/several-statements.md](todo/several-statements.md): they mean the same as running them one after another, inside a transaction as part of it, and outside one each committing on its own, as in SQLite and mattn's driver (agreed by Markus on 2026-11-24). `Query` and `Prepare` take one statement. Checked with hand-written tests and a comparison with mattn's driver, and since 2026-11-26 with a generated workload of texts of several statements, which the driver's generated test runs in one `Exec` on both sides and compares with mattn's own `Exec`, and since 2026-11-26 the split is compared with SQLite by a differential test and a fuzz target, and the engine's differential tests run each text in one `ExecAll` and compare it with its statements run one after another (built 2026-11-26), and the engine's simulation runs the texts through `ExecAll` with crashes between their statements and finds seven planted bugs of its loop and commit path (built 2026-11-26). Mutation testing is still to come.
 
 **Decided,** with the details in [todo/driver.md](todo/driver.md):
 
@@ -203,7 +203,7 @@ Everything else is rejected, including a second column, `integer` spelled out, `
 
 ### Slice 2: parameters
 
-Status: built. The statement pass and the engine are checked against SQLite, and the `database/sql` driver runs an insert with an argument, directly and through a prepared statement. The generated tests make arguments: one insert in three has a `?`, and some calls have none, one too many, one of a type that is not supported, or one with a name. The engine's differential test compares every other call with SQLite and checks those 717 of its 12,000 statements against s4ql's rule; the driver's compares 8,000 calls with mattn/go-sqlite3, also prepared statements run several times, and checks 515 against the rule. The simulation checks that each commit holds the arguments that its caller gave, and finds a planted bug that annotates a wrong one. Mutation testing of the new code left no mutant unexplained.
+Status: built. The statement pass and the engine are checked against SQLite, and the `database/sql` driver runs an insert with an argument, directly and through a prepared statement. The generated tests make arguments: one insert in three has a `?`, and some calls have none, one too many, one of a type that is not supported, or one with a name. The engine's differential test compares every other call with SQLite and checks those 717 of its 12,000 statements against s4ql's rule; the driver's compares 8,000 calls with mattn/go-sqlite3, also prepared statements run several times, and checks 515 against the rule. The simulation checks that each commit holds the rows that its statements make in SQLite with the arguments that their callers gave, and finds a planted bug that runs a statement with other arguments. Mutation testing of the new code left no mutant unexplained.
 
 ```go
 db.ExecContext(ctx, "insert into t1 (v1) values (?)", 1)
@@ -215,7 +215,7 @@ Included, without adding syntax:
 - An argument that is a Go integer and fits a signed 64-bit integer: what `database/sql` turns into an `int64`.
 - Both directly, with `db.ExecContext` and its arguments, and through a prepared statement, with `db.PrepareContext` and then `stmt.ExecContext`, any number of times with different arguments.
 - The number of arguments must equal the number of `?` in the text. Any other number is an error, the same for a direct call and a prepared one, and the statement does not run. This also holds for a text with no `?` that is given an argument. SQLite would bind NULL for a missing one; s4ql does not. The error is an ordinary error of s4ql's, whose message starts with `s4ql: ` and says both numbers, and not "not supported".
-- The commit object keeps the arguments in the annotation of the statement, by position, next to its text.
+- The commit object keeps the text of the statement in its annotation, without the arguments (since 2026-11-26: see [todo/storage-formats.md](todo/storage-formats.md)).
 - The errors of slice 1, matching SQLite's: a key inserted twice through a parameter gives the same error as with a literal.
 - Surviving a restart: with an empty cache, replaying the log gives the same rows for rows inserted through parameters.
 
@@ -247,7 +247,7 @@ Included, without adding syntax:
 - A write transaction reads its own changes, and nothing outside it sees them before its commit.
 - A statement that fails leaves the transaction usable, with the effects of the statements before it, as in SQLite.
 - `create table` and `drop table` are transactional: the later statements of the transaction see them, and a roll back undoes them.
-- One commit object for each transaction. It holds the statements of the transaction that write and that succeeded, in order, each with its arguments. A transaction that changes nothing writes none.
+- One commit object for each transaction. It holds the statements of the transaction that write and that succeeded, in order, each by its text. A transaction that changes nothing writes none.
 - A write in a read-only transaction gets SQLite's error `attempt to write a readonly database`, with the code 8 and the extended code 8.
 - A commit object that is too large for the store fails the commit with an error that matches the new `s4ql.ErrTooLarge`, and nothing is committed.
 - Surviving a restart: with an empty cache, replaying the log gives the same rows and tables for what transactions committed.

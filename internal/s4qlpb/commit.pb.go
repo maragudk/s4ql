@@ -1987,8 +1987,7 @@ type Value_builder struct {
 	// A 64-bit signed integer.
 	Integer *int64
 	// A 64-bit IEEE 754 floating-point number. It is never NaN and never
-	// infinite. In a row or a primary key it is never -0.0, which SQLite
-	// stores as 0.0; a parameter holds -0.0 as the statement got it.
+	// infinite, and never -0.0, which SQLite stores as 0.0.
 	Real *float64
 	// Text. It is always valid UTF-8, and never holds the character NUL.
 	Text *string
@@ -2042,8 +2041,7 @@ type value_Integer struct {
 
 type value_Real struct {
 	// A 64-bit IEEE 754 floating-point number. It is never NaN and never
-	// infinite. In a row or a primary key it is never -0.0, which SQLite
-	// stores as 0.0; a parameter holds -0.0 as the statement got it.
+	// infinite, and never -0.0, which SQLite stores as 0.0.
 	Real float64 `protobuf:"fixed64,2,opt,name=real,oneof"`
 }
 
@@ -2214,7 +2212,7 @@ type Annotation_builder struct {
 	// What the annotation is.
 
 	// Fields of oneof xxx_hidden_Kind:
-	// One statement, as it ran.
+	// One statement that ran in the commit.
 	Statement *Statement
 	// -- end of xxx_hidden_Kind
 }
@@ -2244,17 +2242,23 @@ type isAnnotation_Kind interface {
 }
 
 type annotation_Statement struct {
-	// One statement, as it ran.
+	// One statement that ran in the commit.
 	Statement *Statement `protobuf:"bytes,1,opt,name=statement,oneof"`
 }
 
 func (*annotation_Statement) isAnnotation_Kind() {}
 
-// One statement, as it ran.
+// One statement that ran in the commit, by its text.
+//
+// It holds the statement's text and nothing else. The arguments of its
+// parameters, the time that it read, and the random bytes that it drew are
+// not kept: what the statement saw is in the rows that it wrote, which are
+// the truth of the commit, and replay never depends on an annotation. A
+// literal written into the text is in the log, and the argument of a
+// parameter is not.
 type Statement struct {
 	state                  protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Sql         *string                `protobuf:"bytes,1,opt,name=sql"`
-	xxx_hidden_Parameters  *[]*Value              `protobuf:"bytes,2,rep,name=parameters"`
 	XXX_raceDetectHookData protoimpl.RaceDetectHookData
 	XXX_presence           [1]uint32
 	unknownFields          protoimpl.UnknownFields
@@ -2296,22 +2300,9 @@ func (x *Statement) GetSql() string {
 	return ""
 }
 
-func (x *Statement) GetParameters() []*Value {
-	if x != nil {
-		if x.xxx_hidden_Parameters != nil {
-			return *x.xxx_hidden_Parameters
-		}
-	}
-	return nil
-}
-
 func (x *Statement) SetSql(v string) {
 	x.xxx_hidden_Sql = &v
-	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 2)
-}
-
-func (x *Statement) SetParameters(v []*Value) {
-	x.xxx_hidden_Parameters = &v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 0, 1)
 }
 
 func (x *Statement) HasSql() bool {
@@ -2331,8 +2322,6 @@ type Statement_builder struct {
 
 	// The SQL text. It is always valid UTF-8.
 	Sql *string
-	// The parameters, by position, starting with parameter 1.
-	Parameters []*Value
 }
 
 func (b0 Statement_builder) Build() *Statement {
@@ -2340,10 +2329,9 @@ func (b0 Statement_builder) Build() *Statement {
 	b, x := &b0, m0
 	_, _ = b, x
 	if b.Sql != nil {
-		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 2)
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 0, 1)
 		x.xxx_hidden_Sql = b.Sql
 	}
-	x.xxx_hidden_Parameters = &b.Parameters
 	return m0
 }
 
@@ -2421,11 +2409,9 @@ const file_s4ql_v1_commit_proto_rawDesc = "" +
 	"\n" +
 	"Annotation\x122\n" +
 	"\tstatement\x18\x01 \x01(\v2\x12.s4ql.v1.StatementH\x00R\tstatementB\x06\n" +
-	"\x04kind\"M\n" +
+	"\x04kind\"/\n" +
 	"\tStatement\x12\x10\n" +
-	"\x03sql\x18\x01 \x01(\tR\x03sql\x12.\n" +
-	"\n" +
-	"parameters\x18\x02 \x03(\v2\x0e.s4ql.v1.ValueR\n" +
+	"\x03sql\x18\x01 \x01(\tR\x03sqlJ\x04\b\x02\x10\x03R\n" +
 	"parameters*i\n" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\f\n" +
@@ -2479,12 +2465,11 @@ var file_s4ql_v1_commit_proto_depIdxs = []int32{
 	14, // 17: s4ql.v1.PrimaryKey.values:type_name -> s4ql.v1.Value
 	15, // 18: s4ql.v1.Value.null:type_name -> s4ql.v1.Null
 	17, // 19: s4ql.v1.Annotation.statement:type_name -> s4ql.v1.Statement
-	14, // 20: s4ql.v1.Statement.parameters:type_name -> s4ql.v1.Value
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_s4ql_v1_commit_proto_init() }

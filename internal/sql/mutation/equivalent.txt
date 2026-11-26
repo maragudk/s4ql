@@ -359,14 +359,6 @@ internal/engine/engine.go Conn.write condition: err == nil => false
 	It differs only with the planted bug keepOpen, when an operator panics.
 internal/engine/engine.go Conn.checkOutside boolean: true => false
 	The planted bug checkOutside: its position is replaced by that of the write transaction, and the bug is found by a commit that fails in SQLite either way.
-internal/engine/engine.go Conn.write remove statement: annotated = nil =>
-	The planted bug annotateNext: the annotation holds the argument and the argument plus one, and the bug is found by the parameters of the commit either way.
-internal/engine/engine.go Conn.write operator: a.GetInteger() + 1 => a.GetInteger() - 1
-	The planted bug annotateNext: the annotation holds another wrong argument, and the bug is found by the parameters of the commit either way.
-internal/engine/engine.go Conn.write constant: a.GetInteger() + 1 => a.GetInteger() + 2
-	The planted bug annotateNext: the annotation holds another wrong argument, and the bug is found by the parameters of the commit either way.
-internal/engine/engine.go Conn.write constant: a.GetInteger() + 1 => a.GetInteger() + 0
-	The planted bug annotateNext: the annotation holds each argument as an integer, which is wrong for a real, text, or a blob, and the bug is found by the parameters of the commit either way.
 
 internal/engine/engine.go Conn.write condition: b.skipUnique => false
 	The planted bugs skipUnique and checkOutside: only checkOutside then plants the write without the check, and only the tests plant either.

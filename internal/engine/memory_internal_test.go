@@ -421,13 +421,13 @@ func (k *memKeys) all(context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 	}
 }
 
-func (x *memTx) position() format.Name                                   { return format.EmptyLog }
-func (x *memTx) annotate(context.Context, string, []*s4qlpb.Value) error { return nil }
-func (x *memTx) rollback(context.Context) error                          { return nil }
-func (x *memTx) end(context.Context) error                               { return nil }
-func (x *memTx) serving(context.Context) error                           { return nil }
-func (x *memTx) lost() error                                             { return nil }
-func (x *memTx) release(context.Context) error                           { x.saved = nil; return nil }
+func (x *memTx) position() format.Name                  { return format.EmptyLog }
+func (x *memTx) annotate(context.Context, string) error { return nil }
+func (x *memTx) rollback(context.Context) error         { return nil }
+func (x *memTx) end(context.Context) error              { return nil }
+func (x *memTx) serving(context.Context) error          { return nil }
+func (x *memTx) lost() error                            { return nil }
+func (x *memTx) release(context.Context) error          { x.saved = nil; return nil }
 
 func (x *memTx) savepoint(context.Context) error {
 	x.saved = (&memory{tables: x.tables}).clone()

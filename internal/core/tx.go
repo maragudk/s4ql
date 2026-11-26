@@ -1105,18 +1105,16 @@ func (k *KeySet) after(ctx context.Context, last []*s4qlpb.Value) ([]*s4qlpb.Val
 	return key, tx.fail(ctx, operation, err)
 }
 
-// Annotate the transaction with a statement that it ran: its SQL text and its parameters. The
-// annotations go into the commit object after its changes, in the order in which they were made.
-// Replay never uses them. It fails with an error that wraps [ErrInvalid] for text that is not
-// valid UTF-8, and for a parameter that is no value, a real that is NaN or infinite, or text that
-// is not valid UTF-8 or holds the character NUL. A parameter that is -0.0 keeps its sign.
-func (tx *Tx) Annotate(ctx context.Context, sql string, parameters []*s4qlpb.Value) error {
+// Annotate the transaction with a statement that it ran: its SQL text, and nothing else. The
+// annotations go into the commit object after its changes, in the order in which they were made. Replay never uses them. It fails with an error that
+// wraps [ErrInvalid] for text that is not valid UTF-8.
+func (tx *Tx) Annotate(ctx context.Context, sql string) error {
 	const operation = "annotate"
 	if err := tx.check(ctx, operation); err != nil {
 		return err
 	}
 	defer tx.leave(ctx)
-	a := s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: new(sql), Parameters: parameters}.Build()}.Build()
+	a := s4qlpb.Annotation_builder{Statement: s4qlpb.Statement_builder{Sql: new(sql)}.Build()}.Build()
 	// The writer of commit objects knows what a valid annotation is.
 	w, err := format.NewCommitWriter(io.Discard, format.EmptyLog, tx.d.host.Wall())
 	if err != nil {

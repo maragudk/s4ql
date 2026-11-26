@@ -218,8 +218,7 @@ message Value {
     // A 64-bit signed integer.
     sint64 integer = 1;
     // A 64-bit IEEE 754 floating-point number. It is never NaN and never
-    // infinite. In a row or a primary key it is never -0.0, which SQLite
-    // stores as 0.0; a parameter holds -0.0 as the statement got it.
+    // infinite, and never -0.0, which SQLite stores as 0.0.
     double real = 2;
     // Text. It is always valid UTF-8, and never holds the character NUL.
     string text = 3;
@@ -239,17 +238,26 @@ message Null {}
 message Annotation {
   // What the annotation is.
   oneof kind {
-    // One statement, as it ran.
+    // One statement that ran in the commit.
     Statement statement = 1;
   }
 }
 
-// One statement, as it ran.
+// One statement that ran in the commit, by its text.
+//
+// It holds the statement's text and nothing else. The arguments of its
+// parameters, the time that it read, and the random bytes that it drew are
+// not kept: what the statement saw is in the rows that it wrote, which are
+// the truth of the commit, and replay never depends on an annotation. A
+// literal written into the text is in the log, and the argument of a
+// parameter is not.
 message Statement {
+  // The arguments of the parameters, by position, which a writer never
+  // writes. A commit object of version 0 written before they were taken out
+  // can hold them, and a reader skips them as a field it does not know.
+  reserved 2;
+  reserved parameters;
+
   // The SQL text. It is always valid UTF-8.
   string sql = 1;
-  // The parameters, by position, starting with parameter 1.
-  repeated Value parameters = 2;
-  // Non-deterministic inputs, such as the time the statement read, become
-  // fields here when a slice of the roadmap first needs them.
 }

@@ -283,7 +283,7 @@ On 2026-11-19, the code that slice 2 added was mutated: `recognizer.parameter`, 
 | `engine` | 77 | 12 | 65 | 0 | 0 | 0 |
 | `.` | 80 | 23 | 55 | 2 | 0 | 0 |
 
-The hand-written tests killed every killed mutant first. Two survived the first run and were gaps in the tests, which new tests close: the guard that the name of a parameter is the next token, which only a tree that no text gives can reach (`TestRecognize`), and a `driver.Valuer` whose own value is an unsigned integer above the largest `int64`, which must give the value of its `Value` (`TestParameters`). The one equivalent mutant is the acceptance of a parameter's node, whose one token is taken at once. The two that time out loop for good on a pointer in `overflows`. The planted bug `annotateNext` of the engine has three equivalent mutants, each another wrong annotation.
+The hand-written tests killed every killed mutant first. Two survived the first run and were gaps in the tests, which new tests close: the guard that the name of a parameter is the next token, which only a tree that no text gives can reach (`TestRecognize`), and a `driver.Valuer` whose own value is an unsigned integer above the largest `int64`, which must give the value of its `Value` (`TestParameters`). The one equivalent mutant is the acceptance of a parameter's node, whose one token is taken at once. The two that time out loop for good on a pointer in `overflows`. The planted bug `annotateNext` of the engine had three equivalent mutants, each another wrong annotation; it went on 2026-11-26 with the arguments of an annotation.
 
 ### The transactions of slice 3
 

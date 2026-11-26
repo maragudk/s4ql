@@ -482,8 +482,8 @@ func planOf(s stmt.Statement, src string) (Plan, string) {
 
 // write runs the plan p of a statement that changes the database, whose text is sql, with the
 // arguments args, in a write transaction of its own, and gives its result. The transaction is
-// annotated with the text and the arguments, and committed if the statement succeeds and writes,
-// and rolled back otherwise, also when an operator panics. A statement of IF NOT EXISTS or IF EXISTS
+// annotated with the text, and committed if the statement succeeds and writes, and rolled back
+// otherwise, also when an operator panics. A statement of IF NOT EXISTS or IF EXISTS
 // that does nothing on the newest state succeeds in a read transaction, as [Conn.nothingToWrite]
 // says, without the write transaction; one that does nothing in the write transaction succeeds there
 // without an annotation, and the transaction is rolled back.
@@ -526,6 +526,10 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	b := e.bugs
 	b.skipUnique = b.skipUnique || b.checkOutside
 	order := e.order(p)
+	if b.argsNext {
+		// The planted bug: the statement runs with each integer argument plus one.
+		args = nextArgs(args)
+	}
 	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit(), e.reading(false))
 	if err != nil {
 		return built(p, err), nil, err
@@ -553,20 +557,11 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	n, err := runSavepointed(ctx, r, tx, s)
 	if err != nil {
 		// The planted bug commitFailed commits what the statement changed.
-		ended = c.commitFailed(ctx, tx, sql, args)
+		ended = c.commitFailed(ctx, tx, sql)
 		return ran(failed, err), nil, err
 	}
-	annotated := args
-	if e.bugs.annotateNext {
-		// The planted bug: the annotation holds each argument plus one.
-		annotated = nil
-		for _, a := range args {
-			annotated = append(annotated, s4qlpb.Value_builder{Integer: new(a.GetInteger() + 1)}.Build())
-		}
-	}
-	// The planted bugs annotateText and argsFromStart annotate with the text or its arguments.
-	note, annotated := e.bugs.annotation(ctx, sql, annotated)
-	if err := tx.annotate(ctx, note, annotated); err != nil {
+	// The planted bug annotateText annotates with the whole text.
+	if err := tx.annotate(ctx, e.bugs.annotation(ctx, sql)); err != nil {
 		return failed, nil, err
 	}
 	// The transaction ends with its commit, whatever the commit gives.

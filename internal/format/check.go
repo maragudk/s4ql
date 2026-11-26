@@ -447,8 +447,7 @@ func checkIdentifier(name string) error {
 }
 
 // checkAnnotation for writing: it holds only what this version knows, it has a known kind, and its
-// statement has valid text and valid parameters. A reader is more lenient, and skips what it does
-// not know.
+// statement has valid text. A reader is more lenient, and skips what it does not know.
 func checkAnnotation(a *s4qlpb.Annotation) error {
 	if err := checkKnown(a.ProtoReflect()); err != nil {
 		return err
@@ -458,11 +457,6 @@ func checkAnnotation(a *s4qlpb.Annotation) error {
 		s := a.GetStatement()
 		if !utf8.ValidString(s.GetSql()) {
 			return in(refuse(ErrMalformed, "is not valid UTF-8"), "statement.sql")
-		}
-		for i, p := range s.GetParameters() {
-			if err := checkValue(p); err != nil {
-				return in(inElement(err, "parameters", i), "statement")
-			}
 		}
 		return nil
 	default:
