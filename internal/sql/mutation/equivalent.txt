@@ -660,10 +660,6 @@ internal/engine/operator.go update.check condition: position != u.key => true
 	The table of an update is the core's, which refuses a table whose primary key takes NULL, as the format does, so the column of the key is never nullable.
 internal/engine/operator.go update.run swap arguments: compare(row[u.key], old[u.key]) => compare(old[u.key], row[u.key])
 	Only whether the two keys are equal is read, which the order of the arguments does not change.
-internal/engine/operator.go update.run condition: err != nil => false #2
-	update.check has refused a value of SET that is not NULL and of another type than its column, and NULL for the key of a row that the update finds, so the new key and the old one are of one kind, and compare does not fail.
-internal/engine/operator.go update.run remove statement: return err => #2
-	update.check has refused a value of SET that is not NULL and of another type than its column, and NULL for the key of a row that the update finds, so the new key and the old one are of one kind, and compare does not fail.
 internal/engine/tx.go Conn.writeIn element: changeNothing: c.e.bugs.changeNothing, =>
 	The planted bug changeNothing is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
 internal/engine/tx.go Conn.writeIn element: , keepOldKey: c.e.bugs.keepOldKey =>
@@ -1219,8 +1215,6 @@ stmt/recognize.go recognizer.selectOf swap arguments: max(height, 2) => max(2, h
 # The scalar subquery of slice 15 in the engine, internal/engine.
 internal/engine/operator.go build.ordered condition: f != nil => true #3
 	A query without WHERE has no subqueries, so b.subs is nil and build.compute returns before it reads f.
-internal/engine/operator.go build.types remove statement: continue =>
-	The value of the condition of a subquery is computed after the check of the types, so it is nil there, and the next test continues too.
 internal/engine/subquery.go build.value condition: in.filter != nil => true #2
 	A filter of no conditions gives every row of its source, in its order, and its errors.
 internal/engine/subquery.go subqueries.lengths condition: err != nil => true #4
@@ -1474,3 +1468,5 @@ internal/engine/subquery.go build.compute remove statement: conditions[i].op, co
 	As for the condition false above: a tested expression is left without a column, and the internal error is another wrong answer that the tests of noRowMatches find.
 internal/engine/subquery.go build.compute constant: conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 0 => conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 1
 	noRowMatches then tests the column at 1 for NOT NULL in place of the key, true of the rows where it is not NULL, another wrong answer, which its tests find.
+internal/engine/tx.go Conn.writeIn remove statement: planted.setFromNew, planted.evalStops, planted.copyAcross, planted.copySelf = c.e.bugs.setFromNew, c.e.bugs.evalStops, c.e.bugs.copyAcross, c.e.bugs.copySelf =>
+	The planted bugs setFromNew, evalStops, copyAcross, and copySelf left out of a write in a transaction, which their statements outside one find, as for those of slice 14.
