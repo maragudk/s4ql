@@ -631,6 +631,13 @@ func subqueryCandidates(t testing.TB, o *oracle, src string, q stmt.Select, args
 		run = o.unlimited
 	}
 	alone := run(t, src[q.Span.Start:q.Span.End], bound...)
+	if alone.err == tooBig && q.OrderBy == nil && !long(q.Limit.Value) && !slices.ContainsFunc(bound, long) && !slices.ContainsFunc(q.Where, func(c stmt.Condition) bool { return long(c.Value.Value) }) {
+		// A text of the subquery that is too long for a row that SQLite reads before it finds its first
+		// row, which an engine that reads in another direction may not read: its candidates are those
+		// that SQLite gives without the limit.
+		run = o.unlimited
+		alone = run(t, src[q.Span.Start:q.Span.End], bound...)
+	}
 	if alone.err != "" {
 		// SQLite refuses the subquery, as for a value of another type than its column, which s4ql
 		// refuses, and SQLite may not.

@@ -196,13 +196,13 @@ func (q *Sequence) textTestedOf(r Rand, raw string) stmt.Expression {
 	return lowerNode(concatNode(columnNode(raw), piece))
 }
 
-// textCondition gives the comparison c of table, of a column of the shape or of a name that the shape does not
-// have, with text, drawn from r. A comparison of a name that the shape does not have tests lower of
+// textCondition gives the comparison c of table, of a column of the shape or of a name that the shape
+// does not have, with text, drawn from r. A comparison of a name that the shape does not have tests lower of
 // it, whose name s4ql looks up as SQLite does. One of a column of a number stays as it is, but as a
 // fault of the area, a text compared with the column or a column of a number in a text, which
 // s4ql refuses; and one of a BLOB column compares hex of the column with hex of the value or with a
 // text, or, as a fault, puts the column in lower or in a concatenation, or compares it with a text.
-// One of a TEXT column, in 16 draws:
+// One of a TEXT column, in 20 draws:
 //
 //   - four times, the value is a text without a column whose value is that of c, as
 //     [Sequence.textConstantOf] draws it, so that the condition serves the key or an index as c
@@ -212,10 +212,10 @@ func (q *Sequence) textTestedOf(r Rand, raw string) stmt.Expression {
 //   - once, the comparison tests a text of the column against a plain value, as
 //     [Sequence.textPlainOf] draws it;
 //   - once, both sides are texts of columns;
-//   - two times, the comparison tests a text of the column and an argument whose length takes the
+//   - four times, the comparison tests a text of the column and an argument whose length takes the
 //     text of a value that an insert gave the column to the length limit, one byte short of it, or one
 //     byte over it, as [Sequence.textEdge] draws it;
-//   - once, the value is a text without a column at the length limit, one byte short of it, or one
+//   - three times, the value is a text without a column at the length limit, one byte short of it, or one
 //     byte over it, as [Sequence.textEdgeConstant] draws it;
 //   - once, the comparison tests a text of the column with NULL in it;
 //   - once, the comparison tests a nested text, lower of hex of the column and a piece, or the value
@@ -266,7 +266,7 @@ func (q *Sequence) textCondition(r Rand, table stmt.Name, shape []stmt.Column, c
 		c.Column, c.Expression, c.Value = stmt.Name{}, e, value
 		return c
 	}
-	switch n := r.IntN(16); {
+	switch n := r.IntN(20); {
 	case n < 4:
 		c.Value = stmt.Term{Expression: q.textConstantOf(r, v)}
 	case n < 6:
@@ -297,11 +297,11 @@ func (q *Sequence) textCondition(r Rand, table stmt.Name, shape []stmt.Column, c
 	case n < 9:
 		c.ValueFirst = false
 		return tested(q.textTestedOf(r, raw), stmt.Term{Expression: q.textTestedOf(r, q.otherText(r, shape, raw))})
-	case n < 11:
-		return tested(q.textEdge(r, columnNode(raw), q.textsOf(table.Fold(), column.Name.Value)), stmt.Term{Value: stmt.Text(textPieces[r.IntN(len(textPieces))])})
-	case n < 12:
-		c.Value = stmt.Term{Expression: q.textEdgeConstant(r)}
 	case n < 13:
+		return tested(q.textEdge(r, columnNode(raw), q.textsOf(table.Fold(), column.Name.Value)), stmt.Term{Value: stmt.Text(textPieces[r.IntN(len(textPieces))])})
+	case n < 16:
+		c.Value = stmt.Term{Expression: q.textEdgeConstant(r)}
+	case n < 17:
 		null := valueNode(stmt.Null{})
 		switch r.IntN(3) {
 		case 0:
@@ -310,7 +310,7 @@ func (q *Sequence) textCondition(r Rand, table stmt.Name, shape []stmt.Column, c
 			return tested(concatNode(hexNode(null), columnNode(raw)), stmt.Term{Expression: concatNode(valueNode(stmt.Text("")), valueNode(text))})
 		}
 		c.Value = stmt.Term{Expression: lowerNode(null)}
-	case n < 14:
+	case n < 18:
 		if r.IntN(2) == 0 {
 			return tested(lowerNode(hexNode(concatNode(columnNode(raw), valueNode(stmt.Text(textPieces[r.IntN(len(textPieces))]))))), stmt.Term{Value: stmt.Text("6d5f")})
 		}
@@ -518,7 +518,9 @@ func (q *Sequence) goqiteID(r Rand) stmt.Expression {
 // the update computes from its row; once a text without a column equal to its value, as
 // [Sequence.textConstantOf] draws it; once goqite's id; once a text of another column, lower of a
 // TEXT column, hex of a BLOB column, or another TEXT column and the column; once a text without a
-// column at the edge of the length limit, as [Sequence.textEdgeConstant] draws it; once NULL in a
+// column at the edge of the length limit, as [Sequence.textEdgeConstant] draws it, or one time in two
+// the column and an argument at the edge for a value that an insert gave it, as [Sequence.textEdge]
+// draws it, so that the update fails on the row of the value; once NULL in a
 // concatenation with the column, or hex of NULL, which is the empty text; once a nested text, lower of
 // hex of another column and the column; and two times, as a fault of the area one time in two, a text
 // that s4ql refuses for the type of an operand, as [Sequence.textFault] draws it, and else a text as
@@ -558,6 +560,9 @@ func (q *Sequence) textSet(table stmt.Name, set []stmt.Assignment) []stmt.Assign
 				}
 			case n < 8:
 				e = q.textEdgeConstant(r)
+				if r.IntN(2) == 0 {
+					e = q.textEdge(r, columnNode(self), q.textsOf(table.Fold(), column.Name.Value))
+				}
 			case n < 9:
 				e = []stmt.Expression{concatNode(valueNode(stmt.Null{}), columnNode(self)), hexNode(valueNode(stmt.Null{}))}[r.IntN(2)]
 			case n < 10:

@@ -206,10 +206,15 @@ func (p *pair) computedTerms() []stmt.Term {
 }
 
 // rows reports whether SQLite gives a row for the query src with the arguments args, which must not
-// fail.
+// fail but with `string or blob too big`, for a text of its conditions that SQLite computes and finds
+// too long, which gives no row: the rules of text judge such a statement, as [pair.textDifference]
+// says.
 func (p *pair) rows(src string, args []any) bool {
 	p.t.Helper()
 	a := p.o.run(p.t, src, args...)
+	if a.err == tooBig {
+		return false
+	}
 	if a.err != "" {
 		p.t.Fatalf("%q: SQLite gives %v", src, a.err)
 	}
@@ -360,6 +365,12 @@ func (p *pair) accessRange(sel *stmt.Select, args []any) ([]stmt.Condition, bool
 // SQLite gives it, or without those conditions otherwise. It reports false where SQLite gives an
 // expression no value of one row.
 func (p *pair) reducedSelect(s *stmt.Select, args []any, constants bool) (*stmt.Select, bool) {
+	return p.reducedSelectOf(s, args, func(stmt.Expression) bool { return constants })
+}
+
+// reducedSelectOf is [pair.reducedSelect] with the conditions whose value is an expression without a
+// column for which keep reports true, and without the others.
+func (p *pair) reducedSelectOf(s *stmt.Select, args []any, keep func(stmt.Expression) bool) (*stmt.Select, bool) {
 	t, o := p.t, p.o
 	t.Helper()
 	reduced := *s
@@ -368,7 +379,7 @@ func (p *pair) reducedSelect(s *stmt.Select, args []any, constants bool) (*stmt.
 		reduced.Limit = literalTerm(args[s.Limit.Parameter-1])
 	}
 	for _, c := range s.Where {
-		if c.Expression.Present() || c.Value.Expression.HasColumn() || !constants && c.Value.Expression.Present() {
+		if c.Expression.Present() || c.Value.Expression.HasColumn() || c.Value.Expression.Present() && !keep(c.Value.Expression) {
 			continue
 		}
 		switch {
@@ -407,10 +418,14 @@ func literalTerm(v any) stmt.Term {
 }
 
 // literalOf the text of a value of a row of an answer of SQLite: the literal of its integer, its
-// real, or NULL, and true, or false for another text.
+// real, its text, or NULL, and true, or false for another text.
 func literalOf(text string) (stmt.Term, bool) {
 	if text == "null" {
 		return stmt.Term{Value: stmt.Null{}}, true
+	}
+	if strings.HasPrefix(text, `"`) {
+		v, err := strconv.Unquote(text)
+		return stmt.Term{Value: stmt.Text(v)}, err == nil
 	}
 	if f, ok := strings.CutPrefix(text, "real "); ok {
 		r, err := strconv.ParseFloat(f, 64)
@@ -1001,9 +1016,10 @@ func arithmeticCalls(r *rand.Rand, n int) []stmttest.Call {
 	return calls
 }
 
-// reachArithmetic counts with count what the statement s with arithmetic, whose answer of the engine
-// is got, reaches: each of its expressions by whether it has a column, where it is, and the kind of
-// the statement, by the outcome, which names the kind of an evaluation error.
+// reachArithmetic counts with count what the statement s with arithmetic or text, whose answer of the
+// engine is got, reaches: each of its expressions by whether it is text, whether it has a column,
+// where it is, and the kind of the statement, by the outcome, which names the kind of an evaluation
+// error.
 func reachArithmetic(s stmt.Statement, got answer, count func(string)) {
 	outcome := "ok"
 	switch {
@@ -1022,7 +1038,11 @@ func reachArithmetic(s stmt.Statement, got answer, count func(string)) {
 			where = "a subquery"
 		}
 		constant := map[bool]string{true: "with a column", false: "without a column"}[site.Root.HasColumn()]
-		count(fmt.Sprint("arithmetic ", constant, " in ", where, " of a ", kind, ", ", outcome))
+		what := "arithmetic "
+		if isTextExpression(site.Root) {
+			what = "text "
+		}
+		count(fmt.Sprint(what, constant, " in ", where, " of a ", kind, ", ", outcome))
 	}
 }
 
@@ -1045,6 +1065,9 @@ func (p *pair) reachOfArithmetic(c stmttest.Call, s stmt.Statement, got answer) 
 		return
 	}
 	reachCompared(s, got, p.count)
+	if textIn(s) {
+		p.reachOfText(c, s, args, got)
+	}
 	if ee := got.eval; ee != nil {
 		for _, site := range stmttest.ArithmeticSites(s) {
 			if !slices.ContainsFunc(stmttest.Operators(site.Root), func(n stmt.Expression) bool { return n.Span == ee.Span && n.Kind == ee.Op }) {
@@ -1186,32 +1209,214 @@ func reachCompared(s stmt.Statement, got answer, count func(string)) {
 	}
 }
 
-// reachServed counts how the constants of the select s with arithmetic serve its access, which is
-// want, as [pair.checkAccess] checked it, on the table of the columns and of the indexes: where the
-// model chooses another access without the conditions whose value is an expression without a column,
-// by whether want gets one key, pins columns of an index, or bounds the key or an index.
+// reachServed counts how the constants of the select s with arithmetic or text serve its access, which
+// is want, as [pair.checkAccess] checked it, on the table of the columns and of the indexes: where the
+// model chooses another access without the conditions whose value is an arithmetic expression
+// without a column, under "arithmetic: constant expression", or without those whose value is a text
+// without a column, under "text: constant text", by whether want gets one key, pins columns of an
+// index, or bounds the key or an index.
 func (p *pair) reachServed(s *stmt.Select, args []any, columns []stmttest.TableColumn, indexes []stmttest.TableIndex, want stmttest.Access) {
-	without, ok := p.reducedSelect(s, args, false)
-	if !ok {
+	for _, served := range []struct {
+		kind string
+		text bool
+	}{{"arithmetic: constant expression", false}, {"text: constant text", true}} {
+		without, ok := p.reducedSelectOf(s, args, func(e stmt.Expression) bool { return isTextExpression(e) != served.text })
+		if !ok {
+			return
+		}
+		if other, ok := stmttest.ChosenAccess(columns, indexes, without, nil); !ok || other.Same(want) {
+			continue
+		}
+		of := "the key"
+		if want.Index != "" {
+			of = "an index"
+		}
+		switch {
+		case want.None:
+			p.count(served.kind + " that makes the access read no row")
+		case want.Get:
+			p.count(served.kind + " that serves a get of one key")
+		case want.Lower != nil || want.Upper != nil:
+			p.count(served.kind + " that serves a bound of " + of)
+		case len(want.Pins) > 0:
+			p.count(served.kind + " that serves the pins of " + of)
+		}
+	}
+}
+
+// textRefusals are the refusals of text that [pair.reachOfText] counts, by the kind that it counts
+// each as.
+var textRefusals = []struct {
+	pattern *regexp.Regexp
+	kind    string
+}{
+	{regexp.MustCompile(`^s4ql: not supported: column of type (INT|INTEGER|REAL) in a concatenation `), "a column of a number in a concatenation"},
+	{regexp.MustCompile(`^s4ql: not supported: column of type BLOB in a concatenation `), "a BLOB column in a concatenation"},
+	{regexp.MustCompile(`^s4ql: not supported: column of type (INT|INTEGER|REAL) in a call of lower `), "a column of a number in lower"},
+	{regexp.MustCompile(`^s4ql: not supported: column of type BLOB in a call of lower `), "a BLOB column in lower"},
+	{regexp.MustCompile(`^s4ql: not supported: column of type (INT|INTEGER|REAL) in a call of hex `), "a column of a number in hex"},
+	{regexp.MustCompile(`^s4ql: not supported: argument \d+ in a concatenation, which is an? (integer|real) `), "an argument that is a number in a concatenation"},
+	{regexp.MustCompile(`^s4ql: not supported: argument \d+ in a concatenation, which is a blob `), "an argument that is a blob in a concatenation"},
+	{regexp.MustCompile(`^s4ql: not supported: argument \d+ in a call of lower, which is an? (integer|real) `), "an argument that is a number in lower"},
+	{regexp.MustCompile(`^s4ql: not supported: argument \d+ in a call of lower, which is a blob `), "an argument that is a blob in lower"},
+	{regexp.MustCompile(`^s4ql: not supported: argument \d+ in a call of hex, which is an? (integer|real) `), "an argument that is a number in hex"},
+	{regexp.MustCompile(`^s4ql: not supported: (an? [a-z]+ literal|argument \d+, which is [a-z ]+,) compared with an expression of type text$`), "a plain value of another type compared with text"},
+	{regexp.MustCompile(`^s4ql: not supported: subquery \d+, of the column .+, compared with an expression of type text$`), "a subquery of another type compared with text"},
+	{regexp.MustCompile(`^s4ql: not supported: an expression of type text compared with the column .+ of type (INT|INTEGER|REAL|BLOB)$`), "text compared with a column of a number or a blob"},
+	{regexp.MustCompile(`^s4ql: not supported: an expression of type text for the column .+ of type (INT|INTEGER|REAL|BLOB)$`), "text set for a column of a number or a blob"},
+}
+
+// reachOfText counts under "text: " what the call c of the statement s with text, with the arguments
+// args as SQLite binds them, which SQLite prepares, whose answer of the engine is got, reaches, on the
+// database of SQLite before the call: each refusal of [textRefusals]; under a lowered length limit,
+// each operator of text whose result, of a constant or of a row that the rule may evaluate it on, is
+// at the edge of the limit, one byte short of it, or one byte over it, as [textEdge] names it, by the
+// outcome; and, where the engine gave no error, an argument that is NULL in a text, a text that is not
+// ASCII, the empty text, a blob in hex, goqite's id, the key compared with a text, text beside
+// arithmetic, and a text that runs again.
+func (p *pair) reachOfText(c stmttest.Call, s stmt.Statement, args []any, got answer) {
+	t, o := p.t, p.o
+	t.Helper()
+	again := p.lastText == c.Src
+	p.lastText = c.Src
+	if got.err == "not supported" {
+		for _, r := range textRefusals {
+			if r.pattern.MatchString(got.message) {
+				p.count("text: refused " + r.kind)
+			}
+		}
 		return
 	}
-	if other, ok := stmttest.ChosenAccess(columns, indexes, without, nil); !ok || other.Same(want) {
+	outcome := "ok"
+	if got.err != "" {
+		outcome = messageKind(got.err)
+	}
+	sites := stmttest.ArithmeticSites(s)
+	table, where := tableWhere(s)
+	if p.i.limit > 0 {
+		subs := subqueriesIn(s)
+		for _, site := range sites {
+			if !isTextExpression(site.Root) {
+				continue
+			}
+			of, inner := table, subs
+			if site.Sub > 0 {
+				of, inner = subs[site.Sub-1].Table, nil
+			}
+			rows, bound := stmttest.SelectText(&stmt.Select{Table: of, Where: stmttest.SiteGuard(s, site), Subqueries: inner}, args, "")
+			seen := map[string]bool{}
+			for _, n := range stmttest.Operators(site.Root) {
+				measured := n
+				if n.Kind == stmt.ExprCall {
+					measured = n.Operands[0]
+				}
+				text, textArgs := stmttest.ExpressionText(measured, args)
+				query, queryArgs := "select length(cast("+text+" as blob))", textArgs
+				if measured.HasColumn() {
+					query, queryArgs = "with r as materialized ("+rows+") "+query+" from r", append(slices.Clone(bound), textArgs...)
+				}
+				for _, row := range o.unlimited(t, query, queryArgs...).rows {
+					length, err := strconv.Atoi(row)
+					if err != nil {
+						continue
+					}
+					if edge := textEdge(n, length, p.i.limit); edge != "" && !seen[edge] {
+						seen[edge] = true
+						p.count("text: " + edge + ", " + outcome)
+					}
+				}
+			}
+		}
+	}
+	if got.err != "" {
 		return
 	}
-	of := "the key"
-	if want.Index != "" {
-		of = "an index"
+	notASCII := func(v string) bool { return strings.ContainsFunc(v, func(r rune) bool { return r > 0x7f }) }
+	var walk func(e, parent stmt.Expression)
+	walk = func(e, parent stmt.Expression) {
+		switch e.Kind {
+		case stmt.ExprParameter:
+			switch v := args[e.Parameter-1].(type) {
+			case nil:
+				p.count("text: NULL as an argument in a text, ok")
+			case string:
+				if v == "" {
+					p.count("text: the empty text in a text, ok")
+				}
+				if notASCII(v) {
+					p.count("text: a text that is not ASCII in a text, ok")
+				}
+			case []byte:
+				p.count("text: a blob in hex, ok")
+			}
+		case stmt.ExprValue:
+			switch v := e.Value.(type) {
+			case stmt.Text:
+				if v == "" {
+					p.count("text: the empty text in a text, ok")
+				}
+				if notASCII(string(v)) {
+					p.count("text: a text that is not ASCII in a text, ok")
+				}
+			case stmt.Blob:
+				p.count("text: a blob in hex, ok")
+			}
+		case stmt.ExprCall:
+			if e.Function == stmt.FuncLower && e.Operands[0].Kind == stmt.ExprCall && e.Operands[0].Function == stmt.FuncHex && parent.Kind == stmt.ExprConcat {
+				p.count("text: goqite's id, 'm_' || lower(hex(?)), ok")
+			}
+		}
+		for _, o := range e.Operands {
+			walk(o, e)
+		}
 	}
-	switch {
-	case want.None:
-		p.count("arithmetic: constant expression that makes the access read no row")
-	case want.Get:
-		p.count("arithmetic: constant expression that serves a get of one key")
-	case want.Lower != nil || want.Upper != nil:
-		p.count("arithmetic: constant expression that serves a bound of " + of)
-	case len(want.Pins) > 0:
-		p.count("arithmetic: constant expression that serves the pins of " + of)
+	text, arithmetic := false, false
+	for _, site := range sites {
+		switch {
+		case isTextExpression(site.Root):
+			text = true
+			walk(site.Root, stmt.Expression{})
+		case len(site.Root.Operands) > 0:
+			arithmetic = true
+		}
 	}
+	if text && arithmetic {
+		p.count("text: text beside arithmetic in one statement, ok")
+	}
+	if again {
+		p.count("text: a text that runs again, ok")
+	}
+	_, columns := o.columns(t, table.Value)
+	for _, cond := range where {
+		if position := stmttest.ColumnOf(columns, cond.Column); !cond.Expression.Present() && position >= 0 && columns[position].PrimaryKey && isTextExpression(cond.Value.Expression) {
+			p.count("text: the key compared with a text, ok")
+		}
+	}
+}
+
+// textEdge of the operator n of text whose result, for a concatenation, or argument, for a call, is
+// length bytes long, under the length limit: the name of the operator, ||, lower, or hex, and "at the
+// length limit" for the longest that SQLite gives a text of, "one byte short of the length limit"
+// for one byte less, and "one byte over the length limit" for one byte more, or "" for another
+// length. A concatenation fails for a result longer than the limit, lower for an argument as long as
+// the limit, and hex where twice the length of its argument and one is longer than the limit.
+func textEdge(n stmt.Expression, length, limit int) string {
+	name, at := "||", limit
+	switch n.Function {
+	case stmt.FuncLower:
+		name, at = "lower", limit-1
+	case stmt.FuncHex:
+		name, at = "hex", (limit-1)/2
+	}
+	switch length - at {
+	case -1:
+		return name + " one byte short of the length limit"
+	case 0:
+		return name + " at the length limit"
+	case 1:
+		return name + " one byte over the length limit"
+	}
+	return ""
 }
 
 func TestNewPlan_arithmetic(t *testing.T) {
@@ -1607,6 +1812,491 @@ func TestEngine_arithmetic(t *testing.T) {
 		is.Equal(t, `columns "k INT, n INT", rows ["1,11" "2,20" "3,30" "4,4"]`, i.queryValues("select k, n from t", nil).String())
 		is.NotError(t, i.c.Commit(t.Context()))
 		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
+	})
+}
+
+// The differences of text from SQLite under the length limit that docs/todo/text-functions.md records,
+// in "The engine and the driver", each a kind that [pair.textDifference] excuses, where the engine
+// and SQLite part on whether a text too long is computed. Each rule checks the cause that the notes
+// give, by SQLite's own result of the text that is too long.
+const (
+	// excusedTextServing is "a constant of text with a call that may serve the access fails before any
+	// row, where SQLite computes it only when it uses it".
+	excusedTextServing = "text with a call that may serve the access, too long, which the engine computes before any row and SQLite does not"
+	// excusedTextLimitZero is "a constant without a call that serves the access fails with LIMIT 0,
+	// where SQLite gives no row".
+	excusedTextLimitZero = "text without a call that may serve the access, too long, in a select of LIMIT 0, which the engine computes and SQLite does not"
+	// excusedTextSubquery is "a scalar subquery is computed whenever the statement may give a row, as
+	// for arithmetic, where SQLite computes it when a row reaches it".
+	excusedTextSubquery = "scalar subquery with a text too long, which the engine computes and SQLite does not"
+	// excusedTextInPlace is the case of excusedTextServing for a text without a call, which the
+	// engine computes before the access, as it computes every side without a column and without a
+	// call: SQLite codes the value of a term that may serve its search in place, and computes it
+	// before a search that uses it, as in `where s = ? || ?`, but only when a row reaches it where its
+	// search uses another term or ends with it, as "the upper bound of a search of the primary key,
+	// `k < 'long'`", which "SQLite evaluates only when the search reaches a row", in the known
+	// difference of a literal in WHERE longer than the length limit, in docs/todo/sql-front-end.md.
+	excusedTextInPlace = "text without a call that may serve the access, too long, which SQLite computes only where its search uses it and the engine before the search"
+	// excusedTextAccess is the general case of the three where s4ql is laxer: "more generally, the
+	// rows that a statement evaluates are those of its access, and SQLite evaluates the terms that an
+	// index covers before the others and those with a subquery last, so where the two read or order
+	// differently, one fails and the other does not", where every text is short enough on the rows
+	// that the access of the engine reads.
+	excusedTextAccess = "text that SQLite finds too long only on rows that the access of the engine does not read"
+	// excusedTextOrder is the general case where s4ql is stricter, of the sentence of
+	// [excusedTextAccess]: the engine computes a text with a column on a row of its access in the
+	// order of the text, which SQLite does not read, or rules out first by a term that an index covers.
+	excusedTextOrder = "text with a column that SQLite finds too long on a row of the access of the engine, which SQLite reads otherwise and computes on no row"
+	// excusedTextNull is the first of the cases where s4ql is laxer: "a condition with a value of NULL
+	// makes the access read nothing, so a condition before it in the text is never evaluated, where
+	// SQLite reads the rows and fails on the first".
+	excusedTextNull = "comparison with NULL, which makes the engine read no row, beside a text that SQLite finds too long"
+	// excusedTextPropagated is the second: "SQLite propagates a constant of an equality of the WHERE
+	// of a select and of a scalar subquery into the other terms (propagateConstants), which turns them
+	// into constants that it computes before any row".
+	excusedTextPropagated = "text that SQLite makes a constant by an equality of its WHERE and finds too long before any row, which the engine computes for each row"
+	// excusedTextHoisted is the third: "build.hoist takes a constant of a subquery for one that SQLite
+	// computes with the subquery wherever mayServe says it may serve the access, where SQLite does so
+	// only where its access uses it".
+	excusedTextHoisted = "text of a subquery that may serve its access, too long, which SQLite computes before any row and the engine with the subquery"
+)
+
+// textDifference names the recorded difference of text from SQLite under the length limit that the
+// call c of a statement s with text shows, where the engine gives got and SQLite want, one of them `string or blob too big` and the other no error, as one of
+// the kinds of [excusedTextServing] and the five after it; or "" where it shows none of them. Where
+// the engine fails and SQLite does not, SQLite must have given no row and changed none, since a row
+// that it gives is one whose every condition it computed, and the engine must have computed a text
+// too long that the notes say it computes and SQLite does not:
+//
+//   - a condition of the WHERE of the statement or of a subquery that compares a column of the key or
+//     of an index with an operator other than != with a text without a column and with a call, which
+//     SQLite finds too long alone: [excusedTextServing];
+//   - the same with a text without a call in a select of LIMIT 0: [excusedTextLimitZero];
+//   - the same with a text without a call otherwise: [excusedTextInPlace];
+//   - a scalar subquery that SQLite fails alone with `string or blob too big`:
+//     [excusedTextSubquery];
+//   - a text of the statement that SQLite finds too long for a row that the rule may evaluate it on,
+//     as [pair.textTooLongWithin] says, of the access of the engine where the model chooses it:
+//     [excusedTextOrder].
+//
+// Where SQLite fails and the engine gives no row and changes none, the engine must have had a reason
+// to compute nothing that SQLite computed:
+//
+//   - a comparison of the WHERE of the statement or of a subquery with a value that is NULL, which no
+//     row holds for: [excusedTextNull];
+//   - an equality of the WHERE of a select or of a subquery of a column alone with a value without a
+//     column, and another condition of that WHERE that has no column with the value in place of the
+//     column, of which a side is a text that SQLite finds too long alone, as [pair.propagated] says:
+//     [excusedTextPropagated];
+//   - a condition of the WHERE of a subquery that the engine did not compute that may serve its
+//     access, as for [excusedTextServing], with a text without a column and without a call, which
+//     SQLite finds too long alone: [excusedTextHoisted];
+//   - a text of the statement that SQLite finds too long only on rows that the access of the engine,
+//     as the model chooses it, does not read, as [pair.outsideAccess] says: [excusedTextAccess].
+func (p *pair) textDifference(c stmttest.Call, got, want answer) string {
+	t, o := p.t, p.o
+	t.Helper()
+	// The statement of the call, with its subqueries, whose values the engine computed, where it did,
+	// and not the statement with those values in their place, which SQLite ran.
+	s, err := stmt.Check(c.Src)
+	args := oracleArgs(c.Args)
+	if p.i.limit == 0 || err != nil || s == nil || len(args) != s.Parameters() || !textIn(s) {
+		return ""
+	}
+	// A count of changes is that of the last write, so a select keeps it.
+	_, isSelect := s.(*stmt.Select)
+	switch {
+	case got.err == tooBig && want.err == "":
+		if changes, _ := o.changes(t); len(want.rows) > 0 || !isSelect && changes > 0 {
+			return ""
+		}
+		// The WHERE of the statement, and that of each subquery, which the engine computes whenever the
+		// statement may give a row, with the constants that may serve its access before it reads it;
+		// a subquery that SQLite fails alone first.
+		accesses := []stmt.Statement{s}
+		for _, q := range subqueriesIn(s) {
+			var bound []any
+			for _, n := range parametersIn(q) {
+				bound = append(bound, args[n-1])
+			}
+			if o.run(t, c.Src[q.Span.Start:q.Span.End], bound...).err == tooBig {
+				return excusedTextSubquery
+			}
+			accesses = append(accesses, &q)
+		}
+		for i, of := range accesses {
+			_, cs := tableWhere(of)
+			for _, cond := range cs {
+				e := cond.Value.Expression
+				if !isTextExpression(e) || e.HasColumn() || !p.mayServe(of, cond) || !p.tooLongAlone(e, args) {
+					continue
+				}
+				if hasCall(e) {
+					return excusedTextServing
+				}
+				if sel, ok := s.(*stmt.Select); ok && i == 0 && limitZero(sel.Limit, args) {
+					return excusedTextLimitZero
+				}
+				return excusedTextInPlace
+			}
+		}
+		access, _ := p.modelGuard(s, args)
+		if !isSelect {
+			access, _ = p.writeGuard(s, args)
+		}
+		if p.textTooLongWithin(s, args, access) {
+			return excusedTextOrder
+		}
+	case want.err == tooBig && got.err == "" && len(got.rows) == 0 && (isSelect || p.i.changes == 0):
+		_, cs := tableWhere(s)
+		wheres := [][]stmt.Condition{cs}
+		for _, q := range subqueriesIn(s) {
+			wheres = append(wheres, q.Where)
+		}
+		for i, w := range wheres {
+			for _, cond := range w {
+				if p.nullValue(cond, args, i) {
+					return excusedTextNull
+				}
+			}
+			of, _ := tableWhere(s)
+			if i > 0 {
+				of = subqueriesIn(s)[i-1].Table
+			}
+			if (isSelect || i > 0) && p.propagated(of, w, args) {
+				return excusedTextPropagated
+			}
+		}
+		if p.computed == nil {
+			for _, q := range subqueriesIn(s) {
+				for _, cond := range q.Where {
+					e := cond.Value.Expression
+					if isTextExpression(e) && !e.HasColumn() && !hasCall(e) && p.mayServe(&q, cond) && p.tooLongAlone(e, args) {
+						return excusedTextHoisted
+					}
+				}
+			}
+		}
+		if p.outsideAccess(s, args) {
+			return excusedTextAccess
+		}
+	}
+	return ""
+}
+
+// outsideAccess reports whether SQLite finds a text of the select, the update, or the delete s, with
+// the arguments args, too long only on rows that the access of the engine does not read: where the
+// model chooses the access, as [pair.modelGuard] and [pair.writeGuard] give the conditions of its
+// range, no text is too long for a row of that range that the rule may evaluate it on, and one is for
+// a row outside it, as [pair.textTooLongWithin] says.
+func (p *pair) outsideAccess(s stmt.Statement, args []any) bool {
+	guard, ok := p.modelGuard(s, args)
+	if _, isSelect := s.(*stmt.Select); !isSelect {
+		guard, ok = p.writeGuard(s, args)
+	}
+	return ok && guard != nil && !p.textTooLongWithin(s, args, guard) && p.textTooLong(s, args)
+}
+
+// textTooLong reports whether SQLite finds a text of the select, the update, or the delete s, with the
+// arguments args, too long: a text without a column and without a call alone, which is computed
+// before any row, or another text for a row of the table of its site that the documented rule may
+// evaluate it on, as [stmttest.SiteGuard] gives its
+// conditions, which SQLite reads into a table of its own before it computes the text on each of its
+// rows, so that it computes the text on no other row.
+func (p *pair) textTooLong(s stmt.Statement, args []any) bool {
+	return p.textTooLongWithin(s, args, nil)
+}
+
+// textTooLongWithin is [pair.textTooLong] for a statement whose access is known: a row of a site of
+// the statement, not of a subquery, must also be one that every condition of access holds for, which
+// are conditions of the table of s with literal values, as of the range of the rows that the access
+// of s reads. Without conditions, it is [pair.textTooLong].
+func (p *pair) textTooLongWithin(s stmt.Statement, args []any, access []stmt.Condition) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	table, _ := tableWhere(s)
+	subs := subqueriesIn(s)
+	for _, site := range stmttest.ArithmeticSites(s) {
+		if !isTextExpression(site.Root) {
+			continue
+		}
+		if !site.Root.HasColumn() && !hasCall(site.Root) {
+			// Computed before any row.
+			if p.tooLongAlone(site.Root, args) {
+				return true
+			}
+			continue
+		}
+		// A text with a column, or with a call, which is computed when the first row reaches it, for
+		// each row of r.
+		of, inner, guard := table, subs, slices.Concat(access, stmttest.SiteGuard(s, site))
+		if site.Sub > 0 {
+			of, inner, guard = subs[site.Sub-1].Table, nil, stmttest.SiteGuard(s, site)
+		}
+		rows, bound := stmttest.SelectText(&stmt.Select{Table: of, Where: guard, Subqueries: inner}, args, "")
+		text, textArgs := stmttest.ExpressionText(site.Root, args)
+		if o.run(t, "with r as materialized ("+rows+") select "+text+" from r", append(bound, textArgs...)...).err == tooBig {
+			return true
+		}
+	}
+	return false
+}
+
+// textIn reports whether the statement s has text of ||, lower, or hex: in the SET of an update, or on
+// a side of a condition of its WHERE or of the WHERE of a subquery.
+func textIn(s stmt.Statement) bool {
+	var es []stmt.Expression
+	if u, ok := s.(*stmt.Update); ok {
+		for _, a := range u.Set {
+			es = append(es, a.Value.Expression)
+		}
+	}
+	_, where := tableWhere(s)
+	for _, q := range subqueriesIn(s) {
+		where = append(where[:len(where):len(where)], q.Where...)
+	}
+	for _, c := range where {
+		es = append(es, c.Expression, c.Value.Expression)
+	}
+	return slices.ContainsFunc(es, isTextExpression)
+}
+
+// isTextExpression reports whether e is text: a concatenation or a call at its root.
+func isTextExpression(e stmt.Expression) bool {
+	return e.Kind == stmt.ExprConcat || e.Kind == stmt.ExprCall
+}
+
+// hasCall reports whether the expression e has a call of a function.
+func hasCall(e stmt.Expression) bool {
+	return e.Kind == stmt.ExprCall || slices.ContainsFunc(e.Operands, hasCall)
+}
+
+// tooLongAlone reports whether SQLite gives `string or blob too big` for the expression e without a
+// column alone, with the arguments args of its statement.
+func (p *pair) tooLongAlone(e stmt.Expression, args []any) bool {
+	text, bound := stmttest.ExpressionText(e, args)
+	return p.o.run(p.t, "select "+text, bound...).err == tooBig
+}
+
+// mayServe reports whether the condition c of the select, the update, or the delete s may serve the
+// access of s, as the engine's rule says: a column alone, compared with an operator other than != with
+// a value without a column, of the key or of an index of the table of s, as SQLite's schema has them.
+func (p *pair) mayServe(s stmt.Statement, c stmt.Condition) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	if c.Expression.Present() || c.Value.Expression.HasColumn() || c.Operator == stmt.OpNotEqual || c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
+		return false
+	}
+	name, _ := tableWhere(s)
+	table, columns := o.columns(t, name.Value)
+	position := stmttest.ColumnOf(columns, c.Column)
+	if position < 0 {
+		return false
+	}
+	if columns[position].PrimaryKey {
+		return true
+	}
+	_, indexes := o.tableIndexes(t, table, columns)
+	return slices.ContainsFunc(indexes, func(ix stmttest.TableIndex) bool {
+		return slices.ContainsFunc(ix.Columns, func(k stmttest.IndexKeyColumn) bool { return k.Position == position })
+	})
+}
+
+// nullValue reports whether the comparison c, of the WHERE of a statement for sub 0 or of its
+// subquery sub otherwise, with the arguments args, has a value that is NULL, which no row holds for:
+// a literal or an argument, a value without a column that SQLite computes as NULL, or a subquery
+// whose value the engine computed as NULL.
+func (p *pair) nullValue(c stmt.Condition, args []any, sub int) bool {
+	v := c.Value
+	switch {
+	case c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull:
+		return false
+	case v.Subquery > 0:
+		if sub != 0 || p.computed == nil {
+			return false
+		}
+		kind := p.computed[v.Subquery-1].WhichKind()
+		return kind == s4qlpb.Value_Null_case || kind == s4qlpb.Value_Kind_not_set_case
+	case v.Expression.Present():
+		if v.Expression.HasColumn() {
+			return false
+		}
+		text, bound := stmttest.ExpressionText(v.Expression, args)
+		a := p.o.run(p.t, "select "+text+" is null", bound...)
+		return a.err == "" && len(a.rows) == 1 && a.rows[0] == "1"
+	}
+	return stmttest.BoundValue(v, args) == nil
+}
+
+// propagated reports whether the conditions where, of a WHERE of the table with the arguments args,
+// have what SQLite's propagation of a constant (propagateConstants) makes a text too long that it
+// computes before any row: an equality of a column alone, not of type BLOB, whose affinity limits the
+// propagation, with a plain value or an expression without a column, and another condition, a
+// comparison, that has no column with that value in place of the column, which SQLite computes before
+// any row as a constant, and of which a side is a text that SQLite finds too long alone.
+func (p *pair) propagated(table stmt.Name, where []stmt.Condition, args []any) bool {
+	t, o := p.t, p.o
+	t.Helper()
+	_, columns := o.columns(t, table.Value)
+	for i, eq := range where {
+		if eq.Operator != stmt.OpEqual || eq.Expression.Present() || eq.Value.Subquery > 0 || eq.Value.Expression.HasColumn() {
+			continue
+		}
+		if position := stmttest.ColumnOf(columns, eq.Column); position < 0 || columns[position].Type == "BLOB" {
+			continue
+		}
+		value := eq.Value.Expression
+		if !value.Present() {
+			value = valueOfTerm(eq.Value, args)
+		}
+		fold := eq.Column.Fold()
+		for j, other := range where {
+			if j == i || other.Operator == stmt.OpIsNull || other.Operator == stmt.OpIsNotNull || other.Value.Subquery > 0 {
+				continue
+			}
+			left := substituted(other.Expression, fold, value)
+			if !other.Expression.Present() {
+				if other.Column.Fold() != fold {
+					continue
+				}
+				left = value
+			}
+			right := substituted(other.Value.Expression, fold, value)
+			if left.HasColumn() || right.HasColumn() {
+				continue
+			}
+			for _, side := range []stmt.Expression{left, right} {
+				if isTextExpression(side) && p.tooLongAlone(side, args) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// valueOfTerm of the plain value t, a literal or a parameter, with the arguments args, as an
+// expression of the parameter or the literal.
+func valueOfTerm(t stmt.Term, args []any) stmt.Expression {
+	if t.Parameter > 0 {
+		return stmt.Expression{Kind: stmt.ExprParameter, Parameter: t.Parameter}
+	}
+	return stmt.Expression{Kind: stmt.ExprValue, Value: t.Value}
+}
+
+// substituted is the expression e with the value in place of each column of the fold.
+func substituted(e stmt.Expression, fold string, value stmt.Expression) stmt.Expression {
+	if e.Kind == stmt.ExprColumn {
+		if e.Column.Fold() == fold {
+			return value
+		}
+		return e
+	}
+	if len(e.Operands) == 0 {
+		return e
+	}
+	e.Operands = slices.Clone(e.Operands)
+	for i, o := range e.Operands {
+		e.Operands[i] = substituted(o, fold, value)
+	}
+	return e
+}
+
+func TestPair_text(t *testing.T) {
+	// The cases of docs/todo/text-functions.md, under a limit of 1,000 with arguments of 600 bytes, on
+	// a table t of one row and an empty table e, each with an index on s, and a table q of one row
+	// with a key of text and an index on v, which does not take NULL.
+	a, b, long := strings.Repeat("a", 600), strings.Repeat("b", 600), strings.Repeat("l", 1000)
+	newSetUp := func(t *testing.T) (*pair, tally) {
+		t.Helper()
+		y := tally{}
+		p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, 1000), y)
+		for _, src := range []string{
+			"create table t (k int primary key, s text, u text, v text) strict, without rowid",
+			"create index t_s on t (s)",
+			"insert into t values (1, 'a', 'b', 'c')",
+			"create table e (k int primary key, s text, u text, v text) strict, without rowid",
+			"create index e_s on e (s)",
+			"create table q (id text primary key, v text not null) strict, without rowid",
+			"create index q_v on q (v)",
+			"insert into q values ('m_1', 'x')",
+		} {
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Supported: true}), src)
+		}
+		return p, y
+	}
+
+	for _, c := range []struct {
+		name, src string
+		args      []any
+		err       string
+		kind      string
+	}{
+		{"should excuse a text with a call that may serve the access, which the engine computes and SQLite does not", "select k from t where k = 99 and s = lower(? || ?)", []any{a, b}, tooBig, excusedTextServing},
+		{"should excuse a text without a call that serves the access in a select of LIMIT 0", "select k from t where s = ? || ? limit 0", []any{a, b}, tooBig, excusedTextLimitZero},
+		{"should excuse a text without a call on the upper bound of an index on an empty table", "select k from e where s <= ? || ?", []any{a, b}, tooBig, excusedTextInPlace},
+		{"should excuse a text without a call on the upper bound of an index above every row", "delete from t where s > 'z' and s < ? || ?", []any{a, b}, tooBig, excusedTextInPlace},
+		{"should excuse a text without a call on the key where SQLite searches an index", "select id from q where v is null and id = ? || ?", []any{a, b}, tooBig, excusedTextInPlace},
+		{"should excuse a scalar subquery with a text too long, which SQLite does not compute", "select k from t where k = 99 and u = (select s from t where s = ? || ?)", []any{a, b}, tooBig, excusedTextSubquery},
+		{"should excuse a comparison with NULL beside a text that SQLite finds too long", "select k from t where s || ? = 'x' and u = ?", []any{long, nil}, "", excusedTextNull},
+		{"should excuse a comparison with NULL in a delete", "delete from t where s || ? = 'x' and u = ?", []any{long, nil}, "", excusedTextNull},
+		{"should excuse a text that SQLite makes a constant by an equality", "select k from e where u = 'q' and u || ? = 'x'", []any{long}, "", excusedTextPropagated},
+		{"should excuse a text that SQLite makes a constant by an equality of the column with a text", "select k from e where lower(u) = 'a' and u = lower(? || ?)", []any{a, b}, "", excusedTextPropagated},
+		{"should excuse a text that SQLite finds too long on a row that the access of the engine does not read", "update q set v = 'y' where id <= lower(?) || ? and id || ? >= ? and id <= ''", []any{"\U0010ffff", "", strings.Repeat("e", 998), "B"}, "", excusedTextAccess},
+		{"should excuse a text of a subquery that may serve its access, which SQLite computes before any row", "select k from t where u = (select u from t where k = 5 and s = ? || ?) limit 0", []any{a, b}, "", excusedTextHoisted},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, y := newSetUp(t)
+			is.Equal(t, "", p.step(stmttest.Call{Src: c.src, Args: c.args, Query: strings.HasPrefix(c.src, "select"), Supported: true}), c.src)
+			is.Equal(t, c.err, p.last.err, c.src)
+			is.Equal(t, 1, y["excused: "+c.kind], c.src)
+			is.Equal(t, p.o.state(t), p.i.state())
+		})
+	}
+
+	t.Run("should name no difference where the cause that a rule names is not there", func(t *testing.T) {
+		for _, c := range []struct {
+			src  string
+			args []any
+			got  answer
+		}{
+			// A text with a call that the engine computes, compared with != or with a column without an
+			// index, serves no access.
+			{"select k from t where k = 99 and s <> lower(? || ?)", []any{a, b}, answer{err: tooBig}},
+			{"select k from t where k = 99 and u = lower(? || ?)", []any{a, b}, answer{err: tooBig}},
+			// A text not too long.
+			{"select k from t where k = 99 and s = lower(? || ?)", []any{a, "b"}, answer{err: tooBig}},
+			// No NULL, and no equality that SQLite propagates into a constant.
+			{"select k from t where s || ? = 'x'", []any{long}, answer{}},
+			{"select k from t where u = 'b' and v || ? = 'x'", []any{long}, answer{}},
+		} {
+			p, _ := newSetUp(t)
+			want := answer{}
+			if c.got.err == "" {
+				want = answer{err: tooBig}
+			}
+			is.Equal(t, "", p.textDifference(stmttest.Call{Src: c.src, Args: c.args, Supported: true}, c.got, want), c.src)
+		}
+	})
+
+	t.Run("should excuse a text with a column that the engine computes on a row of its access only where SQLite finds it too long there", func(t *testing.T) {
+		p, _ := newSetUp(t)
+		e := strings.Repeat("e", 999)
+		src := "select k from t where k > 0 and lower(u || ?) = 'x'"
+		is.Equal(t, excusedTextOrder, p.textDifference(stmttest.Call{Src: src, Args: []any{e}, Supported: true}, answer{err: tooBig}, answer{}))
+		src = "select k from t where k > 5 and lower(u || ?) = 'x'"
+		is.Equal(t, "", p.textDifference(stmttest.Call{Src: src, Args: []any{e}, Supported: true}, answer{err: tooBig}, answer{}))
+	})
+
+	t.Run("should judge a text too long by another path by SQLite's text of a row that the rule evaluates", func(t *testing.T) {
+		p, _ := newSetUp(t)
+		s, err := stmt.Check("select k from t where k > 0 and s || ? = 'x'")
+		is.NotError(t, err)
+		is.True(t, p.textTooLong(s, []any{long}))
+		is.True(t, !p.textTooLong(s, []any{"x"}))
+		s, err = stmt.Check("select k from t where k > 5 and s || ? = 'x'")
+		is.NotError(t, err)
+		is.True(t, !p.textTooLong(s, []any{long}))
 	})
 }
 

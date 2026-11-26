@@ -1077,6 +1077,8 @@ type pair struct {
 	walking bool
 	// severalFailed is set after a text of several statements failed in the transaction that is open.
 	severalFailed bool
+	// lastText is the text of the last call with text of ||, lower, or hex, for [pair.reachOfText].
+	lastText string
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -1284,7 +1286,10 @@ func (p *pair) step(c stmttest.Call) string {
 	}
 	if differs {
 		gap := knownGap(src, got, want)
+		textGap := p.textDifference(c, got, want)
 		switch {
+		case textGap != "":
+			p.y.excused(textGap)
 		case startedTable(t, p.empty, src, got, want):
 			p.y.excused(acceptedStartedTable)
 		case want.err == tooBig && got.err == "" && c.Query && p.sortTooBig(src, args, got):
@@ -2294,6 +2299,32 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, which %v", c.Src, c.Args, path, all.message, why)
 		}
 		p.count("evaluation error by one path and not by another")
+		return ""
+	}
+	if isSelect && textIn(s) && (got.err == tooBig || all.err == tooBig) && all.err != got.err {
+		// Which rows a select with text computes depends on its access too, and a text that is too
+		// long by one path may be on a row that the other does not read: a text too long of the other
+		// instance must be one that SQLite finds too long for a row that the rule may evaluate, as
+		// [pair.textTooLong] says, and one of the instance is judged by [pair.step].
+		if all.err != tooBig {
+			return ""
+		}
+		if !p.textTooLong(s, oracleArgs(c.Args)) {
+			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, and SQLite finds no text of it too long for a row that the rule may evaluate", c.Src, c.Args, path, all.message)
+		}
+		p.count("text too long by one path and not by another")
+		return ""
+	}
+	if subqueried(s) && textIn(s) && (got.err == tooBig) != (all.err == tooBig) && got.err+all.err == tooBig && changes == 0 && allChanges == 0 {
+		// The first row of a subquery without an ORDER BY that decides it is the first of the direction
+		// that each instance draws, and so are the rows that it reads before it, whose text may be too
+		// long. Where a statement fails so by one direction and changes nothing by the other, both
+		// instances hold what they held, and SQLite must find a text of the statement too long for a
+		// row that the rule may evaluate, as [pair.textTooLong] says.
+		if !p.textTooLong(s, oracleArgs(c.Args)) {
+			return fmt.Sprintf("%q with %#v: one instance gives %q, and SQLite finds no text of it too long for a row that the rule may evaluate", c.Src, c.Args, tooBig)
+		}
+		p.count("text too long in a subquery by one direction and not by another")
 		return ""
 	}
 	if failed, ok := subqueryErrorOfOne(s, got, all); ok && changes == 0 && allChanges == 0 {
@@ -3989,7 +4020,7 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several, stmttest.TextFunctions:
 		n *= 2
 	}
 	return uint64(n)
