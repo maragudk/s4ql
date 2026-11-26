@@ -476,8 +476,11 @@ func TestConn_netEffect(t *testing.T) {
 // [TestDifferential] says of its files: among it the selects with WHERE that [pair.bothWays] reads
 // both ways and the updates and deletes that it changes both ways, also in a read-only transaction,
 // which refuses a change; the commits and the roll backs of a write transaction whose update or
-// delete changed rows, and of one with a create index or a drop index; and the statements of slices
-// 10, 11, and 12, which [pair.reach] counts again by the kind of the transaction.
+// delete changed rows, and of one with a create index or a drop index; the statements of slices 10,
+// 11, and 12, which [pair.reach] counts again by the kind of the transaction; and the texts of
+// several statements in one Exec, which [pair.several] judges, in both kinds of transactions. After
+// the end of each transaction, the commits of the instance and of the other instance, with their
+// annotations, must be the same, as [pair.sameLog] says.
 func TestConn_differential(t *testing.T) {
 	// So many sequences of each profile, and twice as many of the mixed profile and of the profiles
 	// of the clauses of slice 10, the defaults, and the values on the left, whose statements this test
@@ -485,7 +488,8 @@ func TestConn_differential(t *testing.T) {
 	// the order of the rows of an update and of a delete with RETURNING, each in both directions, and
 	// so does the profile of arithmetic, whose evaluation errors leave a transaction usable and must
 	// take back the rows that the statement changed before the row that failed, which about one
-	// sequence in a hundred reaches.
+	// sequence in a hundred reaches, and so does the profile of several statements in one Exec, for a
+	// text that fails in a transaction that is then committed or rolled back.
 	n := uint64(20)
 	if slow() {
 		n = 1
@@ -494,18 +498,13 @@ func TestConn_differential(t *testing.T) {
 	runs := map[string]tally{}
 	var names []string
 	for _, p := range stmttest.Profiles {
-		if p == stmttest.Several {
-			// Texts of several statements, which [engine.Conn.Exec] refuses for their second statement:
-			// they are [engine.Conn.ExecAll]'s.
-			continue
-		}
 		y := tally{}
 		runs[p.Name], names = y, append(names, p.Name)
 		times := uint64(1)
 		switch p {
 		case stmttest.Mixed, stmttest.Exists, stmttest.Defaults, stmttest.ValueFirst:
 			times = 2
-		case stmttest.Returning, stmttest.Arithmetic:
+		case stmttest.Returning, stmttest.Arithmetic, stmttest.Several:
 			times = 4
 		}
 		for k := range n * times {
@@ -581,7 +580,13 @@ func txDifferential(t *testing.T, seed uint64, n int, y tally) {
 		if evaluated && y != nil {
 			y["reached: "+map[bool]string{true: "commit", false: "roll back"}[commit]+" of a transaction with an evaluation error"]++
 		}
-		open, changed, indexed, returned, evaluated, p.wrote = "", false, false, false, false, false
+		if p.severalFailed {
+			p.count("several statements: " + map[bool]string{true: "commit", false: "roll back"}[commit] + " of a " + strings.ReplaceAll(open, " ", "-") + " transaction in which a text failed")
+		}
+		if failure := p.sameLog(); failure != "" {
+			fail("after the end of the transaction, %v", failure)
+		}
+		open, changed, indexed, returned, evaluated, p.wrote, p.severalFailed = "", false, false, false, false, false, false
 		want := p.o.state(t)
 		if got := i.state(); got != want {
 			fail("after the end of the transaction the engine holds\n%v\nand SQLite\n%v", got, want)

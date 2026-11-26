@@ -813,3 +813,34 @@
 # total that day.
 18	reached: arithmetic of a write whose evaluation error the model's access judges
 38	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
+# The engine's differential tests of several statements in one Exec of 2026-11-26: a third of the
+# total that day of each kind that pair.several, pair.reachSeveral, and pair.reachDependent count,
+# of the profile several and of mixed.
+43	reached: several statements: a text of 2 statements that ran to its end
+44	reached: several statements: a text of 3 statements that ran to its end
+31	reached: several statements: a text of 4 statements that ran to its end
+18	reached: several statements: a text of 5 statements that ran to its end
+45	reached: several statements: stopped at the first statement: a constraint
+4	reached: several statements: stopped at the first statement: an evaluation error
+79	reached: several statements: stopped at the first statement: not supported
+113	reached: several statements: stopped at the first statement: SQLite's error
+5	reached: several statements: stopped at the first statement: too few arguments
+29	reached: several statements: stopped at a middle statement: a constraint
+3	reached: several statements: stopped at a middle statement: an evaluation error
+28	reached: several statements: stopped at a middle statement: not supported
+41	reached: several statements: stopped at a middle statement: SQLite's error
+2	reached: several statements: stopped at a middle statement: too few arguments
+12	reached: several statements: stopped at the last statement: a constraint
+1	reached: several statements: stopped at the last statement: an evaluation error
+15	reached: several statements: stopped at the last statement: not supported
+21	reached: several statements: stopped at the last statement: SQLite's error
+2	reached: several statements: stopped at the last statement: too few arguments
+10	reached: several statements: fewer arguments than parameters
+43	reached: several statements: more arguments than parameters
+22	reached: several statements: refused for a space that mattn trims
+105	reached: several statements: one commit of a text outside a transaction
+130	reached: several statements: a commit of each of two statements or more of a text outside a transaction
+158	reached: several statements: a statement that ran on a table that an earlier statement of the text created
+109	reached: several statements: a statement that ran on a table whose rows an earlier statement of the text changed
+68	reached: several statements: a last statement with RETURNING that ran
+45	reached: several statements: a last statement with RETURNING that ran, after another count of changes

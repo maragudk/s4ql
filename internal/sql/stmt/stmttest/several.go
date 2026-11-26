@@ -49,13 +49,29 @@ func severalChain(r Rand) []string {
 	}[r.IntN(3)/2:]
 }
 
+// severalReturning is a create table, an update of every row of the table, and an insert with
+// RETURNING of a new row of the key of the number step, which end a text of several statements: the
+// update changes as many rows as earlier texts inserted, first none, and the insert one, so that the
+// count of changes after the last statement differs from the count after the statement before it,
+// which mattn gives for a last statement with RETURNING.
+func severalReturning(step uint64) []string {
+	const table = `"c;r"`
+	return []string{
+		"create table if not exists " + table + " (k text primary key, v int) strict, without rowid",
+		"update " + table + " set v = 2",
+		fmt.Sprintf("insert into %v (k, v) values ('r;%v', 1) returning k, v", table, step),
+	}
+}
+
 // several is a call of a text of several statements, two to five, as glue's migrations and goqite's
 // schema run through Exec, with the arguments of their parameters in order. Each statement is one
 // that the sequence writes, as [Sequence.statement] writes it, with the number of a statement of the
 // sequence of its own, so that each draws as a statement alone does, and the last one, one time in
 // three, with RETURNING if it is an insert, an update, or a delete; or, one time in twelve after
 // the first, an earlier statement of the text again, such as an insert that then fails on its key;
-// or, one time in 24, the statements of [severalChain], as many as the text has room for; or, as a
+// or, one time in 24, the statements of [severalChain], as many as the text has room for; or, for
+// the last three statements of a text of three or more, one time in four in a profile with
+// RETURNING, the statements of [severalReturning]; or, as a
 // fault one time in 24 each, a text of [Others] or of [ArithmeticRefused], which SQLite does not
 // prepare, s4ql does not support, or that fails, also first, and which may hold a second statement,
 // or a string without its end that holds the rest of the text; or, as a fault one time in 48, a
@@ -105,6 +121,9 @@ func (q *Sequence) several() Call {
 			if trimmedAt == j {
 				b.WriteString(severalTrimmed[r.IntN(len(severalTrimmed))])
 			}
+		}
+		if j == n-3 && len(chain) == 0 && q.profile.on(areaReturning) && r.IntN(4) == 0 {
+			chain = severalReturning(q.step)
 		}
 		var text string
 		var a []any
