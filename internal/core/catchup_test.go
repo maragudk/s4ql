@@ -34,7 +34,7 @@ func (h *stallHost) Yield(ctx context.Context, site string) {
 	if h.armed && site == h.site {
 		h.armed = false
 		h.before()
-		_ = h.Instance.Sleep(ctx, h.d)
+		_ = h.Sleep(ctx, h.d)
 		return
 	}
 	h.Instance.Yield(ctx, site)

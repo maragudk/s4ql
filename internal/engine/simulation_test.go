@@ -3722,8 +3722,10 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// quirk on every row, in 86.
 		{"evalStops", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
 		// A row whose comparison fails with an evaluation error left out: 287 seeds, 271 of them by their
-		// own violation.
-		{"errorSkipsRow", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
+		// own violation. A row left out of the rows of a scalar subquery gives the subquery the value
+		// of another row, or NULL, as in seed 22797, whose comparison "x.y" + ? overflows for the
+		// largest integer, and which finds nothing without the bug.
+		{"errorSkipsRow", hammerWorkload, "hammer", stmttest.Arithmetic, append(arithmeticFinds(", and in SQLite"), "gives the subquery")},
 		// A copy of a column alone into a column of another class: 222 seeds, 119 of them by the storage
 		// core, which refuses the value of another kind than its column; the rules of the types refuse
 		// the update that succeeded in a transaction, or whose commit the log holds; and a copy into
