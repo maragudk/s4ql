@@ -356,7 +356,7 @@ func isWord(t ast.Token, w string) bool {
 }
 
 // insert: INSERT INTO table, an optional list of columns, VALUES with one row of values, where each
-// value is a literal or a parameter, and an optional RETURNING.
+// value is a literal or a parameter, an optional ON CONFLICT, and an optional RETURNING.
 func (r *recognizer) insert(c *ast.Insert) *Insert {
 	r.accept(c)
 	if r.isNext(c.Insert) && c.Insert.Kind == token.Replace {
@@ -425,7 +425,7 @@ func (r *recognizer) conflict(table Name, us []*ast.Upsert) Conflict {
 	r.take(u.Conflict)
 	if !u.LParen.Present() {
 		// SQLite takes a clause without a target for every constraint of uniqueness of the table, and
-		// only as the last clause; the agreed form names the key.
+		// only as the last clause. A target names the columns that the engine can check.
 		r.reject("ON CONFLICT without a target")
 	}
 	r.take(u.LParen)
@@ -505,8 +505,9 @@ func (r *recognizer) targetColumn(o *ast.OrderingTerm, seen map[string]bool) Nam
 
 // isExcluded reports whether x is excluded.c in the DO UPDATE of an ON CONFLICT clause, where it
 // names the column c of the row that the insert proposes: a column with the name excluded before it,
-// in any case of its letters and in any quotes, and without a schema. A name in quotes that the pass
-// does not support is refused when it is read.
+// in any case of its letters, bare or in double quotes, single quotes, brackets, or backticks, as
+// SQLite reads it, and without a schema. A name in quotes that the pass does not support is refused
+// when it is read, by its quotes.
 func (r *recognizer) isExcluded(x ast.Expr) bool {
 	ref, ok := x.(*ast.ColumnRef)
 	if !ok || !r.excluded || !ref.Table.Present() || ref.Schema.Present() {
@@ -514,7 +515,7 @@ func (r *recognizer) isExcluded(x ast.Expr) bool {
 	}
 	v := ref.Table.Text
 	switch v[0] {
-	case '[', '`':
+	case '[', '`', '\'':
 		v = v[1 : len(v)-1]
 	case '"':
 		v = dequote(ref.Table)
@@ -537,7 +538,7 @@ func (r *recognizer) excludedColumn(x ast.Expr) (Expression, int) {
 // commas, which may name a column more than once. SQLite takes any result column there, also an
 // expression, an alias, and a column with the name of its table; the pass supports what it supports
 // in a select list. A clause that the parser read before a token that the recognizer has not taken,
-// such as the ON of an upsert, stops at that token.
+// such as the FROM of an update, stops at that token.
 func (r *recognizer) returning(ret *ast.Returning) Returning {
 	if ret == nil {
 		return Returning{}
@@ -970,7 +971,7 @@ func (r *recognizer) update(c *ast.Update) *Update {
 // assignments as of the SET of an update, or of the DO UPDATE of an ON CONFLICT clause with the
 // columns of its target, separated by commas: one or more, each a column = a value, where the value
 // is a literal, a parameter, or an expression, and no column is assigned twice or is one of target,
-// by their folds. An update has at most [maxColumns].
+// by their folds. An update has at most [maxColumns], and DO UPDATE has no limit.
 func (r *recognizer) assignments(as []*ast.Assignment, commas []ast.Token, target map[string]bool) []Assignment {
 	var set []Assignment
 	seen := map[string]bool{}
@@ -978,7 +979,7 @@ func (r *recognizer) assignments(as []*ast.Assignment, commas []ast.Token, targe
 		if i > 0 {
 			r.take(commas[i-1])
 		}
-		if i == maxColumns && target == nil && r.at() == a.Bounds().Start {
+		if i == maxColumns && !r.doUpdate && r.at() == a.Bounds().Start {
 			// SQLite gives `too many columns in set list` for an update while it parses, whatever the
 			// database holds. It does not count those of DO UPDATE, whose columns, more than a table
 			// has, it looks for once it has found the table.
@@ -1101,7 +1102,6 @@ var comparisons = map[token.Kind]Operator{
 func (r *recognizer) condition(e ast.Expr) (Condition, int) {
 	switch e := e.(type) {
 	case *ast.Is:
-		// The column and NULL are 1 deep, and IS one deeper.
 		return r.isCondition(e)
 	case *ast.Unary:
 		if e.Op.Kind == token.Not {
@@ -1534,8 +1534,9 @@ func isZero(e Expression) bool {
 	return false
 }
 
-// isCondition: a column IS NULL or IS NOT NULL, and its height as SQLite counts it. In DO UPDATE, the
-// column can be excluded.c, which is then the Expression of the condition.
+// isCondition: a column IS NULL or IS NOT NULL, and its height as SQLite counts it: the column and
+// NULL are 1 deep, excluded.c 2, and IS one deeper. In DO UPDATE, the column can be excluded.c, which
+// is then the Expression of the condition.
 func (r *recognizer) isCondition(e *ast.Is) (Condition, int) {
 	r.accept(e)
 	var c Condition

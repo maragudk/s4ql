@@ -2,12 +2,14 @@ package engine_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
 
 func TestEngine_upsert(t *testing.T) {
@@ -53,11 +55,18 @@ func TestEngine_upsert(t *testing.T) {
 		is.Equal(t, before, i.state())
 	})
 
+	t.Run("should refuse an insert with ON CONFLICT before the length limit of its values", func(t *testing.T) {
+		i := newInstanceLimited(t, engine.Options{}, nil, stmttest.LengthLimit)
+		is.Equal(t, "", i.exec("create table t (k int primary key, s text) strict, without rowid").err)
+		got := i.exec("insert into t values (1, '" + strings.Repeat("a", stmttest.LengthLimit+100) + "') on conflict (k) do nothing")
+		is.Equal(t, "s4ql: not supported: ON CONFLICT clause (at offset 1129)", got.message)
+	})
+
 	t.Run("should not plan an insert with ON CONFLICT, which would write without its clause", func(t *testing.T) {
 		s, err := stmt.Check("insert into t values (1) on conflict (k) do nothing")
 		is.NotError(t, err)
 		defer func() {
-			is.Equal(t, "engine: an insert with ON CONFLICT, which upsertRefusal refuses", fmt.Sprint(recover()))
+			is.Equal(t, "engine: an insert with ON CONFLICT", fmt.Sprint(recover()))
 		}()
 		engine.NewPlan(s)
 	})

@@ -1155,19 +1155,20 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	if kind, failure := p.checkLength(c, got); kind != "" {
-		if failure == "" {
-			p.y.excused(kind)
-		}
-		return failure
-	}
-	// An upsert is refused before the database is read, whatever it holds.
+	// An upsert is refused before the database is read, whatever it holds, also
+	// one with a value longer than the length limit.
 	if refusal := stmttest.UpsertRefusal(s); refusal != "" && len(c.Args) == s.Parameters() {
 		if got.err != "not supported" || got.message != refusal {
 			return fmt.Sprintf("%q: the engine gives %v, and the rule %q", src, got, refusal)
 		}
 		p.y.excused(excusedUpsert)
 		return ""
+	}
+	if kind, failure := p.checkLength(c, got); kind != "" {
+		if failure == "" {
+			p.y.excused(kind)
+		}
+		return failure
 	}
 	// A statement with arithmetic has rules of its own for its types and its evaluation errors, as
 	// [pair.checkArithmetic] says.

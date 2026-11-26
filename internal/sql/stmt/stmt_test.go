@@ -493,8 +493,9 @@ func canonicalWhere(where []stmt.Condition, subqueries []stmt.Select) string {
 	return whereText(where, subqueries, canonicalExpression)
 }
 
-// whereText of the conditions where, whose subqueries are subqueries, as [canonicalWhere] gives it,
-// with each expression as expression writes it.
+// whereText of the conditions where, whose subqueries are subqueries: " where " and the conditions
+// joined by " and ", each with its two sides in the order of the text, a subquery as its canonical
+// select in parentheses, and each expression as expression writes it, or "" for no conditions.
 func whereText(where []stmt.Condition, subqueries []stmt.Select, expression func(stmt.Expression) string) string {
 	term := func(v stmt.Term) string {
 		if v.Expression.Present() {
@@ -1149,8 +1150,10 @@ func upsertText(s *stmt.Insert, expression func(stmt.Expression) string) string 
 // [expressionSamples], and another row. The three give the same rows of RETURNING, the same error,
 // the same count of changes, and the same rows left in the table. Without a list of columns, the
 // table has a column for each value, and the check is made only if the statement names no more
-// columns than that. With a target of more than one column, which no index of such a table has,
-// SQLite gives `ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint`.
+// columns than that, and in no case for more than 2,000 names. With a list of another number of
+// columns than values, SQLite gives `N values for M columns`, and with a target of more than one
+// column, which no index of such a table has, `ON CONFLICT clause does not match any PRIMARY KEY or
+// UNIQUE constraint`.
 func checkUpsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Insert) {
 	t.Helper()
 	for _, v := range s.Values {
@@ -1201,6 +1204,18 @@ func checkUpsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 	for _, n := range named {
 		names = append(names, swapCase(n.Value))
 	}
+	if len(names) > 2000 {
+		// No table has more columns, SQLITE_MAX_COLUMN.
+		return
+	}
+	if s.Columns != nil && len(s.Columns) != len(s.Values) {
+		// SQLite counts the values against the list once it has found the table, before the target.
+		d := open(t)
+		d.must(createColumns(swapCase(s.Table.Value), intColumns(names, 0)))
+		_, _, err := d.run(src, args)
+		sqliteError(t, src, err, 1, fmt.Sprintf("%v values for %v columns", len(s.Values), len(s.Columns)))
+		return
+	}
 	if s.Columns == nil {
 		if len(names) > len(s.Values) {
 			return
@@ -1220,10 +1235,12 @@ func checkUpsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 	table := swapCase(s.Table.Value)
 	create := fmt.Sprintf("create table %v (%v) strict, without rowid", quote(table), strings.Join(defs, ", "))
 	if len(s.Conflict.Target) > 1 {
-		d := open(t)
-		d.must(create)
-		_, _, err := d.run(src, args)
-		sqliteError(t, src, err, 1, "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint")
+		for _, sql := range []string{src, canonical(s), upsertText(s, parenthesized)} {
+			d := open(t)
+			d.must(create)
+			_, _, err := d.run(sql, args)
+			sqliteError(t, sql, err, 1, "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint")
+		}
 		return
 	}
 
@@ -1238,7 +1255,7 @@ func checkUpsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 		}
 	}
 	var keyValue stmt.Value
-	if key >= 0 && (s.Columns == nil || len(s.Columns) == len(s.Values)) {
+	if key >= 0 {
 		keyValue = s.Values[key].Value
 		if p := s.Values[key].Parameter; p > 0 {
 			if _, ok := args[p-1].(stmt.Null); ok {
@@ -3043,6 +3060,9 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 	if sp.Start < *end || sp.End > b.End || sp.Start >= sp.End {
 		t.Fatalf("%q: the expression %v at %v, after %v", src, e.Kind, sp, *end)
 	}
+	if e.Kind != stmt.ExprExcluded && e.Table != (stmt.Name{}) {
+		t.Fatalf("%q: the expression %v with the table %+v", src, e.Kind, e.Table)
+	}
 	var names []stmt.Name
 	switch e.Kind {
 	case stmt.ExprValue:
@@ -3061,7 +3081,7 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 			t.Fatalf("%q: the parameter %+v, after %v", src, e, *parameters-1)
 		}
 	case stmt.ExprColumn:
-		if e.Column.Offset != sp.Start || src[sp.Start:sp.End] != e.Column.Raw || e.Operands != nil || e.Value != nil || e.Parameter != 0 {
+		if e.Column.Offset != sp.Start || src[sp.Start:sp.End] != e.Column.Raw || e.Operands != nil || e.Value != nil || e.Parameter != 0 || e.Table != (stmt.Name{}) {
 			t.Fatalf("%q: the column %+v", src, e)
 		}
 		names = append(names, e.Column)

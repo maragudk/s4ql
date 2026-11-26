@@ -2270,6 +2270,8 @@ var checkCases = []checkCase{
 				cond(name("v", "v", 80), stmt.OpIsNotNull, stmt.Term{}))}},
 	{name: "a target of two columns, which no table of s4ql has a key of", src: "insert into t values (1, 2) on conflict (k, v) do nothing", want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 57}, Table: name("t", "t", 12),
 		Values: []stmt.Term{lit(stmt.Integer(1), 22, 23), lit(stmt.Integer(2), 25, 26)}, Conflict: nothing(28, 57, name("k", "k", 41), name("v", "v", 44))}},
+	{name: "a target of two columns and fewer values than the list", src: "insert into t (k, j) values (1) on conflict (k, j) do nothing", want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 61}, Table: name("t", "t", 12),
+		Columns: []stmt.Name{name("k", "k", 15), name("j", "j", 18)}, Values: []stmt.Term{lit(stmt.Integer(1), 29, 30)}, Conflict: nothing(32, 61, name("k", "k", 45), name("j", "j", 48))}},
 	{name: "an upsert that does nothing, with returning", src: "insert into t values (1, 2) on conflict (k) do nothing returning k", want: &stmt.Insert{Span: stmt.Span{Start: 0, End: 66}, Table: name("t", "t", 12),
 		Values: []stmt.Term{lit(stmt.Integer(1), 22, 23), lit(stmt.Integer(2), 25, 26)}, Conflict: nothing(28, 54, name("k", "k", 41)), Returning: ret(55, 66, name("k", "k", 65))}},
 	{name: "a column named excluded", src: "insert into t (k, excluded) values (1, 2) on conflict (k) do update set excluded = excluded.excluded + excluded",
@@ -2311,6 +2313,7 @@ var checkCases = []checkCase{
 	{name: "excluded in an upsert into a table named excluded", src: "insert into excluded values (1) on conflict (k) do update set v = excluded.v", err: "s4ql: not supported: column with the name of a table (at offset 66)"},
 	{name: "excluded tested for NULL in an upsert into a table named Excluded", src: `insert into "Excluded" values (1) on conflict (k) do update set v = 1 where excluded.v is null`, err: "s4ql: not supported: column with the name of a table (at offset 76)"},
 	{name: "excluded with a schema", src: "insert into t values (1) on conflict (k) do update set v = main.excluded.v", err: "s4ql: not supported: column with the name of a table (at offset 59)"},
+	{name: "excluded in single quotes", src: "insert into t values (1) on conflict (k) do update set v = 'excluded'.v", err: "s4ql: not supported: single-quoted name (at offset 59)"},
 	{name: "excluded in brackets", src: "insert into t values (1) on conflict (k) do update set v = [excluded].v", err: "s4ql: not supported: name in brackets (at offset 59)"},
 	{name: "excluded in backticks", src: "insert into t values (1) on conflict (k) do update set v = `excluded`.v", err: "s4ql: not supported: name in backticks (at offset 59)"},
 	{name: "an empty name of a column of excluded", src: `insert into t values (1) on conflict (k) do update set v = excluded.""`, err: "s4ql: not supported: empty name (at offset 68)"},
@@ -3360,6 +3363,8 @@ func TestCheck(t *testing.T) {
 		d := open(t)
 		d.must("create table t (k int primary key) strict, without rowid")
 		sqliteError(t, "the upsert of 2,001 assignments", d.exec(src), 1, "no such column: c0")
+		o, _ := verify(t, strings.Replace(src, "insert into t values", "insert into t (k) values", 1))
+		is.Equal(t, supported, o)
 	})
 
 	t.Run("should take conditions of an update and a delete as deep as SQLite allows, and not one deeper", func(t *testing.T) {

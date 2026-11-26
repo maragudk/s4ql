@@ -627,9 +627,10 @@ type OrderColumn struct {
 	Descending bool
 }
 
-// Condition of a WHERE clause of a select, an update, or a delete: a column, or an
-// expression with a column, compared with a value, which may be a scalar subquery or an
-// expression, or a column tested for NULL.
+// Condition of a WHERE clause of a select, an update, a delete, or the DO UPDATE of a [Conflict]: a
+// column, or an expression with a column, compared with a value, which may be a scalar subquery or
+// an expression, or a column tested for NULL. In DO UPDATE, a column of the row that the insert
+// proposes, [ExprExcluded], is a column too, which the condition tests as an Expression.
 //
 // A condition always reads as Column, Operator, Value, whichever side of the operator the text
 // writes the column on: `5 < a` is the condition `a > 5`, with ValueFirst set. SQLite gives the two
@@ -647,8 +648,9 @@ type Condition struct {
 	// has it is not decided here.
 	Column Name
 	// Expression that the condition tests in place of Column: an operator or a call with a column, as
-	// in `a + 1 = 5` and `lower(a) = 'x'`, or the zero Expression if the condition tests Column; see
-	// [Expression.Present].
+	// in `a + 1 = 5` and `lower(a) = 'x'`, or in DO UPDATE excluded.c alone, as in `excluded.a = 5`
+	// and `excluded.a is null`, the one test for NULL with an Expression; or the zero Expression if
+	// the condition tests Column; see [Expression.Present].
 	Expression Expression
 	// Operator of the condition, as it compares Column with Value. When ValueFirst is set, the text
 	// writes [Operator.Swapped] of it.
