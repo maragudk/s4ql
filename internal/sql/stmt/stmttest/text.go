@@ -60,15 +60,19 @@ var textPieces = []string{"", "a", "B", "m_", "x'y", "É", "à", "ÀBc"}
 
 // textHooks wrap the hooks of the WHERE of a select, of an update, and of a delete, so that their
 // conditions and assignments, and the WHERE of their subqueries, have text, as [Sequence.textWhere]
-// and [Sequence.textSet] draw it, and one select in 3*[Profile.TextFunctions] the WHERE of
-// [Sequence.textKeyWhere]. The assignments are drawn first, then the conditions of the statement,
+// and [Sequence.textSet] draw it, one select in 3*[Profile.TextFunctions] the WHERE of
+// [Sequence.textKeyWhere], and one in 2*[Profile.TextFunctions] of the others that of
+// [Sequence.textEdgeWhere]. The assignments are drawn first, then the conditions of the statement,
 // and then those of each subquery in the order of the text.
 func (q *Sequence) textHooks() {
 	where, update, del := q.g.Where, q.g.Update, q.g.Delete
 	q.g.Where = func(table stmt.Name) []stmt.Condition {
 		cs := where(table)
-		if q.rTextFunctions.IntN(3*q.profile.TextFunctions) == 0 {
+		switch r := q.rTextFunctions; {
+		case r.IntN(3*q.profile.TextFunctions) == 0:
 			cs = q.textKeyWhere(table, cs)
+		case r.IntN(2*q.profile.TextFunctions) == 0:
+			cs = q.textEdgeWhere(table, cs)
 		}
 		cs = q.textWhere(table, cs)
 		q.textInner()
@@ -98,8 +102,8 @@ func (q *Sequence) textInner() {
 // textKeyWhere of a select of table, in place of the conditions cs: the key, where it is of type
 // TEXT, equal to a text without a column whose value is one that an insert gave the key, as
 // [Sequence.textConstantOf] draws it, which gets the row of the key, or one time in three between
-// two such texts, which reads a range of the key; or cs where the key is of another type or the
-// sequence keeps no value of it.
+// two such texts, which reads a range of the key, or one time in six equal to a text that is NULL,
+// which reads no row; or cs where the key is of another type or the sequence keeps no value of it.
 func (q *Sequence) textKeyWhere(table stmt.Name, cs []stmt.Condition) []stmt.Condition {
 	r := q.rTextFunctions
 	shape := q.shapeOf(table)
@@ -111,10 +115,35 @@ func (q *Sequence) textKeyWhere(table stmt.Name, cs []stmt.Condition) []stmt.Con
 	at := func(op stmt.Operator) stmt.Condition {
 		return stmt.Condition{Column: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Operator: op, Value: stmt.Term{Expression: q.textConstantOf(r, stored[r.IntN(len(stored))])}}
 	}
+	if r.IntN(6) == 0 {
+		// NULL, which makes the access read no row.
+		return []stmt.Condition{{Column: stmt.Name{Raw: q.spell(r, key.Name.Value)}, Operator: stmt.OpEqual, Value: stmt.Term{Expression: q.textConstantOf(r, stmt.Null{})}}}
+	}
 	if r.IntN(3) == 0 {
 		return []stmt.Condition{at([]stmt.Operator{stmt.OpGreater, stmt.OpGreaterOrEqual}[r.IntN(2)]), at([]stmt.Operator{stmt.OpLess, stmt.OpLessOrEqual}[r.IntN(2)])}
 	}
 	return []stmt.Condition{at(stmt.OpEqual)}
+}
+
+// textEdgeWhere of a select of table, in place of the conditions cs: one comparison of a TEXT column
+// of the shape, of the column with a text without a column at the edge of the length limit, as
+// [Sequence.textEdgeConstant] draws it, or one time in two of a text of the column at the edge for a
+// value that an insert gave it, as [Sequence.textEdge] draws it, with a piece of text, so that the
+// outcome of the select is that of the edge; or cs where the shape has no TEXT column.
+func (q *Sequence) textEdgeWhere(table stmt.Name, cs []stmt.Condition) []stmt.Condition {
+	r := q.rTextFunctions
+	texts := q.columnsOf(q.shapeOf(table), classText)
+	if len(texts) == 0 {
+		return cs
+	}
+	column := texts[r.IntN(len(texts))]
+	raw := q.spell(r, column.Name.Value)
+	op := comparisons[r.IntN(len(comparisons))]
+	if r.IntN(2) == 0 {
+		return []stmt.Condition{{Column: stmt.Name{Raw: raw}, Operator: op, Value: stmt.Term{Expression: q.textEdgeConstant(r)}}}
+	}
+	e := q.textEdge(r, columnNode(raw), q.textsOf(table.Fold(), column.Name.Value))
+	return []stmt.Condition{{Expression: e, Operator: op, Value: stmt.Term{Value: stmt.Text(textPieces[r.IntN(len(textPieces))])}}}
 }
 
 // textsOf the column of the fold of the table of the fold: the texts that the sequence keeps for it,
@@ -337,9 +366,10 @@ func (q *Sequence) otherText(r Rand, shape []stmt.Column, raw string) string {
 }
 
 // textFault of the TEXT column of the raw text raw of the shape, drawn from r: a text that s4ql
-// refuses for the type of an operand, with the column: an argument that is an integer, a real, or a
-// blob in a concatenation or in lower, or a number in hex, beside the column; or a column of the
-// shape of a number or a blob in a concatenation, in lower, or in hex, where the shape has one.
+// refuses for the type of an operand, with the column: an argument that is a number or a blob in a
+// concatenation or in lower, or a number in hex, each as often, beside the column; or, one time in
+// two where the shape has one, a column of the shape of a number or a blob in a concatenation, in
+// lower, or in hex.
 func (q *Sequence) textFault(r Rand, shape []stmt.Column, raw string) stmt.Expression {
 	var others []stmt.Column
 	for _, c := range shape {
@@ -357,14 +387,10 @@ func (q *Sequence) textFault(r Rand, shape []stmt.Column, raw string) stmt.Expre
 		}
 		return hexNode(x)
 	}
-	wrong := valueNode([]stmt.Value{stmt.Integer(1), stmt.Real(1.5), stmt.Blob{0x61}}[r.IntN(3)])
-	switch r.IntN(3) {
-	case 0:
-		return concatNode(columnNode(raw), wrong)
-	case 1:
-		return concatNode(lowerNode(wrong), columnNode(raw))
-	}
-	return concatNode(columnNode(raw), hexNode(valueNode([]stmt.Value{stmt.Integer(-1), stmt.Real(0.5)}[r.IntN(2)])))
+	number := valueNode([]stmt.Value{stmt.Integer(1), stmt.Real(1.5)}[r.IntN(2)])
+	blob := valueNode(stmt.Blob{0x61})
+	return []stmt.Expression{concatNode(columnNode(raw), number), concatNode(blob, columnNode(raw)), concatNode(lowerNode(number), columnNode(raw)),
+		concatNode(lowerNode(blob), columnNode(raw)), concatNode(columnNode(raw), hexNode(number))}[r.IntN(5)]
 }
 
 // textPlainOf the value v of a comparison of a TEXT column, for a side that it tests in a text: v, a
