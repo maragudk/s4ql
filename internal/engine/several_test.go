@@ -13,8 +13,10 @@ import (
 
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
+	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 )
 
 // execAll src with args through [engine.Conn.ExecAll] on the connection of i, and keep SQLite's count
@@ -284,4 +286,96 @@ func TestConn_ExecAll(t *testing.T) {
 		is.Equal(t, "sqlite_error", e[engine.AttrOutcome])
 		is.Equal(t, " selec", e[engine.AttrSQL])
 	})
+
+	t.Run("should give what Exec gives for each text of one statement of the generated workload: its result, its error with its offset, and the state after it, also in transactions", func(t *testing.T) {
+		compared := 0
+		for _, p := range stmttest.Profiles {
+			for k := range uint64(6) {
+				seed := p.Seed(k)
+				q, err := stmttest.NewSequence(seed)
+				is.NotError(t, err)
+				// Both draw the directions of their scans from the same seed, so that a statement whose
+				// outcome depends on the rows that a scan meets first meets them alike.
+				one, all := sameDirections(t, seed), sameDirections(t, seed)
+				r := q.Stream("transactions")
+				inTx := false
+				for n := range 120 {
+					c := q.Next()
+					if parts, failed := stmt.Split(c.Src); c.Statements > 0 || len(parts) > 1 || len(parts) == 1 && failed != nil {
+						// A text of several statements, which Exec refuses for its second statement.
+						continue
+					}
+					switch {
+					case !inTx && r.IntN(8) == 0:
+						begin := (*engine.Conn).Begin
+						if r.IntN(3) == 0 {
+							begin = (*engine.Conn).BeginReadOnly
+						}
+						is.NotError(t, begin(one.c, t.Context()))
+						is.NotError(t, begin(all.c, t.Context()))
+						inTx = true
+					case inTx && r.IntN(5) == 0:
+						end := (*engine.Conn).Commit
+						if r.IntN(3) == 0 {
+							end = (*engine.Conn).Rollback
+						}
+						is.Equal(t, fmt.Sprint(end(one.c, t.Context())), fmt.Sprint(end(all.c, t.Context())))
+						inTx = false
+					}
+					args := values(c.Args)
+					wantRes, wantErr := one.c.Exec(t.Context(), c.Src, args...)
+					gotRes, gotErr := all.c.ExecAll(t.Context(), c.Src, args...)
+					what := fmt.Sprintf("seed %v, call %v: %.500q", seed, n, c.Src)
+					is.Equal(t, fmt.Sprint(wantRes), fmt.Sprint(gotRes), what)
+					is.Equal(t, errorText(wantErr), errorText(gotErr), what)
+					if n%10 == 0 || wantErr == nil {
+						is.Equal(t, one.state(), all.state(), what)
+					}
+					compared++
+				}
+				if inTx {
+					is.NotError(t, one.c.Commit(t.Context()))
+					is.NotError(t, all.c.Commit(t.Context()))
+				}
+				is.Equal(t, one.state(), all.state(), fmt.Sprint("seed ", seed))
+				one.closeMemory()
+				all.closeMemory()
+			}
+		}
+		is.True(t, compared > 4000, fmt.Sprint(compared, " texts compared"))
+	})
+}
+
+// sameDirections is an instance of the engine on a database in memory, whose engine draws the
+// directions of its scans from seed.
+func sameDirections(t *testing.T, seed uint64) *instance {
+	t.Helper()
+	i := &instance{t: t, seed: seed}
+	i.e, i.memory = engine.NewMemory(sim.NewFree(sim.Buggify{}), i.directed(engine.Options{}))
+	i.c = i.e.Conn()
+	return i
+}
+
+// closeMemory closes the connection of an instance of [sameDirections], after which nothing holds it.
+func (i *instance) closeMemory() {
+	i.t.Helper()
+	is.NotError(i.t, i.c.Close(context.WithoutCancel(i.t.Context())))
+}
+
+// errorText of err for a comparison of two errors: its type, its message, the offset of SQLite's
+// error, and the sentinels of the engine that it matches, or "nil".
+func errorText(err error) string {
+	if err == nil {
+		return "nil"
+	}
+	text := fmt.Sprintf("%T %v", err, err)
+	if se, ok := errors.AsType[*sqlerr.Error](err); ok {
+		text += fmt.Sprint(" at offset ", se.Offset)
+	}
+	for _, sentinel := range []error{engine.ErrArguments, engine.ErrNoStatement, stmt.ErrNotSupported, engine.ErrTxOpen, engine.ErrNoTx, engine.ErrRowsOpen} {
+		if errors.Is(err, sentinel) {
+			text += fmt.Sprint(", matches ", sentinel)
+		}
+	}
+	return text
 }

@@ -101,30 +101,32 @@ func trimmedStart(src string, at int) error {
 }
 
 // trimmedEnd is the check of the end of src, which Go's TrimSpace removes the spaces of once a tail
-// follows the first statement, whose tail is at the offset from: "not supported" if the last token
-// of the text after from that is not one of SQLite's spaces holds some of those spaces, and is not a
-// comment that stays one without them; otherwise nil.
+// follows the first statement, whose tail is at the offset from: "not supported" at the first token
+// of the text after from that is not one of SQLite's spaces and holds some of those spaces, and is
+// not a comment that stays one without them, or at the start of the spaces if the token starts
+// before them; otherwise nil.
 func trimmedEnd(src string, from int) error {
 	end := len(strings.TrimRightFunc(src, unicode.IsSpace))
 	if end == len(src) {
 		return nil
 	}
-	last, lastEnd, lastKind := -1, 0, token.Illegal
 	for pos := from; pos < len(src); {
 		kind, n := token.Next(src[pos:])
-		if kind != token.Space {
-			last, lastEnd, lastKind = pos, pos+n, kind
+		if kind != token.Space && pos+n > end && !staysComment(src, pos, end, kind) {
+			return &NotSupportedError{What: "space at the end of the text that SQLite reads as part of a token", Offset: max(pos, end)}
 		}
 		pos += n
 	}
-	if last < 0 || lastEnd <= end {
-		return nil
+	return nil
+}
+
+// staysComment reports whether the token of the kind at the offset pos of src, which runs past the
+// offset end, is a comment that starts before end and is a comment up to end too: a line comment, or
+// a block comment without its end, which runs to the end of its line or of the text.
+func staysComment(src string, pos, end int, kind token.Kind) bool {
+	if kind != token.Comment || pos >= end {
+		return false
 	}
-	if lastKind == token.Comment && last < end {
-		// A line comment, and a block comment without its end, which runs to the end of the text.
-		if kind, n := token.Next(src[last:end]); kind == token.Comment && n == end-last {
-			return nil
-		}
-	}
-	return &NotSupportedError{What: "space at the end of the text that SQLite reads as part of a token", Offset: max(last, end)}
+	k, n := token.Next(src[pos:end])
+	return k == token.Comment && n == end-pos
 }

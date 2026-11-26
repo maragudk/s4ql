@@ -13,7 +13,9 @@
 # select of names ok", "reached: WHERE that gives some rows of a table", "reached: LIMIT that
 # cuts", "reached: LIMIT by an argument ok", the evaluation errors justified of a division by zero
 # and of a real result that is not finite, and the excuse of an evaluation error, and in nothing
-# else.
+# else. A text of several statements, whose statements after one that fails do not run, has no
+# LIMIT and no subquery where it may have arithmetic, so that its counts, the excuses of its result
+# among them, do not vary so.
 
 # Each kind of statement by its outcome, and each call, with arguments and without.
 1	createtable ok
@@ -241,9 +243,9 @@
 5	reached: insert with NULL in a column that does not take it: NOT NULL constraint failed
 # An insert of NULL beside a value of another type in a column that does not take NULL left this
 # file with the generated checks of arithmetic of 2026-11-25, when the mixed profile reached it once;
-# since the fixes after the review of the workload of arithmetic that day it reaches it three times,
-# of 7 in all: required at a third.
-2	reached: insert of NULL beside a value of another type NOT NULL constraint failed
+# since the fixes after the review of the workload of arithmetic that day it reached it three times,
+# of 7 in all, and was required at a third. Since the texts of several statements of 2026-11-26 the
+# mixed profile reaches it twice, and no profile three times, so TestGenerated requires it once.
 3	reached: insert of NULL beside a value of another type a value of another type
 6	reached: select * with NULL ok
 4	reached: select of names with NULL ok
@@ -563,3 +565,76 @@
 # of their totals that day, 14 and 7.
 4	reached: table read back after an evaluation error of an update or a delete, outside a transaction
 2	reached: table read back after an evaluation error of an update or a delete, in a transaction
+# The generated workload of several statements in one Exec of 2026-11-26: a third of the total that
+# day of each form that pair.several and pair.reach count, of the profile several and of mixed.
+50	reached: several statements: ok
+323	reached: several statements: failed
+21	reached: several statements: 2 statements ok
+14	reached: several statements: 3 statements ok
+9	reached: several statements: 4 statements ok
+4	reached: several statements: 5 statements ok
+82	reached: several statements: 2 statements failed
+62	reached: several statements: 5 statements failed
+32	reached: several statements: with arguments ok
+228	reached: several statements: with arguments failed
+39	reached: several statements: createtable that ran
+46	reached: several statements: insert that ran
+49	reached: several statements: insert with a parameter that ran
+56	reached: several statements: select that ran
+16	reached: several statements: select with a parameter that ran
+17	reached: several statements: update that ran
+25	reached: several statements: update with a parameter that ran
+20	reached: several statements: delete that ran
+14	reached: several statements: delete with a parameter that ran
+14	reached: several statements: createindex that ran
+7	reached: several statements: dropindex that ran
+15	reached: several statements: droptable that ran
+14	reached: several statements: last statement with RETURNING that ran
+24	reached: several statements: more arguments than parameters
+8	reached: several statements: fewer arguments than parameters
+26	reached: several statements: failed after a statement ran: UNIQUE constraint failed
+4	reached: several statements: failed after a statement ran: NOT NULL constraint failed
+14	reached: several statements: failed after a statement ran: already exists
+2	reached: several statements: failed after a statement ran: evaluation error
+4	reached: several statements: failed after a statement ran: syntax error
+13	reached: several statements: failed after a statement ran: no such table
+26	reached: several statements: failed after a statement ran: not supported
+5	reached: several statements: failed after a statement ran: attempt to write a readonly database
+17	reached: several statements: failed before the last statement: UNIQUE constraint failed
+1	reached: several statements: failed before the last statement: evaluation error
+9	reached: several statements: failed before the last statement: no such table
+5	reached: several statements: failed before the last statement: not supported
+281	reached: several statements: empty statement or comment before the first statement
+338	reached: several statements: empty statement or comment between statements
+38	reached: several statements: empty statement or comment after the last statement ok
+250	reached: several statements: empty statement or comment after the last statement failed
+10	write transaction: reached: several statements: ok
+75	write transaction: reached: several statements: failed
+57	read-only transaction: reached: several statements: failed
+6	write transaction: reached: several statements: failed after a statement ran: UNIQUE constraint failed
+7	write transaction: reached: several statements: failed after a statement ran: not supported
+7	write transaction: reached: several statements: empty statement or comment after the last statement ok
+19	reached: several statements through query not supported
+11	reached: several statements through query row not supported
+31	reached: several statements through prepare, exec not supported
+16	reached: several statements through prepare, exec several times not supported
+7	reached: several statements through prepare, query not supported
+# The forms of a text of several statements that a split must read as SQLite does, by the position
+# of the statement, of 2026-11-26, at a third of their totals: a CREATE TRIGGER, whose body holds
+# semicolons; a name in double quotes and a string that hold a semicolon; statements that depend on
+# each other; and comments that hold a semicolon, before, between, and after the statements.
+8	reached: several statements: create trigger first
+13	reached: several statements: create trigger in the middle
+5	reached: several statements: create trigger last
+27	reached: several statements: name in double quotes with a semicolon first
+66	reached: several statements: name in double quotes with a semicolon in the middle
+45	reached: several statements: name in double quotes with a semicolon last
+8	reached: several statements: string with a semicolon first
+43	reached: several statements: string with a semicolon in the middle
+32	reached: several statements: string with a semicolon last
+33	reached: several statements: statements that depend on each other first
+19	reached: several statements: statements that depend on each other in the middle
+19	reached: several statements: statements that depend on each other last
+25	reached: several statements: comment with a semicolon before the first statement
+132	reached: several statements: comment with a semicolon between statements
+46	reached: several statements: comment with a semicolon after the last statement
