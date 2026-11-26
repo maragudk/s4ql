@@ -2329,7 +2329,6 @@ func FuzzConn_Prepare(f *testing.F) {
 	})
 }
 
-// memory database for a test, closed when the test ends.
 // failedContext ends at the first call of its Err after an operation of its VFS has failed.
 type failedContext struct {
 	context.Context
@@ -2350,6 +2349,7 @@ func (c *failedContext) Err() error {
 	return context.Canceled
 }
 
+// memory database for a test, closed when the test ends.
 func memory(t *testing.T) *sqlite.Conn {
 	t.Helper()
 	return open(t, ":memory:")

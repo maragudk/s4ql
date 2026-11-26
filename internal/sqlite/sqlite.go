@@ -677,7 +677,10 @@ const progressPeriod = 10_000
 // or the error that it failed with. SQLite looks at ctx once more on its way out of a step, if a
 // look is due then, and StepContext stops the step there only while the statement still runs, so an
 // I/O error that failed the step, and that rolled back the transaction of the connection, is given
-// as such. A step that has a row is stopped there, and fails with the error of ctx.
+// as such. A step that has a row is stopped there, and fails with the error of ctx. So does a COMMIT
+// that meets SQLITE_BUSY, whose statement still runs when it returns, so that it gives the error of
+// ctx in place of SQLITE_BUSY, with its transaction still open: StepContext is meant for statements
+// that read, and a COMMIT goes through [Stmt.Step].
 func (s *Stmt) StepContext(ctx context.Context) (bool, error) {
 	if s.stmt == nil {
 		return false, errorFromConn(nil, C.SQLITE_MISUSE)
