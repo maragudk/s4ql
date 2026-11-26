@@ -101,3 +101,49 @@ The aimed crash in `run.crash`, which only the profile `several` takes, and the 
 ### Future work
 
 Mutation testing of the loop, as the brief says.
+
+## Step 3: the runs at the nightly's sizes
+
+**Author:** several-statements-bugs
+
+### Prompt Context
+
+**Verbatim prompt:** "5. **Night sizes before you hand in**, all passing, one at a time: … `go test -count=1 -p 3 -run '^TestDifferential$' -timeout 40m ./internal/engine/ -sequences 400` … `S4QL_ENGINE_SIM_SEEDS=100 go test -count=1 -p 3 -run '^TestSimulation$' -timeout 40m ./internal/engine/` … `S4QL_ENGINE_SIM_SEEDS=1000 go test -count=1 -p 3 -run '^TestSimulation_plantedBugs$' -timeout 300m -v ./internal/engine/` (all bugs; it took 56 minutes for 40 bugs) and, from the directory `internal/sqlite/crosscheck`, `go test -count=1 -p 3 -timeout 40m ./drivercheck/`."
+**Interpretation:** run the four, one after another, with `TMPDIR` and `GOTMPDIR` on `/Volumes/990/s4ql/several-statements-bugs/tmp`.
+**Inferred intent:** tonight's nightly has run here first.
+
+### What I did
+
+- `TestDifferential -sequences 400`: ok in 329 s (before the fixes of the self-review, which touch neither its code nor the engine without a planted bug).
+- `TestSimulation` with 100 seeds: ok in 154 s, before and after the fixes of the self-review.
+- `TestSimulation_plantedBugs` with 1,000 seeds, all 48 bugs: ok in 4,353 s. Each new bug found by exactly the counts of the classification.
+- The driver check: ok in 23 s.
+- The whole engine package without `-short`: ok in 144 s. The new tests under `-race -count=2` (`TestSimulation`, `TestSimulation_plantedBugs`, `TestConn_ExecAll`): ok in 134 s; the new planted bugs `-count=20`: ok in 45 s. `make lint`: 0 issues. `make test`: ok.
+
+### Why
+
+The rule of `AGENTS.md`: a change to the generated checks is run at the nightly's sizes before it lands.
+
+### What worked
+
+Running the planted bugs with all of them from one command after the per-bug classification: the counts came out the same, since a run is a function of its seed.
+
+### What didn't work
+
+`go test -race -count=20 -run '^(TestSimulation|TestSimulation_plantedBugs)$' ./internal/engine/` failed at 600.383 s on the default timeout of ten minutes, with no data race; `-count=2` under `-race` takes 134 s, so twenty would take about 22 minutes, which I left out for the nightly-sized runs.
+
+### What I learned
+
+The 48 bugs at 1,000 seeds take 73 minutes here, 17 more than the 40 bugs did; the eight new ones take about two minutes each.
+
+### What was tricky
+
+Nothing beyond the waits.
+
+### What warrants review
+
+Nothing new.
+
+### Future work
+
+None from this step.
