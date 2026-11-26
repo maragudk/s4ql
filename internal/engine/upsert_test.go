@@ -686,6 +686,7 @@ func TestEngine_upsert(t *testing.T) {
 				"set s = lower(zz) || lower(yy)",
 				"set s = lower(lower(zz) || yy)",
 				"set s = lower(zz) where yy = 1",
+				"set s = hex(zz) || excluded.s || yy",
 				// WHERE, one walk, after SET.
 				"set s = 'x' where hex(excluded.zz) = yy",
 				"set s = 'x' where hex(zz) = excluded.s",
@@ -699,6 +700,8 @@ func TestEngine_upsert(t *testing.T) {
 				"set s = 'x' where s = lower(zz) and lower(yy) = s",
 				"set s = 'x' where lower(zz) = lower(yy)",
 				"set s = 'x' where lower(zz) = 'a' || s",
+				"set s = 'x' where hex(zz) || excluded.s = yy",
+				"set s = 'x' where lower(zz) = s and s is null",
 			} {
 				steps = append(steps, upsertStep{fmt.Sprint("insert into t (k, n) values (", key, ", 1) on conflict (k) do update ", clause), nil})
 			}
@@ -707,8 +710,8 @@ func TestEngine_upsert(t *testing.T) {
 		var want []string
 		for range 2 {
 			for _, name := range []string{
-				"yy", "yy", "excluded.yy", "excluded.zz", "zz", "EXCLUDED.zz", "yy", "yy", "zz",
-				"yy", "zz", "zz", "excluded.yy", "zz", "excluded.xx", "zz", "zz", "excluded.zz", "zz", "yy", "zz",
+				"yy", "yy", "excluded.yy", "excluded.zz", "zz", "EXCLUDED.zz", "yy", "yy", "zz", "yy",
+				"yy", "zz", "zz", "excluded.yy", "zz", "excluded.xx", "zz", "zz", "excluded.zz", "zz", "yy", "zz", "yy", "zz",
 			} {
 				want = append(want, "1/1: no such column: "+name+"; 1")
 			}
@@ -719,7 +722,7 @@ func TestEngine_upsert(t *testing.T) {
 	t.Run("should fail as SQLite does for a text longer than the length limit in DO UPDATE, at the start of the statement or on the row of the conflict", func(t *testing.T) {
 		const limit = 1000
 		x, y, long := strings.Repeat("x", 600), strings.Repeat("y", 600), strings.Repeat("z", limit+1)
-		const tooBig, none, one = "18/18: string or blob too big; 0", "; 0", "; 1"
+		const failed, none, one = "18/18: string or blob too big; 0", "; 0", "; 1"
 		// Each clause runs with a conflict, on the key '1', and without one, on the key '9', and then a
 		// delete of the key '9': conflict and inserted are the answers of the upsert. An argument that is
 		// too long fails when SQLite binds it, which leaves the count of changes of the delete before.
@@ -731,26 +734,29 @@ func TestEngine_upsert(t *testing.T) {
 			// SQLite computes these at the start of the statement, also where the table has no row of the
 			// key: a concatenation without a column and without a call inside text with a column, and a
 			// side of a comparison without a column and without a call.
-			{"set a = ? || ? || a", []any{x, y}, tooBig, tooBig},
-			{"set a = a || (? || ?)", []any{x, y}, tooBig, tooBig},
-			{"set a = excluded.a || (? || ?)", []any{x, y}, tooBig, tooBig},
-			{"set a = 'q' where a = ? || ?", []any{x, y}, tooBig, tooBig},
-			{"set a = 'q' where ? || ? || a = 'x'", []any{x, y}, tooBig, tooBig},
-			{"set a = 'q' where excluded.a = ? || ?", []any{x, y}, tooBig, tooBig},
+			{"set a = ? || ? || a", []any{x, y}, failed, failed},
+			{"set a = a || (? || ?)", []any{x, y}, failed, failed},
+			{"set a = excluded.a || (? || ?)", []any{x, y}, failed, failed},
+			{"set a = 'q' where a = ? || ?", []any{x, y}, failed, failed},
+			{"set a = 'q' where ? || ? || a = 'x'", []any{x, y}, failed, failed},
+			{"set a = 'q' where excluded.a = ? || ?", []any{x, y}, failed, failed},
 			// These on the row of the conflict only, and in the order of WHERE: a value of SET without a
 			// column, a side with a call, also of the key and of a column of an index, which serve no
 			// access in DO UPDATE, and text with a column.
-			{"set a = ? || ?", []any{x, y}, tooBig, one},
-			{"set a = lower(? || ?)", []any{x, y}, tooBig, one},
-			{"set a = 'q' where a = lower(? || ?)", []any{x, y}, tooBig, one},
-			{"set a = 'q' where b = lower(? || ?)", []any{x, y}, tooBig, one},
-			{"set a = 'q' where id = lower(? || ?)", []any{x, y}, tooBig, one},
-			{"set a = 'q' where lower(? || ?) || a = 'x'", []any{x, y}, tooBig, one},
+			{"set a = ? || ?", []any{x, y}, failed, one},
+			{"set a = lower(? || ?)", []any{x, y}, failed, one},
+			{"set a = 'q' where a = lower(? || ?)", []any{x, y}, failed, one},
+			{"set a = 'q' where b = lower(? || ?)", []any{x, y}, failed, one},
+			{"set a = 'q' where id = lower(? || ?)", []any{x, y}, failed, one},
+			{"set a = 'q' where lower(? || ?) || a = 'x'", []any{x, y}, failed, one},
 			{"set a = 'q' where a = 'q' and b = lower(? || ?)", []any{x, y}, none, one},
-			{"set a = 'q' where b = lower(? || ?) and a = 'q'", []any{x, y}, tooBig, one},
-			{"set a = excluded.b || excluded.b || excluded.b", nil, tooBig, one},
-			{"set a = 'q' where excluded.b || excluded.b || excluded.b = 'x'", nil, tooBig, one},
+			{"set a = 'q' where b = lower(? || ?) and a = 'q'", []any{x, y}, failed, one},
+			{"set a = excluded.b || excluded.b || excluded.b", nil, failed, one},
+			{"set a = 'q' where excluded.b || excluded.b || excluded.b = 'x'", nil, failed, one},
 			{"set a = 'q' where a = 'q' and excluded.b || excluded.b || excluded.b = 'x'", nil, none, one},
+			{"set a = ? || ? where a = 'nomatch'", []any{x, y}, none, one},
+			{"set a = lower(? || ?) where a = 'nomatch'", []any{x, y}, none, one},
+			{"set a = excluded.b || excluded.b || excluded.b where a = 'nomatch'", nil, none, one},
 			// Under the limit, and an argument longer than the limit.
 			{"set a = excluded.b || ? returning id", []any{strings.Repeat("v", 500)}, `"1"` + one, `"9"` + one},
 			{"set a = ? || a", []any{long}, "18/18: string or blob too big; 0", "18/18: string or blob too big; 1"},
@@ -775,9 +781,10 @@ func TestEngine_upsert(t *testing.T) {
 			upsertStep{"begin read only", nil},
 			upsertStep{"insert into q (id, a) values ('1', 'p') on conflict (id) do update set a = ? || ? || a", []any{x, y}},
 			upsertStep{"insert into q (id, a) values ('1', 'p') on conflict (id) do update set a = 'q' where a = ? || ?", []any{x, y}},
+			upsertStep{"insert into q (id, a) values ('1', 'p') on conflict (id) do update set a = ? || a", []any{int64(1)}},
 			upsertStep{"rollback", nil},
 		)
-		want = append(want, "8/8: attempt to write a readonly database; 0", "8/8: attempt to write a readonly database; 0")
+		want = append(want, "8/8: attempt to write a readonly database; 0", "8/8: attempt to write a readonly database; 0", "8/8: attempt to write a readonly database; 0")
 		got := runUpserts(t, newInstanceLimited(t, forward(), nil, limit), newOracleLimited(t, limit),
 			[]string{"create table q (id text primary key, a text, b text) strict, without rowid", "create index q_b on q (b)", "insert into q values ('1', 'x', 'y')"}, steps)
 		is.EqualSlice(t, want, got)
@@ -946,7 +953,10 @@ func TestPair_upsert(t *testing.T) {
 				is.Equal(t, "", p.step(stmttest.Call{Src: "delete from q where id = '9'"}))
 			}
 		}
-		is.True(t, y2[comparedWithSQLite] > 0)
+		for kind := range y2 {
+			is.True(t, !strings.HasPrefix(kind, "excused: "), kind)
+		}
+		is.Equal(t, 3+2*8*2, y2[comparedWithSQLite])
 	})
 
 	t.Run("should fail a refusal that is none of the rules', a refusal that was due and not given, and an evaluation error that SQLite does not justify", func(t *testing.T) {

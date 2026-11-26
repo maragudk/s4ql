@@ -22,7 +22,8 @@ import (
 // excluded.c of the clause becomes a column of that table, [combinedExpression], once SQLite would
 // have given every error of its names, so that DO UPDATE is checked, bound, and computed by the
 // operators of an update and a filter, as for a column of the type of its column: by the rule of
-// exact types, a copy of excluded.c alone, as a column alone is copied, and arithmetic with it.
+// exact types, a copy of excluded.c alone, as a column alone is copied, and arithmetic and text with
+// it.
 
 // excludedPrefix is the start of the name of a column of the row that an upsert proposes, in its
 // combined table: a NUL byte, which the text of no statement holds, so that the name is no name of a
@@ -268,10 +269,10 @@ func (b build) doUpdate(ctx context.Context, w writer, t *s4qlpb.CreateTable, c 
 			return nil, nil, err
 		}
 	}
-	// As for an update: the subtrees of SET that SQLite computes before any row, and then the values of
+	// As for an update: the subtrees of SET that SQLite computes before any row, which it computes at
+	// the start of the statement, also where the table has no row of the key, and then the values of
 	// SET without a column, but one of text that is too long, which SQLite computes on the row that
-	// DO UPDATE changes, and the update computes there too. SQLite computes them at the start of the
-	// statement, also where the table has no row of the key.
+	// DO UPDATE changes, and the update computes there too.
 	if err := computeHoisted(u.hoisted); err != nil {
 		return nil, nil, err
 	}

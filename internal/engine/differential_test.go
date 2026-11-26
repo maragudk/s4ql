@@ -885,9 +885,9 @@ const (
 	// [pair.tooLongForCache].
 	excusedCacheLimit = "a create table whose statement in the cache is longer than the length limit, checked against the length of that statement"
 	// excusedUpsertType is an upsert that the engine refuses by s4ql's rules of its types, of the
-	// proposed row and of DO UPDATE, or for its text, checked against [stmttest.UpsertRefusals]. See
-	// [pair.checkUpsert].
-	excusedUpsertType = "an upsert refused by the rule of exact types or for its text, checked against s4ql's rules"
+	// proposed row and of DO UPDATE, also of its arithmetic and its text, checked against
+	// [stmttest.UpsertRefusals]. See [pair.checkUpsert].
+	excusedUpsertType = "an upsert refused by the rule of exact types, checked against s4ql's rules"
 	// excusedSortTooBig is a select with ORDER BY that SQLite refuses under the length limit with
 	// `string or blob too big`, for the record of what it sorts of a row, and that s4ql answers with
 	// rows: the known difference of slice 13, by the decision of the lead in docs/todo/slice-13.md.
