@@ -1455,3 +1455,96 @@ func rows(t *testing.T, d *core.DB) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TestAdversarial_refusalOfAnAppliedWrite has the fake apply a write and answer it with 412
+// PreconditionFailed in one attempt, as Tigris answered a create on 2026-11-26 in CI, where the
+// object that "exists" held the content of that very create. The contract of [store.Store] says
+// that [store.ErrExists] and [store.ErrChanged] mean that the write was not applied, and
+// [core.Tx.Commit] that every error but [core.ErrOutcomeUnknown] means "not committed".
+func TestAdversarial_refusalOfAnAppliedWrite(t *testing.T) {
+	// appliedThen412 is a hook that applies the first PUT that match accepts, and answers it with
+	// 412 PreconditionFailed.
+	appliedThen412 := func(match func(r *http.Request) bool) func(w http.ResponseWriter, r *http.Request, f *fake) bool {
+		var done bool
+		return func(w http.ResponseWriter, r *http.Request, f *fake) bool {
+			if done || r.Method != http.MethodPut || !match(r) {
+				return false
+			}
+			done = true
+			data, _ := io.ReadAll(r.Body)
+			rec := httptest.NewRecorder()
+			f.apply(rec, r, data)
+			if rec.Code != http.StatusOK {
+				panic(fmt.Sprint("the fake did not apply the write: ", rec.Code))
+			}
+			fail(w, http.StatusPreconditionFailed, "PreconditionFailed")
+			return true
+		}
+	}
+
+	t.Run("should not report a create that the store applied as not applied", func(t *testing.T) {
+		f := newFake(t)
+		c := f.client(t)
+		f.hook = appliedThen412(func(*http.Request) bool { return true })
+		_, err := c.Create(t.Context(), "k", strings.NewReader("data"), sum("data"))
+		_, applied := f.object("k")
+		is.True(t, applied)
+		is.Equal(t, 1, f.count(http.MethodPut, "k"))
+		is.True(t, !errors.Is(err, store.ErrExists), fmt.Sprint("an applied create is reported as not applied: ", err))
+	})
+
+	t.Run("should not report a swap that the store applied as not applied", func(t *testing.T) {
+		f := newFake(t)
+		c := f.client(t)
+		v := f.put("k", []byte("old"))
+		f.hook = appliedThen412(func(*http.Request) bool { return true })
+		_, err := c.Swap(t.Context(), "k", store.Version(v), strings.NewReader("new"), sum("new"))
+		o, _ := f.object("k")
+		is.Equal(t, "new", string(o.data))
+		is.Equal(t, 1, f.count(http.MethodPut, "k"))
+		is.True(t, !errors.Is(err, store.ErrChanged), fmt.Sprint("an applied swap is reported as not applied: ", err))
+	})
+
+	t.Run("should not report a commit whose manifest swap the store applied as not committed", func(t *testing.T) {
+		f := newFake(t)
+		c := f.client(t)
+		d, err := core.Open(t.Context(), host.New(), c, filepath.Join(t.TempDir(), "a.db"), "db",
+			core.Options{Lease: 10 * time.Minute, Watch: 250 * time.Millisecond})
+		is.NotError(t, err)
+		t.Cleanup(func() {
+			// The context of the test is done when its cleanup runs.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			_ = d.Close(ctx)
+		})
+		is.NotError(t, d.Wait(t.Context()))
+		commit(t, d, func(tx *core.Tx) {
+			is.NotError(t, tx.CreateTable(t.Context(), table("t")))
+		})
+
+		manifest := func() format.Manifest {
+			o, ok := f.object("db/manifest.json")
+			is.True(t, ok)
+			m, err := format.ParseManifest(o.data)
+			is.NotError(t, err)
+			return m
+		}
+		before := manifest().Head
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		is.NotError(t, tx.Upsert(t.Context(), "t", values(1, 10)))
+		// The lease lasts ten minutes, so the next swap of the manifest is the commit's.
+		f.mu.Lock()
+		f.hook = appliedThen412(func(r *http.Request) bool {
+			return key(r) == "db/manifest.json" && r.Header.Get("If-Match") != ""
+		})
+		f.mu.Unlock()
+		err = tx.Commit(t.Context())
+		after := manifest().Head
+
+		is.True(t, after != before, "the fake did not apply the commit's swap")
+		is.True(t, err == nil || errors.Is(err, core.ErrOutcomeUnknown),
+			fmt.Sprint("a commit that is the head of the log is reported as not committed: ", err))
+	})
+}
