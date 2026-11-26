@@ -587,8 +587,16 @@ h2 {
 /* The dancer stands on the top line of the frame, in the margin above it, dances to the sounds, and
    strolls along the line: see page.js. This is its old place, near the right end, from which a
    transform moves it. It is drawn in pixels of 2 px. page.js has its right and its pixels as RIGHT
-   and PX, to keep it on the line: change them together. */
-.dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; pointer-events: none; }
+   and PX, to keep it on the line: change them together. A poke makes it react, and a drag carries it
+   to the top line of another frame, which then holds it: each frame that it can stand on is
+   positioned. Its ::before widens what a finger hits to 44 px each way, around and above it, and not
+   into the frame below; a touch on it drags it and does not scroll the page. */
+.dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+.dancer::before { content: ""; position: absolute; inset: -8px -7px 0; }
+.dancer svg { display: block; width: 100%; height: 100%; }
+.dancer:active, .dancer[data-aloft] { cursor: grabbing; }
+.dancer[data-aloft] { z-index: 10; }
+.node, .s3, .ask-box { position: relative; }
 .logs > section { min-width: 0; }
 .logs > .objects { border-left: var(--rule); }
 .log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 12px 20px; border-bottom: var(--rule); }
@@ -731,17 +739,6 @@ body { position: relative; isolation: isolate; }
 @keyframes sky-core { 0% { opacity: 0.45; } 90% { opacity: 0.7; } 96% { opacity: 0.45; } }
 @keyframes sky-arm1 { 0% { opacity: 0; } 90% { opacity: 0.45; } 96% { opacity: 0; } }
 @keyframes sky-arm2 { 0% { opacity: 0; } 92% { opacity: 0.3; } 94% { opacity: 0; } }
-/* Constellations: while a mouse moves over the page, the few stars nearest it are joined by lines of
-   pixels, dimmer than the stars, that keep clear of content as the stars do: see constellations.js.
-   Each is an SVG of its own, as large as its lines, whose opacity steps in and out in an animation
-   that the compositor runs. Without a mouse that hovers, and under reduced motion, there are none. */
-.sky .con { position: absolute; display: block; fill: var(--lumin); opacity: 0.2; animation: con-in 0.2s steps(3, jump-none) both; }
-.sky .con.out { animation: con-out 0.8s steps(4, jump-none) both; }
-@keyframes con-in { from { opacity: 0; } }
-@keyframes con-out { to { opacity: 0; } }
-@media (hover: none), (pointer: coarse), (pointer: none), (prefers-reduced-motion: reduce) {
-  .sky .con { display: none; }
-}
 @media print, (forced-colors: active) {
   .sky { display: none; }
   .dancer path { stroke: none; }
@@ -789,7 +786,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // heading's box is wider than its lines.
   // Content added to the page needs adding here, and to the elements that the ResizeObserver below
   // watches if its size can change alone. The stick figure #dancer is left out: it walks along the
-  // top line of .logs in front of the sky, by a transform that changes no layout.
+  // top line of .logs, or of the frame that the visitor carried it to, in front of the sky, by a
+  // transform that changes no layout.
   const BOXES = "#failure, .requests, .fork, .inst, .s3, .logs, .ask-box";
   const WORDS = ".ask-head > *, .about p, footer p, footer li";
   const HEADINGS = "h1, .about h2";
@@ -854,9 +852,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (below > 0) add(x - 1, r.bottom, x + 1, r.bottom + below);
     }
 
-    // stars are the centre and the reach of each star that is shown, in px from the sky's top left,
-    // which constellations.js joins into constellations.
-    const d = ["", "", ""], keep = new Map(), candidates = { blink: [], glint: [] }, stars = [];
+    const d = ["", "", ""], keep = new Map(), candidates = { blink: [], glint: [] };
     const pixel = (X, Y, level) => { d[level] += `M${X} ${Y}h${k}v${k}h${-k}z`; };
     for (let j = 0; j * CELL < H; j++) {
       for (let i = 0; i * CELL < W; i++) {
@@ -869,8 +865,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const before = (kind === "glint" ? 2 : kind === "plus" ? 1 : 0) * p, after = p + (kind === "dot" || kind === "blink" ? 0 : kind === "glint" ? 2 : 1) * p;
         const l = x - before, t = y - before, r = x + after, b = y + after;
         if (l < 0 || t < 0 || r > W || b > H || out.some((q) => r > q[0] && l < q[2] && b > q[1] && t < q[3])) continue;
-        const c = (kind === "block" ? k : k / 2) / dpr;
-        stars.push({ x: x + c, y: y + c, reach: Math.max(c + before, after - c) });
         const v = rnd(i, j, 4);
         if (kind === "dot") pixel(X, Y, v < 0.5 ? 0 : v < 0.85 ? 1 : 2);
         else if (kind === "block") for (const [a, c] of [[0, 0], [1, 0], [0, 1], [1, 1]]) pixel(X + a * k, Y + c * k, 1);
@@ -911,10 +905,6 @@ document.addEventListener("DOMContentLoaded", () => {
     set(svg, "height", H);
     set(svg, "viewBox", `0 0 ${W * dpr} ${H * dpr}`);
     paths.forEach((path, n) => set(path, "d", d[n]));
-    // The layout of the sky, for constellations.js: its stars, the rectangles out, where it is on the
-    // page, and its pixels. The event layout tells of a new one.
-    sky.layout = { stars, out, left: o.left + window.scrollX, top: o.top + window.scrollY, dpr, k };
-    sky.dispatchEvent(new Event("layout"));
   };
 
   // A ResizeObserver calls draw after layout and before paint, at once and whenever the page or one
@@ -1088,7 +1078,7 @@ document.addEventListener("DOMContentLoaded", () => {
       </dl>
     </section>
     <div class="logs">
-      <svg class="dancer" id="dancer" viewBox="0 0 15 18" shape-rendering="crispEdges" aria-hidden="true" focusable="false" data-pose="" data-moves="0"><path fill="currentColor"/></svg>
+      <span class="dancer" id="figure" role="button" tabindex="0" aria-label="Poke the stick figure"><svg id="dancer" viewBox="0 0 15 18" shape-rendering="crispEdges" aria-hidden="true" focusable="false" data-pose="" data-moves="0"><path fill="currentColor"/></svg></span>
       <section class="log" aria-labelledby="log-h">
         <div class="log-head"><h2 id="log-h">Log</h2><span id="lines"></span></div>
         <div class="scroll" tabindex="0" aria-label="Log, newest first">

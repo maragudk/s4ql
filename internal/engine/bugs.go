@@ -7,6 +7,7 @@ import (
 
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
 // bugs that the tests of this package plant in it, to show that their checks find them. Each field
@@ -166,6 +167,126 @@ type bugs struct {
 	// copySelf makes an update that copies a column alone, as `set a = b`, give the column the value
 	// that it had, and not that of the column that it names.
 	copySelf bool
+	// oneCommit makes [Conn.ExecAll] run the statements of a text of several outside a transaction in
+	// a write transaction of its own, which commits them all in one commit when the text ends, also
+	// after a statement that failed.
+	oneCommit bool
+	// goOn makes ExecAll go on after a statement of a text that fails, and give the error of the first
+	// that failed when the text ends.
+	goOn bool
+	// commitFailed makes a statement of a text of several outside a transaction that fails while it
+	// runs, after its checks, commit what it changed before it failed, and give its error.
+	commitFailed bool
+	// commitLater makes a write of a text of several outside a transaction that another statement of
+	// the text follows succeed, and log its event, with its write transaction open, which commits when
+	// the next statement starts or the text ends, whatever the commit gives.
+	commitLater bool
+	// annotateText makes each statement of a text of several annotate its write with the whole text,
+	// and not with its own.
+	annotateText bool
+	// argsFromStart makes each statement of a text of several annotate its write with the arguments of
+	// the text from the first on, as many as it has parameters, and not with its own.
+	argsFromStart bool
+	// undoInTx makes a statement of a text of several in a write transaction that fails after the
+	// first statement of the text roll the transaction back, with what the statements before it did,
+	// and begin a new one.
+	undoInTx bool
+	// firstResult makes ExecAll give the result of the first statement of the text that sets the count
+	// of changes, and not of the last.
+	firstResult bool
+}
+
+// ofText reports whether a bug is planted that needs the text of several statements that
+// [Conn.ExecAll] runs in the context of each of its statements: see [textRun].
+func (b bugs) ofText() bool {
+	return b.commitFailed || b.commitLater || b.annotateText || b.argsFromStart
+}
+
+// textKey is the key of the context of a statement of [Conn.ExecAll] that holds its text, while a
+// planted bug that needs it is: see [bugs.ofText].
+type textKey struct{}
+
+// textRun is a text of several statements that [Conn.ExecAll] runs, with its arguments, for the
+// planted bugs of its loop.
+type textRun struct {
+	src  string
+	args []*s4qlpb.Value
+	// follows is set while a statement runs that another statement of the text follows.
+	follows bool
+	// later is the commit of the write transaction of a statement before, which the planted bug
+	// commitLater left open, or nil.
+	later func(context.Context)
+}
+
+// textOf the context of a statement: the text of several statements that it is of, or nil.
+func textOf(ctx context.Context) *textRun {
+	t, _ := ctx.Value(textKey{}).(*textRun)
+	return t
+}
+
+// commit the write transaction that the planted bug commitLater left open, if one is.
+func (t *textRun) commit(ctx context.Context) {
+	if t != nil && t.later != nil {
+		later := t.later
+		t.later = nil
+		later(ctx)
+	}
+}
+
+// annotation of a statement of the text of ctx with the text sql and the arguments args: with the
+// planted bug annotateText the whole text, and with argsFromStart the arguments of the text from the
+// first on, as many as args.
+func (b bugs) annotation(ctx context.Context, sql string, args []*s4qlpb.Value) (string, []*s4qlpb.Value) {
+	if !b.annotateText && !b.argsFromStart {
+		return sql, args
+	}
+	t := textOf(ctx)
+	if t == nil {
+		return sql, args
+	}
+	if b.annotateText {
+		sql = t.src
+	}
+	if b.argsFromStart {
+		args = t.args[:len(args)]
+	}
+	return sql, args
+}
+
+// commitFailed commits the write transaction tx of a statement of a text of several that failed while
+// it ran, with its annotation of the text sql and the arguments args, and reports whether it ended the
+// transaction so: the planted bug commitFailed. A transaction whose annotation fails is left to be
+// rolled back.
+func (c *Conn) commitFailed(ctx context.Context, tx writeTx, sql string, args []*s4qlpb.Value) bool {
+	if !c.e.bugs.commitFailed || textOf(ctx) == nil || tx.annotate(ctx, sql, args) != nil {
+		return false
+	}
+	_ = tx.commit(ctx)
+	return true
+}
+
+// inOneCommit runs the text src with args as [Conn.execAll] does, in a write transaction of its own
+// that commits when the text ends, if the text holds several statements: the planted bug oneCommit.
+// A begin that fails leaves the text to run as without the bug.
+func (c *Conn) inOneCommit(ctx context.Context, src string, args []*s4qlpb.Value) (Result, error) {
+	if parts, _ := stmt.Split(src); len(parts) < 2 || c.Begin(ctx) != nil {
+		return c.execAll(ctx, src, args)
+	}
+	res, err := c.execAll(ctx, src, args)
+	if c.tx == nil {
+		return res, err
+	}
+	if cerr := c.Commit(ctx); err == nil {
+		err = cerr
+	}
+	return res, err
+}
+
+// undo the write transaction of the connection, and begin a new one: the planted bug undoInTx.
+func (c *Conn) undo(ctx context.Context) {
+	if c.Rollback(ctx) == nil {
+		_ = c.Begin(ctx)
+	}
 }
 
 // reader of a query on r: r, or with the planted bug openBound r as [openBounds] reads it.

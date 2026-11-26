@@ -19,13 +19,9 @@
 // past 10 minutes; and the page writes nothing into its address. The box for SQL, while paused,
 // selects from barcodes, creates a table, inserts, selects with order by and limit, shows an error of
 // the engine and the refusal of a write to barcodes, moves fake time only until each answer, and lets
-// a write wait while the connection to S3 hangs. Then S3: a reload keeps the tab's
-// database, its name, and the time, and a catches up from it before it serves, with the visitor's
-// table and the text of the box; a stored database that
-// is damaged or of another version is dropped; a write to sessionStorage that fails leaves nothing
-// half-written, and stops the page as S3 full; Reset empties the database and keeps its name; the page stops at the cap of commit
-// objects, and Reset starts over from there; a tab without storage runs in memory; and a tab with an
-// empty sessionStorage, as a new tab has, gets a database of its own. The page remembers Turbo and
+// a write wait while the connection to S3 hangs. Then S3: the page stores nothing of it, and a reload
+// starts on an empty S3 and the box as at the first visit; Reset empties the database; and the page
+// stops at the cap of commit objects, and Reset starts over from there. The page remembers Turbo and
 // Sound in localStorage across reloads, and Reset keeps them; Sound remembered on waits, without an
 // audio context, until the first click or key on the page; and storage that throws, or holds what
 // the page did not write, gives the toggles of a first visit. It also checks the words of run.js,
@@ -322,7 +318,6 @@ var simulatorFiles = []string{
 	"/simulator/page.js",
 	"/simulator/run.js",
 	"/simulator/sound.js",
-	"/simulator/bucket.js",
 	"/simulator/engine/build.json",
 	"/simulator/engine/simulator.js",
 	"/simulator/engine/worker.js",

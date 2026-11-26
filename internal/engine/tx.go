@@ -391,7 +391,9 @@ func (c *Conn) writeIn(ctx context.Context, r *report, p Plan, sql string, args 
 	if err != nil {
 		return ran(failed, err), nil, err
 	}
-	if err := w.annotate(ctx, sql, args); err != nil {
+	// The planted bugs annotateText and argsFromStart annotate with the text or its arguments.
+	note, annotated := c.e.bugs.annotation(ctx, sql, args)
+	if err := w.annotate(ctx, note, annotated); err != nil {
 		return failed, nil, err
 	}
 	// The release ends the savepoint whatever it gives, and a release that fails leaves a

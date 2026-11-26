@@ -559,6 +559,8 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	}
 	n, err := s.run(ctx)
 	if err != nil {
+		// The planted bug commitFailed commits what the statement changed.
+		ended = c.commitFailed(ctx, tx, sql, args)
 		return ran(failed, err), nil, err
 	}
 	annotated := args
@@ -569,11 +571,21 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 			annotated = append(annotated, s4qlpb.Value_builder{Integer: new(a.GetInteger() + 1)}.Build())
 		}
 	}
-	if err := tx.annotate(ctx, sql, annotated); err != nil {
+	// The planted bugs annotateText and argsFromStart annotate with the text or its arguments.
+	note, annotated := e.bugs.annotation(ctx, sql, annotated)
+	if err := tx.annotate(ctx, note, annotated); err != nil {
 		return failed, nil, err
 	}
 	// The transaction ends with its commit, whatever the commit gives.
 	ended = true
+	if e.bugs.commitLater {
+		if t := textOf(ctx); t != nil && t.follows {
+			// The planted bug: the commit when the next statement starts.
+			t.later = func(ctx context.Context) { _ = tx.commit(ctx) }
+			r.rows = n
+			return Result{Changes: n, SetsChanges: setsChanges(p)}, returnedOf(s, order), nil
+		}
+	}
 	if err := commitError(tx.commit(ctx)); err != nil {
 		if e.bugs.rowsOfFailed && returns && returnsOf(s) != nil {
 			// The planted bug: the rows of a commit that failed, without its error.

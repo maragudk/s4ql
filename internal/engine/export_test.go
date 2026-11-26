@@ -391,6 +391,14 @@ var plantable = map[string]func(b *bugs){
 	"copyAcross":            func(b *bugs) { b.copyAcross = true },
 	"constantsServeNothing": func(b *bugs) { b.constantsServeNothing = true },
 	"copySelf":              func(b *bugs) { b.copySelf = true },
+	"oneCommit":             func(b *bugs) { b.oneCommit = true },
+	"goOn":                  func(b *bugs) { b.goOn = true },
+	"commitFailed":          func(b *bugs) { b.commitFailed = true },
+	"commitLater":           func(b *bugs) { b.commitLater = true },
+	"annotateText":          func(b *bugs) { b.annotateText = true },
+	"argsFromStart":         func(b *bugs) { b.argsFromStart = true },
+	"undoInTx":              func(b *bugs) { b.undoInTx = true },
+	"firstResult":           func(b *bugs) { b.firstResult = true },
 }
 
 // The names of the event and of its attributes, for the tests of the telemetry.
