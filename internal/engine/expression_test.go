@@ -2022,22 +2022,19 @@ func (p *pair) textDifference(c stmttest.Call, got, want answer) string {
 		for _, q := range subqueriesIn(s) {
 			wheres = append(wheres, q.Where)
 		}
-		for i, w := range wheres {
-			for _, cond := range w {
-				if p.nullValue(cond, args, i) {
-					return excusedTextNull
-				}
-			}
-		}
-		// The engine's answer is right only if SQLite gives it without the length limit, as the run
-		// of SQLite that has no text too long gives it: of the statement that SQLite ran, with the
-		// values of the subqueries that the engine computed in their place, where it computed them.
 		kind := p.laxerText(s, isSelect, wheres, args)
+		if kind == excusedTextNull {
+			return kind
+		}
+		// Of the others, the engine's answer is right only if SQLite gives it without the length
+		// limit, as the run of SQLite that has no text too long gives it: of the statement that SQLite
+		// ran, with the values of the subqueries that the engine computed in their place, where it
+		// computed them.
 		ran, ranArgs := c.Src, args
 		if p.computed != nil {
 			ran, ranArgs = p.sub.flatten(p.computed)
 		}
-		if kind != "" && p.noneUnlimited(ran, ranArgs) {
+		if kind != "" && p.noneUnlimited(ran, ranArgs, c.Query) {
 			return kind
 		}
 	case want.err == tooBig && got.err == "" && isSelect && p.limitedBefore(s.(*stmt.Select), args, got):
@@ -2049,10 +2046,16 @@ func (p *pair) textDifference(c stmttest.Call, got, want answer) string {
 // laxerText names the case where s4ql is laxer than SQLite that the select, the update, or the delete
 // s with the arguments args shows, of the WHERE of s and those of its subqueries, wheres, where
 // SQLite fails with `string or blob too big` and the engine gives no row and changes none:
-// [excusedTextPropagated], [excusedTextHoisted], or [excusedTextAccess]; or "" for none. Each names
-// why the engine computed nothing too long, and not that its answer is right.
+// [excusedTextNull] or [excusedTextPropagated] of the first WHERE that has one, in that order, then
+// [excusedTextHoisted] or [excusedTextAccess]; or "" for none. Each names why the engine computed
+// nothing too long; only [excusedTextNull] also says that no row holds for the WHERE.
 func (p *pair) laxerText(s stmt.Statement, isSelect bool, wheres [][]stmt.Condition, args []any) string {
 	for i, w := range wheres {
+		for _, cond := range w {
+			if p.nullValue(cond, args, i) {
+				return excusedTextNull
+			}
+		}
 		of, _ := tableWhere(s)
 		if i > 0 {
 			of = subqueriesIn(s)[i-1].Table
@@ -2093,7 +2096,7 @@ func (p *pair) textOneDirection(c stmttest.Call, s stmt.Statement, computed []*s
 	if computed != nil {
 		ran, ranArgs = p.sub.flatten(computed)
 	}
-	if !p.noneUnlimited(ran, ranArgs) {
+	if !p.noneUnlimited(ran, ranArgs, false) {
 		return fmt.Sprintf("%q with %#v: one instance gives %q, and the other changes no row, where SQLite without the length limit gives an error or changes rows", c.Src, c.Args, tooBig)
 	}
 	return ""
@@ -2102,8 +2105,9 @@ func (p *pair) textOneDirection(c stmttest.Call, s stmt.Statement, computed []*s
 // noneUnlimited reports whether SQLite, without the length limit, gives no error and no row for the
 // select of src with the arguments args, and no error and no change for the update or the delete of
 // src: no row of its table holds for its WHERE, as SQLite counts them in a select of its own, which
-// changes nothing, also not SQLite's count of changes.
-func (p *pair) noneUnlimited(src string, args []any) bool {
+// changes nothing, also not SQLite's count of changes. A select that does not run as a query gives
+// the engine no rows to compare, so it needs no error alone.
+func (p *pair) noneUnlimited(src string, args []any, query bool) bool {
 	t, o := p.t, p.o
 	t.Helper()
 	s, err := stmt.Check(src)
@@ -2112,7 +2116,7 @@ func (p *pair) noneUnlimited(src string, args []any) bool {
 	}
 	if _, ok := s.(*stmt.Select); ok {
 		a := o.unlimited(t, src, args...)
-		return a.err == "" && len(a.rows) == 0
+		return a.err == "" && (len(a.rows) == 0 || !query)
 	}
 	table, where := tableWhere(s)
 	if table.Value == "" {
@@ -2551,6 +2555,9 @@ func TestPair_text(t *testing.T) {
 			is.Equal(t, c.kind, p.laxerText(s, true, wheres, args), c.src)
 			is.Equal(t, `columns "k INT", rows ["1"]`, p.o.unlimited(t, c.src, args...).String(), c.src)
 			is.Equal(t, "", p.textDifference(stmttest.Call{Src: c.src, Args: c.args, Query: true, Supported: true}, answer{columns: "k INT"}, answer{err: tooBig}), c.src)
+			// Through Exec the select gives no rows to compare, and SQLite without the limit gives no
+			// error.
+			is.Equal(t, c.kind, p.textDifference(stmttest.Call{Src: c.src, Args: c.args, Supported: true}, answer{}, answer{err: tooBig}), c.src)
 		}
 	})
 
