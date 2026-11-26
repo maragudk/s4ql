@@ -282,9 +282,70 @@ type Insert struct {
 	// Values of the row, in the order of the text. Their number may differ from that of the columns,
 	// which SQLite refuses once it has found the table.
 	Values []Term
+	// Conflict of the ON CONFLICT clause, after the values, which says what the statement does in
+	// place of the insert when the row has the key of a row of the table, or the zero Conflict if the
+	// statement has none; see [Conflict.Present].
+	Conflict Conflict
 	// Returning of the RETURNING clause, which gives the row that the statement inserts, with its
-	// values as the table stores them, or the zero Returning if the statement has none.
+	// values as the table stores them, or the row that its DO UPDATE changes, with the values after
+	// the change, or the zero Returning if the statement has none.
 	Returning Returning
+}
+
+// Conflict clause of an [Insert], an upsert: ON CONFLICT, the columns of its target in parentheses,
+// and DO NOTHING or DO UPDATE SET with assignments and an optional WHERE. When the row of the insert
+// has the values of the target of a row that the table holds, the statement does not insert it: with
+// DO NOTHING it changes nothing, and with DO UPDATE it changes the row that the table holds, if the
+// conditions of the WHERE hold for it.
+type Conflict struct {
+	// Span of the clause in the text, from the keyword ON to the end of its last token, or the zero
+	// Span if the statement has no ON CONFLICT.
+	Span Span
+	// Target holds the columns of the conflict target, in the order of the text, one or more, each
+	// with its offset. No two of them have one name, as [Name.Fold] compares names. Whether they are
+	// the primary key of the table, which is the one constraint of uniqueness that a table of s4ql
+	// has, is not decided here.
+	Target []Name
+	// Action is [DoNothing] or [DoUpdate].
+	Action ConflictAction
+	// Set holds the assignments of DO UPDATE, as [Update.Set] holds those of an update, or nil for DO
+	// NOTHING. A value names a column of the row that the table holds as a column, [ExprColumn], and
+	// one of the row that the insert proposes as excluded.c, [ExprExcluded]. No assignment is to a
+	// column of Target.
+	Set []Assignment
+	// Where holds the conditions of the WHERE of DO UPDATE, in the order of the text, as for an
+	// [Update], or nil if the clause has none. They test the columns of both rows, and no condition
+	// has a subquery. A test for NULL tests a column of the row of the table, or one of the row of
+	// the insert, whose [Condition.Expression] is then of the kind [ExprExcluded].
+	Where []Condition
+}
+
+// Present reports whether the statement has an ON CONFLICT clause.
+func (c Conflict) Present() bool {
+	return c.Span != Span{}
+}
+
+// ConflictAction of a [Conflict]. The zero value is no action.
+type ConflictAction int
+
+// The actions of a [Conflict].
+const (
+	// DoNothing is DO NOTHING: the statement changes nothing.
+	DoNothing ConflictAction = iota + 1
+	// DoUpdate is DO UPDATE: the statement changes the row of the table that has the values of the
+	// target, with the assignments of [Conflict.Set], if the conditions of [Conflict.Where] hold.
+	DoUpdate
+)
+
+// String of the action as SQL writes it, DO NOTHING or DO UPDATE, or "" for no action.
+func (a ConflictAction) String() string {
+	switch a {
+	case DoNothing:
+		return "DO NOTHING"
+	case DoUpdate:
+		return "DO UPDATE"
+	}
+	return ""
 }
 
 // Returning clause of an [Insert], an [Update], or a [Delete]: the statement gives a row for each row
@@ -374,14 +435,17 @@ type Expression struct {
 	// Parameter of [ExprParameter]: its number, from 1, numbered with every other parameter of the
 	// statement in the order of the text. 0 for every other kind.
 	Parameter int
-	// Column of [ExprColumn]: its name, bare or in double quotes. Whether the table has it is not
-	// decided here. The zero Name for every other kind.
+	// Column of [ExprColumn] and of [ExprExcluded]: its name, bare or in double quotes. Whether the
+	// table has it is not decided here. The zero Name for every other kind.
 	Column Name
+	// Table of [ExprExcluded]: the name excluded before the dot, as the text writes it, bare or in
+	// double quotes and in any case of its letters. The zero Name for every other kind.
+	Table Name
 	// Function of [ExprCall], and 0 for every other kind.
 	Function Function
 	// Operands of an operator or a call, in the order of the text: one for [ExprNegate], two, the left
 	// and the right, for [ExprAdd], [ExprSubtract], [ExprMultiply], [ExprDivide], and [ExprConcat], and
-	// the one argument for [ExprCall]. Nil for a literal, a parameter, and a column.
+	// the one argument for [ExprCall]. Nil for a literal, a parameter, a column, and excluded.c.
 	Operands []Expression
 	// Span of the node in the text, from its first token to the end of its last, without parentheses
 	// around the node itself and with those around its operands. That of a literal holds its sign.
@@ -413,12 +477,17 @@ const (
 	ExprConcat
 	// ExprCall is a call of its Function with its one argument.
 	ExprCall
+	// ExprExcluded is excluded.c, the value of the column c of the row that an insert proposes, in
+	// the DO UPDATE of its [Conflict].
+	ExprExcluded
 )
 
 // String of the kind: the operator as SQL writes it, such as + or - for both a negation and a
-// subtraction, or "value", "parameter", "column", or "call", or "" for no kind.
+// subtraction, or "value", "parameter", "column", "call", or "excluded", or "" for no kind.
 func (k ExpressionKind) String() string {
 	switch k {
+	case ExprExcluded:
+		return "excluded"
 	case ExprConcat:
 		return "||"
 	case ExprCall:
@@ -470,10 +539,11 @@ func (e Expression) Present() bool {
 	return e.Kind != 0
 }
 
-// HasColumn reports whether a node of e is a column. An expression without a column has one value
-// for each run of its statement, which its literals and its arguments decide, whatever the row.
+// HasColumn reports whether a node of e is a column, of the row of the table or, as excluded.c, of
+// the row that an insert proposes. An expression without a column has one value for each run of its
+// statement, which its literals and its arguments decide, whatever the row.
 func (e Expression) HasColumn() bool {
-	if e.Kind == ExprColumn {
+	if e.Kind == ExprColumn || e.Kind == ExprExcluded {
 		return true
 	}
 	for _, o := range e.Operands {
@@ -772,7 +842,8 @@ func (s *DropIndex) Bounds() Span { return s.Span }
 // Parameters of the statement, which has none.
 func (s *CreateTable) Parameters() int { return 0 }
 
-// Parameters of the statement: the number of its values that are a parameter.
+// Parameters of the statement: the number of its values that are a parameter, and of the parameters
+// of the assignments and the conditions of its ON CONFLICT, which come after them in the text.
 func (s *Insert) Parameters() int {
 	n := 0
 	for _, v := range s.Values {
@@ -780,7 +851,10 @@ func (s *Insert) Parameters() int {
 			n++
 		}
 	}
-	return n
+	for _, a := range s.Conflict.Set {
+		n += parametersOf(a.Value, nil)
+	}
+	return n + conditionParameters(s.Conflict.Where, nil)
 }
 
 // Parameters of the statement: the number of the values of its conditions that are a parameter, with

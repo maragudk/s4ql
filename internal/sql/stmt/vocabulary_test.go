@@ -76,6 +76,11 @@ var allowed = map[string]bool{
 	"Paren": true, "Paren.LParen": true, "Paren.X": true, "Paren.RParen": true,
 
 	"FuncCall": true, "FuncCall.Name": true, "FuncCall.LParen": true, "FuncCall.Args": true, "FuncCall.RParen": true,
+
+	"Insert.Upserts": true, "Upsert": true, "Upsert.On": true, "Upsert.Conflict": true, "Upsert.LParen": true,
+	"Upsert.Target": true, "Upsert.TargetCommas": true, "Upsert.RParen": true, "Upsert.Do": true, "Upsert.Nothing": true,
+	"Upsert.Update": true, "Upsert.Set": true, "Upsert.Assignments": true, "Upsert.Commas": true, "Upsert.Where": true,
+	"ColumnRef.Table": true, "ColumnRef.Dot2": true,
 }
 
 // features of the tree from n that are present: the name of the type of every node, and every field

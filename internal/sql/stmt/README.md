@@ -1178,6 +1178,11 @@ A test checks that every name the pass gives in any test is in these tables.
 | `number as an argument` | The argument of `lower` or `hex` is a number literal, with or without a sign, an operator of arithmetic, or a negation, as in `lower(1)`, `hex(-1)`, or `hex(v + 1)`. SQLite writes the number as text. The offset is that of the first token of the argument, after a sign that is part of it. |
 | `NULL as an argument` | The argument of `lower` or `hex` is NULL. SQLite gives NULL for `lower(null)` and the empty text for `hex(null)`. The offset is that of the `NULL`. |
 | `blob as an argument` | The argument of `lower` is a blob, as in `lower(x'41')`. SQLite reads the blob as text. `hex` takes a blob. The offset is that of the blob. |
+| `ON CONFLICT without a target` | ON CONFLICT has no columns in parentheses before DO, as in `on conflict do nothing`. SQLite takes it, for every constraint of uniqueness of the table, as the last clause. The offset is that of the DO. |
+| `conflict target other than a column` | A term of the target of ON CONFLICT is a literal, a parameter, or an expression, such as `1`, `'k'`, `?`, or `k + 0`, which SQLite matches to no index. A column in parentheses, with the name of its table, or with COLLATE has the name `parentheses`, `column with the name of a table`, or `COLLATE`, and the bare word TRUE or FALSE `TRUE or FALSE`. The offset is that of the term. |
+| `WHERE of a conflict target` | The target of ON CONFLICT has a WHERE, which SQLite matches to a partial index, or to an index that is not partial. The offset is that of the WHERE. |
+| `second ON CONFLICT clause` | An insert has a second ON CONFLICT clause. SQLite takes the first clause whose target the row meets. The offset is that of the second ON. |
+| `assignment to a column of the conflict target` | The SET of DO UPDATE assigns to a column of the target of its ON CONFLICT, as Name.Fold compares names. SQLite changes the key of the row that the table holds, and gives `UNIQUE constraint failed` when the new key is that of another row. The offset is that of the column. |
 
 ### Names of fields
 
