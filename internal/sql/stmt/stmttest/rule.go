@@ -98,6 +98,44 @@ func TypeRule(table string, columns []TableColumn, insert *stmt.Insert, args []a
 	return ""
 }
 
+// MissingName of the expression e of a table of the columns, as a walk of its own, such as the value
+// of an assignment of SET: the name that SQLite's `no such column` names, and true, or false if the
+// table has every column of e. SQLite walks it as [MissingColumn] walks a side of a comparison, and a
+// missing column inside a call that no later one replaces ends the walk at its end.
+func MissingName(columns []TableColumn, e stmt.Expression) (stmt.Name, bool) {
+	var missing *stmt.Name
+	if name, stop := walkNames(columns, e, &missing); stop {
+		return name, true
+	}
+	if missing != nil {
+		return *missing, true
+	}
+	return stmt.Name{}, false
+}
+
+// walkNames of the expression e of a table of the columns, with the column *missing that the walk
+// goes on with, or nil: the name that ends the walk, and true, or false where it goes on, perhaps
+// with *missing set by a call.
+func walkNames(columns []TableColumn, e stmt.Expression, missing **stmt.Name) (stmt.Name, bool) {
+	switch {
+	case e.Kind == stmt.ExprColumn:
+		return e.Column, ColumnOf(columns, e.Column) < 0
+	case e.Kind == stmt.ExprCall:
+		if name, stop := walkNames(columns, e.Operands[0], missing); stop {
+			*missing = &name
+		}
+		return stmt.Name{}, false
+	case *missing != nil:
+		return **missing, true
+	}
+	for _, o := range e.Operands {
+		if name, stop := walkNames(columns, o, missing); stop {
+			return name, true
+		}
+	}
+	return stmt.Name{}, false
+}
+
 // MissingColumn of the select s of the table of the columns, in the order of the table: the name
 // that SQLite's `no such column` names, and true, or false if the table has every column that s
 // names. SQLite looks the select list up first, in its order, and then the conditions, in the order
@@ -117,27 +155,7 @@ func MissingColumn(columns []TableColumn, s *stmt.Select) (stmt.Name, bool) {
 		}
 	}
 	var missing *stmt.Name
-	// walk the expression e, a side of a comparison: the name that ends the walk, and true.
-	var walk func(e stmt.Expression) (stmt.Name, bool)
-	walk = func(e stmt.Expression) (stmt.Name, bool) {
-		switch {
-		case e.Kind == stmt.ExprColumn:
-			return e.Column, ColumnOf(columns, e.Column) < 0
-		case e.Kind == stmt.ExprCall:
-			if name, stop := walk(e.Operands[0]); stop {
-				missing = &name
-			}
-			return stmt.Name{}, false
-		case missing != nil:
-			return *missing, true
-		}
-		for _, o := range e.Operands {
-			if name, stop := walk(o); stop {
-				return name, true
-			}
-		}
-		return stmt.Name{}, false
-	}
+	walk := func(e stmt.Expression) (stmt.Name, bool) { return walkNames(columns, e, &missing) }
 	for i, c := range s.Where {
 		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
 			if ColumnOf(columns, c.Column) < 0 {

@@ -92,8 +92,8 @@ func (n *resolver) resolve(e stmt.Expression) (stmt.Name, bool) {
 	return stmt.Name{}, false
 }
 
-// all the names of the expression e, as a walk of its own, such as that of the value of an
-// assignment of SET: the column that ends it, also one pending at its end, and true, or false.
+// all the names of the expression e, as a walk of its own: the column that ends it, also one pending
+// at its end, and true, or false.
 func (n *resolver) all(e stmt.Expression) (stmt.Name, bool) {
 	if name, stop := n.resolve(e); stop {
 		return name, true
@@ -172,44 +172,49 @@ func bindExpression(t *s4qlpb.CreateTable, e stmt.Expression, args []*s4qlpb.Val
 	return &bound, nil
 }
 
-// hoisted of the expression e, the value of an assignment of SET if set, or a side of a comparison
-// with a column: the subtrees of text that SQLite computes once, before any row, as it factors them
-// out of its loop into the start of the statement. They are the concatenations without a column and
-// without a call that are under no other such concatenation, nor under a call without a column, which
-// SQLite computes when the first row reaches it, and that are not the value of SET itself, which
-// SQLite computes for each row. So `set s = ?1 || ?2 || s` and `where ?1 || ?2 || s = 'x'` compute
-// `?1 || ?2` before any row, and fail there where it is longer than the limit, also on an empty table,
-// and `set s = ?1 || ?2` and `where lower(?1 || ?2) || s = 'x'` do not. A side of a comparison without
-// a column is computed before any row as a whole, as [build.constants] says, and has no hoisted
-// subtree; nor has arithmetic, which never fails in SQLite.
-func hoisted(e stmt.Expression, set bool) []stmt.Expression {
-	if !isText(e) || !set && !e.HasColumn() {
+// hoisted of the expression e: the subtrees of text that SQLite computes once, before any row, as it
+// factors them out of its loop into the start of the statement. SQLite codes an operand, and a side of
+// a comparison, as a temporary, which it factors out where it has no column: a concatenation without a
+// call before any row, and one with a call, or a call, when the first row reaches it, with nothing
+// under it factored out. It codes the value of an assignment of SET, and a constant that serves the
+// access, in place, if inPlace, which factors out nothing but a call without a column, and then only
+// to the first row, and codes its operands as temporaries. So `set s = ? || ? || s`, `set s = hex(?) ||
+// (? || ?)`, and `where ? || ? || s = 'x'` compute `? || ?` before any row, and fail there where it is
+// longer than the limit, also on an empty table, and `set s = ? || ?` and `where lower(? || ?) || s =
+// 'x'` do not. A side of a comparison without a column is itself such a subtree where it has no call.
+// Arithmetic has none, as it never fails in SQLite.
+func hoisted(e stmt.Expression, inPlace bool) []stmt.Expression {
+	if !isText(e) {
 		return nil
 	}
 	var subtrees []stmt.Expression
-	var walk func(e stmt.Expression, root bool)
-	walk = func(e stmt.Expression, root bool) {
-		switch {
-		case !e.HasColumn() && hasCall(e):
-			return
-		case !e.HasColumn() && !root && e.Kind == stmt.ExprConcat:
-			subtrees = append(subtrees, e)
-			return
+	var walk func(e stmt.Expression, temporary bool)
+	walk = func(e stmt.Expression, temporary bool) {
+		if !e.HasColumn() {
+			switch {
+			case e.Kind == stmt.ExprCall || temporary && hasCall(e):
+				return
+			case temporary:
+				if e.Kind == stmt.ExprConcat {
+					subtrees = append(subtrees, e)
+				}
+				return
+			}
 		}
 		for _, o := range e.Operands {
-			walk(o, false)
+			walk(o, true)
 		}
 	}
-	walk(e, true)
+	walk(e, !inPlace)
 	return subtrees
 }
 
 // bindHoisted binds the subtrees of the expression e that [hoisted] gives, each as [bindExpression]
 // binds it, in the order of the text. The expression e is bound already, so they give no error but
 // a fault.
-func bindHoisted(t *s4qlpb.CreateTable, e stmt.Expression, set bool, args []*s4qlpb.Value, limit int) ([]*expr.Bound, error) {
+func bindHoisted(t *s4qlpb.CreateTable, e stmt.Expression, inPlace bool, args []*s4qlpb.Value, limit int) ([]*expr.Bound, error) {
 	var bs []*expr.Bound
-	for _, sub := range hoisted(e, set) {
+	for _, sub := range hoisted(e, inPlace) {
 		b, err := bindExpression(t, sub, args, limit)
 		if err != nil {
 			return nil, err
@@ -294,7 +299,7 @@ func columnClass(typ s4qlpb.Type) class {
 // expressionClass of the expression e, bound as b: the class of the type of b, and for an expression
 // whose every value is NULL, because an argument of it is NULL, the class of what it is: classText
 // for text, which never meets a number, and classNumber for arithmetic, which never meets text or a
-// blob. A column alone, as in `k + 1 = s`, has the class of its column.
+// blob. A column alone has the class of its column.
 func expressionClass(e stmt.Expression, b *expr.Bound) class {
 	switch b.Type() {
 	case expr.TypeInteger:
@@ -370,8 +375,7 @@ func columnName(t *s4qlpb.CreateTable, position int) string {
 }
 
 // scalar is a value of a side of a comparison of an expression, an integer, a real, text, or NULL,
-// which it compares without an allocation: its text shares its bytes with the row or the value of the
-// evaluator.
+// which it compares without an allocation of its own.
 type scalar struct {
 	class class
 	i     int64

@@ -213,10 +213,12 @@ type condition struct {
 	// lazy reports whether constant is text with a call, which SQLite computes when the first row
 	// reaches it, unless it serves its access; failed is SQLite's error for it, once [build.constants]
 	// found it too long there, which the condition gives on the first row that it is evaluated on.
-	// early reports whether constant is text without a call, which SQLite computes before any row,
-	// unless it serves its access, also in a subquery that it does not compute, as [build.hoist] does.
-	lazy, early bool
-	failed      error
+	lazy   bool
+	failed error
+	// text is the expression of constant where it is text, or the zero Expression, whose subtrees
+	// SQLite computes before any row of the statement also in a subquery that it does not compute, as
+	// [build.hoist] says.
+	text stmt.Expression
 	// paired reports whether the value of the condition is the column alone at pair of the row, as in
 	// `a = b`, in place of value.
 	paired bool
@@ -691,7 +693,7 @@ type update struct {
 // finds a row, as check reads it from the source. The type is s4ql's rule of the text, which holds
 // whether the update finds a row or not.
 //
-// A value of arithmetic has the class of its expression, as [comparable] says, whatever its rows, and
+// A value of an expression has the class of its expression, as [comparable] says, whatever its rows, and
 // a column alone that of its column. An update with a value that is computed for each row checks the
 // NOT NULL of every column that it sets on each row that it changes, in [update.run], so the
 // refusal of a type comes before it there.
@@ -1435,11 +1437,11 @@ func mayServe(ctx context.Context, r reader, t *s4qlpb.CreateTable, c condition)
 // hoist computes the subtrees of the expressions of the conditions of the table t that SQLite
 // computes before any row, as [hoisted] says, in the order of the text, but in a [readOnly]
 // transaction, where SQLite refuses a write first. For the conditions of a subquery, which the
-// statement may not compute, it computes the constants of text without a call too, which SQLite
-// computes before any row of the statement, unless the condition may serve the access of the
-// subquery, as [mayServe] says, which SQLite computes when it computes the subquery. Each gives
-// SQLite's `string or blob too big` where it is too long; its value is computed again with the
-// subquery.
+// statement may not compute, it computes those subtrees of the constants of text too: of a constant
+// that may serve the access of the subquery, as [mayServe] says, which SQLite codes in place where
+// the subquery seeks, its operands, and of any other constant the constant itself where it has no
+// call, as for a side of a comparison. Each gives SQLite's `string or blob too big` where it is too
+// long; the value of a constant is computed again with the subquery.
 func (b build) hoist(ctx context.Context, t *s4qlpb.CreateTable, conditions []condition, subquery bool) error {
 	if _, lookups := b.r.(readOnly); lookups {
 		return nil
@@ -1448,17 +1450,19 @@ func (b build) hoist(ctx context.Context, t *s4qlpb.CreateTable, conditions []co
 		if err := computeHoisted(c.hoisted); err != nil {
 			return err
 		}
-		if !subquery || !c.early {
+		if !subquery || !c.text.Present() {
 			continue
 		}
 		serves, err := mayServe(ctx, b.r, t, c)
 		if err != nil {
 			return err
 		}
-		if !serves {
-			if err := computeHoisted([]*expr.Bound{c.constant}); err != nil {
-				return err
-			}
+		hoisted, err := bindHoisted(t, c.text, serves, b.args, b.limit)
+		if err != nil {
+			return err
+		}
+		if err := computeHoisted(hoisted); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1467,7 +1471,7 @@ func (b build) hoist(ctx context.Context, t *s4qlpb.CreateTable, conditions []co
 // values of the conditions of the filter f, which it evaluates and puts in conditions: SQLite's error
 // for the first, in the order of the text, that is longer than the limit. The values of a subquery
 // are checked where it is, as [subqueries.lengths] says, and its own value is computed later. An
-// arithmetic expression gives a number, which has no length, and is checked by [build.types], but
+// expression is computed later, where a text that it makes may be too long, as [hoisted] says, but
 // the arguments of its parameters are checked here, on either side of the condition, as
 // [argumentLengths] says.
 func (b build) values(f *Filter, conditions []condition) error {
@@ -1591,7 +1595,10 @@ func (b build) arithmetic(fc Condition, t *s4qlpb.CreateTable, c *condition, val
 			c.per = bound
 		} else {
 			text, call := isText(value.Expression), hasCall(value.Expression)
-			c.constant, c.lazy, c.early = bound, text && call, text && !call
+			c.constant, c.lazy = bound, text && call
+			if text {
+				c.text = value.Expression
+			}
 		}
 		return nil
 	}
@@ -1610,11 +1617,13 @@ func (b build) arithmetic(fc Condition, t *s4qlpb.CreateTable, c *condition, val
 			return err
 		}
 	}
-	var valueExpression stmt.Expression
-	if value != nil {
-		valueExpression = value.Expression
+	// The subtrees of the sides with a column; those of a constant are bound where it is computed, as
+	// [build.hoist] says.
+	sides := []stmt.Expression{fc.Expression}
+	if value != nil && value.Expression.HasColumn() {
+		sides = append(sides, value.Expression)
 	}
-	for _, e := range []stmt.Expression{fc.Expression, valueExpression} {
+	for _, e := range sides {
 		hoisted, err := bindHoisted(t, e, false, b.args, b.limit)
 		if err != nil {
 			return err
@@ -2047,7 +2056,7 @@ func (b build) change(ctx context.Context, w writer, source Node, set []Assignme
 	for i, a := range set {
 		u.exprs[i], u.copied[i] = a.Value, -1
 		if arithmetic, ok := a.Value.(*Arithmetic); ok {
-			// A number has no length, but an argument of its parameters has.
+			// An expression is computed later, but the arguments of its parameters are checked here.
 			if err := argumentLengths(arithmetic.Expression, b.args, b.limit); err != nil {
 				return nil, err
 			}

@@ -170,12 +170,12 @@ func (s *subqueries) all() []*inner {
 	return s.list
 }
 
-// pendingNames of the subquery in, which the walk over the conditions of the statement of the build
-// b has reached with the column pending pending, as [resolver] says, and then ends the walk: with
-// SQLite's error for the first of its names that SQLite looks up there, or else with `no such column`
-// for pending. In an update and a delete, SQLite finds its table there, and looks none of its columns
-// up, as it resolves no names after an error; a select has found its table before, and looks the
-// column of its select list up.
+// pendingNames of the subquery in, in the transaction of the build b, where SQLite resolves its names
+// with the column pending missing already, as [resolver] says: SQLite's error for the first of its
+// names that SQLite looks up then, or else `no such column` for pending. A subquery whose table is not
+// found yet, as in an update and a delete, finds its table and looks none of its columns up, as SQLite
+// resolves no names after an error; one whose table is found, as in a select, looks the column of its
+// select list up, unless it has a LIMIT, which SQLite resolves before and stops at.
 func (s *subqueries) pendingNames(ctx context.Context, b build, in *inner, pending stmt.Name) error {
 	if in.s == nil {
 		if err := in.find(ctx, b.r); err != nil {
@@ -183,7 +183,7 @@ func (s *subqueries) pendingNames(ctx context.Context, b build, in *inner, pendi
 		}
 		return noSuchResultColumn(pending)
 	}
-	if !in.project.Star && len(in.project.Columns) == 1 {
+	if in.limit == nil && !in.project.Star && len(in.project.Columns) == 1 {
 		if _, ok := s.lookup(columnPositions(in.s.table), s.outer, in.project.Columns[0]); !ok {
 			return noSuchResultColumn(in.project.Columns[0])
 		}

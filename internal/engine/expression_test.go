@@ -1776,13 +1776,16 @@ func TestEngine_text(t *testing.T) {
 			"select * from t where lower(nosuch1) <> (select nosuch3 from w)",
 			"select * from t where lower(nosuch1) <> (select x from w)",
 			"select * from t where u = (select x from w where lower(nosuch) = x) and nosuch2 is null",
+			"select * from t where lower(nosuch1) = (select nosuch3 from w limit 1)",
+			"select * from t where lower(nosuch1) = (select nosuch3 from w)",
+			"select * from t where s || lower(nosuch) = u and nosuch2 is null",
 			"select * from t where u = (select x from w where lower(nosuch) = x and nosuch2 is null)",
 			"select * from t where lower(s) = (select * from w)",
 			"update t set s = 'a' where lower(s) = (select * from w)",
 			"update t set s = 'a' where (select * from w) = lower(s)",
 		} {
 			got := d.run(src)
-			is.True(t, got.got.err != "", src)
+			is.True(t, got.got.err != "" && got.got.err != "not supported", src)
 		}
 		d.same()
 	})
@@ -1837,7 +1840,7 @@ func TestEngine_text(t *testing.T) {
 	t.Run("should give SQLite's string or blob too big for text longer than the limit, where SQLite gives it: before any row for a constant without a call, and on the first row that reaches one with a call that serves no access", func(t *testing.T) {
 		const limit = 1000
 		a60, b60 := strings.Repeat("a", 600), strings.Repeat("b", 600)
-		long := []any{a60, b60}
+		long := []any{a60, b60, a60}
 		const tooBig = "18/18: string or blob too big"
 		// On an empty table, a table with a row, and a table whose rows no condition reaches.
 		for _, rows := range [][]string{nil, {"insert into t values (1, 'a', 'b', 'c')"}, {"insert into t values (1, 'a', 'b', 'c')", "insert into t values (2, 'x', 'y', 'z')"}} {
@@ -1855,6 +1858,9 @@ func TestEngine_text(t *testing.T) {
 				"update t set u = (? || ?) || 'x'",
 				"update t set u = lower(? || ?) || s",
 				"update t set u = lower(? || ? || s)",
+				"update t set u = hex(?) || (? || ?)",
+				"update t set u = (? || ?) || lower(?)",
+				"update t set u = lower(?) || (? || ?) where k = 99",
 				"update t set u = 'x' where k = 2 and v = ? || ?",
 				"update t set u = ? || ? where k = 99",
 				"update t set u = ? || ? || s where k = 99",
@@ -1874,10 +1880,10 @@ func TestEngine_text(t *testing.T) {
 				"select k from t where hex(?) || u = 'x'",
 				"select k from t where u || hex(?) = 'x'",
 				"select k from t where ? || ? || u = 'x'",
-				"select k from e where s = lower(? || ?)",
-				"select k from e where s > lower(? || ?)",
-				"select k from e where lower(s) = lower(? || ?)",
-				"select k from e where s <> lower(? || ?)",
+				"select s from e where s = lower(? || ?)",
+				"select s from e where s > lower(? || ?)",
+				"select s from e where lower(s) = lower(? || ?)",
+				"select s from e where s <> lower(? || ?)",
 				"delete from t where ? || ? || s = 'x'",
 				"delete from t where lower(? || ?) = u",
 				"delete from t where lower(u) = ? || ?",
@@ -1890,6 +1896,10 @@ func TestEngine_text(t *testing.T) {
 				"select k from t where k = 99 and u = (select s from t where v = ? || ?)",
 				"select k from t where u = (select s from t where s = ? || ?) limit 0",
 				"select k from t where k = 1 and u = (select s from t where v = lower(? || ?))",
+				"select k from t where k is null and u = (select s from e where s = ? || ?)",
+				"select k from t where k is null and u = (select s from e where s = ? || ? || ?)",
+				"select k from t where k is null and u = (select s from e where s = hex(?) || (? || ?))",
+				"select k from t where u = (select s from e where s = ? || (? || ?)) limit 0",
 				"select k from t where k = 99 and u = (select s from t where v = ? || ? || s)",
 			} {
 				if len(rows) > 0 {
@@ -1907,8 +1917,8 @@ func TestEngine_text(t *testing.T) {
 				"select k from t where k = 99 and s = lower(? || ?)",
 				"select k from t where k = 99 and u = (select s from t where s = ? || ?)",
 			} {
-				is.Equal(t, tooBig, d.i.queryValues(src, values(long)).err, src)
-				is.Equal(t, "", d.o.run(t, src, oracleArgs(long)...).err, src)
+				is.Equal(t, tooBig, d.i.queryValues(src, values(long[:2])).err, src)
+				is.Equal(t, "", d.o.run(t, src, oracleArgs(long[:2])...).err, src)
 			}
 			// Text with a column that is too long on a row fails on that row.
 			for _, c := range []struct {
@@ -1916,11 +1926,11 @@ func TestEngine_text(t *testing.T) {
 				args []any
 			}{
 				{"update t set u = s || ?", []any{strings.Repeat("c", 1000)}},
-				{"update t set v = ? where k = 1", []any{strings.Repeat("c", 1000)}},
-				{"select k from t where lower(v) = 'a'", nil},
+				{"update t set v = ? where k = 1", []any{strings.Repeat("c", 600)}},
+				{"select k from t where lower(v || v) = 'a'", nil},
 				{"select k from t where hex(v) = 'a'", nil},
 				{"select k from t where v || v = 'a'", nil},
-				{"update t set u = v || 'x'", nil},
+				{"update t set u = v || v", nil},
 				{"update t set v = ? where k = 1", []any{strings.Repeat("c", 500)}},
 				{"select k from t where hex(v) = 'a'", nil},
 				{"select k from t where k = 99 and hex(v) = 'a'", nil},

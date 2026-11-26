@@ -12,11 +12,12 @@ import (
 )
 
 // The rules of the expressions of the pieces of work arithmetic and text functions, for a statement
-// that [HasExpression] reports, as s4ql's documents give them: the refusals of its types, which come in an order that is
-// the engine's own, so that a rule gives each refusal that may come, and the justification of an
-// evaluation error by SQLite's own result of the operator that failed. They are independent of the
-// engine and of the evaluator: they read the typed form of the statement, the types of the columns,
-// and the arguments, and leave what SQLite computes to a query that the caller runs.
+// that [HasExpression] reports, as s4ql's documents give them: the refusals of its types, which come
+// in an order that is the engine's own, so that a rule gives each refusal that may come, and the
+// justification of an evaluation error by SQLite's own result of the operator that failed. They are
+// independent of the engine and of the evaluator: they read the typed form of the statement, the
+// types of the columns, and the arguments, and leave what SQLite computes to a query that the caller
+// runs.
 
 // ColumnClass of a column of the declared type typ, by the rule of exact types: "integer" for INT and
 // INTEGER, and "real", "text", or "blob" for the others.

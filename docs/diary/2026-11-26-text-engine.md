@@ -95,3 +95,53 @@ The rules of `stmttest` against the engine's messages (`TestArithmeticRefusals`)
 ### Future work
 
 The generators of text, its planted bugs, the driver's generated test of text, mutation testing of the new code, and the lead's answer on the partial statement.
+
+## Step 3: the review, and what it fixed and left open
+
+**Author:** text-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Run the `fabrik:code-review` skill over your diff and fix what matters."
+**Interpretation:** Two independent reviewers over `main...HEAD`; fix what both found and what is serious.
+**Inferred intent:** Hand in nothing that gives another answer than SQLite without saying so.
+
+### What I did
+
+Two reviewers (most capable model) ran about 900 statements between them against the pinned SQLite. Neither found another value than SQLite's. Fixed:
+
+- Both: `hoisted` pruned the value of SET at its root where a call stood in one operand, so `update t set u = hex(?) || (? || ?)` gave no error on an empty table where SQLite fails. `hoisted` now takes whether the root is coded in place (SET, a constant that serves the access) or as a temporary, as `sqlite3ExprCodeTemp` does, and `build.hoist` uses the in-place rule for a subquery's constant that may serve its access, so `(select s from e where s = ? || ? || ?)` fails beside `k is null` as in SQLite.
+- One reviewer, and the writer of the README before it: a write that failed with a too-long text before any row left the count of changes, where SQLite sets it to 0. `computedTooBig` and `built` in `/internal/engine/errors.go`.
+- `pendingNames` in a select gives the pending column for a subquery with LIMIT, as SQLite resolves the LIMIT first.
+- Tests that passed for the wrong reason: four statements on a table without the column `k`, and long values that the record limit refused before any text saw them. The names group asserts that no statement was refused.
+- The rule of the driver check for quoted names of SET (`checkQuoted`) took the first missing name in the order of the text; it uses `stmttest.MissingName` now, and the hand sequence has the reviewer's two statements. The equivalent mutant `build.walk condition: !c.ValueFirst => true` is no longer equivalent and is removed. Stale comments fixed.
+
+Left open in `/docs/todo/text-functions.md`, for the lead: three ways in which s4ql gives no row where SQLite fails with `string or blob too big` (a NULL constant that makes the access read nothing, SQLite's propagation of constants in a select, and `mayServe` exempting a subquery's constant that SQLite's access does not use), and three stricter cases.
+
+### Why
+
+The rule is SQLite's answer or an error; the laxer cases break it, and they need SQLite's planner copied further, which is a question of design.
+
+### What worked
+
+The planted checks: reverting `built` in `Conn.write` or in `Conn.writeIn`, and the old pruning in `hoisted`, each fail `TestEngine_text`.
+
+### What didn't work
+
+A `sed` that planted the fault in `/internal/engine/engine.go` also undid my uncommitted edit of that line; I wrote it again by hand before committing.
+
+### What I learned
+
+SQLite's `propagateConstants` turns `u = 'q' and u || ? = 'x'` into a constant term, which it computes before any row; the engine cannot see that without copying the rewrite.
+
+### What was tricky
+
+Telling which of the reviewers' laxer cases are one rule and which are three.
+
+### What warrants review
+
+`hoisted` and `build.hoist` again, and the list "Laxer than SQLite" of the todo.
+
+### Future work
+
+The lead's decision on the laxer cases and on the partial statement in a transaction.

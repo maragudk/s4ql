@@ -2540,8 +2540,9 @@ func (p *pair) checkQuoted(src string, s stmt.Statement, got outcome, o runner) 
 			return "", false
 		}
 		for _, a := range s.Set {
-			if at := slices.IndexFunc(expressionNames(a.Value.Expression), func(n stmt.Name) bool { return stmttest.ColumnOf(columns, n) < 0 }); at >= 0 {
-				return p.quoted(src, got, expressionNames(a.Value.Expression)[at])
+			// SQLite walks the names of the value as stmttest.MissingName does, also inside a call.
+			if name, missing := stmttest.MissingName(columns, a.Value.Expression); missing {
+				return p.quoted(src, got, name)
 			}
 			if stmttest.ColumnOf(columns, a.Column) < 0 {
 				return "", false
@@ -3681,6 +3682,10 @@ var sequences = map[string][]step{
 		{callQuery, "select * from t3 where lower(w3) = 'ax'", ""},
 		{callRollback, "", "rollback"},
 		{callQuery, "select * from t3", ""},
+		// SQLite walks on after a missing name inside a call, and a later one replaces it.
+		{callExec, `update t3 set w3 = lower("nosuch") || "nosuch2"`, ""},
+		{callExec, `update t3 set w3 = lower(nosuch) || "nosuch2"`, ""},
+		{callExec, `update t3 set w3 = lower("nosuch") || w3`, ""},
 		{callExec, "drop table t3", "exec: 2 affected, last insert id 0"},
 	},
 	"the example of slice 1": {
