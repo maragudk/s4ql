@@ -33,6 +33,9 @@ type bugs struct {
 	leaseFromAnswer bool
 	// ignoreCacheError makes a commit whose manifest swap succeeded ignore a failure of the cache.
 	ignoreCacheError bool
+	// ignoreCheckpointError makes the writer ignore the error of a checkpoint of the cache, as
+	// SQLite's automatic checkpoint does.
+	ignoreCheckpointError bool
 	// ackUnknown makes a commit whose manifest swap has an unknown outcome count as committed.
 	ackUnknown bool
 	// settleByRead makes an instance conclude from a read of an unchanged manifest that a commit

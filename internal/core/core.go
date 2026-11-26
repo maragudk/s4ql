@@ -33,6 +33,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"maragu.dev/s4ql/internal/core/internal/testonly"
 	"maragu.dev/s4ql/internal/format"
 	"maragu.dev/s4ql/internal/host"
 	"maragu.dev/s4ql/internal/sqlite"
@@ -78,12 +79,34 @@ type Options struct {
 	// than 1000.
 	LengthLimit int
 
-	// syncOff stops SQLite from syncing the cache to disk, for tests.
-	syncOff bool
+	// syncs says how SQLite syncs the cache to disk, which tests change: see [SyncOff].
+	syncs syncs
+	// checkpointAfter is the number of frames in the write-ahead log from which the writer
+	// checkpoints the cache after a commit: see [DB.checkpoint]. The default is 1000.
+	checkpointAfter int
 	// bugs that tests plant.
 	bugs bugs
 	// local is how the instance reaches its local files, which tests change to make them fail.
 	local local
+}
+
+// syncs is how SQLite syncs the cache to disk: with synchronous = full, unless it is [syncsOff].
+// The zero value, [syncsDefault], leaves the choice open to whoever sets the options next, and
+// [syncsFull] does not.
+type syncs int
+
+const (
+	syncsDefault syncs = iota
+	syncsFull
+	syncsOff
+)
+
+// SyncOff is o with SQLite's syncs of the cache to disk off: pragma synchronous = off. A crash of
+// the operating system can then lose or tear commits of the cache, so it is for tests that do not
+// test syncing. The key is of a package that only the packages under this one can import.
+func SyncOff(o Options, _ testonly.Key) Options {
+	o.syncs = syncsOff
+	return o
 }
 
 // local is how an instance reaches its spool files. The zero value is the files of the operating
@@ -119,6 +142,11 @@ func (o Options) withDefaults() (Options, error) {
 	}
 	if o.LengthLimit == 0 {
 		o.LengthLimit = maxLength
+	}
+	if o.checkpointAfter == 0 {
+		// SQLite's default for its automatic checkpoint, SQLITE_DEFAULT_WAL_AUTOCHECKPOINT, which
+		// every connection of the core turns off: see [openConn].
+		o.checkpointAfter = 1000
 	}
 	switch {
 	case o.Lease > 365*24*time.Hour:
@@ -224,6 +252,9 @@ type DB struct {
 	// then.
 	stopped error
 	done    chan struct{}
+	// failedLocally is whether a local I/O failure has stopped the instance, or would have, had it
+	// not stopped for another cause before: see [DB.keepLogLocked].
+	failedLocally bool
 	// holder is whether the instance holds the lease, as far as it knows: whether version is set.
 	holder bool
 	// serving is whether the instance holds the lease, its cache is caught up, and no commit of it
@@ -311,6 +342,8 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 
 	defer func() {
 		if err != nil {
+			// Nothing else knows the instance yet.
+			d.failedLocally = errors.Is(err, ErrLocal)
 			d.closeCache()
 		}
 	}()
@@ -322,7 +355,7 @@ func Open(ctx context.Context, h host.Host, s store.Store, path, prefix string, 
 	if d.w, err = openConn(sqlite.OpenVFS, path, options); err != nil {
 		return nil, openError(err)
 	}
-	if err := d.w.setUp(options.syncOff, options.Identity); err != nil {
+	if err := d.w.setUp(options.syncs == syncsOff, options.Identity); err != nil {
 		return nil, openError(err)
 	}
 
@@ -397,12 +430,24 @@ func (d *DB) CloseCache() {
 func (d *DB) closeCache() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	keepLog := d.keepLogLocked()
 	for _, c := range d.readers {
-		_ = c.close()
+		_ = c.close(keepLog)
 	}
 	if d.w != nil {
-		_ = d.w.close()
+		_ = d.w.close(keepLog)
 	}
+}
+
+// keepLogLocked is whether a connection to the cache that closes now must leave the write-ahead log
+// as it is: once a local I/O failure has stopped the instance, or met it after it stopped for
+// another cause, as a commit that goes on after [DB.Close] can, and after an [Open] that failed for
+// one. The close of the last connection otherwise checkpoints the log into the file of the cache
+// and then deletes it, which after a failed sync tries the sync again in place, and can delete the
+// only copy of pages that are not durable in the file. With the log left, the next open recovers
+// from it. It requires mu.
+func (d *DB) keepLogLocked() bool {
+	return d.failedLocally
 }
 
 // Done is closed when the instance has stopped for good.
@@ -440,6 +485,7 @@ func (d *DB) stop(ctx context.Context, cause error) error {
 // stopLocked is [DB.stop] without the event, which the caller logs with [DB.stopEvent] if first is
 // true. It requires mu.
 func (d *DB) stopLocked(cause error) (first bool, err error) {
+	d.failedLocally = d.failedLocally || errors.Is(cause, ErrLocal)
 	first = d.stopped == nil
 	if first {
 		d.stopped = fmt.Errorf("%w: %w", ErrStopped, cause)
@@ -832,7 +878,7 @@ func (d *DB) closeIdleLocked() {
 	for _, c := range append(slices.Clone(d.readers), d.w) {
 		if !c.closed && c.users == 0 {
 			c.closed, closed = true, true
-			if err := c.close(); err != nil {
+			if err := c.close(d.keepLogLocked()); err != nil {
 				d.closeErrs = append(d.closeErrs, fmt.Errorf("close: a connection to the cache: %w", err))
 			}
 		}

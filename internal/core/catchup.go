@@ -15,7 +15,8 @@ import (
 // records and the head of the manifest, oldest first, each in one transaction of the cache. It
 // finds them by walking the log back from the head, because a commit object names only the one
 // before it. It renews the lease on the way when a renewal is due. It requires the writer lock and
-// the manifest lock, and that the instance holds the lease.
+// the manifest lock, and that the instance holds the lease. After each commit object, the writer
+// checkpoints the cache when the write-ahead log has grown large enough, as after a commit.
 //
 // It stops the instance for what can never be right by trying again: a cache whose position is
 // not in the log, with [ErrCacheNotInLog]; a commit object that needs a newer version of s4ql, is
@@ -91,6 +92,9 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 			return err
 		}
 		applied++
+		if err := d.checkpoint(ctx); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -90,7 +90,7 @@ func stepSort(t *testing.T) func(ctx context.Context, fault faultvfs.Fault) erro
 	t.Cleanup(func() { is.NotError(t, vfs.Close()) })
 	c, err := openConn(sqlite.OpenVFS, filepath.Join(t.TempDir(), "cache.db"), Options{VFS: vfs.Name(), BusyTimeout: time.Second, LengthLimit: 1000})
 	is.NotError(t, err)
-	t.Cleanup(func() { is.NotError(t, c.close()) })
+	t.Cleanup(func() { is.NotError(t, c.close(false)) })
 	// 5,000 rows of 900 bytes each are 4.5 MB, and SQLite sorts up to 2 MB, the size of its page
 	// cache, in memory, and the rest in temporary files.
 	is.NotError(t, c.exec("create table t (k int primary key, v int, b blob) strict, without rowid"))

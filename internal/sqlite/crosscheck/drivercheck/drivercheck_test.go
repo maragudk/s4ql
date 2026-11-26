@@ -27,6 +27,7 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 	"maragu.dev/s4ql/internal/sql/stmt/stmttest"
 	"maragu.dev/s4ql/internal/sql/token"
+	"maragu.dev/s4ql/internal/store/s3test"
 )
 
 // call of database/sql that runs a text.
@@ -642,7 +643,7 @@ type world struct {
 
 func newWorld(tb testing.TB) *world {
 	tb.Helper()
-	isolate(tb)
+	s3test.Isolate(tb)
 	return &world{s3: newFakeS3(tb)}
 }
 
