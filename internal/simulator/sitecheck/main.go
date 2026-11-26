@@ -19,7 +19,10 @@
 // past 10 minutes; and the page writes nothing into its address. The box for SQL, while paused,
 // selects from barcodes, creates a table, inserts, selects with order by and limit, shows an error of
 // the engine and the refusal of a write to barcodes, moves fake time only until each answer, and lets
-// a write wait while the connection to S3 hangs. Then S3: the page stores nothing of it, and a reload
+// a write wait while the connection to S3 hangs. Then the keys of the page: Space plays and pauses, and
+// a and b send the requests to that instance, but not in a text field, with Ctrl, Alt, or Meta, or for a
+// held Space, and Space on a focused button, such as the stick figure, plays and does not press it.
+// Then S3: the page stores nothing of it, and a reload
 // starts on an empty S3 and the box as at the first visit; Reset empties the database; and the page
 // stops at the cap of commit objects, and Reset starts over from there. The page remembers Turbo and
 // Sound in localStorage across reloads, and Reset keeps them; Sound remembered on waits, without an

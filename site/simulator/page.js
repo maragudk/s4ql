@@ -455,6 +455,8 @@ function wire() {
       pump();
     }
   });
+  document.addEventListener("keydown", shortcut);
+  document.addEventListener("keyup", shortcutUp);
   $("reset").addEventListener("click", () => reset());
   $("turbo").addEventListener("click", () => {
     setTurbo(!turbo);
@@ -474,6 +476,34 @@ function wire() {
   });
   const mac = /mac|iphone|ipad/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
   set($("sql-keys"), mac ? "⌘ Enter" : "Ctrl+Enter");
+}
+
+// The keys of the page: Space plays and pauses, and a and b send the requests, and so the SQL of the
+// box, to that instance. Each does what a click on its button does, so that a button that is switched
+// off ignores its key too. Keys are the page's only where the visitor is not typing or holding a
+// modifier: not in a text field, and not with Ctrl, Alt, or Meta, which are the browser's. Space is the
+// page's on a focused button as well, as in a media player, so that a focused Play or the stick figure
+// does not take it: Enter still presses a focused button. The keys of a held Space do nothing.
+function shortcut(e) {
+  if (e.ctrlKey || e.altKey || e.metaKey || e.isComposing || typing(e.target)) return;
+  if (e.key === " ") {
+    e.preventDefault();
+    if (!e.repeat) $("play").click();
+    return;
+  }
+  const to = e.key.toLowerCase();
+  if (to === "a" || to === "b") document.querySelector(`#requests [data-target="${to}"]`).click();
+}
+
+// shortcutUp keeps Space from clicking a focused button when it is let go, which some browsers do
+// even when its keydown was kept from it.
+function shortcutUp(e) {
+  if (e.key === " " && !(e.ctrlKey || e.altKey || e.metaKey || e.isComposing || typing(e.target))) e.preventDefault();
+}
+
+// typing says whether the element takes text from the keyboard.
+function typing(el) {
+  return el instanceof Element && !!el.closest("textarea, input, select, [contenteditable]:not([contenteditable=false])");
 }
 
 const instanceState = (name) => (state && state.instances.find((x) => x.instance === name)) || null;
@@ -903,7 +933,7 @@ async function reset() {
 // how many dance poses it has taken, for a check of sound; the poses of the walk are walk0 to
 // walk11, mirrored when it walks to the left.
 //
-// The visitor can poke it, with a click, a tap, or Enter or Space on #figure, the element around the
+// The visitor can poke it, with a click, a tap, or Enter on #figure, the element around the
 // SVG that is placed and moved. A poke stops what it does, dance or stroll, and it plays one of
 // POKES, by chance and never the one of the poke before; PESTERS pokes within PESTER ms make it sulk.
 // Then it stands, strolls on, and dances to the next sound. A press on it that moves TAP px picks it
@@ -1508,7 +1538,7 @@ function dancerStart() {
   dancer.box.addEventListener("click", (e) => e.detail === 0 && dancerPoke(performance.now()));
   dancer.box.addEventListener("contextmenu", (e) => e.preventDefault());
   dancer.box.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
+    if (e.key !== "Enter") return;
     e.preventDefault();
     if (!e.repeat) dancerPoke(performance.now());
   });
