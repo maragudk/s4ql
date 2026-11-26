@@ -2678,7 +2678,15 @@ func (p *pair) checkRefused(src string, s stmt.Statement, runs [][]any, got outc
 		args := runs[i]
 		want := argumentRefusal(args)
 		prepared := false
+		if refusal := stmttest.TextRefusal(s); upsertOf(s) != nil && refusal != "" && r.failed == "prepare" {
+			// Prepare refuses text from the text alone, before it sees an argument.
+			want, prepared = refusal, true
+		}
 		switch {
+		case prepared:
+			if kind == excusedType {
+				kind = excusedUpsert
+			}
 		case want != "":
 			kind = excusedArgument
 		case len(args) == s.Parameters() && upsertOf(s) != nil:
@@ -3067,8 +3075,9 @@ func (p *pair) justifyUpsert(src string, s *stmt.Insert, args []any, e *expr.Err
 			key = c.Name
 		}
 	}
-	// probe runs q on o, rolled back, and gives whether it gave a row and how many it changed.
-	probe := func(q string, args []any) (bool, int64) {
+	// probe runs q on o, rolled back, and gives whether it gave a row, how many it changed, and
+	// SQLite's error, or "".
+	probe := func(q string, args []any) (bool, int64, string) {
 		r := o
 		var end func()
 		switch o := o.(type) {
@@ -3089,19 +3098,25 @@ func (p *pair) justifyUpsert(src string, s *stmt.Insert, args []any, e *expr.Err
 		defer end()
 		rows, err := r.QueryContext(ctx, q, args...)
 		if err != nil {
-			tb.Fatalf("%q: SQLite gives %v", q, mattnText(tb, err))
+			return false, 0, mattnText(tb, err)
 		}
 		found := rows.Next()
 		for rows.Next() {
 		}
-		is.NotError(tb, rows.Err())
+		if err := rows.Err(); err != nil {
+			is.NotError(tb, rows.Close())
+			return false, 0, mattnText(tb, err)
+		}
 		is.NotError(tb, rows.Close())
 		var changes int64
 		is.NotError(tb, r.QueryRowContext(ctx, "select changes()").Scan(&changes))
-		return found, changes
+		return found, changes, ""
 	}
+	// The rule evaluates an expression with a column only on a conflict, where SQLite takes the
+	// proposed row, which the engine checks before it computes such an expression.
 	q, qArgs := stmttest.UpsertConflictQuery(s, src, key, bound)
-	_, inserted := probe(q, qArgs)
+	_, inserted, failed := probe(q, qArgs)
+	conflict := failed == "" && inserted == 0
 	at := false
 	for _, site := range stmttest.UpsertSites(s.Conflict) {
 		for _, n := range stmttest.Operators(site.Root) {
@@ -3109,10 +3124,15 @@ func (p *pair) justifyUpsert(src string, s *stmt.Insert, args []any, e *expr.Err
 				continue
 			}
 			at = true
-			if inserted > 0 && site.Root.HasColumn() {
+			if !conflict && site.Root.HasColumn() {
 				continue
 			}
-			if found, _ := probe(stmttest.UpsertQuirkQuery(s, src, key, site, n, e.Kind, bound)); found {
+			q, qArgs := stmttest.UpsertQuirkQuery(s, src, key, site, n, e.Kind, bound)
+			found, _, failed := probe(q, qArgs)
+			if failed != "" {
+				tb.Fatalf("%q: SQLite gives %v", q, failed)
+			}
+			if found {
 				return ""
 			}
 		}
@@ -4838,6 +4858,9 @@ func TestPair(t *testing.T) {
 					"prepare, exec several times: 1 affected, last insert id 0; then: 0 affected, last insert id 0; then: 1 affected, last insert id 0; then: exec failed with s4ql: integer overflow in + (at offset 81)"},
 				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = excluded.v3", callExec, nil, "exec: exec failed with s4ql: not supported: the column excluded.v3 of type REAL for the column t4.v4 of type INT"},
 				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v2 = lower(excluded.v2)", callPrepareExec, nil, "prepare, exec: prepare failed with s4ql: not supported: call of lower (at offset 76)"},
+				{"insert into t4 (v1, v3) values (?, ?) on conflict (v1) do update set v2 = lower(excluded.v2)", callPrepareExec, [][]any{{int64(1), math.NaN()}}, "prepare, exec: prepare failed with s4ql: not supported: call of lower (at offset 74)"},
+				{"insert into t4 (v1, v3) values (?, ?) on conflict (v1) do update set v2 = lower(excluded.v2)", callExec, [][]any{{int64(1), math.NaN()}}, "exec: exec failed with s4ql: not supported: argument 2, which is a real that is not a number"},
+				{"insert into t4 (v1) values (1) on conflict (v1) do update set v4 = 9223372036854775807 + 1, v3 = v3 * 2.0", callExec, nil, "exec: exec failed with s4ql: integer overflow in + (at offset 67)"},
 				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v2) do nothing", callExec, nil, "exec: exec failed with 1/1: ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint"},
 				{"insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = 9223372036854775807 + v1", callExec, nil, "exec: exec failed with s4ql: integer overflow in + (at offset 76)"},
 				{"insert into t4 (v1, v3) values (1, null) on conflict (v1) do nothing", callExec, nil, "exec: exec failed with 19/1299: NOT NULL constraint failed: t4.v3"},

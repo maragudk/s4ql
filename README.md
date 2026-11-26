@@ -16,7 +16,7 @@ Made with ✨sparkles✨ by [maragu](https://www.maragu.dev/): independent softw
 
 ## Status
 
-As of 2026-11-25:
+As of 2026-11-26:
 
 - **Works now,** through `database/sql`, with the package `maragu.dev/s4ql` as the driver:
   - `create table` and `drop table` of a strict table with one or more columns, exactly one of them the primary key, and a `default` with a literal on a column.

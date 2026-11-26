@@ -80,14 +80,12 @@ func (p *pair) upsertQuirk(src string, s *stmt.Insert, columns []stmttest.TableC
 	// probe runs q in a savepoint that it rolls back, and gives its answer and SQLite's count of
 	// changes.
 	probe := func(q string, args []any) (answer, int64) {
+		t.Helper()
 		is.Equal(t, "", o.run(t, "savepoint s4ql_quirk").err)
 		a := o.run(t, q, args...)
 		changes, _ := o.changes(t)
 		is.Equal(t, "", o.run(t, "rollback to s4ql_quirk").err)
 		is.Equal(t, "", o.run(t, "release s4ql_quirk").err)
-		if a.err != "" {
-			t.Fatalf("%q: SQLite gives %v", q, a.err)
-		}
 		return a, changes
 	}
 	// The probes write, which sets SQLite's count of changes, so the count is set back once they have
@@ -105,10 +103,17 @@ func (p *pair) upsertQuirk(src string, s *stmt.Insert, columns []stmttest.TableC
 		changes, _ := o.changes(t)
 		is.Equal(t, before, changes, "SQLite's count of changes after the probes")
 	}()
-	_, inserted := probe(stmttest.UpsertConflictQuery(s, src, key, args))
+	// The rule evaluates an expression with a column only on a conflict: where the table has a row of
+	// the key of the proposed row, and SQLite takes the row, as the engine has checked it before it
+	// computes such an expression. A constant is computed before the row is checked, also of a row
+	// that SQLite refuses.
+	conflict := false
+	if slices.ContainsFunc(stmttest.UpsertSites(s.Conflict), func(site stmttest.ArithmeticSite) bool { return site.Root.HasColumn() }) {
+		a, inserted := probe(stmttest.UpsertConflictQuery(s, src, key, args))
+		conflict = a.err == "" && inserted == 0
+	}
 	for _, site := range stmttest.UpsertSites(s.Conflict) {
-		if inserted > 0 && site.Root.HasColumn() {
-			// The table has no row of the key, and the rule evaluates no expression with a column.
+		if !conflict && site.Root.HasColumn() {
 			continue
 		}
 		for _, n := range stmttest.Operators(site.Root) {
@@ -120,7 +125,12 @@ func (p *pair) upsertQuirk(src string, s *stmt.Insert, columns []stmttest.TableC
 				kinds = []error{ee.Kind}
 			}
 			for _, kind := range kinds {
-				if a, _ := probe(stmttest.UpsertQuirkQuery(s, src, key, site, n, kind, args)); len(a.rows) > 0 {
+				q, bound := stmttest.UpsertQuirkQuery(s, src, key, site, n, kind, args)
+				a, _ := probe(q, bound)
+				if a.err != "" {
+					t.Fatalf("%q: SQLite gives %v", q, a.err)
+				}
+				if len(a.rows) > 0 {
 					return true
 				}
 			}
@@ -563,6 +573,9 @@ var upsertCases = []stmttest.Call{
 	// Evaluation errors, of a constant and on the row of the conflict, and none where the rule
 	// evaluates nothing.
 	{Src: "insert into t (k, n) values (9, 1) on conflict (k) do update set v = 9223372036854775807 + 1"},
+	// A constant is computed before the proposed row is checked, also of a row that SQLite refuses.
+	{Src: "insert into t (k) values (1) on conflict (k) do update set v = 9223372036854775807 + 1, w = w * 2.0"},
+	{Src: "insert into t (k, n, v) values (1, 1, 'x') on conflict (k) do update set v = 9223372036854775807 + 1"},
 	{Src: "insert into t (k, n, v) values (1, 1, 9223372036854775807) on conflict (k) do update set v = excluded.v + v"},
 	{Src: "insert into t (k, n, v) values (8, 1, 9223372036854775807) on conflict (k) do update set v = excluded.v + v returning *"},
 	{Src: "insert into t (k, n, v) values (1, 1, 0) on conflict (k) do update set v = 1 where v / excluded.v = 1"},
