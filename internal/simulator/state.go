@@ -125,9 +125,6 @@ type ClientState struct {
 // StateAt the time t of the run res, from the events up to and including t.
 func StateAt(res Response, t float64) State {
 	f := newFold()
-	if res.Request != nil {
-		f.pending = res.Request.seed
-	}
 	for _, e := range res.Events {
 		if e.T > t {
 			break
@@ -162,9 +159,6 @@ type fold struct {
 	head   string
 	whole  bool
 	follow bool
-	// pending is the bucket that the store holds from before the run, which the event "seeded" puts
-	// into the fold.
-	pending *seed
 }
 
 // clocks of an instance at an event: its time, and the readings of the two clocks.
@@ -257,14 +251,6 @@ func (f *fold) add(e Event) {
 			s.OutageUntil = max(s.OutageUntil, e.T+e.For)
 		case "calm":
 			s.Calm = true
-		case "seeded":
-			if f.pending != nil {
-				f.seed(f.pending, e.By)
-				f.pending = nil
-			}
-			if s.Bucket.Manifest != nil {
-				s.Bucket.ManifestVersion = e.Version
-			}
 		}
 	case "action":
 		if e.What != "done" {
@@ -325,21 +311,6 @@ func (f *fold) core(e Event) {
 			in.State = "stopped"
 		}
 		in.Lease = "none"
-	}
-}
-
-// seed the fold with the bucket that the store holds from before the run, as if the store had applied
-// its objects before the event "seeded": the commit objects at the times of their last writes, which
-// are times of the history, less offset, the time of the history at the time 0 of the run, and the
-// manifest. Nothing knows the process that wrote them.
-func (f *fold) seed(s *seed, offset float64) {
-	for _, o := range s.objects {
-		at := o.At - offset
-		if c := s.commits[o.Key]; c != nil {
-			f.request(Event{T: at, Kind: "request", What: "applied", Object: &Object{Commit: c}})
-		} else {
-			f.request(Event{T: at, Kind: "request", What: "applied", Object: &Object{Manifest: s.manifest}})
-		}
 	}
 }
 

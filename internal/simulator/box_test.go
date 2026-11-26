@@ -13,40 +13,41 @@ import (
 	"maragu.dev/s4ql/internal/simulator"
 )
 
-// sql sends the statement of the box in the session k, advances until it has ended, and returns the
+// pageSettings are those of the simulator page: a starts alone, b stands by, and the client calls a.
+const pageSettings = `"workload": {"callers": 0}, "client": {"instance": "a"}, "standby": true`
+
+// sql sends the statement of the box in the session l, advances until it has ended, and returns the
 // event that ends its call, and the answer of the advance.
-func (k *keeping) sql(text string) (simulator.Event, simulator.Live) {
-	k.t.Helper()
+func (l *live) sql(text string) (simulator.Event, simulator.Live) {
+	l.t.Helper()
 	body, err := json.Marshal(simulator.Action{Do: "sql", SQL: text})
-	is.NotError(k.t, err)
-	k.act(string(body))
-	from := len(k.events)
-	a := k.do("advance", `{"by": 120000, "until": "sql"}`)
-	k.kept.keep(a)
-	for _, e := range k.events[from:] {
+	is.NotError(l.t, err)
+	l.act(string(body))
+	from := len(l.events)
+	a := l.do("advance", `{"by": 120000, "until": "sql"}`)
+	for _, e := range l.events[from:] {
 		if e.Kind == "call" && e.Caller == "box" && e.What != "started" {
 			return e, a
 		}
 	}
-	k.t.Fatalf("the statement %q has not ended after the advance", text)
+	l.t.Fatalf("the statement %q has not ended after the advance", text)
 	return simulator.Event{}, a
 }
 
-// served starts a session with the page's settings on the bucket b, or none, and advances it until a
-// serves.
-func served(t *testing.T, seed int, b *simulator.StoredBucket) *keeping {
+// served starts a session with the page's settings, and advances it until a serves.
+func served(t *testing.T, seed int) *live {
 	t.Helper()
-	k := startKeeping(t, fmt.Sprintf(`"seed": %v, `+pageSettings, seed), b)
+	l := startLive(t, fmt.Sprintf(`{"seed": %v, `+pageSettings+"}", seed))
 	for range 60 {
-		k.advance(5_000)
-		for _, e := range k.events {
+		l.advance(5_000)
+		for _, e := range l.events {
 			if e.Kind == "call" && e.Caller == "client" && e.What == "committed" {
-				return k
+				return l
 			}
 		}
 	}
 	t.Fatal("a commits no request in five minutes")
-	return k
+	return l
 }
 
 // values of the cells of the rows, as text, with null for NULL.
@@ -68,7 +69,7 @@ func values(rows [][]*simulator.Cell) []string {
 
 func TestEngine_box(t *testing.T) {
 	t.Run("should run the visitor's statements on the instance that the requests go to, each write as a commit object of its own", func(t *testing.T) {
-		k := served(t, 3, nil)
+		k := served(t, 3)
 
 		e, _ := k.sql("create table t (k integer primary key, v text, r real, b blob) strict, without rowid")
 		is.Equal(t, "committed", e.What, e.Error)
@@ -139,7 +140,7 @@ func TestEngine_box(t *testing.T) {
 	})
 
 	t.Run("should refuse every statement but a select that names the table of the app, before it reaches the engine", func(t *testing.T) {
-		k := served(t, 4, nil)
+		k := served(t, 4)
 		for _, text := range []string{
 			"insert into barcodes (code) values (1)", "delete from barcodes", "update BarCodes set code = 1",
 			`drop table "barcodes"`, "create table if not exists barcodes (k integer primary key) strict, without rowid",
@@ -163,7 +164,7 @@ func TestEngine_box(t *testing.T) {
 	})
 
 	t.Run("should take one statement at a time, and stop an advance until it ends once it has", func(t *testing.T) {
-		k := served(t, 5, nil)
+		k := served(t, 5)
 		// Without a statement on its way, the advance moves nothing.
 		before := k.last.T
 		a := k.do("advance", `{"by": 60000, "until": "sql"}`)
@@ -211,7 +212,7 @@ func TestEngine_box(t *testing.T) {
 	})
 
 	t.Run("should keep the outcomes of a write apart under the faults of the instance", func(t *testing.T) {
-		k := served(t, 6, nil)
+		k := served(t, 6)
 		e, _ := k.sql("create table t (k integer primary key) strict, without rowid")
 		is.Equal(t, "committed", e.What, e.Error)
 
@@ -238,27 +239,6 @@ func TestEngine_box(t *testing.T) {
 		is.Equal(t, "refused", e.What, e.Error)
 		e, _ = k.sql("select * from t")
 		is.Equal(t, "refused", e.What, e.Error)
-	})
-
-	t.Run("should keep the visitor's tables in the bucket across a reload", func(t *testing.T) {
-		first := served(t, 7, nil)
-		for _, text := range []string{"create table mine (k integer primary key, v text) strict, without rowid", "insert into mine values (1, 'kept')", "create index mine_v on mine (v)"} {
-			e, _ := first.sql(text)
-			is.Equal(t, "committed", e.What, e.Error)
-		}
-		first.advance(10_000)
-		b := first.kept.bucket()
-
-		second := startKeeping(t, `"seed": 9, `+pageSettings, &b)
-		var e simulator.Event
-		for range 20 {
-			if e, _ = second.sql("select v from mine where v = 'kept'"); e.What == "served" {
-				break
-			}
-			second.advance(10_000)
-		}
-		is.Equal(t, "served", e.What, e.Error)
-		is.EqualSlice(t, []string{"text:kept"}, values(e.Rows))
 	})
 
 	t.Run("should give the same events and hash in a session as a batch run with the same statements", func(t *testing.T) {

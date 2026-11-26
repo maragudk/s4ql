@@ -27,13 +27,6 @@ type Live struct {
 	Steps int `json:"steps"`
 	// State is the state of the session, in the answer to "now".
 	State *State `json:"state,omitzero"`
-	// Changes are the objects that writes put into the store since the answer before, in the order
-	// of the writes, each as the store held it after its write. Values is the counter of the
-	// workload. A page that keeps them has the bucket of the session as a [StoredBucket].
-	Changes []StoredObject `json:"changes"`
-	Values  int64          `json:"values"`
-	// Version is the [StorageVersion] of the engine, in the answer to "start".
-	Version string `json:"version,omitzero"`
 	// Ended is set on the last answer of a session: the answer to "end", or to the command during
 	// which the scheduler failed. It has the fields from here on, as a [Response] has them.
 	Ended          bool     `json:"ended,omitzero"`
@@ -83,28 +76,19 @@ func startSession(t *testing.T, req Request) (*session, answer) {
 	s := &session{instances: req.Instances, line: handoff.New[command, answer]()}
 	first := s.line.Start(func() {
 		var last Live
-		var refusal string
 		synctest.Test(t, func(t *testing.T) {
 			world := sim.New(req.Seed, sim.Options{Jitter: 50 * time.Millisecond, Buggify: sim.Buggify{On: req.Buggify}, MaxSteps: math.MaxInt})
 			r := newRun(t, req, world, math.MaxInt64, disks, true)
 			r.session = s
 			var res Response
 			r.ends(world.Run(r.serve), &res)
-			changes, values := r.takeChanges()
-			last = Live{T: millis(r.endedAt), Events: nonNil(r.rec.take()), Changes: nonNil(changes), Values: values, Steps: res.Steps, Ended: true,
+			last = Live{T: millis(r.endedAt), Events: nonNil(r.rec.take()), Steps: res.Steps, Ended: true,
 				Summary: res.Summary, Hash: res.Hash, SchedulerError: res.SchedulerError}
 			if last.SchedulerError != "" {
 				last.T = millis(world.Monotonic())
 			}
-			if r.refusal != "" {
-				refusal = "the bucket is refused: " + r.refusal
-			}
 		})
 		putDisks(disks)
-		if refusal != "" {
-			s.line.Last(answer{body: refused(refusal), final: true})
-			return
-		}
 		s.line.Last(answer{body: marshal(last), final: true})
 	})
 	return s, first
@@ -126,14 +110,10 @@ func (r *run) serve(ctx context.Context) {
 	s := r.session
 	var state *State
 	var refusal string
-	version := StorageVersion()
 	for {
 		a := answer{body: refused(refusal)}
 		if refusal == "" {
-			changes, values := r.takeChanges()
-			a = answer{body: marshal(Live{T: millis(r.world.Monotonic()), Events: nonNil(r.rec.take()), Changes: nonNil(changes), Values: values,
-				Steps: r.world.Steps(), State: state, Version: version})}
-			version = ""
+			a = answer{body: marshal(Live{T: millis(r.world.Monotonic()), Events: nonNil(r.rec.take()), Steps: r.world.Steps(), State: state})}
 		}
 		c := s.line.Answer(a)
 		state, refusal = nil, ""
