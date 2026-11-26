@@ -1401,6 +1401,19 @@ func TestStmt_StepContext(t *testing.T) {
 		is.Equal(t, codeInterrupt, code(t, s.Reset()))
 	})
 
+	t.Run("should end the step with the context's error, and not its cause, for a context that ended with a cause", func(t *testing.T) {
+		c := memory(t)
+		s := sorted(t, c, 20_000)
+		cause := &sqlite.Error{Code: 10, Message: "disk I/O error of another connection"}
+		ctx, cancel := context.WithCancelCause(t.Context())
+		cancel(cause)
+		_, err := s.StepContext(ctx)
+		is.Error(t, context.Canceled, err)
+		var sqliteErr *sqlite.Error
+		is.True(t, !errors.As(err, &sqliteErr), fmt.Sprint(err))
+		is.Equal(t, codeInterrupt, code(t, s.Reset()))
+	})
+
 	t.Run("should interrupt only the step that it runs, and no step after it, of the same statement or another", func(t *testing.T) {
 		c := memory(t)
 		s := sorted(t, c, 20_000)
