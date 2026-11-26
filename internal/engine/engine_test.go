@@ -3039,6 +3039,68 @@ func TestEngine_cancelChange(t *testing.T) {
 			})
 		}
 	}
+
+	for _, inTx := range []bool{false, true} {
+		t.Run(fmt.Sprint("should change nothing and give the context's error when the context is canceled midway through the run or the replay of an update by an index that fails for a row, in a transaction ", inTx, ", which goes on and commits"), func(t *testing.T) {
+			// In the order of the key, the run changes the rows of the keys 0 to 19 and fails on that of
+			// the key 20, which gives NULL to y; in that of ia, which is the reverse, the replay changes
+			// the rows of the keys 39 to 26 and fails on that of the key 25, which gives NULL to x.
+			i, o := newInstance(t, engine.Options{}), newOracle(t)
+			setup := []string{
+				"create table t (k int primary key, a int, x int not null, y int not null, nx int, ny int) strict, without rowid",
+				"create index ia on t (a)",
+			}
+			for k := range 40 {
+				nx, ny := "1", "1"
+				switch k {
+				case 20:
+					ny = "null"
+				case 25:
+					nx = "null"
+				}
+				setup = append(setup, fmt.Sprintf("insert into t values (%v, %v, 0, 0, %v, %v)", k, 100-k, nx, ny))
+			}
+			for _, src := range setup {
+				is.Equal(t, "", o.run(t, src).err, src)
+				is.Equal(t, "", i.exec(src).err, src)
+			}
+			if inTx {
+				is.NotError(t, i.c.Begin(t.Context()))
+				is.Equal(t, "", o.run(t, "begin").err)
+				is.Equal(t, "", o.run(t, "insert into t values (50, 1, 1, 1, 1, 1)").err)
+				is.Equal(t, "", i.exec("insert into t values (50, 1, 1, 1, 1, 1)").err)
+			}
+			src := "update t set x = nx, y = ny where a > 0"
+			want := o.run(t, src).err
+			is.Equal(t, "19/1299: NOT NULL constraint failed: t.x", want)
+			// The context is canceled at each call of its Err in turn, in the run and then in the replay,
+			// until the statement no longer calls it as often, and fails with SQLite's error.
+			canceled := 0
+			for n := int64(0); ; n++ {
+				_, err := i.c.Exec(newFlipContext(t.Context(), n), src)
+				is.True(t, err != nil, "the update fails")
+				if !errors.Is(err, context.Canceled) {
+					is.Equal(t, want, i.errAnswer(src, err).err, fmt.Sprint("the error once the context is no longer canceled, at the call ", n))
+					break
+				}
+				canceled++
+				is.Equal(t, o.run(t, "select * from t").String(), i.query("select * from t").String(), fmt.Sprint("the rows after a cancel at the call ", n))
+				is.True(t, n < 100_000, "the statement fails with SQLite's error once its context is no longer canceled")
+			}
+			// The run changes 20 rows before it fails, and the replay 14, each with a call of Err.
+			is.True(t, canceled > 20+14, fmt.Sprint("the statement is canceled in its run and in its replay: ", canceled))
+			if inTx {
+				is.Equal(t, "", o.run(t, "insert into t values (51, 2, 1, 1, 1, 1)").err)
+				is.Equal(t, "", i.exec("insert into t values (51, 2, 1, 1, 1, 1)").err)
+				is.NotError(t, i.c.Commit(t.Context()))
+				is.Equal(t, "", o.run(t, "commit").err)
+			}
+			state := o.state(t)
+			is.Equal(t, state, i.state(), "the state at the end")
+			i.restart(true, engine.Options{})
+			is.Equal(t, state, i.state(), "the state after a replay of the log into an empty cache")
+		})
+	}
 }
 
 func TestEngine_delete(t *testing.T) {
