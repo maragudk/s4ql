@@ -1725,3 +1725,21 @@ stmt/split.go staysComment operator: pos >= end => pos > end
 	A comment never starts at end, which is a space or the end of the text.
 stmt/split.go staysComment operator: k == token.Comment && n == end-pos => k == token.Comment || n == end-pos
 	The prefix is either a comment that runs to end, true either way, or the slash of a /* at the end of the text, one byte of the two before end, false either way.
+# These timed out in the first run, at the limit of one minute of the layers generator and mutants
+# under load, and survived the rerun with a limit of five minutes.
+stmt/check.go Check condition: err != nil => false #2
+	statementAt gives no statement with an error, so s == nil holds where err != nil does, and the return is taken as before.
+stmt/check.go Check condition: s == nil => false
+	A rest without a statement has its tail at the end of the text, so Check then finds no second statement and gives the nil statement and the nil error, as the return did.
+stmt/check.go statementAt constant: 0 => 1
+	The tail beside the error of a limit of the parser is read by no caller: Check and Split return at the error.
+stmt/check.go statementAt constant: 0 => 1 #2
+	The tail beside SQLite's syntax error is read by no caller: Check and Split return at the error.
+stmt/split.go Split operator: tail < len(src) => tail <= len(src)
+	As for the condition true: for a first statement whose tail is the end of the text, trimmedEnd reads no token after it and gives nil, and the statement ends the view.
+stmt/split.go trimmedEnd condition: end == len(src) => false
+	As for the removal of its return: where the trim leaves the text as it is, no token runs past its end, and the loop gives nil.
+stmt/split.go staysComment condition: pos >= end => false
+	A comment never starts at or after end, as above, so the guard holds only by its first operand either way.
+internal/engine/bugs.go bugs.annotation condition: b.annotateText => true
+	Reached only with annotateText or argsFromStart planted: argsFromStart then annotates with the whole text too, another wrong annotation that its tests find.
