@@ -81,7 +81,7 @@ The decisions and notes of the builders of the piece of work "arithmetic", the f
   - **The driver's errors.** An evaluation error matches `s4ql.ErrEvaluation` and one of `s4ql.ErrOverflow`, `s4ql.ErrDivisionByZero`, and `s4ql.ErrNotFinite`, with the message of the evaluator, such as `s4ql: integer overflow in + (at offset 17)`. A fault of the evaluator is an internal error.
   - **The event.** An evaluation error has the outcome `evaluation_error`, at Debug. No attribute was added.
   - **Negative zero.** SQLite stores 0.0 for `update t set r = -0.0 * 1` on a REAL column, and gives 0.0 through RETURNING, in a table WITHOUT ROWID and in a rowid table. The evaluator gives -0.0, and the core stores 0.0, in the cache, in the commit object, and after a replay, as it did for -0.0 before.
-  - **The commit format does not change.** Commits record rows, and the annotation is the text with its arguments.
+  - **The commit format does not change.** Commits record rows, and the annotation is the text, with its arguments until 2026-11-26.
 - **Where s4ql is stricter than SQLite or differs from it, in the engine and the driver,** for the lead to tell Markus:
   - Text and blobs beside arithmetic are refused from the types. SQLite converts by the affinity of the column: `s = 3 + 1` chooses the row with `s = '4'`, and `set s = i + 1` stores `'4'`.
   - An integer and a real across a comparison or an assignment of arithmetic are refused, as in `r = k + 1` and `set i = r * 2`, where SQLite compares them by their number or converts 5.0 to 5. So are two expressions of other classes, as in `a * 2 < r * 3`.
