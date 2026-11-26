@@ -1605,3 +1605,39 @@ internal/engine/bugs.go bugs.annotation condition: !b.argsFromStart => false
 	As for the whole condition false: without either bug, neither flag after it changes the annotation.
 internal/engine/bugs.go bugs.annotation remove statement: return sql, args => #2
 	As for the condition false: the code after the guard gives the text and the arguments as they came without either bug.
+internal/engine/bugs.go bugs.annotation condition: b.argsFromStart => true
+	Reached only with annotateText or argsFromStart planted: annotateText then also annotates the arguments of the text from the first on, another wrong annotation, which its tests find.
+
+# Conn.commitFailed, the planted bug commitFailed. Each variant plants it with other bugs of the text
+# too, or on a statement alone, or leaves the transaction to a roll back after its commit; each is
+# reached only with a planted bug, and is still a wrong answer that the tests of the bugs find.
+internal/engine/bugs.go Conn.commitFailed operator: !c.e.bugs.commitFailed || textOf(ctx) == nil => !c.e.bugs.commitFailed && textOf(ctx) == nil
+	Without a planted bug there is no text, so it gives false as before. With commitFailed it also commits a failed statement alone, and with another bug of the text it commits a failed statement of the text: wrong answers that the tests of those bugs find.
+internal/engine/bugs.go Conn.commitFailed condition: !c.e.bugs.commitFailed => false
+	There is a text only while a planted bug of the text is, so this plants commitFailed beside each of them, another wrong answer that their tests find.
+internal/engine/bugs.go Conn.commitFailed condition: textOf(ctx) == nil => false
+	Reached only with commitFailed planted, which then commits a failed statement alone too, another wrong answer that its tests find.
+internal/engine/bugs.go Conn.commitFailed operator: textOf(ctx) == nil => textOf(ctx) != nil
+	Reached only with commitFailed planted, which then commits a failed statement alone and not one of a text, another wrong answer that its tests find.
+internal/engine/bugs.go Conn.commitFailed boolean: true => false
+	The write is committed either way; Conn.write then takes the transaction for open and rolls it back, which fails on a transaction that has ended, and drops that error.
+
+# Conn.inOneCommit, the planted bug oneCommit.
+internal/engine/bugs.go Conn.inOneCommit operator: len(parts) < 2 => len(parts) <= 2
+	oneCommit then leaves out a text of two statements, and its tests find it by the texts of three or more.
+internal/engine/bugs.go Conn.inOneCommit constant: len(parts) < 2 => len(parts) < 3
+	As for <= 2: its tests find it by the texts of three statements or more.
+internal/engine/bugs.go Conn.inOneCommit constant: len(parts) < 2 => len(parts) < 1
+	oneCommit then wraps a text of one statement too, and its tests find it by the texts of several as before.
+internal/engine/bugs.go Conn.inOneCommit remove statement: return c.execAll(ctx, src, args) =>
+	Without the return, the code after it runs the text with c.execAll and, with no transaction open, since none was begun or the begin failed, returns its result and its error, which is what the return gave.
+internal/engine/bugs.go Conn.inOneCommit condition: c.tx == nil => false
+	The transaction that it began is open after the text: s4ql refuses BEGIN, COMMIT, and ROLLBACK, and a statement that fails in a transaction leaves it open, so c.tx is never nil here.
+internal/engine/bugs.go Conn.inOneCommit remove statement: return res, err => #2
+	Unreachable, as for the condition above: the transaction is open after the text.
+internal/engine/bugs.go Conn.inOneCommit condition: err == nil => true
+	oneCommit then gives the error of the commit in place of that of a failed statement, another wrong answer that its tests find.
+internal/engine/bugs.go Conn.inOneCommit condition: err == nil => false
+	oneCommit then drops the error of its commit, which does not fail in its tests, so its answers are those of the bug as before.
+internal/engine/bugs.go Conn.inOneCommit operator: err == nil => err != nil
+	As for true and false: the error of a failed statement gives way to that of the commit, and a commit's error is dropped, wrong answers of the bug that its tests find.
