@@ -274,10 +274,12 @@ func (c *conn) readSchema(sql string, row func(s *sqlite.Stmt) error, args ...an
 // version with [ErrCacheVersion], and one that records another identity than the given one with
 // [ErrCacheDatabase].
 //
-// With synchronous = full, SQLite syncs the write-ahead log at every commit, and the file of the
-// cache at every checkpoint that copies the whole log (https://sqlite.org/pragma.html#pragma_synchronous),
-// so a sync that fails fails the commit that needed it. Under synchronous = normal SQLite would sync
-// the log only at a checkpoint, and a commit whose frames never reached the disk would succeed.
+// With synchronous = full (https://sqlite.org/pragma.html#pragma_synchronous), SQLite syncs the
+// write-ahead log at every commit, before the commit is in the index of the log, so a failed sync of
+// the log fails the commit that needed it. The file of the cache is synced only by a checkpoint that
+// copies the whole log, so a failed sync of the file fails no commit: it surfaces at the checkpoint
+// that [DB.checkpoint] runs after a later commit. Under synchronous = normal SQLite would sync the
+// log only at a checkpoint, and a commit whose frames never reached the disk would succeed.
 func (c *conn) setUp(syncOff bool, identity string) error {
 	if err := c.wal(); err != nil {
 		return err
