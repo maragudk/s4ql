@@ -2731,8 +2731,10 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 		}
 		names = append(names, e.Column)
 	case stmt.ExprNegate:
-		if len(e.Operands) != 1 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) ||
-			e.Operands[0].Kind == stmt.ExprValue || e.Operands[0].Kind == stmt.ExprNegate {
+		// A second sign is refused, but a negation in parentheses is an operator, as in `-(-v)`.
+		if len(e.Operands) != 1 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) || e.Function != 0 ||
+			e.Operands[0].Kind == stmt.ExprValue ||
+			e.Operands[0].Kind == stmt.ExprNegate && !slices.ContainsFunc(token.Tokens(src[sp.Start:e.Operands[0].Span.Start]), func(tk token.Token) bool { return tk.Kind == token.LP }) {
 			t.Fatalf("%q: the negation %+v", src, e)
 		}
 		x := e.Operands[0]
