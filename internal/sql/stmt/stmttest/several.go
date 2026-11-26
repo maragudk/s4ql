@@ -105,6 +105,11 @@ func (q *Sequence) several() Call {
 	var args [][]any
 	// supports holds whether each of texts is a statement that a Sequence writes.
 	var supports []bool
+	// statements holds whether each statement of the text, as SQLite reads it, is one that a Sequence
+	// writes: one for each of texts, and two for a text of Others with two.
+	var statements []bool
+	// counts holds the number of statements of each of texts.
+	var counts []int
 	// chain holds the statements of [severalChain] that the text has yet to write.
 	var chain []string
 	each := true
@@ -130,15 +135,17 @@ func (q *Sequence) several() Call {
 		var text string
 		var a []any
 		supported := true
+		count := 1
 		switch d := r.IntN(12); {
 		case len(chain) > 0:
 			text, chain = chain[0], chain[1:]
 		case d == 0 && j > 0:
 			i := r.IntN(len(texts))
-			text, a, supported = texts[i], args[i], supports[i]
+			text, a, supported, count = texts[i], args[i], supports[i], counts[i]
 		case d == 1 && q.fault(r, areaSeveral, 2):
 			text, a = q.other(r)
 			supported = false
+			count = max(1, statementsIn(text))
 		case d == 2 && q.profile.on(areaArithmetic) && q.fault(r, areaSeveral, 2):
 			form := ArithmeticRefused[r.IntN(len(ArithmeticRefused))]
 			text = fmt.Sprintf(form, q.tables[r.IntN(len(q.tables))], q.columns[r.IntN(len(q.columns))])
@@ -156,7 +163,11 @@ func (q *Sequence) several() Call {
 			q.received = false
 			text, a = c.Src, c.Args
 		}
-		texts, args, supports = append(texts, text), append(args, a), append(supports, supported)
+		texts, args, supports, counts = append(texts, text), append(args, a), append(supports, supported), append(counts, count)
+		// A text of Others can hold two statements, as SQLite reads them, and each has its own.
+		for range count {
+			statements = append(statements, supported)
+		}
 		each = each && supported
 		b.WriteString(text)
 		if openComment(text) {
@@ -189,7 +200,33 @@ func (q *Sequence) several() Call {
 	} else if q.fault(r, areaSeveral, 16) {
 		all = append(all, q.anyValue(r))
 	}
-	return Call{Src: b.String(), Args: all, Query: r.IntN(8) == 0, Statements: n, Each: each, Supports: supports}
+	return Call{Src: b.String(), Args: all, Query: r.IntN(8) == 0, Statements: n, Each: each, Supports: statements}
+}
+
+// statementsIn counts the statements of the text src of [Others] as SQLite's tokenizer reads them:
+// the runs of tokens between semicolons that hold a token that is no space and no comment. A string
+// without its end is one token to the end of the text, so it holds no semicolon. It is not for a
+// CREATE TRIGGER, whose body holds semicolons of one statement.
+func statementsIn(src string) int {
+	n, open := 0, false
+	for _, t := range token.Tokens(src) {
+		switch t.Kind {
+		case token.Semi:
+			open = false
+		case token.Space, token.Comment:
+		case token.Illegal:
+			if t.Len > 0 && !open {
+				n++
+				open = true
+			}
+		default:
+			if !open {
+				n++
+				open = true
+			}
+		}
+	}
+	return n
 }
 
 // other is a text of [othersWithStatement] at random from r, with a table and a column of the

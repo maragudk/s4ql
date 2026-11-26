@@ -1208,7 +1208,8 @@ func (p *pair) step(c stmttest.Call) string {
 	p.y.compared()
 	inOrder := p.returnedInOrder(u, args)
 	want := o.run(t, src, args...)
-	if want.err == tooBig && got.err == "" {
+	if want.err == tooBig && got.err != tooBig {
+		// The engine succeeds, or fails as SQLite does without RETURNING; see [pair.returningTooBig].
 		if unlimited, ok := p.returningTooBig(u, src, args); ok {
 			// SQLite's rows without the limit, which the comparison below compares with the engine's.
 			want = unlimited
@@ -1346,7 +1347,9 @@ func (p *pair) sortTooBig(src string, args []any, got answer) bool {
 // under a lowered length limit, and gives SQLite's answer without the limit then: an insert, an
 // update, or a delete with RETURNING, which SQLite refuses for the record of a row of RETURNING,
 // longer than the row's record in the table, and which SQLite runs without RETURNING under the
-// limit, in a savepoint that is rolled back. The run without the limit changes SQLite's database,
+// limit, in a savepoint that is rolled back, with success, or with the error that SQLite gives with
+// RETURNING without the limit, of no length, as UNIQUE of a later row of an update gives it. The run
+// without the limit changes SQLite's database,
 // so the caller compares its answer with the engine's in place of the refusal.
 func (p *pair) returningTooBig(s stmt.Statement, src string, args []any) (answer, bool) {
 	t, o := p.t, p.o
@@ -1367,10 +1370,21 @@ func (p *pair) returningTooBig(s stmt.Statement, src string, args []any) (answer
 	without := o.run(t, src[:r.Span.Start]+src[r.Span.End:], args...)
 	is.Equal(t, "", o.run(t, "rollback to s4ql_returning").err)
 	is.Equal(t, "", o.run(t, "release s4ql_returning").err)
-	if without.err != "" {
+	if without.err == "" {
+		return o.unlimited(t, src, args...), true
+	}
+	// An update of several rows builds the row of RETURNING of a row before it checks the constraints
+	// of a later row, so a statement that fails on a later row without RETURNING, as on its key, fails
+	// for the length of RETURNING with it. Under the difference s4ql gives the error without RETURNING,
+	// which must be no error of a length and must be the one that SQLite gives without the limit.
+	if strings.HasSuffix(without.err, "string or blob too big") {
 		return answer{}, false
 	}
-	return o.unlimited(t, src, args...), true
+	unlimited := o.unlimited(t, src, args...)
+	if unlimited.err != without.err {
+		return answer{}, false
+	}
+	return unlimited, true
 }
 
 // checkOrder of the rows got of the engine of the select s with the arguments args, which SQLite

@@ -592,6 +592,22 @@ func TestPair_returning(t *testing.T) {
 			is.Equal(t, 1, y["excused: "+excusedReturningTooBig], src)
 			is.Equal(t, p.o.state(t), p.i.state(), src)
 		}
+
+		// An update of two rows builds the row of RETURNING of the first before it checks the key of the
+		// second, so SQLite refuses it for the length, and without RETURNING, and without the limit,
+		// with UNIQUE, which s4ql gives, as in sequence 8782 of TestDifferential.
+		for _, src := range []string{"update d set k = -0.0, p = ? returning p, p", "update d set k = -0.0, p = ? returning p, k, p"} {
+			y := tally{}
+			p := newPair(t, newInstanceLimited(t, engine.Options{}, nil, stmttest.LengthLimit), y)
+			for _, c := range []stmttest.Call{{Src: "create table d (p blob not null, k real primary key not null) strict, without rowid", Supported: true},
+				{Src: "insert into d (p, k) values (x'00', 1.0)", Supported: true}, {Src: "insert into d (p, k) values (x'00', 2.0)", Supported: true}} {
+				is.Equal(t, "", p.step(c), c.Src)
+			}
+			args := []any{[]byte(strings.Repeat("x", 995))}
+			is.Equal(t, "", p.step(stmttest.Call{Src: src, Args: args, Query: true, Supported: true}), src)
+			is.Equal(t, 1, y["excused: "+excusedReturningTooBig], src)
+			is.Equal(t, p.o.state(t), p.i.state(), src)
+		}
 	})
 }
 
