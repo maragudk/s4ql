@@ -56,3 +56,45 @@ The other instance must not run the walk's statements, so `pair.bothWays`, which
 ### Future work
 
 The simulation's planted bugs for the loop, mutation testing of `stmt.Split` and `ExecAll`, and a fuzz target of `Split`.
+
+## Step 2: the self-review
+
+**Author:** builder (several-statements-engine)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief of step 1) "`make test` and the lint target pass; the whole engine package and the driver check pass without `-short`; new tests pass with `-count=20` and `-race`."
+**Interpretation:** review the diff with the code-review skill, fix what matters, and run the checks of the brief.
+**Inferred intent:** the branch is ready for the lead's review.
+
+### What I did
+
+Ran `/code-review medium main...HEAD`. It reported two important findings and two nits. Fixed both important ones in `/internal/engine/several_test.go`: in a transaction `pair.tablesAfter` also reads the tables that a create table or a drop table of the text names, so a table that only the other instance has fails the call; and `pair.several` gives the other instance an observer of subqueries that forces nothing before `ExecAll`, since the one that the last `pair.bothWays` left could force `p.force`. Left the two nits, recorded in `/docs/todo/several-statements.md`: `txDifferential`'s bookkeeping counts nothing of a text of several statements, and a failure that depends on the other instance's directions replays with the `-directions` seed that the failing test logs.
+
+### Why
+
+The first finding is real: a statement that runs after a failed one and creates a table, in a transaction that is then rolled back, would have shown nowhere. The second is latent, since no profile with several statements writes subqueries now, but costs one line.
+
+### What worked
+
+`make lint` reported 0 issues; `make test` passed; `TestSqliteParts` and `TestSpaceRule` passed with `-race -count 20`; `TestDifferential` and `TestConn_differential` passed under `-race`.
+
+### What didn't work
+
+Nothing failed in this step.
+
+### What I learned
+
+The other instance keeps the path and the observer of subqueries that the last `pair.bothWays` set; anything that runs on it outside `bothWays` must set both.
+
+### What was tricky
+
+Nothing beyond the findings.
+
+### What warrants review
+
+The names that `pair.tablesAfter` reads in a transaction: those of SQLite's tables and those that the text's create tables and drop tables name.
+
+### Future work
+
+As in step 1.

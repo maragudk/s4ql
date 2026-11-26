@@ -682,8 +682,10 @@ func (p *pair) several(c stmttest.Call) string {
 		}
 		p.walking = false
 	}
-	// The other instance reads as the rules choose.
+	// The other instance reads as the rules choose, and computes its own subqueries, which no
+	// statement of the walk forces.
 	other.e.SetPath(engine.Path{})
+	other.e.ObserveSubqueries(func(_ context.Context, vs []*s4qlpb.Value) []*s4qlpb.Value { return vs })
 	res, err := other.c.ExecAll(t.Context(), src, values(c.Args)...)
 	if res.SetsChanges {
 		other.changes = res.Changes
@@ -721,7 +723,7 @@ func (p *pair) several(c stmttest.Call) string {
 	if res != wantRes {
 		return fail("ExecAll gives the result %+v, and the statements one after another %+v", res, wantRes)
 	}
-	if failure := p.tablesAfter(); failure != "" {
+	if failure := p.tablesAfter(src, parts); failure != "" {
 		return fail("%v", failure)
 	}
 	if logged {
@@ -862,9 +864,12 @@ func (p *pair) sameLog() string {
 	return ""
 }
 
-// tablesAfter a text of several statements: every table of the other instance must hold SQLite's
-// columns and rows, read in the transaction if one is open. It gives what differs, or "".
-func (p *pair) tablesAfter() string {
+// tablesAfter the text src of several statements, whose statements are those of parts: every table
+// of the other instance must hold SQLite's columns and rows, read in the transaction if one is open.
+// In a transaction, the tables of SQLite are read, and the tables that a create table or a drop
+// table of the text names, which the other instance must lack where SQLite does. It gives what
+// differs, or "".
+func (p *pair) tablesAfter(src string, parts []sqlitePart) string {
 	t, other, o := p.t, p.other, p.o
 	t.Helper()
 	if !p.inTx {
@@ -875,10 +880,22 @@ func (p *pair) tablesAfter() string {
 	}
 	tables := o.run(t, "select name from sqlite_schema where type = 'table' order by name collate binary")
 	is.Equal(t, "", tables.err)
+	var names []string
 	for _, quoted := range tables.rows {
-		src := "select * from " + stmttest.Quote(unquoted(t, quoted))
-		if got, want := other.queryValues(src, nil), o.run(t, src); got.String() != want.String() || got.columns != want.columns {
-			return fmt.Sprintf("after it, in the transaction, %v gives\n%v (%v)\nand in SQLite\n%v (%v)", src, got, got.columns, want, want.columns)
+		names = append(names, unquoted(t, quoted))
+	}
+	for _, part := range parts {
+		switch s, _ := stmt.Check(src[part.statement.Start:part.statement.End]); s := s.(type) {
+		case *stmt.CreateTable:
+			names = append(names, s.Table.Value)
+		case *stmt.DropTable:
+			names = append(names, s.Table.Value)
+		}
+	}
+	for _, name := range names {
+		read := "select * from " + stmttest.Quote(name)
+		if got, want := other.queryValues(read, nil), o.run(t, read); got.String() != want.String() || got.columns != want.columns {
+			return fmt.Sprintf("after it, in the transaction, %v gives\n%v (%v)\nand in SQLite\n%v (%v)", read, got, got.columns, want, want.columns)
 		}
 	}
 	return ""
