@@ -148,3 +148,52 @@ Each survivor needs a test or a reason.
 ### Future work
 
 - The rest of the run, and a rerun of the mutants of the changed declarations on the final code.
+
+## Step 4: The end of the run, the rerun on the final code, the self-review, and the record
+
+**Author:** mutation-arithmetic-engine builder
+
+### Prompt Context
+
+**Verbatim prompt:** (the coordinator) "(3) carry on with the task as briefed: no survivor unexplained, the four open ones included, then the README section, `equivalent.txt`, the notes in `docs/todo/arithmetic.md`, `make test`, lint, the whole engine package without `-short`, and the final report."
+**Interpretation:** Classify the last survivors, rerun every survivor and the changed declarations on the final code, write the record, and run the checks.
+**Inferred intent:** A finished round that the lead can check against the counts of the runs.
+
+### What I did
+
+- The resumed run ended at 01:41, after 5 h 8 min. Over all, 2,488 mutants: 462 not compiled, 1,802 killed (1,781 first by the hand-written tests, 21 by the simulation), 18 timed out, 206 survived. Of the 206, 118 are equivalent (50 listed before the round, 68 by it) and 88 are killed by the new tests. The last survivors were the errors of the state of a transaction in `outcomeOf`, which `TestOutcomeOf` now has, and the planted bugs of arithmetic left out of a write in a transaction, which are equivalent as those of slice 14 are.
+- Three entries of `equivalent.txt` matched no survivor: the arithmetic added checks before them in their functions, so their mutants have the keys `update.run ... #3` and `build.types remove statement: continue => #2` now, which this round lists, and the old keys name mutants that are killed. The old entries are gone.
+- The rerun on `tree2/`, a copy of the code at `9a005a6` with its tests, of every line with a survivor and every line of `compareNumbers` and `build.types` (628 mutants), with 6 workers, `-min-time 5m`, and a `-first` of the new tests, took 3 h 1 min: 60 not compiled, 441 killed, 9 timed out, 118 survived, and 0 unexplained. Every one of the 88 that the new tests kill was killed.
+- The self-review (the `code-review` skill, at medium, over `main...HEAD`) found no bug and four nits, all closed: the comment of the counts of the planted bugs of arithmetic in `TestDifferential_plantedBugs` now gives 7 of 30 for `nullCompares` since the fix (the test printed "7 of 30 sequences of the profile arithmetic find the bug"); the counts of the simulation for `nullCompares` say that they were taken before the fix; the internal error of `build.types` for a pair of a condition of no column has a message of its own, where it said that the table does not have a column that it has; and the README says which of the counts of the equivalent mutants hold the moved entries. The 13 mutants of the two lines of `build.types` that the message changed were run one at a time with `scripts/many.sh`, and all were killed.
+- The record: the section "Arithmetic in the engine" in `/internal/sql/mutation/README.md`, the section of arithmetic in the engine at the end of `/internal/sql/mutation/equivalent.txt`, and the heading "Mutation testing of the engine" at the end of `/docs/todo/arithmetic.md`.
+- Checks: `make lint` gives 0 issues; `make test` passes; `go test -count=1 -shuffle on ./internal/engine/` without `-short` passes in 320 s; the new tests pass with `-race -count=20`.
+
+### Why
+
+The rerun shows that the final code has no unexplained survivor, and that each new test kills what it is said to.
+
+### What worked
+
+- Selecting the rerun by `file:line`: the fixes changed no line numbers of the code, so the lines of the survivors of `out1` name the same places in the final code.
+
+### What didn't work
+
+- The first start of the rerun used a script made with `sed` from `run.sh` whose pattern did not match, so it ran on the old copy `tree/` into `out2`; I stopped it at its planning, deleted `out2`, wrote `run2.sh` by hand, and started again.
+- `gofmt -l internal/engine` lists `differential_test.go`, for a long line in `pair.compare` that is on `main` too; I left it, and `make lint` passes.
+
+### What I learned
+
+- After a run that was stopped and resumed, a rerun of the survivors on a quiet machine is also the check of the timeouts: the 7 of the 16 that were on rerun lines timed out again under `-min-time 5m`.
+
+### What was tricky
+
+- Counting the equivalent mutants when entries move: the 68 new entries include the new keys of the three moved ones, and the 50 older ones exclude them.
+
+### What warrants review
+
+- The 68 new entries of `/internal/sql/mutation/equivalent.txt`, in particular those of `build.types`, `update.run`, and `build.compute`.
+- The fix of the planted bug `nullCompares` in `/internal/engine/operator.go` `build.types`.
+
+### Future work
+
+- None from this round. The scratch directory `/Volumes/990/s4ql/mutation-arithmetic-engine/` is deleted at the end.
