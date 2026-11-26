@@ -884,6 +884,9 @@ const (
 	// statement in the cache is longer than the limit, which s4ql refuses as not supported. See
 	// [pair.tooLongForCache].
 	excusedCacheLimit = "a create table whose statement in the cache is longer than the length limit, checked against the length of that statement"
+	// excusedUpsert is an insert with ON CONFLICT, which the engine refuses before it reads the
+	// database, as [stmttest.UpsertRefusal] says, until it runs one.
+	excusedUpsert = "an insert with ON CONFLICT, which the engine does not run yet, checked against the refusal"
 	// excusedSortTooBig is a select with ORDER BY that SQLite refuses under the length limit with
 	// `string or blob too big`, for the record of what it sorts of a row, and that s4ql answers with
 	// rows: the known difference of slice 13, by the decision of the lead in docs/todo/slice-13.md.
@@ -1153,6 +1156,15 @@ func (p *pair) step(c stmttest.Call) string {
 	s, err := stmt.Check(src)
 	if err != nil || s == nil {
 		args = nil
+	}
+	// An upsert is refused before the database is read, whatever it holds, also
+	// one with a value longer than the length limit.
+	if refusal := stmttest.UpsertRefusal(s); refusal != "" && len(c.Args) == s.Parameters() {
+		if got.err != "not supported" || got.message != refusal {
+			return fmt.Sprintf("%q: the engine gives %v, and the rule %q", src, got, refusal)
+		}
+		p.y.excused(excusedUpsert)
+		return ""
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
 		if failure == "" {
@@ -4724,7 +4736,7 @@ func FuzzSQL_core(f *testing.F) {
 
 // fuzzSQL is [FuzzSQL] on the instances of newInstance. Its seeds are statements of a sequence of
 // the mixed profile, the texts of [stmttest.Others] and [fuzzSetUp], every 500th text of the corpus,
-// and texts with arithmetic and with text.
+// and texts with arithmetic, with text, and of upserts.
 func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 	add := shardedAdd(f)
 	q := newSequence(f, stmttest.Mixed.Seed(1))
@@ -4762,6 +4774,9 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		"select * from t1 where v1 = (select v1 from t1 where lower(v1) = 'a')",
 		"delete from t1 where hex(nosuch) = ?",
 		"select * from t1 where v1 || ? = 'x'",
+		// Upserts, which the engine refuses before it reads the database.
+		"insert into t1 values (1) on conflict (v1) do nothing",
+		"insert into t1 values (2) on conflict (v1) do update set w = excluded.v1 + 1 where excluded.v1 > 0 returning *",
 	} {
 		add(src, i%2 == 1)
 	}

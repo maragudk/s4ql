@@ -15,7 +15,7 @@ The list is in the directory [todo](todo), one file per area, one per slice of s
 - [driver.md](todo/driver.md): the public package and the `database/sql` driver.
 - [storage-core.md](todo/storage-core.md): what is open or not built in the storage core.
 - [storage-core-tests.md](todo/storage-core-tests.md): what the tests of the storage core and the simulation harness do not show yet.
-- [ci.md](todo/ci.md): faults seen in CI's jobs that are not fixed.
+- [ci.md](todo/ci.md): faults seen in CI's jobs that are not fixed, and what is open in the rounds of mutation testing in CI.
 - [performance.md](todo/performance.md): performance measurement.
 - [wal-index.md](todo/wal-index.md): the memory-mapped wal-index.
 - [storage-formats.md](todo/storage-formats.md): the manifest and the commit object.
@@ -39,4 +39,5 @@ The list is in the directory [todo](todo), one file per area, one per slice of s
 - [text-functions.md](todo/text-functions.md): the piece of work text functions, `||`, `lower`, and `hex` in `set` and in `where`.
 - [generated-workload.md](todo/generated-workload.md): the profiles and the random streams of the generated checks.
 - [several-statements.md](todo/several-statements.md): the piece of work several statements in one `Exec`.
+- [upserts.md](todo/upserts.md): the piece of work upserts, `insert ... on conflict (key) do nothing` and `do update`.
 - [cache-checkpoints.md](todo/cache-checkpoints.md): the piece of work checkpoints and syncs of the cache, `synchronous = full`.
