@@ -27,6 +27,7 @@ As of 2026-11-25:
   - `order by` of one or more columns, each ascending or descending, and `limit` with a number or `?`, on `select`.
   - A scalar subquery in a `where`, on the right or the left of a comparison, in a `select`, an `update`, and a `delete`. It is not correlated, and runs once before the statement changes anything.
   - Arithmetic: `+`, `-`, `*`, `/`, and a unary `-` on integers and reals, in the `set` of an `update` and in a `where`. An overflow, a division by zero, and an infinite result are errors. A column may be compared with a column of the same type.
+  - Upserts: `insert ... on conflict (key) do nothing` and `do update set ... [where ...]`, with `excluded.<column>`.
   - `update` and `delete`, with or without that `where`. An update may change the primary key, and `RowsAffected` is what SQLite reports.
   - `returning` at the end of an `insert`, an `update`, and a `delete`, with column names or `*`. Outside a transaction, the statement commits before it gives its first row.
   - `create index` and `drop index`, on one or more columns, each ascending or descending, not unique. The engine picks the index for a `where` by fixed rules.
@@ -37,6 +38,6 @@ As of 2026-11-25:
   - Storage: a database is a log of commits in S3, with a local SQLite cache. One instance at a time holds a lease on it. Commits, recovery after a crash, and replay of the log work.
 - **How it is checked:** against SQLite with generated statements, in the engine and through `database/sql`, in a deterministic simulation with planted bugs, and with mutation testing and fuzzing. The storage is also tested against a real S3-compatible bucket in CI.
 - **Not built:** `or`, functions, and other operators in a `where`, arithmetic outside `set` and `where`, `offset`, more than one row per `insert`, and a statement while rows of the same transaction are open.
-- **Next:** what is decided next is in the [roadmap](docs/roadmap.md#at-a-glance) by area: more operators and functions, and expressions in more places, grouping and joining, `on conflict` upserts, and a limit on the memory of an operator.
+- **Next:** what is decided next is in the [roadmap](docs/roadmap.md#at-a-glance) by area: more operators and functions, and expressions in more places, grouping and joining, and a limit on the memory of an operator.
 
 The roadmap by area, and the slices that were built with how each is checked, are in [docs/roadmap.md](docs/roadmap.md). What is open in detail is in [docs/todo.md](docs/todo.md).
