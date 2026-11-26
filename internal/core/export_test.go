@@ -115,6 +115,12 @@ func Margin(duration time.Duration) time.Duration {
 	return margin(duration)
 }
 
+// WatchWait is how long an instance that has watched the manifest for elapsed waits for a holder's
+// lease of the given duration, at most watch, or zero once it may take the lease.
+func WatchWait(duration, elapsed, watch time.Duration) time.Duration {
+	return watchWait(duration, elapsed, watch)
+}
+
 // Quote an identifier.
 func Quote(name string) string {
 	return quote(name)

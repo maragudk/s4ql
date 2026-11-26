@@ -58,7 +58,7 @@ type Options struct {
 	// includes applying a commit object that is downloaded. The default is 5 minutes.
 	ObjectTimeout time.Duration
 	// Watch is how often an instance that does not hold the lease reads the manifest, to see whether
-	// the holder still writes it. The default is 5 seconds.
+	// the holder still writes it. The default is 5 seconds, and it is a year at the most.
 	Watch time.Duration
 	// Logger of the events of the instance: one event for each unit of work. The default discards
 	// them.
@@ -126,6 +126,9 @@ func (o Options) withDefaults() (Options, error) {
 		return o, fmt.Errorf("the lease lasts %v, which is more than a year", o.Lease)
 	case o.Lease < 0 || o.RenewAfter < 0 || o.RenewAfter >= o.Lease:
 		return o, fmt.Errorf("the lease lasts %v and is renewed after %v, which must be above zero and shorter", o.Lease, o.RenewAfter)
+	case o.Watch > 365*24*time.Hour:
+		// The wait for the lease of another holder adds to the interval, as to a lease.
+		return o, fmt.Errorf("the manifest is watched every %v, which is more than a year", o.Watch)
 	case o.BusyTimeout < 0 || o.StoreTimeout < 0 || o.ObjectTimeout < 0 || o.Watch < 0:
 		return o, errors.New("a timeout or an interval below zero")
 	case o.LengthLimit < 1000 || o.LengthLimit > maxLength:
