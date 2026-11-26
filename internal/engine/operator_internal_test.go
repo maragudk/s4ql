@@ -893,10 +893,14 @@ func TestFilter(t *testing.T) {
 		for _, c := range []struct {
 			name     string
 			position int
-		}{{"z", 0}, {"w", -1}} {
+			err      string
+		}{
+			{"z", 0, "a condition of the column z, which the table t does not have"},
+			{"w", -1, "a comparison with the column w of a condition of no column"},
+		} {
 			f := &Filter{Conditions: []Condition{{Column: k, Operator: stmt.OpEqual, Value: &Arithmetic{Expression: stmt.Expression{Kind: stmt.ExprColumn, Column: stmt.Name{Value: c.name}}}}}}
 			err := build{}.types(f, &scan{table: newTable().tables["t"].ct}, []condition{{position: c.position, op: stmt.OpEqual}})
-			is.Equal(t, "s4ql: internal error: a condition of the column "+c.name+", which the table t does not have", fmt.Sprint(err))
+			is.Equal(t, "s4ql: internal error: "+c.err, fmt.Sprint(err))
 		}
 		// A filter without a projection checks the types of its values as a select does.
 		_, err := buildQuery(t.Context(), fakeTx{newTable()}, &Query{Root: &Filter{Source: scanT, Conditions: []Condition{{Column: k, Operator: stmt.OpEqual, Value: &Text{Value: "a"}}}}}, nil, 1_000_000_000, reading{})

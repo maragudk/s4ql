@@ -4118,7 +4118,8 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"orderIgnored", stmttest.Subquery, 2, []string{"and SQLite one of"}, 12},
 		// The bugs of arithmetic, on the profile of arithmetic, each found by any difference from SQLite
 		// or from s4ql's rules for arithmetic but constantsServeNothing, whose rows and errors are
-		// SQLite's and which [pair.checkAccess] finds: on 2026-11-25 10, 6, 5, 10, 4, 15, and 4 of 30.
+		// SQLite's and which [pair.checkAccess] finds: on 2026-11-25 10, 6, 5, 10, 4, 15, and 4 of 30, and
+		// nullCompares 7 on 2026-11-26, since it is planted in a comparison of two columns too.
 		{"setFromNew", stmttest.Arithmetic, 3, nil, 0},
 		{"nullCompares", stmttest.Arithmetic, 2, nil, 0},
 		{"evalStops", stmttest.Arithmetic, 1, nil, 0},

@@ -1412,8 +1412,11 @@ func (b build) types(f *Filter, s *scan, conditions []condition) error {
 			// A column compared with a column alone, of the same class, compares them as SQLite does,
 			// with no conversion and no evaluator.
 			pair, ok := columnPositions(s.table)[arithmetic.Expression.Column.Fold()]
-			if !ok || c.position < 0 {
+			if !ok {
 				return internalError("a condition of the column %v, which the table %v does not have", arithmetic.Expression.Column.Value, s.table.GetTable())
+			}
+			if c.position < 0 {
+				return internalError("a comparison with the column %v of a condition of no column", arithmetic.Expression.Column.Value)
 			}
 			columns := s.table.GetColumns()
 			if columnClass(columns[pair].GetType()) != columnClass(columns[c.position].GetType()) {
