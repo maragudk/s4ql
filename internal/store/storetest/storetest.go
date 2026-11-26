@@ -545,40 +545,94 @@ func raceCounter(t T, ctx context.Context, env Env) {
 		return
 	}
 	const increments = 4
+	// A real store fails a call now and then for a reason of its own, such as a 408 or a connection
+	// that is reset, so a racer tries a get or a swap again, and gives up after tries failures in a
+	// row. A swap that failed so may have been applied, so the counter is checked against the swaps
+	// that succeeded, with those whose outcome is unknown counted as either.
+	const tries = 5
+	var mu sync.Mutex
+	applied, unknown := 0, 0
 	race(t, ctx, env, "counter", func(ctx context.Context, i int, c store.Store) {
 		// A failed swap almost always means that another succeeded, so a racer that fails many times
 		// more often than all racers together can succeed does not see the swaps of the others.
-		attempts := 0
-		for n := 0; n < increments; attempts++ {
-			if attempts > 10*racers*increments {
-				t.Errorf("racer %v: %v swaps failed with ErrChanged, of %v that can succeed in all", i, attempts-n, racers*increments)
+		changed, failures := 0, 0
+		for n := 0; n < increments; {
+			if changed > 10*racers*increments {
+				t.Errorf("racer %v: %v swaps failed with ErrChanged, of %v that can succeed in all", i, changed, racers*increments)
 				return
 			}
-			data, v, ok := read(t, ctx, c, "counter")
-			if !ok {
-				return
+			data, v, err := get(ctx, c, "counter")
+			if err != nil {
+				if failures++; failures == tries {
+					t.Errorf("racer %v: get %q failed %v times in a row, the last with %v", i, "counter", failures, err)
+					return
+				}
+				continue
 			}
 			var count int
 			if _, err := fmt.Sscan(string(data), &count); err != nil {
 				t.Errorf("racer %v: the counter is %q: %v", i, data, err)
 				return
 			}
-			_, err := c.Swap(ctx, "counter", v, content(fmt.Sprint(count+1, " racer-", i, "-", n)), nil)
+			_, err = c.Swap(ctx, "counter", v, content(fmt.Sprint(count+1, " racer-", i, "-", n)), nil)
 			switch {
 			case err == nil:
 				n++
-			case !errors.Is(err, store.ErrChanged):
+				failures = 0
+				mu.Lock()
+				applied++
+				mu.Unlock()
+			case errors.Is(err, store.ErrChanged):
+				changed++
+				failures = 0
+			case errors.Is(err, store.ErrNotFound), errors.Is(err, store.ErrExists), errors.Is(err, store.ErrChecksum), errors.Is(err, store.ErrTooLarge):
 				t.Errorf("racer %v: swap: got %v, want success or ErrChanged", i, err)
 				return
+			default:
+				mu.Lock()
+				unknown++
+				mu.Unlock()
+				if failures++; failures == tries {
+					t.Errorf("racer %v: swap failed %v times in a row, the last with %v", i, failures, err)
+					return
+				}
 			}
 		}
 	})
-	data, _, ok := read(t, ctx, env.Client("reader"), "counter")
-	if !ok {
+	var data []byte
+	var err error
+	for range tries {
+		if data, _, err = get(ctx, env.Client("reader"), "counter"); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Errorf("get %q: %v", "counter", err)
 		return
 	}
+	// Every swap that succeeded is in the counter, and none is in it twice: a lost increment makes
+	// the counter smaller than applied.
 	var count int
-	if _, err := fmt.Sscan(string(data), &count); err != nil || count != racers*increments {
-		t.Errorf("the counter is %q after %v increments", data, racers*increments)
+	if _, err := fmt.Sscan(string(data), &count); err != nil || count < applied || count > applied+unknown {
+		t.Errorf("the counter is %q after %v swaps that succeeded and %v whose outcome is unknown", data, applied, unknown)
 	}
+}
+
+// get the content and version of the object at key, as [read] does, but with the error returned.
+func get(ctx context.Context, c store.Store, key string) ([]byte, store.Version, error) {
+	body, v, err := c.Get(ctx, key)
+	if err != nil {
+		return nil, "", err
+	}
+	data, err := io.ReadAll(body)
+	if closeErr := body.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if v == "" {
+		return nil, "", errors.New("an empty version")
+	}
+	return data, v, nil
 }
