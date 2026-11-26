@@ -1179,9 +1179,9 @@ internal/engine/engine.go Conn.write condition: returnsOf(s) != nil => true
 	The planted bug rowsOfFailed also for a statement without RETURNING through Query: a commit that fails then succeeds, with no rows, which is the bug of a lost error that TestSimulation_plantedBugs finds as it finds rowsOfFailed, by an acknowledged write that is not in the log.
 internal/engine/engine.go Conn.write operator: returnsOf(s) != nil => returnsOf(s) == nil
 	The planted bug rowsOfFailed for the statements without RETURNING through Query only: a commit that fails then succeeds, which TestSimulation_plantedBugs finds by an acknowledged write that is not in the log, as for the mutant above.
-internal/engine/engine.go Conn.write remove statement: r.rows = n => #2
+internal/engine/engine.go Conn.write remove statement: r.rows = n => #3
 	In the planted bug rowsOfFailed, only the attribute statement.rows of the event of the statement whose commit failed changes; the bug, the rows and the success of a commit that failed, stays, and TestSimulation_plantedBugs finds it by a write that is not in the log, which reads no event.
-internal/engine/engine.go Conn.write element: , SetsChanges: setsChanges(p) =>
+internal/engine/engine.go Conn.write element: , SetsChanges: setsChanges(p) => #2
 	In the planted bug rowsOfFailed, the result of the statement whose commit failed then sets no count of changes, so the simulation compares no count for it (run.statement reads one only where SetsChanges is set); the bug, the rows and the success of a commit that failed, stays, and TestSimulation_plantedBugs finds it by its own violation, a write that is not in the log.
 internal/engine/operator.go insert.run remove statement: i.ret.add(row) => #2
 	In the planted bug skipUnique, an insert with RETURNING then gives no row as well; the bug, a row written without the check of its key, stays, and the tests of the planted bugs find it as before.
@@ -1641,3 +1641,16 @@ internal/engine/bugs.go Conn.inOneCommit condition: err == nil => false
 	oneCommit then drops the error of its commit, which does not fail in its tests, so its answers are those of the bug as before.
 internal/engine/bugs.go Conn.inOneCommit operator: err == nil => err != nil
 	As for true and false: the error of a failed statement gives way to that of the commit, and a commit's error is dropped, wrong answers of the bug that its tests find.
+
+# Conn.write and Conn.ExecAll: the planted bugs commitLater and oneCommit. The two entries of
+# rowsOfFailed in Conn.write are #3 and #2 since the branch of commitLater came before them.
+internal/engine/engine.go Conn.write condition: t.follows => true
+	commitLater then leaves the commit of the last write of a text open too, which ExecAll's deferred commit makes when the text ends; its tests find the bug by the writes before.
+internal/engine/engine.go Conn.write condition: t.follows => !t.follows
+	commitLater then leaves only the commit of the last write of a text open, for the end of the text, and commits the others at once; its tests find the bug by that write, as by every other.
+internal/engine/engine.go Conn.write remove statement: t.later = func(ctx context.Context) { _ = tx.commit(ctx) } =>
+	commitLater then never commits a write that another statement follows, which loses it, another wrong answer that its tests find.
+internal/engine/engine.go Conn.write remove statement: _ = tx.commit(ctx) =>
+	As for the removal of t.later: commitLater never commits a write that another statement follows, which its tests find.
+internal/engine/several.go Conn.ExecAll condition: c.tx == nil => true
+	In a transaction, oneCommit's begin fails with ErrTxOpen, and inOneCommit then runs the text as without the bug, so the bug stays outside a transaction.
