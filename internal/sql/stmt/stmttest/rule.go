@@ -382,9 +382,10 @@ func TermText(t stmt.Term, subs []stmt.Select, args []any) (string, []any) {
 }
 
 // ExpressionText of the expression e with the arguments args of the statement that holds it: every
-// column in double quotes, a ? for every literal and parameter, a negation as -( ), a call with its
-// argument, and every binary operator in parentheses, so that SQLite reads the tree of e, and the
-// arguments of its ?, each literal as SQLite binds it, in the order of the text.
+// column in double quotes, excluded.c with its column so, a ? for every literal and parameter, a
+// negation as -( ), a call with its argument, and every binary operator in parentheses, so that
+// SQLite reads the tree of e, and the arguments of its ?, each literal as SQLite binds it, in the
+// order of the text.
 func ExpressionText(e stmt.Expression, args []any) (string, []any) {
 	switch e.Kind {
 	case stmt.ExprCall:
@@ -396,6 +397,8 @@ func ExpressionText(e stmt.Expression, args []any) (string, []any) {
 		return "?", []any{args[e.Parameter-1]}
 	case stmt.ExprColumn:
 		return Quote(e.Column.Value), nil
+	case stmt.ExprExcluded:
+		return "excluded." + Quote(e.Column.Value), nil
 	case stmt.ExprNegate:
 		text, bound := ExpressionText(e.Operands[0], args)
 		return "-(" + text + ")", bound
