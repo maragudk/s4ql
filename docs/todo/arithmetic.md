@@ -171,3 +171,14 @@ An independent review of the driver check of arithmetic, in `internal/sqlite/cro
 - **A gap that the 400 sequences found, fixed.** A prepared statement run several times whose first run failed with an evaluation error and whose later runs were refused as "not supported", where the engine met the refusal of a column of SET first, had its refused runs compared with SQLite (seed 7437). `pair.compare` sends every statement with arithmetic of which a run fails with an evaluation error to `pair.checkEvaluation`, which judges a refused run by `pair.checkRefused`, also where the refusal comes first.
 - **No fault of s4ql was found.**
 - **Open:** the pinned excuses of `arithmetic` could still vary between two runs of the 40 counted sequences, since a select whose arithmetic fails by the direction of a scan changes whether rows stay open, and so the calls that follow; ten runs and five recounts saw only the excuse of an evaluation error vary. Fixed directions for the driver check, or a pin per run in `stmttest.Reached`, would close it. Nothing checks that the 360 uncounted sequences still hold an update that fails after a change.
+
+## Mutation testing of the engine
+
+- **Decisions of the mutation testing of the engine's arithmetic, by its builder on 2026-11-25 and 2026-11-26, built, for the lead to confirm.** The results are in [the README of the runner](../../internal/sql/mutation/README.md#arithmetic-in-the-engine), and the diary `2026-11-25-mutation-arithmetic-engine.md` has the steps.
+  - **The scope.** Every declaration of the engine that `git diff ac97306..main` touches, whole: 2,488 mutants. 462 did not compile, 1,802 were killed, 18 timed out, 118 are equivalent (68 listed in this round), and 88 are killed by the new tests. None is unexplained, and none was removed.
+  - **The timeouts.** The 16 mutants that timed out while the machine was thrashing ran again on the quiet machine and timed out again, each in its first stage, so they count as timed out.
+  - **No fault of s4ql was found.** Every survivor was a gap in the tests, mostly internal errors for shapes that no statement gives, which the new tests call directly, or an equivalent mutant.
+  - **A fault of a planted bug, fixed.** `nullCompares` was never planted in a comparison of two columns, as its comment says, since `build.types` went on before `build.arithmetic`, which sets its flag. `build.types` sets it for a pair now.
+  - **A message changed.** The internal error of `compareNumbers` for two classes reads "a comparison of values of the classes real and integer", where it read "a comparison of an real with a integer".
+  - **Three entries of `equivalent.txt` moved** to the numbers that their mutants have since the arithmetic: the comparison of the keys in `update.run` is `#3`, and the `continue` after a subquery in `build.types` is `#2`.
+- **Open:** the mutation testing of `internal/expr` and `internal/sql/stmt` is another builder's round.
