@@ -1056,7 +1056,9 @@ var plantedBugs = []plantedBug{
 		control: new(plant(competing(func(w *workload) {
 			w.damaged, w.crashes = 0, 1
 		}), "skipUnreadable")),
-		symptoms: []string{"the cache of", "a read saw at commit", "the instance stopped", "began at the position", "the replay of the whole log"},
+		// A cache that lacks a commit object that the bug skipped also gives a write transaction
+		// other rows than the model, as in seed 177, which finds nothing without the bug.
+		symptoms: []string{"the cache of", "a read saw at commit", "the instance stopped", "began at the position", "the replay of the whole log", "a transaction scanned"},
 	},
 	{
 		// A take is sent from a manifest without a lease entry, whose version comes back whenever a

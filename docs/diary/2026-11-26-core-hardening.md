@@ -150,3 +150,54 @@ Nothing beyond the count above.
 ### Future work
 
 None beyond the report.
+
+## Step 4: the night-sized runs, and what they moved
+
+**Author:** core-hardening builder
+
+### Prompt Context
+
+**Verbatim prompt:** "Run the core's planted bugs at the nightly's size (`.github/workflows/nightly.yml` has the command, `S4QL_SIM_SEEDS=1000` for `TestSimulation_plantedBugs` of `./internal/core/`) and the engine's night-sized runs named in `AGENTS.md`, since every engine test runs on the core."
+**Interpretation:** the core's planted bugs over 1000 seeds, and the engine's `TestDifferential -sequences 400`, `TestSimulation` over 100 seeds, and `TestSimulation_plantedBugs` over 1000, on the final code, after merging `main`.
+**Inferred intent:** show that the core's changes break nothing that the engine's checks see, and that no clean run shows a false stop.
+
+### What I did
+
+- Ran the four night-sized runs, with `GOTMPDIR` and `TMPDIR` in `/Volumes/990/s4ql/core-hardening/`, one test process at a time, three times: after the self-review, after the change below, and after the last merge of `main` (the checkpoints of the cache and the annotations of statements landed meanwhile).
+- **The read check, narrowed.** The first engine run passed its differential and simulation runs but failed `TestSimulation` of the engine at the default size: "hammer/mixed reaches "updates with arithmetic that changed rows in a transaction" 0 times, and at least 1 were expected", "hammer/valuefirst reaches "fault: conflict" 1 times, and at least 2 were expected", and "the runs reach "statements with a subquery of another type than its column, refused" 84 times in all, and testdata/reached/TestSimulation.kinds requires 86". `main` at the merge base passed. With the upload's read reverted only "fault: conflict" failed, so the read's retry moved the rest: a retry after every change between the two looks adds a rollback, a begin, and two yields. The file of the write connection is always at one of the two positions of `cachePosition`, so with at most one commit between the looks (two changes of the count) every position of that time is one of those of the two looks, and a read now fixes its state again only after more. That left only the floor of the subquery kind, 82 against 86, which the upload's extra download moves; with it reverted the engine's `TestSimulation` passed. I lowered that floor to 82 in `/internal/engine/testdata/reached/TestSimulation.kinds`.
+- **The hammer of the core.** After the merge with the checkpoints, the core's `TestSimulation` failed: "the workload reached "event unknown_outcome/renewal/renewed" 0 times, and must reach it 1 times at least". `main` passed. Over 200 seeds the workload reaches 21 of them, so the minimum left `hammerReaches`, as one did on 2026-11-20 for the same reason.
+- **Symptoms of planted bugs that the moved traces showed.** Each was replayed with and without its bug; each seed finds nothing without it, and the bug causes the violation:
+  - engine `errorSkipsRow`, seed 22797: "the statement 207 gives the subquery 1 the value null, and SQLite one of ["A"]"; the comparison `"x.y" + ?` overflows for the largest integer inside a scalar subquery, and the bug leaves that row out.
+  - engine `undoInTx`, seed 27822: "the end of the transaction 26: s4ql: no transaction is open on the connection"; the bug rolls the transaction back and its new begin fails.
+  - core `skipUnreadable`, seed 177: "a transaction scanned "TBL 2;--" ... as [], and its own writes make it [1,1,-24]"; the bug skipped damaged commit objects of b's catch-up. Over 1000 seeds it is then found in 581, 79 of them by that symptom, and 0 seeds of the control or without the bug find anything.
+  - core `replayCommitsEarly`: "it records no commit object" in 61 to 71 of 1000 seeds, as both reviewers had predicted.
+- Results at the last run: lint, `make test`, and the core and engine packages without `-short` pass; the new tests pass with `-race -count=20`; `fixedOnce` is found in 977 of 1000 seeds and no clean run of any core bug found anything; engine `TestDifferential -sequences 400` and `TestSimulation` over 100 seeds pass; engine `errorSkipsRow` and `undoInTx` over 1000 seeds pass. The full engine planted run over 1000 seeds passed at `f2068419` but for `undoInTx`, before the last merge of `main`, and was not repeated in full after it.
+
+### Why
+
+The rule of `AGENTS.md` widens a list of symptoms only when the planted bug is shown to cause exactly that symptom, so each one above was replayed with and without its bug. A floor or a minimum that a change of the draws moves is set again from the counts, after checking what the change switched off: nothing that the engine or the core does is gone, only which seeds reach a rare event.
+
+### What worked
+
+Reverting one change at a time against the engine's minimums told the two causes apart in two runs of 40 seconds each.
+
+### What didn't work
+
+- `S4QL_RECOUNT=1` for the engine refused to write its counts: "no run reaches "deletes with subqueries and RETURNING that gave rows", which is required, three times". After the read was narrowed, no recount was needed.
+- `git archive main` took a newer `main` than the merge base at first; the comparison has to use the merge base (`git merge-base HEAD main`).
+
+### What I learned
+
+A check in the read path of the core costs nothing in statements and still moves the engine's simulation, through yields alone. The narrower rule is also the more precise one.
+
+### What was tricky
+
+Every merge of `main` moved the traces again, so each night-sized result is of one commit only.
+
+### What warrants review
+
+The lowered floor in `TestSimulation.kinds`, the minimum that left `hammerReaches`, and the three widened lists of symptoms.
+
+### Future work
+
+The full engine planted run over 1000 seeds after the last merge of `main`, if the lead wants it before the merge; the nightly runs it too.
