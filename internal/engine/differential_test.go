@@ -2337,10 +2337,16 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 		// The first row of a subquery without an ORDER BY that decides it is the first of the direction
 		// that each instance draws, and so are the rows that it reads before it, whose text may be too
 		// long. Where a statement fails so by one direction and changes nothing by the other, both
-		// instances hold what they held, and SQLite must find a text of the statement too long for a
-		// row that the rule may evaluate, as [pair.textTooLong] says.
-		if !p.textTooLong(s, oracleArgs(c.Args)) {
-			return fmt.Sprintf("%q with %#v: one instance gives %q, and SQLite finds no text of it too long for a row that the rule may evaluate", c.Src, c.Args, tooBig)
+		// instances hold what they held, as [pair.textOneDirection] judges.
+		computed := p.computed
+		if got.err != "" {
+			computed = otherComputed
+			if computed != nil && p.force != nil {
+				computed = p.force
+			}
+		}
+		if failure := p.textOneDirection(c, s, computed); failure != "" {
+			return failure
 		}
 		p.count("text too long in a subquery by one direction and not by another")
 		return ""
