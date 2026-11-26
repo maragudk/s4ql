@@ -974,8 +974,9 @@ const GAP = 8; // px, the least room between the figure and words or a box besid
 // STAGES are the frames whose top line it can stand on. .requests is not one: the sticky bar stands
 // right above it. CROWD is what takes room above a line, besides the frames themselves; the lines
 // of the edges between the frames do not, and it walks in front of them.
-const STAGES = ".node, .box, .s3, .logs, .ask-box";
-const CROWD = STAGES + ", .requests, .link > .btn, .ask-head > *, #failure";
+// The disk and the clocks are not either: their edges up to the instance are shorter than the figure.
+const STAGES = ".node, .s3, .logs, .ask-box";
+const CROWD = STAGES + ", .requests, .box, .link > .btn, .ask-head > *, #failure";
 
 // POSES by name: the head's centre h, the neck n, the pelvis p, the elbow and hand of each arm, la
 // and ra, and the knee and foot of each leg, ll and rl, on the grid, with the line under row 17. l is
@@ -1171,7 +1172,7 @@ const dancer = {
   poked: "", // the name of the last poke, which the next one is not
   pokes: [], // the times of the pokes of the last PESTER ms
   lift: 0, // the pixels of its grid that it is up off the line
-  hold: null, // the press on it: {id, x, y, held}: its pointer, where it went down, and whether it has picked it up
+  hold: null, // the press on it: {id, x, y, held, at}: its pointer, where it went down, whether it has picked it up, and where the pointer is since
   fall: null, // the fall after a drop: {t, x, y, to}: its start, from where in px, and the x where it lands
 };
 
@@ -1415,7 +1416,9 @@ function stretch(frame) {
 // dancerStage moves the figure into the frame, with its line s, and has it measure the frame.
 function dancerStage(frame, s) {
   if (dancer.box.parentElement !== frame) {
+    const focused = document.activeElement === dancer.box;
     frame.append(dancer.box);
+    if (focused) dancer.box.focus({ preventScroll: true });
     if (dancer.watch) {
       dancer.watch.disconnect();
       dancer.watch.observe(frame);
@@ -1429,7 +1432,7 @@ function dancerStage(frame, s) {
 // dancerRestage measures the frame that holds the figure again, after a change of layout, and lands
 // it on the nearest frame if this one has no line any more.
 function dancerRestage() {
-  if (!dancer.box || (dancer.hold && dancer.hold.held) || dancer.fall) return;
+  if (!dancer.box || dancer.hold || dancer.fall) return;
   const frame = dancer.box.parentElement, s = stretch(frame);
   if (s) dancerStage(frame, s);
   else {
@@ -1489,12 +1492,20 @@ function falling(now) {
 // dancerGrab, dancerDrag, and dancerDrop are the press on the figure, by Pointer Events, so that a
 // mouse, a finger, and a pen work alike: a press that lets go before it moves TAP px is a poke, and
 // one that moves picks the figure up and carries it, by its head, until it lets go. The figure has
-// the pointer captured, so it hears of the pointer wherever it goes.
+// the pointer captured, so it hears of the pointer wherever it goes; if it loses it, it is let go.
+// While it is carried, a scroll of the page keeps it under the pointer.
 function dancerGrab(e) {
   if (!e.isPrimary || e.button !== 0 || !dancer.live || dancer.hold || dancer.fall) return;
   e.preventDefault();
   dancer.box.setPointerCapture(e.pointerId);
   dancer.hold = { id: e.pointerId, x: e.clientX, y: e.clientY, held: false };
+}
+
+// dancerCarry places the figure that is carried under the pointer, at x and y in the viewport.
+function dancerCarry(x, y) {
+  const o = home(dancer.box.parentElement);
+  dancer.hold.at = [x, y];
+  dancer.box.style.transform = `translate(${x - o.left - (PX * DW) / 2}px, ${y - o.bottom + PX * (DH - 1)}px)`;
 }
 
 function dancerDrag(e) {
@@ -1506,8 +1517,7 @@ function dancerDrag(e) {
     h.held = true;
     dancer.box.dataset.aloft = "";
   }
-  const o = home(dancer.box.parentElement);
-  dancer.box.style.transform = `translate(${e.clientX - o.left - PX * DW / 2}px, ${e.clientY - o.bottom + PX * (DH - 1)}px)`;
+  dancerCarry(e.clientX, e.clientY);
 }
 
 function dancerDrop(e) {
@@ -1534,6 +1544,10 @@ function dancerStart() {
   dancer.box.addEventListener("pointermove", dancerDrag);
   dancer.box.addEventListener("pointerup", dancerDrop);
   dancer.box.addEventListener("pointercancel", dancerDrop);
+  dancer.box.addEventListener("lostpointercapture", dancerDrop);
+  window.addEventListener("scroll", () => dancer.hold && dancer.hold.held && dancerCarry(...dancer.hold.at), { passive: true });
+  // A click of no press, as a screen reader sends to a button, is a poke too.
+  dancer.box.addEventListener("click", (e) => e.detail === 0 && dancerPoke(performance.now()));
   dancer.box.addEventListener("contextmenu", (e) => e.preventDefault());
   dancer.box.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" && e.key !== " ") return;
