@@ -1706,3 +1706,13 @@ internal/engine/several.go Conn.execAll operator: first == nil => first != nil
 	As for false: first is never set, and goOn's tests find the call that succeeds where a statement failed.
 internal/engine/several.go Conn.execAll remove statement: first = err =>
 	As for false: first is never set, and goOn's tests find the call that succeeds where a statement failed.
+internal/engine/several.go Conn.execAll condition: first != nil => false
+	first is set only with goOn planted, which then gives the error of a statement that Split refused in place of that of the first statement that failed, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll remove statement: return res, first => #2
+	As for the condition false: first is set only with goOn planted, whose tests find the other error.
+internal/engine/several.go Conn.split remove statement: defer r.panicked(ctx) =>
+	It logs an event only if stmt.Split panics, which it does on no text: FuzzSplit, TestSplit_differential, and every check of the engine and the driver give it texts. The guard is kept so that a fault of Split is logged as a panic of the check of Exec is.
+internal/engine/several.go before swap cases: case len(parts) == 1 && failed == nil: return nil case failed != nil: // The statements before one that failed to check leave the arguments after theirs to i... => case len(parts) == 1 && failed == nil: // The statements before one that failed to check leave the arguments after theirs to it. return nil case failed != ni...
+	The two cases swap their bodies, which are both return nil; only the comment moves.
+internal/engine/several.go before condition: failed == nil => true
+	A text of one statement that Split refused after it then returns nil at that case, which the next case returns for it anyway.
