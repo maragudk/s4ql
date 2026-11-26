@@ -18,6 +18,7 @@ import (
 
 	"maragu.dev/s4ql"
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/core/coretest"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
@@ -427,7 +428,7 @@ func TestTx_leaseLost(t *testing.T) {
 		t.Run("should serve again while a write transaction is open and idle as the instance loses its lease, refuse its statements and its commit with ErrNotServing, return nil from its roll back, and put its connection back in the pool: "+end, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				w := newWorld(t)
-				options := core.Options{BusyTimeout: time.Minute}
+				options := coretest.SyncOff(core.Options{BusyTimeout: time.Minute})
 				s := &faulty{Store: w.client()}
 				a := w.openOn(t, "a", s, options)
 				is.NotError(t, a.PingContext(t.Context()))

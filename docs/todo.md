@@ -40,3 +40,4 @@ The list is in the directory [todo](todo), one file per area, one per slice of s
 - [generated-workload.md](todo/generated-workload.md): the profiles and the random streams of the generated checks.
 - [several-statements.md](todo/several-statements.md): the piece of work several statements in one `Exec`.
 - [upserts.md](todo/upserts.md): the piece of work upserts, `insert ... on conflict (key) do nothing` and `do update`.
+- [cache-checkpoints.md](todo/cache-checkpoints.md): the piece of work checkpoints and syncs of the cache, `synchronous = full`.
