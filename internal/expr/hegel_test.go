@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"hegel.dev/go/hegel"
 
@@ -74,21 +75,21 @@ func (s hegelSource) Uint64() uint64 {
 }
 
 // drawCase draws a case of the evaluator: a tree of arithmetic two times in three, and of text
-// otherwise, over a row of [schema] whose values are drawn first, with a length limit from 30 to
-// 4,000 bytes one case in four.
+// otherwise, with a length limit from 30 to 4,000 bytes one case in four, over a row of [schema]
+// whose values are drawn after the limit and before the tree.
 func drawCase(tc hegel.TestCase) exprCase {
 	c := exprCase{row: make([]*s4qlpb.Value, len(schema))}
-	for i, column := range schema {
-		c.row[i] = drawColumnValue(tc, column.typ)
-	}
 	if hegel.Draw(tc, hegel.WeightedBooleans(0.25)) {
 		c.limit = hegel.Draw(tc, hegel.Integers(30, 4000))
+	}
+	for i, column := range schema {
+		c.row[i] = drawColumnValue(tc, column.typ, c.limit)
 	}
 	w := &caseWriter{tc: tc, c: &c}
 	if hegel.Draw(tc, hegel.WeightedBooleans(1.0/3)) {
 		w.text(4, true)
 	} else {
-		w.number(4, true)
+		w.number(4, true, false)
 	}
 	c.src = w.b.String()
 	return c
@@ -103,25 +104,32 @@ type caseWriter struct {
 }
 
 // number writes an expression of a number of at most depth levels of operators: a leaf, one of the
-// four operators, or the negation, each in parentheses, so that the text is read as drawn. The root
-// is an operator, and an operand a leaf one time in three.
-func (w *caseWriter) number(depth int, root bool) {
+// four operators, in parentheses, or the negation. The root is an operator, and an operand a leaf one
+// time in three. The pass refuses parentheses around a leaf and a sign before a sign, so the operand
+// of a negation, negated, is a leaf without a literal, which would be a negative literal, an
+// operator, or a negation in parentheses.
+func (w *caseWriter) number(depth int, root, negated bool) {
 	op := 0
 	if depth > 0 && (root || !hegel.Draw(w.tc, hegel.WeightedBooleans(0.35))) {
 		op = hegel.Draw(w.tc, hegel.Integers(1, 5))
 	}
 	switch op {
 	case 0:
-		w.leaf(placeNumber)
+		w.leaf(placeNumber, negated)
 	case 5:
-		w.b.WriteString("-(")
-		w.number(depth-1, false)
-		w.b.WriteString(")")
+		if negated {
+			w.b.WriteString("(")
+		}
+		w.b.WriteString("-")
+		w.number(depth-1, false, true)
+		if negated {
+			w.b.WriteString(")")
+		}
 	default:
 		w.b.WriteString("(")
-		w.number(depth-1, false)
+		w.number(depth-1, false, false)
 		w.b.WriteString([]string{"", " + ", " - ", " * ", " / "}[op])
-		w.number(depth-1, false)
+		w.number(depth-1, false, false)
 		w.b.WriteString(")")
 	}
 }
@@ -135,7 +143,7 @@ func (w *caseWriter) text(depth int, root bool) {
 	}
 	switch op {
 	case 0:
-		w.leaf(placeText)
+		w.leaf(placeText, false)
 	case 1:
 		w.b.WriteString("(")
 		w.text(depth-1, false)
@@ -149,7 +157,7 @@ func (w *caseWriter) text(depth int, root bool) {
 	case 3:
 		w.b.WriteString("hex(")
 		if hegel.Draw(w.tc, hegel.Booleans()) {
-			w.leaf(placeBlob)
+			w.leaf(placeBlob, false)
 		} else {
 			w.text(depth-1, false)
 		}
@@ -166,27 +174,31 @@ const (
 	placeBlob
 )
 
-// leaf writes a literal, a column, or a parameter of the place p. One leaf in 40 is of another
-// place, for the refusals of the types.
-func (w *caseWriter) leaf(p place) {
+// leaf writes a literal, a column, or a parameter of the place p, and no literal if negated. One leaf
+// in 40 is of another place, for the refusals of the types.
+func (w *caseWriter) leaf(p place, negated bool) {
 	if hegel.Draw(w.tc, hegel.WeightedBooleans(0.025)) {
 		p = place(hegel.Draw(w.tc, hegel.Integers(0, 2)))
 	}
-	switch hegel.Draw(w.tc, hegel.Integers(0, 2)) {
+	first := 0
+	if negated {
+		first = 1
+	}
+	switch hegel.Draw(w.tc, hegel.Integers(first, 2)) {
 	case 0:
-		w.b.WriteString(literalOf(drawValue(w.tc, p, false)))
+		w.b.WriteString(literalOf(drawValue(w.tc, p, false, w.c.limit)))
 	case 1:
 		names := map[place][]string{placeNumber: {"a", "b", "c", "d"}, placeText: {"s", "t"}, placeBlob: {"x", "y"}}[p]
 		w.b.WriteString(hegel.Draw(w.tc, hegel.SampledFrom(names)))
 	default:
 		w.b.WriteString("?")
-		w.c.args = append(w.c.args, drawValue(w.tc, p, true))
+		w.c.args = append(w.c.args, drawValue(w.tc, p, true, w.c.limit))
 	}
 }
 
 // drawColumnValue draws a value of a column of the type typ: NULL one time in seven, and otherwise
 // a value of the type.
-func drawColumnValue(tc hegel.TestCase, typ s4qlpb.Type) *s4qlpb.Value {
+func drawColumnValue(tc hegel.TestCase, typ s4qlpb.Type, limit int) *s4qlpb.Value {
 	if hegel.Draw(tc, hegel.WeightedBooleans(1.0/7)) {
 		return null()
 	}
@@ -196,14 +208,14 @@ func drawColumnValue(tc hegel.TestCase, typ s4qlpb.Type) *s4qlpb.Value {
 	case s4qlpb.Type_TYPE_REAL:
 		return float(drawReal(tc))
 	case s4qlpb.Type_TYPE_TEXT:
-		return text(drawText(tc))
+		return text(drawText(tc, limit))
 	}
-	return blob([]byte(drawBlob(tc)))
+	return blob([]byte(drawBlob(tc, limit)))
 }
 
 // drawValue draws a value of the place p, an integer or a real for a number, and NULL one time in
 // seven if nullable.
-func drawValue(tc hegel.TestCase, p place, nullable bool) *s4qlpb.Value {
+func drawValue(tc hegel.TestCase, p place, nullable bool, limit int) *s4qlpb.Value {
 	if nullable && hegel.Draw(tc, hegel.WeightedBooleans(1.0/7)) {
 		return null()
 	}
@@ -214,9 +226,9 @@ func drawValue(tc hegel.TestCase, p place, nullable bool) *s4qlpb.Value {
 		}
 		return integer(drawInteger(tc))
 	case placeText:
-		return text(drawText(tc))
+		return text(drawText(tc, limit))
 	}
-	return blob([]byte(drawBlob(tc)))
+	return blob([]byte(drawBlob(tc, limit)))
 }
 
 // drawInteger draws a small integer, any integer, or one at an edge of 64 bits or of the reals.
@@ -236,33 +248,50 @@ func drawReal(tc hegel.TestCase) float64 {
 	))
 }
 
-// drawText draws a text without NUL, short, or one repeated up to 4,000 bytes, near the limits that
-// [drawCase] draws.
-func drawText(tc hegel.TestCase) string {
+// drawText draws a text without NUL: a short one, or one repeated up to 4,000 bytes, or with a limit,
+// one time in three a text of a length at an edge of the limit, padded with capital letters, which
+// lower changes.
+func drawText(tc hegel.TestCase, limit int) string {
 	s := hegel.Draw(tc, hegel.Text().ExcludeCharacters("\x00").MaxSize(6))
-	if s != "" && hegel.Draw(tc, hegel.WeightedBooleans(0.2)) {
+	switch {
+	case limit > 0 && hegel.Draw(tc, hegel.WeightedBooleans(1.0/3)):
+		n := drawEdge(tc, limit)
+		for len(s) > n {
+			_, size := utf8.DecodeLastRuneInString(s)
+			s = s[:len(s)-size]
+		}
+		s += strings.Repeat("A", n-len(s))
+	case s != "" && hegel.Draw(tc, hegel.WeightedBooleans(0.2)):
 		s = strings.Repeat(s, hegel.Draw(tc, hegel.Integers(1, 4000/len(s))))
 	}
 	return s
 }
 
-// drawBlob draws a blob as [drawText] draws a text.
-func drawBlob(tc hegel.TestCase) string {
+// drawBlob draws a blob as [drawText] draws a text, padded with the byte 0xab.
+func drawBlob(tc hegel.TestCase, limit int) string {
 	b := string(hegel.Draw(tc, hegel.Binary(0, 6)))
-	if b != "" && hegel.Draw(tc, hegel.WeightedBooleans(0.2)) {
+	switch {
+	case limit > 0 && hegel.Draw(tc, hegel.WeightedBooleans(1.0/3)):
+		n := drawEdge(tc, limit)
+		b = b[:min(len(b), n)] + strings.Repeat("\xab", max(0, n-len(b)))
+	case b != "" && hegel.Draw(tc, hegel.WeightedBooleans(0.2)):
 		b = strings.Repeat(b, hegel.Draw(tc, hegel.Integers(1, 2000/len(b))))
 	}
 	return b
 }
 
-// literalOf v, an integer, a real, a text, or a blob, in parentheses where it is negative, as SQLite
-// reads it back to v: a real in the shortest digits that are v, which SQLite reads exactly.
+// drawEdge draws a length at an edge of the length limit: one byte below, at, or above the limit or
+// half of it, where an operation of the evaluator makes a text that is just short enough or just too
+// long.
+func drawEdge(tc hegel.TestCase, limit int) int {
+	return hegel.Draw(tc, hegel.SampledFrom([]int{limit - 1, limit, limit + 1, limit/2 - 1, limit / 2, limit/2 + 1}))
+}
+
+// literalOf v, an integer, a real, a text, or a blob, as SQLite reads it back to v, with the sign as
+// part of the literal: a real in the shortest digits that are v, which SQLite reads exactly.
 func literalOf(v *s4qlpb.Value) string {
 	switch {
 	case v.HasInteger():
-		if i := v.GetInteger(); i < 0 {
-			return "(" + strconv.FormatInt(i, 10) + ")"
-		}
 		return strconv.FormatInt(v.GetInteger(), 10)
 	case v.HasReal():
 		f := v.GetReal()
@@ -271,7 +300,7 @@ func literalOf(v *s4qlpb.Value) string {
 			s += ".0"
 		}
 		if math.Signbit(f) {
-			return "(-" + s + ")"
+			return "-" + s
 		}
 		return s
 	case v.HasText():
