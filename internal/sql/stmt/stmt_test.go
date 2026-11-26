@@ -1311,7 +1311,6 @@ func checkUpsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 			if rows != nil {
 				d.insert(table, rows)
 			}
-			is.Equal(t, d.parameters(sql), len(args), sql)
 			returned, got, err := d.run(sql, args)
 			if err != nil {
 				if keyed {
@@ -1319,6 +1318,7 @@ func checkUpsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 				}
 				return err.Error()
 			}
+			is.Equal(t, d.parameters(sql), len(args), sql)
 			_, left, err := d.run("select * from "+quote(table), nil)
 			is.NotError(t, err)
 			return fmt.Sprint(returned, "\n", showRows(got), show(d.value("select changes()")), "\n", sortedRows(left))
