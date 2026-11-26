@@ -483,6 +483,9 @@ drop table s4ql_cache;
 create table s4ql_cache (id integer primary key, version integer not null, head text not null, database text not null) strict;
 insert into s4ql_cache select * from saved;
 drop table saved`, why: `its table "s4ql_cache" is not declared as s4ql declares it`},
+			// The adversarial review of 2026-11-26 found that a cache at the empty log was taken with its
+			// tables, which replay of the log then put commit objects on.
+			{statement: "update s4ql_cache set head = '" + strings.Repeat("0", 64) + "'", why: `it records no commit object, and holds the table "t1"`},
 		} {
 			w, path := made(t)
 			before := change(t, path, test.statement)
@@ -492,6 +495,37 @@ drop table saved`, why: `its table "s4ql_cache" is not declared as s4ql declares
 			is.True(t, strings.Contains(err.Error(), test.why), err.Error())
 			is.True(t, strings.Contains(err.Error(), advice), err.Error())
 			unchanged(t, path, before, test.statement)
+		}
+	})
+
+	// The adversarial review of 2026-11-26 found that such a file got the table s4ql_cache and was
+	// used, with SQLite's order of text in UTF-16.
+	t.Run("should refuse at the open a file whose text is not in UTF-8, and make nothing in it", func(t *testing.T) {
+		for _, encoding := range []string{"UTF-16le", "UTF-16be"} {
+			w := newWorld(t)
+			path := filepath.Join(w.dir, "a.db")
+			c, err := sqlite.Open(path)
+			is.NotError(t, err)
+			// The encoding is written to the file with its first table.
+			is.NotError(t, c.Exec("pragma encoding = '"+encoding+"'"))
+			is.NotError(t, c.Exec("create table x (a)"))
+			is.NotError(t, c.Exec("drop table x"))
+			is.NotError(t, c.Close())
+
+			_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+			is.Error(t, core.ErrCacheVersion, err, encoding)
+			is.True(t, strings.Contains(err.Error(), "its text is in the encoding "+encoding+", not UTF-8"), err.Error())
+			// The open puts the file into the journal mode wal before it looks, and writes nothing else.
+			c, err = sqlite.Open(path)
+			is.NotError(t, err)
+			s, err := c.Prepare("select count(*) from sqlite_schema")
+			is.NotError(t, err)
+			ok, err := s.Step()
+			is.NotError(t, err)
+			is.True(t, ok)
+			is.Equal(t, int64(0), s.ColumnInt64(0), encoding)
+			is.NotError(t, s.Finalize())
+			is.NotError(t, c.Close())
 		}
 	})
 

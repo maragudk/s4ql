@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -433,6 +434,9 @@ func (tx *Tx) changed(name string) *txTable {
 	return e
 }
 
+// maxKeyColumns is the largest number of columns of a primary key: see [checkCreateTable].
+const maxKeyColumns = 250
+
 // checkCreateTable is one that a commit object can hold and the cache can make. Its error wraps
 // [ErrInvalid] or [ErrReservedName].
 func checkCreateTable(ct *s4qlpb.CreateTable, commitTime time.Time) error {
@@ -454,8 +458,8 @@ func checkCreateTable(ct *s4qlpb.CreateTable, commitTime time.Time) error {
 	// A row is found by a condition with a term for each column of its primary key, and SQLite
 	// refuses a condition that is nested deeper than a thousand levels, which a few hundred terms
 	// are.
-	if len(ct.GetPrimaryKey()) > 250 {
-		return invalidf("a primary key of %v columns, where the limit is 250", len(ct.GetPrimaryKey()))
+	if len(ct.GetPrimaryKey()) > maxKeyColumns {
+		return invalidf("a primary key of %v columns, where the limit is %v", len(ct.GetPrimaryKey()), maxKeyColumns)
 	}
 	for _, c := range ct.GetColumns() {
 		if _, err := typeSQL(c.GetType()); err != nil {
@@ -1502,10 +1506,13 @@ func (r *spoolReader) Seek(offset int64, whence int) (int64, error) {
 }
 
 // upload the commit object under its name, with its checksum, if no object is there. An object
-// that is there already can only be this commit object, left by an upload that reported a failure,
-// so it counts as success. An upload that ends without an answer is sent again until ctx is done,
-// which is harmless, because the object is named by its content and created only if absent. An
-// upload that the store refuses as too large fails at once with [ErrTooLarge].
+// that is there already is this commit object, left by an upload that reported a failure, if its
+// content as it is read has the checksum that is the name, and the upload then counts as success.
+// Content that does not have it was damaged on its way, or is another object, which only a tool
+// outside s4ql can put there and which the log must never name, so the upload is sent and the
+// object read again until ctx is done. So is an upload that ends without an answer, which is
+// harmless, because the object is named by its content and created only if absent. An upload that
+// the store refuses as too large fails at once with [ErrTooLarge].
 func (tx *Tx) upload(ctx context.Context, out *spooled, attempts *int) error {
 	d := tx.d
 	sum := store.Checksum(out.name)
@@ -1526,8 +1533,21 @@ func (tx *Tx) upload(ctx context.Context, out *spooled, attempts *int) error {
 		switch {
 		case content.err != nil:
 			return d.spoolError(ctx, content.err)
-		case err == nil, errors.Is(err, store.ErrExists):
+		case err == nil:
 			return nil
+		case errors.Is(err, store.ErrExists):
+			same, readErr := tx.uploaded(ctx, out.name)
+			switch {
+			case readErr != nil:
+				err = readErr
+			case same:
+				return nil
+			default:
+				// The bytes may have been damaged on their way, which another read can tell. If they
+				// were not, no attempt can succeed, and the upload ends when ctx does, as for a store
+				// that never answers, with this error after the error of ctx.
+				err = fmt.Errorf("the object at the key %v is not the commit object: its content does not have the checksum that is the commit object's name", d.commitKey(out.name))
+			}
 		case errors.Is(err, store.ErrTooLarge):
 			// Every attempt sends the same bytes, so none can succeed.
 			return fmt.Errorf("%w: %v", ErrTooLarge, err)
@@ -1542,6 +1562,24 @@ func (tx *Tx) upload(ctx context.Context, out *spooled, attempts *int) error {
 		}
 		wait = min(2*wait, retryAfter)
 	}
+}
+
+// uploaded reports whether the object at the key of the commit object with the given name is that
+// commit object: whether its content has the checksum that is the name.
+func (tx *Tx) uploaded(ctx context.Context, name format.Name) (bool, error) {
+	d := tx.d
+	rctx, cancel := d.host.WithTimeout(ctx, d.options.ObjectTimeout)
+	defer cancel()
+	body, _, err := d.store.Get(rctx, d.commitKey(name))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = body.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, body); err != nil {
+		return false, err
+	}
+	return store.Checksum(h.Sum(nil)) == store.Checksum(name), nil
 }
 
 // publishing is what became of the manifest swap of a commit.

@@ -1995,6 +1995,38 @@ func checkIndexScans(t *testing.T, in *choices, every bool) scanStats {
 	return stats
 }
 
+func TestTx_scan(t *testing.T) {
+	// The adversarial review of 2026-11-26 found that the scan of a write transaction went on after
+	// a stop, where the scan of a read transaction ends.
+	t.Run("should end a scan that is running when the instance stops", func(t *testing.T) {
+		w := newWorld(t)
+		d := w.serve(t, "a", core.Options{})
+		transact(t, d, create("t1", 1, "k"), upsert("t1", 1), upsert("t1", 2), upsert("t1", 3))
+
+		tx, err := d.Begin(t.Context())
+		is.NotError(t, err)
+		closed := make(chan error, 1)
+		var rows int
+		var scanErr error
+		for _, err := range tx.Scan(t.Context(), "t1") {
+			if err != nil {
+				scanErr = err
+				break
+			}
+			rows++
+			if rows == 1 {
+				// Close stops the instance at once, and then waits for the scan to end.
+				go func() { closed <- d.Close(t.Context()) }()
+				<-d.Done()
+			}
+		}
+		is.Equal(t, 1, rows)
+		is.Error(t, core.ErrStopped, scanErr)
+		is.NotError(t, tx.Rollback(t.Context()))
+		is.NotError(t, <-closed)
+	})
+}
+
 func TestScanIndex_generated(t *testing.T) {
 	t.Run("should give, for every index, every shape of bounds, and both directions, the rows that SQLite gives from a database of its own, in the same order, by a search of exactly that index and those bounds, and count them", func(t *testing.T) {
 		seeds := 400

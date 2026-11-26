@@ -281,6 +281,9 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 	// write lock from its start, and that looks again whether the table is there: of two instances
 	// that open one new cache at once, exactly one makes it, and the other then reads what the first
 	// recorded.
+	if err := c.checkEncoding(); err != nil {
+		return err
+	}
 	made, err := c.made()
 	if err != nil {
 		return err
@@ -308,7 +311,28 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 	if err := r.check(identity); err != nil {
 		return err
 	}
-	return c.checkObjects()
+	position, err := r.position()
+	if err != nil {
+		return err
+	}
+	return c.checkObjects(position == format.EmptyLog)
+}
+
+// checkEncoding of the cache is UTF-8, the encoding of every text that the core writes, in which
+// SQLite's BINARY order of text is the order of its bytes. SQLite gives a new file that encoding,
+// so a cache in another is a file that something other than s4ql made.
+func (c *conn) checkEncoding() error {
+	var encoding string
+	if err := c.query("pragma encoding", func(s *sqlite.Stmt) error {
+		encoding = s.ColumnText(0)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if encoding != "UTF-8" {
+		return foreign("its text is in the encoding %v, not UTF-8", encoding)
+	}
+	return nil
 }
 
 // checkObjects of the schema of the cache: each is one that this package makes or that SQLite makes
@@ -322,9 +346,12 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 //   - a table whose name starts with "sqlite_", which only SQLite makes, such as sqlite_stat1.
 //
 // It refuses everything else: a view, a trigger, a table under another name that starts with
-// "s4ql_", and an index on a table with a reserved name.
-func (c *conn) checkObjects() error {
-	return c.query("select type, name, tbl_name, sql from main.sqlite_schema", func(s *sqlite.Stmt) error {
+// "s4ql_", and an index on a table with a reserved name. It also refuses a table of the database
+// in a cache that is empty, at the position [format.EmptyLog], since the log has no commit object
+// that made it.
+func (c *conn) checkObjects(empty bool) error {
+	var tables []string
+	err := c.query("select type, name, tbl_name, sql from main.sqlite_schema", func(s *sqlite.Stmt) error {
 		typ, name, owner := s.ColumnText(0), s.ColumnText(1), s.ColumnText(2)
 		switch {
 		case typ == "table" && name == "s4ql_cache":
@@ -335,12 +362,17 @@ func (c *conn) checkObjects() error {
 		case typ == "table" && strings.HasPrefix(fold(name), "sqlite_"):
 			return nil
 		case typ == "table" && !reserved(name):
+			tables = append(tables, name)
 			return nil
 		case typ == "index" && !reserved(owner):
 			return nil
 		}
 		return foreign("it holds the %v %q on the table %q, which s4ql does not make", typ, name, owner)
 	})
+	if err == nil && empty && len(tables) > 0 {
+		return foreign("it records no commit object, and holds the table %q", tables[0])
+	}
+	return err
 }
 
 // foreign is the error that wraps [ErrCacheVersion] for a cache that holds what this package does

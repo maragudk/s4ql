@@ -46,14 +46,14 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // the reader reports them; [errCacheMoved] for a commit object whose parent is not the position of
 // the cache, which the walk of a catch-up rules out unless another instance on the same cache has
 // committed to it meanwhile; and [ErrLogBroken] for a commit object that the reader accepts and that
-// does not fit the cache: a table that is there already or is not there, a column
-// position outside the table, a row or a key that does not fit the table, a value of the wrong
-// storage class, a row to change or delete that is not there, an index on a table that is not
-// there or on a column outside the table, an index whose name a table or an index has or that is
-// reserved, and an index to drop that is not there. The cache is right up to the
-// parent, so such a commit object is wrong, and applying a part of it would leave the cache in a
-// state that the log never had. An error of body, of tick, or of the cache is passed on as it is.
-// After any error, the cache is as it was.
+// does not fit the cache: a table that is there already or is not there, a primary key of more
+// columns than a write takes, a column position outside the table, a row or a key that does not fit
+// the table, a value of the wrong storage class, a row to change or delete that is not there, an
+// index on a table that is not there or on a column outside the table, an index whose name a table
+// or an index has or that is reserved, and an index to drop that is not there. The cache is right
+// up to the parent, so such a commit object is wrong, and applying a part of it would leave the
+// cache in a state that the log never had. An error of body, of tick, or of the cache is passed on
+// as it is. After any error, the cache is as it was.
 func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs bugs) (done replayed, err error) {
 	counted := &countingReader{r: body}
 	r := format.NewCommitReader(counted, name)
@@ -171,6 +171,9 @@ func apply(c *conn, change *s4qlpb.Change) (int, error) {
 		ct := change.GetCreateTable()
 		if reserved(ct.GetTable()) {
 			return 0, brokenf("it creates the table %q, whose name is reserved", ct.GetTable())
+		}
+		if len(ct.GetPrimaryKey()) > maxKeyColumns {
+			return 0, brokenf("it creates the table %q with a primary key of %v columns, where the limit is %v", ct.GetTable(), len(ct.GetPrimaryKey()), maxKeyColumns)
 		}
 		existing, err := c.lookUp(ct.GetTable())
 		if err != nil {
