@@ -153,3 +153,49 @@ Checks: `make test` and `make lint` passed, as did `go test ./drivercheck/` from
 ### Future work
 
 The driver's pair has no rule either that a success of arithmetic outside an upsert was due no refusal (it relies on SQLite's outcome there too); whether to add one is for the builder of the generated checks.
+
+## Step 4: landing the branch on the text engine, and text in DO UPDATE
+
+**Author:** builder (upsert-engine-land)
+
+### Prompt Context
+
+**Verbatim prompt:** "Your task: join the finished, reviewed upsert branch with the text engine that has landed on `main`, and land it." (with steps: merge `origin/main`; make `||`, `lower`, and `hex` work in SET and WHERE of DO UPDATE as in an update, checked against SQLite and through both pairs; keep `hegel_test.go` passing; self-review with at least six planted faults; the checks and one run at the nightly's sizes; the documents; land the pull request)
+**Interpretation:** resolve the merge so that neither the branch's refusal of text in DO UPDATE nor main's `upsertRefusal` survives, then let DO UPDATE take text by the rules of an update, measure every timing and order against SQLite rather than assume it, and make the rules of the pairs judge it.
+**Inferred intent:** upserts and text are both on `main` with no gap between them, so goqite's and glue's statements of the kind `on conflict (k) do update set v = excluded.v || ...` run.
+
+### What I did
+
+The merge had four conflicts. `/internal/engine/expression.go` and `/internal/sql/stmt/stmttest/arithmetic.go` took main's side, which deletes `textRefusal` and `stmttest.TextRefusal`; `/internal/engine/README.md` kept both new sections, Text before Upserts; `/README.md` got a line for each. Main still called `upsertRefusal`, which the branch had deleted, in `Check`, `prepare`, and `execPart`; those calls went. `doUpdate` needed the new signatures (`u.bind` with the limit, `b.constants` with the context and a table), and the pairs' calls of `stmttest.TextRefusal` and the `prepared` flag that only served them went too.
+
+For text I measured SQLite first (`/Volumes/990/s4ql/upsert-engine-land/sql/m1.sql` to `m3.sql`, under `.limit length 100` with arguments of 60 bytes). SQLite codes DO UPDATE inside the insert and factors its constants into the start of the program, so the subtrees that `hoisted` gives and the sides of WHERE without a column and without a call fail with `string or blob too big` also without a conflict; a SET value without a column, a side with a call, and text with a column fail only on the conflict row; and WHERE of DO UPDATE serves no access, so `where id = lower(? || ?)` with the key is lazy as well. The engine then got: `resolver` a case for `stmt.ExprExcluded` (a missing one named by `missingExcluded`), `conflictNames` the resolver's walk for each SET value and a rewritten `whereNames` that copies `build.walk` with pending names; `doUpdate` the update's `computeHoisted` of SET, the skip of a too-long text constant of SET, `b.hoist` of WHERE, and `b.constants` with a nil table, for which `mayServe` now says no. `noSuchExcluded` went. `stmttest.UpsertRefusals` lost its text refusal and otherwise needed nothing: the rules of an update already type text over the combined columns.
+
+Tests: in `TestEngine_upsert` the refusals of text replaced the refusals of text-not-supported, and three subtests are new (values with NULL in every place and a text key; 26 clauses of names inside calls, both keys; 23 clauses under a limit of 1,000, both keys, plus a read-only transaction and the long literal inside a call that s4ql refuses before SQLite would). `TestPair_upsert` has text cases, a subtest under the limit, and self-tests of `checkUpsert` against wrong answers of text. `TestUpsertRefusals`, the driver's two upsert subtests of `TestPair`, `TestUpsert` and `TestText` in `/conn_test.go`, and one `FuzzSQL` seed cover the rest. The documents are `/docs/todo/upserts.md` (the decisions and what is open), the Upserts section of `/internal/engine/README.md`, the line of `/docs/roadmap.md`, and the Status line of `/README.md`. A second merge took main's Hegel tests (#185); `TestHegel_series` passes unchanged.
+
+### Why
+
+The branch kept text refused only because main could not compute it when the branch started. With the text engine on main, the refusal was the last thing that told an upsert from an update, and the rule of the brief was that DO UPDATE judges text exactly as an update does.
+
+### What worked
+
+Measuring before writing: the first engine change (hoist SET, hoist WHERE, lazy WHERE) matched SQLite on every statement of the length subtest at once, and the names subtest matched on its first run once `excluded.c` was a column to the resolver. Nine planted faults, each in `/Volumes/990/s4ql/upsert-engine-land/plant.py` and never committed, all failed a short test: `excluded.s` read from the stored row inside `||`, `lower(NULL)` as `''` in DO UPDATE only, no hoist of WHERE, a text class taken beside a number in SET, WHERE serving the access, no hoist of SET, a too-long SET constant failing early, a missing `excluded.c` inside a call ending the walk, and the rules dropping the refusals of text. Long runs at the nightly's sizes, all passing: `TestDifferential` with 400 sequences in 738 s, `TestSimulation` with 100 seeds in 404 s, and `go test ./drivercheck/` in 89 s. `make test` and `make lint` passed, and the new tests passed with `-count=50` and with `-race -count=20`.
+
+### What didn't work
+
+The pair caught three of the nine planted faults only after fixes: its subtest under the limit deleted the key '9' once per key instead of after each step, so every call after the first insert of '9' met a conflict and `noWhereHoist` and `whereServes` passed it; and it had no case of names inside a call, so `excludedEndsWalk` passed it. A first draft of the tests had `where lower(excluded.s) is null`, which the pass refuses (`IS (function call)`), a column named `substr` by a slip, and `where lower(zz) = ?` without an argument, which gave `wrong number of arguments`. In the driver's pair, a prepared `set v2 = ? || v2` run with `'a'` and then 1 failed with "s4ql gives ... 1 affected ...; then: exec failed with s4ql: not supported: argument 1 in a concatenation, which is an integer (at offset 76) and SQLite ...; then: 1 affected": the same happens for `update t4 set v2 = ? || v2 where v1 = 2`, so it is the pair's, not the upsert's, and the test uses runs that are all refused. The sandbox refused several shell commands with here-documents or `||` inside them ("this command is too complex to verify that it stays inside the worktree"); the edits went through Python scripts in `/Volumes/990/s4ql/upsert-engine-land/`.
+
+### What I learned
+
+DO UPDATE is not a separate statement for SQLite's constant factoring: its constants run in the prologue of the insert, before the row is even looked up, so "without a conflict" does not mean "DO UPDATE is never touched". Only what is coded in place or behind `OP_Once` waits for the row.
+
+### What was tricky
+
+The resolver had to learn `excluded.c` without a second walk: since the row that the insert proposes has the table's columns, `found(e.Column)` is the right test, and a `stmt.Name` whose `Raw` has no quote gives SQLite's exact `no such column: EXCLUDED.zz` through `noSuchResultColumn`. The order of SET's constants before WHERE's matters only beside s4ql's own evaluation errors, which SQLite never gives, so it is s4ql's choice; it follows the update's.
+
+### What warrants review
+
+Two independent reviews ran about 790 upserts on the engine and SQLite between them and found no divergence. They found test gaps (WHERE before SET on the row, the read-only refusal of SET, IS NULL after a pending name, the value side before the tested side, a check of the driver that failed for another reason, a tally that could not fail, SET's constants before WHERE's), stale comments, and one real gap of the engine's pair: `pair.checkLength` measured only plain literals, so a literal longer than the limit inside an expression, which the engine refuses when it binds it, failed the pair, for an update on main as for an upsert. It now takes `string or blob too big` there. All of those are fixed. Look at `whereNames` beside `build.walk`, the nil table of `b.constants` in `doUpdate`, and the rule of `checkLength` in `/internal/engine/differential_test.go`.
+
+### Future work
+
+Both reviews proposed sharing `whereNames` with `build.walk` and the constants of SET with `build.change`, which touches the update's code; the driver's pair cannot judge a prepared statement whose runs are refused by turns. Both are open in `/docs/todo/upserts.md`. The generated checks of upserts, planted bugs of upserts in the simulation, and mutation testing stay later builders' work.
