@@ -1078,6 +1078,8 @@ type pair struct {
 	walking bool
 	// severalFailed is set after a text of several statements failed in the transaction that is open.
 	severalFailed bool
+	// lastText is the text of the last call with text of ||, lower, or hex, for [pair.reachOfText].
+	lastText string
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -1283,7 +1285,10 @@ func (p *pair) step(c stmttest.Call) string {
 	}
 	if differs {
 		gap := knownGap(src, got, want)
+		textGap := p.textDifference(c, got, want)
 		switch {
+		case textGap != "":
+			p.y.excused(textGap)
 		case startedTable(t, p.empty, src, got, want):
 			p.y.excused(acceptedStartedTable)
 		case want.err == tooBig && got.err == "" && c.Query && p.sortTooBig(src, args, got):
@@ -2293,6 +2298,57 @@ func (p *pair) bothWays(c stmttest.Call, got answer) string {
 			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, which %v", c.Src, c.Args, path, all.message, why)
 		}
 		p.count("evaluation error by one path and not by another")
+		return ""
+	}
+	if isSelect && textIn(s) && (got.err == tooBig || all.err == tooBig) && all.err != got.err {
+		// Which rows a select with text computes depends on its access too, and a text that is too
+		// long by one path may be on a row that the other does not read: a text too long of the other
+		// instance must be one that SQLite finds too long for a row that the rule may evaluate, as
+		// [pair.textTooLong] says, and one of the instance is judged by [pair.step], where the other
+		// instance must give no error and SQLite's rows without the limit.
+		if all.err != tooBig {
+			// The other instance read no row whose text is too long: it gives no error, and SQLite's
+			// answer without the length limit.
+			if all.err != "" {
+				return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, where it gives %q as the rules choose", c.Src, c.Args, path, all.message, got.message)
+			}
+			want := p.o.unlimited(p.t, c.Src, oracleArgs(c.Args)...)
+			bad := want.err != ""
+			if q := orderedOf(s.(*stmt.Select), oracleArgs(c.Args)); !bad && c.Query {
+				if q.plain() {
+					bad = all.String() != want.String()
+				} else {
+					bad = q.compare(p.t, p.o, all, want) != ""
+				}
+			}
+			if bad {
+				return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives\n%v\nand SQLite without the length limit\n%v", c.Src, c.Args, path, all, want)
+			}
+			p.count("text too long by one path and not by another")
+			return ""
+		}
+		if !p.textTooLong(s, oracleArgs(c.Args)) {
+			return fmt.Sprintf("%q with %#v: by the path %+v, the engine gives %q, and SQLite finds no text of it too long for a row that the rule may evaluate", c.Src, c.Args, path, all.message)
+		}
+		p.count("text too long by one path and not by another")
+		return ""
+	}
+	if subqueried(s) && textIn(s) && (got.err == tooBig) != (all.err == tooBig) && got.err+all.err == tooBig && changes == 0 && allChanges == 0 {
+		// The first row of a subquery without an ORDER BY that decides it is the first of the direction
+		// that each instance draws, and so are the rows that it reads before it, whose text may be too
+		// long. Where a statement fails so by one direction and changes nothing by the other, both
+		// instances hold what they held, as [pair.textOneDirection] judges.
+		computed := p.computed
+		if got.err != "" {
+			computed = otherComputed
+			if computed != nil && p.force != nil {
+				computed = p.force
+			}
+		}
+		if failure := p.textOneDirection(c, s, computed); failure != "" {
+			return failure
+		}
+		p.count("text too long in a subquery by one direction and not by another")
 		return ""
 	}
 	if failed, ok := subqueryErrorOfOne(s, got, all); ok && changes == 0 && allChanges == 0 {
@@ -3677,7 +3733,14 @@ func (p *pair) recordSlips(u *stmt.Update, args []any) bool {
 	key := columns[slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })].Name
 	found, foundArgs, one, oneArgs := stmttest.RowQueries(u, key, args)
 	is.Equal(t, "", o.run(t, "savepoint s4ql_rows").err)
-	is.Equal(t, "", o.run(t, found, foundArgs...).err, found)
+	foundErr := o.run(t, found, foundArgs...).err
+	if foundErr == tooBig && textIn(u) {
+		// A text of the WHERE that is too long for a row, which the rules of text judge, and no record.
+		is.Equal(t, "", o.run(t, "rollback to s4ql_rows").err)
+		is.Equal(t, "", o.run(t, "release s4ql_rows").err)
+		return false
+	}
+	is.Equal(t, "", foundErr, found)
 	n, err := strconv.Atoi(o.run(t, "select count(*) from temp.s4ql_found").rows[0])
 	is.NotError(t, err)
 	// The rows change one at a time, in the order of the key, as the engine changes them, and the
@@ -4019,7 +4082,7 @@ func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several, stmttest.TextFunctions:
 		n *= 2
 	}
 	return uint64(n)

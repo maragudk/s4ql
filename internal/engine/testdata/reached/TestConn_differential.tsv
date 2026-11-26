@@ -4,84 +4,81 @@
 # those of testdata/reached/TestConn_differential.kinds. Written with S4QL_RECOUNT=1 in a full run: see stmttest.Reached.
 # Do not edit a number by hand.
 mixed	9	3	delete attempt to write a readonly database
-mixed	88	=	excused: a value of another type than its column, checked against s4ql's rule
-mixed	57	=	excused: an argument that no column holds, checked against s4ql's rule
-mixed	14	=	excused: arithmetic refused by the rule of exact types
+mixed	73	=	excused: a value of another type than its column, checked against s4ql's rule
+mixed	62	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	52	=	excused: arithmetic refused by the rule of exact types
 mixed	3	=	excused: evaluation error that SQLite's result of its operator justifies
-mixed	116	=	excused: the wrong number of arguments, checked against s4ql's rule
-mixed	10	3	reached: LIMIT by an argument ok
-mixed	4	1	reached: ORDER BY that gives rows in a write transaction after a change of rows
-mixed	37	12	reached: WHERE run by every path on a table with an index
+mixed	119	=	excused: the wrong number of arguments, checked against s4ql's rule
+mixed	7	2	reached: LIMIT by an argument ok
+mixed	3	1	reached: ORDER BY that gives rows in a write transaction after a change of rows
+mixed	31	10	reached: WHERE run by every path on a table with an index
+mixed	4	1	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
 mixed	3	1	reached: arithmetic: constant expression that serves a get of one key
+mixed	8	2	reached: arithmetic: expression compared with a plain value, ok
+mixed	3	1	reached: arithmetic: expression compared with a subquery, ok
 mixed	3	1	reached: arithmetic: refused an expression of type null compared with a TEXT or BLOB column
-mixed	3	1	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
-mixed	308	102	reached: changed both ways
-mixed	73	24	reached: changed both ways in a read-only transaction
-mixed	5	1	reached: chosen every row, sorted
+mixed	4	1	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
+mixed	3	1	reached: arithmetic: update that computes its key from its row that changed rows
+mixed	3	1	reached: arithmetic: update that sets a column from itself that changed rows
+mixed	326	108	reached: changed both ways
+mixed	79	26	reached: changed both ways in a read-only transaction
+mixed	3	1	reached: chosen every row, sorted
 mixed	11	3	reached: commit of a transaction whose statement with RETURNING gave rows
-mixed	8	2	reached: commit of a transaction whose update or delete changed rows
-mixed	21	7	reached: commit of a transaction with a create index or a drop index
+mixed	7	2	reached: commit of a transaction whose update or delete changed rows
+mixed	19	6	reached: commit of a transaction with a create index or a drop index
 mixed	11	3	reached: create index attempt to write a readonly database
 mixed	5	1	reached: create index if not exists attempt to write a readonly database in a read-only transaction
 mixed	4	1	reached: create index if not exists did nothing: an index of the name exists in a write transaction
 mixed	14	4	reached: create table if not exists attempt to write a readonly database in a read-only transaction
-mixed	20	6	reached: create table if not exists did its work in a write transaction
-mixed	11	3	reached: create table if not exists did nothing: a table of the name exists in a read-only transaction
-mixed	17	5	reached: create table if not exists did nothing: a table of the name exists in a write transaction
+mixed	19	6	reached: create table if not exists did its work in a write transaction
+mixed	10	3	reached: create table if not exists did nothing: a table of the name exists in a read-only transaction
+mixed	14	4	reached: create table if not exists did nothing: a table of the name exists in a write transaction
 mixed	20	6	reached: create table with a default on the key attempt to write a readonly database in a read-only transaction
-mixed	32	10	reached: create table with a default on the key ok in a write transaction
-mixed	6	2	reached: delete with RETURNING through Query ok in a write transaction
-mixed	6	2	reached: delete with a value on the left attempt to write a readonly database in a read-only transaction
-mixed	3	1	reached: drop index attempt to write a readonly database
+mixed	31	10	reached: create table with a default on the key ok in a write transaction
+mixed	5	1	reached: delete with RETURNING through Query ok in a write transaction
+mixed	5	1	reached: delete with a value on the left attempt to write a readonly database in a read-only transaction
 mixed	3	1	reached: drop index if exists did nothing: no index of the name exists in a read-only transaction
-mixed	7	2	reached: drop index if exists did nothing: no index of the name exists in a write transaction
-mixed	7	2	reached: drop table if exists did its work in a write transaction
+mixed	6	2	reached: drop index if exists did nothing: no index of the name exists in a write transaction
+mixed	6	2	reached: drop table if exists did its work in a write transaction
 mixed	3	1	reached: drop table if exists did nothing: no table of the name exists in a read-only transaction
-mixed	3	1	reached: drop table if exists did nothing: no table of the name exists in a write transaction
 mixed	3	1	reached: insert that leaves out a column that does not take NULL with DEFAULT NULL NOT NULL constraint failed in a write transaction
 mixed	3	1	reached: insert that leaves out a column with a default of integer ok in a write transaction
 mixed	8	2	reached: insert that leaves out a column with a default that an index holds ok
-mixed	3	1	reached: insert that leaves out the key with a default ok in a write transaction
-mixed	16	5	reached: insert with RETURNING through Query attempt to write a readonly database in a read-only transaction
+mixed	15	5	reached: insert with RETURNING through Query attempt to write a readonly database in a read-only transaction
 mixed	12	4	reached: insert with RETURNING through Query ok in a write transaction
-mixed	13	4	reached: path that delivers the order
-mixed	41	13	reached: path that sorts
-mixed	211	70	reached: read both ways
-mixed	53	17	reached: read both ways in a read-only transaction
+mixed	10	3	reached: path that delivers the order
+mixed	33	11	reached: path that sorts
+mixed	231	77	reached: read both ways
+mixed	60	20	reached: read both ways in a read-only transaction
 mixed	3	1	reached: roll back of a transaction whose statement with RETURNING gave rows
-mixed	4	1	reached: roll back of a transaction whose update or delete changed rows
+mixed	5	1	reached: roll back of a transaction whose update or delete changed rows
 mixed	6	2	reached: roll back of a transaction with a create index or a drop index
-mixed	85	28	reached: select read by the access that the model chooses
-mixed	5	1	reached: select with a subquery ok in a write transaction
-mixed	10	3	reached: select with a value on the left ok, no row found in a write transaction
-mixed	9	3	reached: select with arithmetic read by the access that the model chooses
-mixed	10	3	reached: select without ORDER BY whose rows came in the order of the key of its access
-mixed	7	2	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
-mixed	5	1	reached: several statements: a commit of each of two statements or more of a text outside a transaction
+mixed	71	23	reached: select read by the access that the model chooses
+mixed	4	1	reached: select with a subquery ok in a write transaction
+mixed	8	2	reached: select with a value on the left ok, no row found in a write transaction
+mixed	21	7	reached: select with arithmetic read by the access that the model chooses
+mixed	8	2	reached: select without ORDER BY whose rows came in the order of the key of its access
+mixed	8	2	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+mixed	6	2	reached: several statements: a commit of each of two statements or more of a text outside a transaction
 mixed	5	1	reached: several statements: a last statement with RETURNING that ran
 mixed	5	1	reached: several statements: a last statement with RETURNING that ran, after another count of changes
 mixed	16	5	reached: several statements: a statement that ran on a table that an earlier statement of the text created
-mixed	11	3	reached: several statements: a text in a read-only transaction
+mixed	3	1	reached: several statements: a statement that ran on a table whose rows an earlier statement of the text changed
+mixed	10	3	reached: several statements: a text in a read-only transaction
 mixed	23	7	reached: several statements: a text in a write transaction
 mixed	4	1	reached: several statements: a text of 3 statements that ran to its end
-mixed	3	1	reached: several statements: a text of 5 statements that ran to its end
-mixed	4	1	reached: several statements: commit of a read-only transaction in which a text failed
-mixed	10	3	reached: several statements: commit of a write transaction in which a text failed
+mixed	3	1	reached: several statements: commit of a read-only transaction in which a text failed
+mixed	11	3	reached: several statements: commit of a write transaction in which a text failed
 mixed	6	2	reached: several statements: more arguments than parameters
 mixed	5	1	reached: several statements: roll back of a read-only transaction in which a text failed
 mixed	6	2	reached: several statements: roll back of a write transaction in which a text failed
-mixed	4	1	reached: several statements: stopped at a middle statement: SQLite's error
+mixed	3	1	reached: several statements: stopped at a middle statement: SQLite's error
 mixed	23	7	reached: several statements: stopped at the first statement: SQLite's error
-mixed	3	1	reached: several statements: stopped at the first statement: a constraint
 mixed	11	3	reached: several statements: stopped at the first statement: not supported
-mixed	5	1	reached: subquery that the engine did not compute, of an update or a delete
-mixed	6	2	reached: subquery whose value was that of its one first row
-mixed	3	1	reached: update with RETURNING through Query attempt to write a readonly database in a read-only transaction
-mixed	5	1	reached: update with a value on the left a value of another type in a write transaction
-mixed	7	2	reached: update with a value on the left attempt to write a readonly database in a read-only transaction
-mixed	32	10	reached: value on the left on a table that a create table if not exists found
-mixed	9	3	update attempt to write a readonly database
-mixed	9	3	update with a parameter attempt to write a readonly database
+mixed	4	1	reached: subquery that the engine did not compute, of an update or a delete
+mixed	26	8	reached: value on the left on a table that a create table if not exists found
+mixed	8	2	update attempt to write a readonly database
+mixed	6	2	update with a parameter attempt to write a readonly database
 tables	42	=	excused: a value of another type than its column, checked against s4ql's rule
 tables	240	80	reached: select read by the access that the model chooses
 tables	63	21	reached: select without ORDER BY whose rows came in the order of the key of its access
@@ -535,3 +532,38 @@ several	8	2	reached: update with RETURNING through Query attempt to write a read
 several	13	4	reached: update with RETURNING through Query ok in a write transaction
 several	48	16	update attempt to write a readonly database
 several	44	14	update with a parameter attempt to write a readonly database
+textfunctions	15	=	excused: a value of another type than its column, checked against s4ql's rule
+textfunctions	72	=	excused: arithmetic refused by the rule of exact types
+textfunctions	4	=	excused: evaluation error that SQLite's result of its operator justifies
+textfunctions	4	1	reached: LIMIT by an argument ok
+textfunctions	22	7	reached: WHERE run by every path on a table with an index
+textfunctions	10	3	reached: arithmetic: condition computed for each row that holds for a row that the others hold for
+textfunctions	8	2	reached: arithmetic: condition computed for each row that rules out every row that the others hold for
+textfunctions	63	21	reached: arithmetic: expression compared with a plain value, ok
+textfunctions	40	13	reached: arithmetic: expression compared with a subquery, ok
+textfunctions	5	1	reached: arithmetic: refused a subquery compared with an expression
+textfunctions	3	1	reached: arithmetic: select with LIMIT that failed on a row
+textfunctions	26	8	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
+textfunctions	14	4	reached: arithmetic: update that sets a column from itself that changed rows
+textfunctions	269	89	reached: changed both ways
+textfunctions	72	24	reached: changed both ways in a read-only transaction
+textfunctions	4	1	reached: chosen every row, sorted
+textfunctions	6	2	reached: commit of a transaction whose statement with RETURNING gave rows
+textfunctions	9	3	reached: commit of a transaction whose update or delete changed rows
+textfunctions	12	4	reached: commit of a transaction with a create index or a drop index
+textfunctions	7	2	reached: create index attempt to write a readonly database
+textfunctions	12	4	reached: insert with RETURNING through Query attempt to write a readonly database in a read-only transaction
+textfunctions	16	5	reached: insert with RETURNING through Query ok in a write transaction
+textfunctions	8	2	reached: path that delivers the order
+textfunctions	35	11	reached: path that sorts
+textfunctions	249	83	reached: read both ways
+textfunctions	70	23	reached: read both ways in a read-only transaction
+textfunctions	9	3	reached: roll back of a transaction whose statement with RETURNING gave rows
+textfunctions	10	3	reached: roll back of a transaction whose update or delete changed rows
+textfunctions	9	3	reached: roll back of a transaction with a create index or a drop index
+textfunctions	49	16	reached: select read by the access that the model chooses
+textfunctions	84	28	reached: select with arithmetic read by the access that the model chooses
+textfunctions	7	2	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+textfunctions	14	4	reached: subquery whose value was that of its one first row
+textfunctions	11	3	update attempt to write a readonly database
+textfunctions	31	10	update with a parameter attempt to write a readonly database
