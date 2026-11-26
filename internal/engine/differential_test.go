@@ -3706,7 +3706,14 @@ func (p *pair) recordSlips(u *stmt.Update, args []any) bool {
 	key := columns[slices.IndexFunc(columns, func(c stmttest.TableColumn) bool { return c.PrimaryKey })].Name
 	found, foundArgs, one, oneArgs := stmttest.RowQueries(u, key, args)
 	is.Equal(t, "", o.run(t, "savepoint s4ql_rows").err)
-	is.Equal(t, "", o.run(t, found, foundArgs...).err, found)
+	foundErr := o.run(t, found, foundArgs...).err
+	if foundErr == tooBig && textIn(u) {
+		// A text of the WHERE that is too long for a row, which the rules of text judge, and no record.
+		is.Equal(t, "", o.run(t, "rollback to s4ql_rows").err)
+		is.Equal(t, "", o.run(t, "release s4ql_rows").err)
+		return false
+	}
+	is.Equal(t, "", foundErr, found)
 	n, err := strconv.Atoi(o.run(t, "select count(*) from temp.s4ql_found").rows[0])
 	is.NotError(t, err)
 	// The rows change one at a time, in the order of the key, as the engine changes them, and the

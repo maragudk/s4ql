@@ -64,7 +64,7 @@ default	1309	436	rows of several columns
 default	96	32	selects read by an index
 default	11	3	selects with LIMIT and without ORDER BY that gave rows
 default	109	36	selects with LIMIT and without ORDER BY with SQLite's error
-default	259	86	selects with LIMIT that succeeded
+default	253	84	selects with LIMIT that succeeded
 default	29	9	selects with ORDER BY that gave rows
 default	101	33	selects with ORDER BY with SQLite's error
 default	961	320	selects with WHERE in a transaction compared with SQLite
@@ -234,7 +234,7 @@ default/mixed	116	38	rows of several columns
 default/mixed	7	2	selects read by an index
 default/mixed	5	1	selects with LIMIT and without ORDER BY that gave rows
 default/mixed	37	12	selects with LIMIT and without ORDER BY with SQLite's error
-default/mixed	45	15	selects with LIMIT that succeeded
+default/mixed	43	14	selects with LIMIT that succeeded
 default/mixed	11	3	selects with ORDER BY that gave rows
 default/mixed	52	17	selects with ORDER BY with SQLite's error
 default/mixed	157	52	selects with WHERE in a transaction compared with SQLite
@@ -1241,7 +1241,7 @@ default/textfunctions	5	1	replays of a log with an index
 default/textfunctions	48	16	rows of several columns
 default/textfunctions	9	3	selects read by an index
 default/textfunctions	7	2	selects with LIMIT and without ORDER BY with SQLite's error
-default/textfunctions	32	10	selects with LIMIT that succeeded
+default/textfunctions	28	9	selects with LIMIT that succeeded
 default/textfunctions	13	4	selects with ORDER BY with SQLite's error
 default/textfunctions	80	26	selects with WHERE in a transaction compared with SQLite
 default/textfunctions	23	7	selects with WHERE in a transaction compared with SQLite, on an engine that forces an index path
@@ -1766,8 +1766,8 @@ hammer	58	19	replays of a log with an index
 hammer	2752	917	rows of several columns
 hammer	204	68	selects read by an index
 hammer	48	16	selects with LIMIT and without ORDER BY that gave rows
-hammer	459	153	selects with LIMIT and without ORDER BY with SQLite's error
-hammer	888	296	selects with LIMIT that succeeded
+hammer	457	152	selects with LIMIT and without ORDER BY with SQLite's error
+hammer	882	294	selects with LIMIT that succeeded
 hammer	96	32	selects with ORDER BY that gave rows
 hammer	236	78	selects with ORDER BY with SQLite's error
 hammer	2112	704	selects with WHERE in a transaction compared with SQLite
@@ -1933,8 +1933,8 @@ hammer/mixed	11	3	replays of a log with an index
 hammer/mixed	234	78	rows of several columns
 hammer/mixed	14	4	selects read by an index
 hammer/mixed	8	2	selects with LIMIT and without ORDER BY that gave rows
-hammer/mixed	61	20	selects with LIMIT and without ORDER BY with SQLite's error
-hammer/mixed	106	35	selects with LIMIT that succeeded
+hammer/mixed	60	20	selects with LIMIT and without ORDER BY with SQLite's error
+hammer/mixed	103	34	selects with LIMIT that succeeded
 hammer/mixed	21	7	selects with ORDER BY that gave rows
 hammer/mixed	110	36	selects with ORDER BY with SQLite's error
 hammer/mixed	230	76	selects with WHERE in a transaction compared with SQLite
@@ -2916,8 +2916,8 @@ hammer/textfunctions	5	1	replays of a log with an index
 hammer/textfunctions	324	108	rows of several columns
 hammer/textfunctions	29	9	selects read by an index
 hammer/textfunctions	8	2	selects with LIMIT and without ORDER BY that gave rows
-hammer/textfunctions	65	21	selects with LIMIT and without ORDER BY with SQLite's error
-hammer/textfunctions	105	35	selects with LIMIT that succeeded
+hammer/textfunctions	64	21	selects with LIMIT and without ORDER BY with SQLite's error
+hammer/textfunctions	102	34	selects with LIMIT that succeeded
 hammer/textfunctions	10	3	selects with ORDER BY that gave rows
 hammer/textfunctions	51	17	selects with ORDER BY with SQLite's error
 hammer/textfunctions	240	80	selects with WHERE in a transaction compared with SQLite

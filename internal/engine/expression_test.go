@@ -151,7 +151,18 @@ const (
 func (p *pair) checkArithmetic(c stmttest.Call, s stmt.Statement, args []any, got answer) (excuse, failure string) {
 	t, o := p.t, p.o
 	t.Helper()
-	if len(args) != s.Parameters() || o.prepare(t, c.Src) != nil {
+	if len(args) != s.Parameters() {
+		return "", ""
+	}
+	if err := o.prepare(t, c.Src); err != nil {
+		// An update or a delete with two subqueries of * of more than one column, which SQLite does not
+		// prepare, and s4ql refuses, as [wideRule] says.
+		if rule := wideRule(t, o, s, err); rule != "" {
+			if got.err != "not supported" || got.message != rule {
+				return excusedType, fmt.Sprintf("%q with the arguments %#v: the engine gives %v, and the rule %q", c.Src, args, got, rule)
+			}
+			return excusedType, ""
+		}
 		return "", ""
 	}
 	refusals := arithmeticRefusals(t, o, s, args, p.readOnly)

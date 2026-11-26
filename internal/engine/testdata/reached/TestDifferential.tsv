@@ -7,7 +7,7 @@ mixed	13	4	createtable duplicate column name
 mixed	2	=	excused: a literal longer than the length limit, checked against s4ql's rule
 mixed	256	=	excused: a value of another type than its column, checked against s4ql's rule
 mixed	18	=	excused: already exists after the start of a table, accepted
-mixed	223	=	excused: an argument that no column holds, checked against s4ql's rule
+mixed	224	=	excused: an argument that no column holds, checked against s4ql's rule
 mixed	5	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
 mixed	137	=	excused: arithmetic refused by the rule of exact types
 mixed	17	=	excused: evaluation error that SQLite's result of its operator justifies
@@ -509,8 +509,8 @@ mixed	26	8	reached: text with a column in WHERE of a delete, not supported
 mixed	8	2	reached: text with a column in WHERE of a delete, ok
 mixed	8	2	reached: text with a column in WHERE of a delete, wrong number of arguments
 mixed	16	5	reached: text with a column in WHERE of a select, no such column
-mixed	56	18	reached: text with a column in WHERE of a select, no such table
-mixed	33	11	reached: text with a column in WHERE of a select, not supported
+mixed	55	18	reached: text with a column in WHERE of a select, no such table
+mixed	34	11	reached: text with a column in WHERE of a select, not supported
 mixed	24	8	reached: text with a column in WHERE of a select, ok
 mixed	3	1	reached: text with a column in WHERE of a select, string or blob too big
 mixed	16	5	reached: text with a column in WHERE of a select, wrong number of arguments
@@ -4605,7 +4605,7 @@ several	14	4	select wrong number of arguments
 textfunctions	3	=	excused: a literal longer than the length limit, checked against s4ql's rule
 textfunctions	79	=	excused: a value of another type than its column, checked against s4ql's rule
 textfunctions	15	=	excused: an update or a delete with a literal longer than the length limit, checked against s4ql's rule
-textfunctions	394	=	excused: arithmetic refused by the rule of exact types
+textfunctions	391	=	excused: arithmetic refused by the rule of exact types
 textfunctions	20	=	excused: evaluation error that SQLite's result of its operator justifies
 textfunctions	1	=	excused: scalar subquery with a text too long, which the engine computes and SQLite does not
 textfunctions	3	=	excused: text with a call that may serve the access, too long, which the engine computes before any row and SQLite does not
@@ -4706,7 +4706,7 @@ textfunctions	12	4	reached: argument float64 -0.0
 textfunctions	169	56	reached: argument int64
 textfunctions	39	13	reached: argument nil
 textfunctions	287	95	reached: argument string
-textfunctions	226	75	reached: arithmetic of a select whose due errors the model's access decides
+textfunctions	230	76	reached: arithmetic of a select whose due errors the model's access decides
 textfunctions	6	2	reached: arithmetic of a write whose evaluation error the model's access judges
 textfunctions	3	1	reached: arithmetic with a column in SET of a update, an evaluation error: s4ql: integer overflow
 textfunctions	4	1	reached: arithmetic with a column in SET of a update, no such column
@@ -4746,7 +4746,7 @@ textfunctions	8	2	reached: arithmetic: s4ql: division by zero in WHERE of an exp
 textfunctions	4	1	reached: arithmetic: s4ql: integer overflow in SET
 textfunctions	3	1	reached: arithmetic: s4ql: integer overflow in WHERE
 textfunctions	7	2	reached: arithmetic: select with LIMIT that failed on a row
-textfunctions	104	34	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
+textfunctions	102	34	reached: arithmetic: select with LIMIT that gave fewer rows than its LIMIT, whose due errors its access decides
 textfunctions	14	4	reached: arithmetic: update that computes its key from its row that changed rows
 textfunctions	6	2	reached: arithmetic: update that copies another column alone that changed rows
 textfunctions	75	25	reached: arithmetic: update that sets a column from itself that changed rows
@@ -4920,7 +4920,7 @@ textfunctions	12	4	reached: select with a subquery through Query ok
 textfunctions	5	1	reached: select with a value on the left ok, no row found
 textfunctions	366	122	reached: select with arithmetic read by the access that the model chooses
 textfunctions	25	8	reached: select without ORDER BY whose rows came in the order of the key of its access
-textfunctions	28	9	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
+textfunctions	29	9	reached: select without ORDER BY whose rows came in the reverse of the order of the key of its access
 textfunctions	5	1	reached: subquery of the table of the statement in a delete
 textfunctions	15	5	reached: subquery of the table of the statement in a select
 textfunctions	5	1	reached: subquery of the table of the statement in a update
@@ -4954,9 +4954,9 @@ textfunctions	4	1	reached: text with a column in WHERE of a delete, string or bl
 textfunctions	6	2	reached: text with a column in WHERE of a select, 1/1: row value misused
 textfunctions	31	10	reached: text with a column in WHERE of a select, no such column
 textfunctions	42	14	reached: text with a column in WHERE of a select, no such table
-textfunctions	167	55	reached: text with a column in WHERE of a select, not supported
+textfunctions	164	54	reached: text with a column in WHERE of a select, not supported
 textfunctions	234	78	reached: text with a column in WHERE of a select, ok
-textfunctions	45	15	reached: text with a column in WHERE of a select, string or blob too big
+textfunctions	48	16	reached: text with a column in WHERE of a select, string or blob too big
 textfunctions	9	3	reached: text with a column in WHERE of a update, 1/1: sub-select returns 3 columns - expected 1
 textfunctions	17	5	reached: text with a column in WHERE of a update, no such column
 textfunctions	25	8	reached: text with a column in WHERE of a update, no such table
@@ -5039,7 +5039,7 @@ textfunctions	268	89	reached: text: the empty text in a text, ok
 textfunctions	232	77	reached: text: the key compared with a text, ok
 textfunctions	10	3	reached: text: || at the length limit, ok
 textfunctions	14	4	reached: text: || at the length limit, string or blob too big
-textfunctions	25	8	reached: text: || one byte over the length limit, string or blob too big
+textfunctions	28	9	reached: text: || one byte over the length limit, string or blob too big
 textfunctions	15	5	reached: text: || one byte short of the length limit, ok
 textfunctions	13	4	reached: text: || one byte short of the length limit, string or blob too big
 textfunctions	16	5	reached: update WHERE that reads a get of one key ok, rows changed

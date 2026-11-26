@@ -34,7 +34,7 @@ mixed	103	34	dropindex no such index
 mixed	55	18	dropindex ok
 mixed	82	27	droptable no such table
 mixed	117	39	droptable ok
-mixed	841	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
+mixed	840	=	excused: SQLite's error at prepare, s4ql's at the run of the statement
 mixed	27	=	excused: a begin on a connection whose transaction is open, refused by both with their own errors
 mixed	56	=	excused: a select, an update, a delete, a create index, or an insert with RETURNING with a name in double quotes that is no column, which mattn's SQLite reads as a string, checked against the pinned build's error
 mixed	40	=	excused: a statement prepared outside the transaction, whose names only the transaction has, compared as prepared in it
@@ -43,7 +43,7 @@ mixed	7	=	excused: a statement with a subquery with a name in double quotes that
 mixed	143	=	excused: a value of another type than its column, checked against s4ql's rule
 mixed	8	=	excused: already exists after the start of a table, accepted
 mixed	2	=	excused: an argument of the LIMIT of a subquery that is no integer from 0, checked against s4ql's rule
-mixed	199	=	excused: an argument that s4ql does not support, checked against s4ql's rule
+mixed	200	=	excused: an argument that s4ql does not support, checked against s4ql's rule
 mixed	4	1	excused: an evaluation error of arithmetic, which SQLite's result of its operator justifies
 mixed	41	=	excused: an isolation level that s4ql does not support, checked against s4ql's rule
 mixed	58	=	excused: arithmetic refused by the rules of its types, checked against s4ql's rules
@@ -3794,7 +3794,7 @@ textfunctions	34	11	insert with a parameter ok
 textfunctions	28	9	other not supported
 textfunctions	3	1	reached: < on another column ok
 textfunctions	4	1	reached: = on another column ok
-textfunctions	12	4	reached: LIMIT by an argument ok
+textfunctions	11	3	reached: LIMIT by an argument ok
 textfunctions	4	1	reached: SET with a value of another type a value of another type
 textfunctions	4	1	reached: WHERE that gives every row of a table with rows
 textfunctions	16	5	reached: WHERE that gives no row of a table with rows
@@ -3809,7 +3809,6 @@ textfunctions	3	1	reached: comparison with literal blob ok
 textfunctions	3	1	reached: delete with WHERE attempt to write a readonly database
 textfunctions	11	3	reached: delete with WHERE ok, no row found
 textfunctions	3	1	reached: delete with a subquery through exec ok
-textfunctions	3	1	reached: evaluation error justified by SQLite's result of its operator: s4ql: integer overflow
 textfunctions	4	1	reached: insert into INT a value of another type
 textfunctions	6	2	reached: insert into INT attempt to write a readonly database
 textfunctions	3	1	reached: insert into INT ok
