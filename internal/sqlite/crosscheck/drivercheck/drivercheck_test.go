@@ -2250,6 +2250,18 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 			}
 		}
 	}
+	if u := upsertOf(s); u != nil && !byText {
+		// Where a run of an upsert gives no error, none of s4ql's refusals was due, which SQLite's
+		// outcome cannot show where it converts a value that s4ql refuses.
+		for i, r := range got.runs() {
+			if r.failed != "" || i >= len(runs) {
+				continue
+			}
+			if refusals := p.upsertRefusals(src, u, boundArgs(runs[i]), o); len(refusals) > 0 {
+				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and the rules refuse it with one of %q", src, runs[i], got, refusals)
+			}
+		}
+	}
 
 	if subqueriesIn(s) != nil {
 		if failure, ok := p.checkQuotedSubquery(src, s, got, o); ok {
@@ -4889,6 +4901,51 @@ func TestPair(t *testing.T) {
 			is.Equal(t, "", p.compareTables())
 			p.close()
 		}
+	})
+
+	t.Run("should fail an upsert's refusal that is none of the rules', a refusal that was due and not given, and an evaluation error that SQLite does not justify", func(t *testing.T) {
+		p := newPair(t, newWorld(t), true, nil)
+		for _, src := range []string{t4, "insert into t4 values (1, 'a', 1.5, null)", "insert into t4 values (2, 'b', 2.5, 7)"} {
+			_, failure := p.step(src, callExec, false)
+			is.Equal(t, "", failure)
+		}
+		// check compares s4ql's outcome got of src with the runs, and requires that it fails where fails.
+		check := func(src string, runs [][]any, got outcome, fails bool) {
+			t.Helper()
+			failure := p.compare(src, callExec, false, runs, got, p.o)
+			is.Equal(t, fails, failure != "", fmt.Sprint(src, " with the runs ", runs, " and the outcome ", got, ": ", failure))
+		}
+		const refused = "insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = excluded.v3"
+		refusal := run(t, p.s, callExec, refused, [][]any{nil}, s4qlText)
+		is.Equal(t, "exec: exec failed with s4ql: not supported: the column excluded.v3 of type REAL for the column t4.v4 of type INT", refusal.String())
+		check(refused, [][]any{nil}, refusal, false)
+
+		// A refusal that is none of the rules', of a statement that the rules refuse, and of one that
+		// they take.
+		wrong := refusal
+		wrong.err = "s4ql: not supported: the column excluded.v2 of type TEXT for the column t4.v4 of type INT"
+		check(refused, [][]any{nil}, wrong, true)
+		check("insert into t4 (v1, v3) values (1, 0.5) on conflict (v1) do update set v4 = excluded.v4", [][]any{nil}, refusal, true)
+
+		// An evaluation error of an expression with a column, which SQLite justifies on the row of the
+		// conflict and not for another value or where the table has no row of the key, and of a constant.
+		const onRow = "insert into t4 (v1, v3, v4) values (?, 0.5, ?) on conflict (v1) do update set v4 = v4 + excluded.v4"
+		overflow := run(t, p.s, callExec, onRow, [][]any{{int64(2), int64(math.MaxInt64)}}, s4qlText)
+		is.Equal(t, "exec: exec failed with s4ql: integer overflow in + (at offset 83)", overflow.String())
+		check(onRow, [][]any{{int64(2), int64(math.MaxInt64)}}, overflow, false)
+		check(onRow, [][]any{{int64(2), int64(1)}}, overflow, true)
+		check(onRow, [][]any{{int64(9), int64(math.MaxInt64)}}, overflow, true)
+		const constant = "insert into t4 (v1, v3, v4) values (9, 0.5, 1) on conflict (v1) do update set v4 = ? + 1"
+		overflow = run(t, p.s, callExec, constant, [][]any{{int64(math.MaxInt64)}}, s4qlText)
+		is.True(t, evaluated(overflow), overflow.String())
+		check(constant, [][]any{{int64(math.MaxInt64)}}, overflow, false)
+		check(constant, [][]any{{int64(1)}}, overflow, true)
+
+		// No error where a refusal was due, where SQLite converts the value that s4ql refuses, of DO
+		// UPDATE and of the proposed row. These run in SQLite, so they come last.
+		done := outcome{call: callExec, affected: "1", lastID: "0"}
+		check("insert into t4 (v1, v3) values (1, 2.0) on conflict (v1) do update set v4 = excluded.v3", [][]any{nil}, done, true)
+		check("insert into t4 (v1, v3, v4) values (9, 0.5, 2.0) on conflict (v1) do nothing", [][]any{nil}, done, true)
 	})
 
 	t.Run("should run goqite's receive with its scalar subquery, through Query and a prepared statement run several times, with rows that tie broken by goqite's index, and none on an empty queue", func(t *testing.T) {
