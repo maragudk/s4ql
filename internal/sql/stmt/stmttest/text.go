@@ -606,27 +606,27 @@ func (q *Sequence) textLike(r Rand, a any) any {
 // TextRefused are texts that the statement pass refuses for their text, with %[1]v for the name of a
 // table and %[2]v for that of a column, each the refusal of the text that its comment names.
 var TextRefused = []string{
-	"select * from %[1]v where %[2]v = %[2]v || 1",             // number in a concatenation
-	"update %[1]v set %[2]v = %[2]v || -%[2]v",                 // number in a concatenation
-	"delete from %[1]v where %[2]v = %[2]v || null",            // NULL in a concatenation
-	"select * from %[1]v where %[2]v = x'01' || %[2]v",         // blob in a concatenation
-	"update %[1]v set %[2]v = lower(1)",                        // number as an argument
-	"update %[1]v set %[2]v = hex(null)",                       // NULL as an argument
-	"select * from %[1]v where lower(x'41') = %[2]v",           // blob as an argument
-	"update %[1]v set %[2]v = upper(%[2]v)",                    // function other than lower or hex
-	"select * from %[1]v where %[2]v = lower()",                // wrong number of arguments
-	"delete from %[1]v where %[2]v = hex(%[2]v, %[2]v)",        // wrong number of arguments
-	"select * from %[1]v where %[2]v = hex(*)",                 // * as an argument
-	"update %[1]v set %[2]v = lower(distinct %[2]v)",           // DISTINCT or ALL
+	"select * from %[1]v where %[2]v = %[2]v || 1",                    // number in a concatenation
+	"update %[1]v set %[2]v = %[2]v || -%[2]v",                        // number in a concatenation
+	"delete from %[1]v where %[2]v = %[2]v || null",                   // NULL in a concatenation
+	"select * from %[1]v where %[2]v = x'01' || %[2]v",                // blob in a concatenation
+	"update %[1]v set %[2]v = lower(1)",                               // number as an argument
+	"update %[1]v set %[2]v = hex(null)",                              // NULL as an argument
+	"select * from %[1]v where lower(x'41') = %[2]v",                  // blob as an argument
+	"update %[1]v set %[2]v = upper(%[2]v)",                           // function other than lower or hex
+	"select * from %[1]v where %[2]v = lower()",                       // wrong number of arguments
+	"delete from %[1]v where %[2]v = hex(%[2]v, %[2]v)",               // wrong number of arguments
+	"select * from %[1]v where %[2]v = hex(*)",                        // * as an argument
+	"update %[1]v set %[2]v = lower(distinct %[2]v)",                  // DISTINCT or ALL
 	"select * from %[1]v where %[2]v = lower(%[2]v) filter (where 1)", // FILTER clause
-	"select * from %[1]v where [lower](%[2]v) = 'a'",           // name in brackets
-	"select * from %[1]v where %[2]v * lower(%[2]v) = 1",       // text in arithmetic
-	"update %[1]v set %[2]v = (%[2]v || 'a') * 2",              // text in arithmetic
-	"select * from %[1]v where %[2]v = lower((%[2]v))",         // parentheses
-	"update %[1]v set %[2]v = 'a' || (hex(%[2]v))",             // parentheses
-	"select lower(%[2]v) from %[1]v",                           // result column other than a column or *
-	"select * from %[1]v where lower(%[2]v) is null",           // function call
-	"insert into %[1]v values ('a' || 'b')",                    // binary operator
-	"select * from %[1]v where 'a' || 'b' = lower('ab')",       // value compared with a value
-	"select * from %[1]v where %[2]v || current_time = 'a'",    // current date or time
+	"select * from %[1]v where [lower](%[2]v) = 'a'",                  // name in brackets
+	"select * from %[1]v where %[2]v * lower(%[2]v) = 1",              // text in arithmetic
+	"update %[1]v set %[2]v = (%[2]v || 'a') * 2",                     // text in arithmetic
+	"select * from %[1]v where %[2]v = lower((%[2]v))",                // parentheses
+	"update %[1]v set %[2]v = 'a' || (hex(%[2]v))",                    // parentheses
+	"select lower(%[2]v) from %[1]v",                                  // result column other than a column or *
+	"select * from %[1]v where lower(%[2]v) is null",                  // function call
+	"insert into %[1]v values ('a' || 'b')",                           // binary operator
+	"select * from %[1]v where 'a' || 'b' = lower('ab')",              // value compared with a value
+	"select * from %[1]v where %[2]v || current_time = 'a'",           // current date or time
 }
