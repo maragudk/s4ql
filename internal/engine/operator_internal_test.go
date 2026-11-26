@@ -385,17 +385,38 @@ func (x fakeTx) delete(_ context.Context, name string, key []*s4qlpb.Value) (boo
 
 // keys records its call, as "keys" and the name, and runs f with a set of integer keys in memory,
 // which records each add, as "add" and the key, and each key that it gives, as "key" and the key.
-func (x fakeTx) keys(_ context.Context, name string, f func(keySet) error) error {
-	x.f.calls = append(x.f.calls, "keys "+name)
-	return f(&fakeKeys{f: x.f})
+// A set in the order of the columns by is recorded as "keys", the name, "by", and the positions of
+// by, and gives its keys in that order, as [compareBy] orders them.
+func (x fakeTx) keys(_ context.Context, name string, by []core.KeyColumn, f func(keySet) error) error {
+	if by == nil {
+		x.f.calls = append(x.f.calls, "keys "+name)
+		return f(&fakeKeys{f: x.f})
+	}
+	x.f.calls = append(x.f.calls, fmt.Sprint("keys ", name, " by ", by))
+	key := int(x.f.tables[fold(name)].ct.GetPrimaryKey()[0])
+	return f(&fakeKeys{f: x.f, by: by, at: slices.IndexFunc(by, func(c core.KeyColumn) bool { return c.Position == key })})
 }
 
 type fakeKeys struct {
 	f    *fake
 	keys []int64
+	// by is the order of the set, and nil for the order of the key; rows holds the values of the
+	// columns of by of each key, and at is the place of the key in them.
+	by   []core.KeyColumn
+	rows [][]*s4qlpb.Value
+	at   int
 }
 
 func (k *fakeKeys) add(_ context.Context, key []*s4qlpb.Value) error {
+	if k.by != nil {
+		if k.f.addFails != nil {
+			return k.f.addFails
+		}
+		k.f.calls = append(k.f.calls, fmt.Sprint("add ", rowText(key)))
+		k.rows = append(k.rows, key)
+		k.keys = append(k.keys, key[k.at].GetInteger())
+		return nil
+	}
 	k.f.calls = append(k.f.calls, fmt.Sprint("add ", key[0].GetInteger()))
 	if k.f.addFails != nil {
 		return k.f.addFails
@@ -410,6 +431,17 @@ func (k *fakeKeys) all(context.Context) iter.Seq2[[]*s4qlpb.Value, error] {
 	return func(yield func([]*s4qlpb.Value, error) bool) {
 		if k.f.readKeysFails != nil {
 			yield(nil, k.f.readKeysFails)
+			return
+		}
+		if k.by != nil {
+			rows := slices.Clone(k.rows)
+			slices.SortStableFunc(rows, func(a, b []*s4qlpb.Value) int { return compareBy(k.by, a, b) })
+			for _, r := range rows {
+				k.f.calls = append(k.f.calls, fmt.Sprint("key ", r[k.at].GetInteger()))
+				if !yield([]*s4qlpb.Value{r[k.at]}, nil) {
+					return
+				}
+			}
 			return
 		}
 		var last *int64
@@ -470,7 +502,8 @@ func (x fakeTx) rollback(context.Context) error {
 	return nil
 }
 
-// The calls of a transaction that spans statements, which no statement of its own makes.
+// The calls of a transaction that spans statements, which a statement of its own makes only for an
+// update that may replay, as [runSavepointed] says.
 func (x fakeTx) serving(context.Context) error    { return nil }
 func (x fakeTx) savepoint(context.Context) error  { return nil }
 func (x fakeTx) release(context.Context) error    { return nil }
@@ -1179,6 +1212,12 @@ func TestChangeRows(t *testing.T) {
 		}
 		return strings.Replace(calls, "[table t", "[table t indexes t", 1)
 	}
+	// byUpdate gives the calls of an update on w that sets no column of the key: the rules look the
+	// indexes of the table up once also under a scan of every row, for the order of its changes, as
+	// [build.changeOrder] says.
+	byUpdate := func(calls string) string {
+		return strings.Replace(calls, "[table t", "[table t indexes t", 1)
+	}
 
 	cases := []struct {
 		src string
@@ -1189,8 +1228,10 @@ func TestChangeRows(t *testing.T) {
 		byKey, all string
 		// indexes is the number of look-ups of the indexes of the table by the key: one for a WHERE
 		// that reads neither the row of the key nor no row, since only then the access depends on
-		// them, and none without WHERE.
-		indexes int
+		// them, and none without WHERE. allIndexes is the number with a scan of every row, which is
+		// one only for an update that the rules then choose an access for, for the order of its
+		// changes.
+		indexes, allIndexes int
 	}{
 		{src: "update t set w = 25 where k = 2", n: 1,
 			byKey: "[table t keys t get t 2 add 2 key 2 get t 2 upsert t 25,2]",
@@ -1217,9 +1258,9 @@ func TestChangeRows(t *testing.T) {
 		{src: "update t set w = null where k = 2", err: "NOT NULL constraint failed: t.w",
 			byKey: "[table t get t 2]",
 			all:   "[table t]"},
-		{src: "update t set w = null where k > 2", err: "NOT NULL constraint failed: t.w", indexes: 1,
+		{src: "update t set w = null where k > 2", err: "NOT NULL constraint failed: t.w", indexes: 1, allIndexes: 1,
 			byKey: "[table t indexes t range t > 2]",
-			all:   "[table t]"},
+			all:   "[table t indexes t]"},
 		{src: "update t set w = 1 where k is null", n: 0, byKey: "[table t keys t]", all: "[table t keys t]"},
 		{src: "delete from t where k < 3", n: 2, indexes: 1,
 			byKey: "[table t indexes t keys t range t < 3 add 1 add 2 key 1 delete t 1 key 2 delete t 2]",
@@ -1249,8 +1290,9 @@ func TestChangeRows(t *testing.T) {
 				is.Equal(t, c.err, err)
 				is.Equal(t, c.n, n)
 				is.Equal(t, want, calls, fmt.Sprint("scan all: ", scanAll))
-				// A scan of every row that the test forces chooses nothing, so it looks no index up.
-				is.Equal(t, map[bool]int{false: c.indexes}[scanAll], strings.Count(calls, "indexes "), fmt.Sprint("scan all: ", scanAll))
+				// A scan of every row that the test forces chooses nothing, so it looks no index up, but for
+				// the order of the changes of an update.
+				is.Equal(t, map[bool]int{false: c.indexes, true: c.allIndexes}[scanAll], strings.Count(calls, "indexes "), fmt.Sprint("scan all: ", scanAll))
 			}
 		})
 	}
@@ -1262,7 +1304,7 @@ func TestChangeRows(t *testing.T) {
 			err, n, calls := change(t, f, "update t set w = null where w = 20", scanAll)
 			is.Equal(t, "the scan fails", err)
 			is.Equal(t, int64(0), n)
-			is.Equal(t, byRules("[table t]", scanAll), calls, fmt.Sprint("scan all: ", scanAll))
+			is.Equal(t, byUpdate("[table t]"), calls, fmt.Sprint("scan all: ", scanAll))
 		}
 	})
 
@@ -1285,7 +1327,7 @@ func TestChangeRows(t *testing.T) {
 			err, n, calls := change(t, f, "update t set w = 5 where w = 20", scanAll)
 			is.Equal(t, "the get fails", err)
 			is.Equal(t, int64(0), n)
-			is.Equal(t, byRules("[table t keys t add 2 key 2 get t 2]", scanAll), calls, fmt.Sprint("scan all: ", scanAll))
+			is.Equal(t, byUpdate("[table t keys t add 2 key 2 get t 2]"), calls, fmt.Sprint("scan all: ", scanAll))
 		}
 	})
 
@@ -1338,7 +1380,7 @@ func TestChangeRows(t *testing.T) {
 		f := newTable()
 		ctx, cancel := context.WithCancel(t.Context())
 		src := &scan{r: fakeTx{f}, table: f.tables["t"].ct}
-		n, err := changeRows(ctx, fakeTx{f}, "t", 1, src, bugs{}, func(key []*s4qlpb.Value) error {
+		n, err := changeRows(ctx, fakeTx{f}, "t", 1, src, changeOrder{}, bugs{}, func(key []*s4qlpb.Value) error {
 			f.calls = append(f.calls, fmt.Sprint("change ", key[0].GetInteger()))
 			cancel()
 			return nil

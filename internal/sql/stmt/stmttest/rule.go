@@ -455,24 +455,43 @@ func BoundValue(term stmt.Term, args []any) any {
 
 // RowQueries of the update u of a table whose key is the column with the name key, with the
 // arguments args as SQLite binds them: a create of the temporary table s4ql_found of the keys of the
-// rows that the WHERE of u finds, in the order of the key, and the arguments of its parameters; and
-// an update with the SET of u of the row whose key is the one at an offset of s4ql_found, and the
-// arguments of its parameters but the last, which is the offset. The updates of one row each, in the
-// order of the offsets, change the rows as u changes them, one at a time in the order of the key,
-// and each measures the record of its row afresh, as a statement that changes many rows does not in
-// every build of SQLite: see the known difference of a record that is too long in docs/todo/sql-front-end.md.
-func RowQueries(u *stmt.Update, key string, args []any) (found string, foundArgs []any, one string, oneArgs []any) {
+// rows that the WHERE of u finds, in the order of the terms of an ORDER BY order, and the arguments
+// of its parameters; and an update with the SET of u of the row whose key is the one at an offset of
+// s4ql_found, and the arguments of its parameters but the last, which is the offset. The updates of
+// one row each, in the order of the offsets, change the rows as u changes them, one at a time in that
+// order, and each measures the record of its row afresh, as a statement that changes many rows does
+// not in every build of SQLite: see the known difference of a record that is too long in
+// docs/todo/sql-front-end.md.
+func RowQueries(u *stmt.Update, key, order string, args []any) (found string, foundArgs []any, one string, oneArgs []any) {
 	conditions, bound := whereText(u.Where, u.Subqueries, args)
 	table := Quote(u.Table.Value)
+	sets, oneArgs := setText(u, args)
+	found = "create temp table s4ql_found as select " + Quote(key) + " as k from " + table + conditions + " order by " + order
+	one = "update " + table + " set " + sets + " where " + Quote(key) + " = (select k from temp.s4ql_found order by rowid limit 1 offset ?)"
+	return found, bound, one, oneArgs
+}
+
+// UpdateText of the update u, with the arguments args as SQLite binds them: the text of u alone,
+// with its SET and its WHERE and without its RETURNING, and the arguments of its parameters. Its
+// plan in SQLite reads the rows as that of u does, since RETURNING changes the order of the changes
+// of an update and not its access.
+func UpdateText(u *stmt.Update, args []any) (string, []any) {
+	conditions, bound := whereText(u.Where, u.Subqueries, args)
+	sets, setArgs := setText(u, args)
+	return "update " + Quote(u.Table.Value) + " set " + sets + conditions, append(setArgs, bound...)
+}
+
+// setText of the SET of the update u, with the arguments args as SQLite binds them, and the
+// arguments of its parameters.
+func setText(u *stmt.Update, args []any) (string, []any) {
 	var sets []string
+	var setArgs []any
 	for _, a := range u.Set {
 		value, valueArgs := TermText(a.Value, u.Subqueries, args)
 		sets = append(sets, Quote(a.Column.Value)+" = "+value)
-		oneArgs = append(oneArgs, valueArgs...)
+		setArgs = append(setArgs, valueArgs...)
 	}
-	found = "create temp table s4ql_found as select " + Quote(key) + " as k from " + table + conditions + " order by " + Quote(key)
-	one = "update " + table + " set " + strings.Join(sets, ", ") + " where " + Quote(key) + " = (select k from temp.s4ql_found order by rowid limit 1 offset ?)"
-	return found, bound, one, oneArgs
+	return strings.Join(sets, ", "), setArgs
 }
 
 // WhereRule of the conditions of a WHERE of the table of the name and the columns, which the table

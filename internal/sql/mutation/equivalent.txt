@@ -658,7 +658,7 @@ internal/engine/engine.go readOnly.delete boolean: false => true
 	A sink of a readOnly is built and checked, and never run, so its delete is never called.
 internal/engine/operator.go update.check condition: position != u.key => true
 	The table of an update is the core's, which refuses a table whose primary key takes NULL, as the format does, so the column of the key is never nullable.
-internal/engine/operator.go update.run swap arguments: compare(row[u.key], old[u.key]) => compare(old[u.key], row[u.key])
+internal/engine/operator.go update.runIn swap arguments: compare(row[u.key], old[u.key]) => compare(old[u.key], row[u.key])
 	Only whether the two keys are equal is read, which the order of the arguments does not change.
 internal/engine/tx.go Conn.writeIn element: changeNothing: c.e.bugs.changeNothing, =>
 	The planted bug changeNothing is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
@@ -666,9 +666,9 @@ internal/engine/tx.go Conn.writeIn element: , keepOldKey: c.e.bugs.keepOldKey =>
 	The planted bug keepOldKey is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
 
 # The UPDATE and DELETE of slice 8 in the core, internal/core: the sets of keys of Tx.Keys.
-internal/core/tx.go Tx.Keys remove statement: tx.temps++ =>
+internal/core/tx.go Tx.keys remove statement: tx.temps++ =>
 	The table of a set is dropped before Keys returns, or with the transaction when it can only be rolled back, and its prefix s4ql_keys_ is not that of a table of touched keys, so a number that repeats never meets a table of its name.
-internal/core/tx.go Tx.Keys swap arguments: fmt.Sprint("s4ql_keys_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_keys_")
+internal/core/tx.go Tx.keys swap arguments: fmt.Sprint("s4ql_keys_", tx.temps) => fmt.Sprint(tx.temps, "s4ql_keys_")
 	The names of the temporary tables need only differ from each other, which they still do.
 internal/core/tx.go KeySet.Add condition: err != nil => true #3
 	tooBig and tx.fail both give nil for nil, so the add gives nil without an error either way.
@@ -678,7 +678,9 @@ internal/core/tx.go Tx.dropKeys element: k.add, =>
 	A statement of the set that is not finalized is at rest and reset, which does not keep SQLite from dropping its table; its text names the table, whose number no later table of the transaction has, so it is never prepared again, and forget finalizes it at the end of the transaction.
 internal/core/tx.go Tx.dropKeys element: k.first, =>
 	A statement of the set that is not finalized is at rest and reset, which does not keep SQLite from dropping its table; its text names the table, whose number no later table of the transaction has, so it is never prepared again, and forget finalizes it at the end of the transaction.
-internal/core/tx.go Tx.dropKeys element: , k.next =>
+internal/core/tx.go Tx.dropKeys element: k.next, =>
+	A statement of the set that is not finalized is at rest and reset, which does not keep SQLite from dropping its table; its text names the table, whose number no later table of the transaction has, so it is never prepared again, and forget finalizes it at the end of the transaction.
+internal/core/tx.go Tx.dropKeys element: , k.sort =>
 	A statement of the set that is not finalized is at rest and reset, which does not keep SQLite from dropping its table; its text names the table, whose number no later table of the transaction has, so it is never prepared again, and forget finalizes it at the end of the transaction.
 internal/core/tx.go Tx.dropKeys condition: err != nil => false #2
 	A statement at rest has been reset without an error, since conn.rest finalizes one whose reset fails, so its finalize gives no error but for want of memory.
@@ -1484,16 +1486,18 @@ internal/engine/operator.go update.newRow remove statement: return row, nil => #
 	The check of NOT NULL then runs also for an update of plain values, where update.check has refused every such NULL before the update reads a row.
 internal/engine/operator.go update.newRow condition: position == u.key => false
 	The column of the primary key is never Nullable in a plan, so the check of Nullable after it refuses the NULL key as well.
-internal/engine/operator.go update.run condition: errors.Is(err, expr.ErrEvaluation) => true
+internal/engine/operator.go update.runIn condition: errors.Is(err, expr.ErrEvaluation) => true
 	Only with the planted bug evalStops, which then also stops and succeeds at every other error of a new row, another wrong answer, which the tests of the planted bugs find.
-internal/engine/operator.go update.run condition: errors.Is(err, expr.ErrEvaluation) => !errors.Is(err, expr.ErrEvaluation)
+internal/engine/operator.go update.runIn condition: errors.Is(err, expr.ErrEvaluation) => !errors.Is(err, expr.ErrEvaluation)
 	Only with the planted bug evalStops, which then stops and succeeds at the other errors of a new row, NOT NULL among them, another wrong answer, which the tests of the planted bugs find.
-internal/engine/operator.go update.run condition: err != nil => false #3
+internal/engine/operator.go update.runIn condition: err != nil => false #3
 	The comparison of the new key with the old cannot fail: update.check gives the new key the class of the key column, and only the planted bug copyAcross copies another class into it, which its other symptoms find.
-internal/engine/operator.go update.run remove statement: return err => #3
+internal/engine/operator.go update.runIn remove statement: return err => #3
 	As the mutant above: the comparison of the new key with the old cannot fail outside the planted bug copyAcross.
 internal/engine/operator.go update.run swap arguments: errors.Is(err, errStopped) => errors.Is(errStopped, err)
 	changeRows gives the error of the change as it is, so the error is errStopped itself or no errStopped, and errors.Is answers the same both ways.
+internal/engine/engine.go runSink swap arguments: errors.Is(err, errStopped) => errors.Is(errStopped, err)
+	The replay of an update gives the error of changeRows as it is, as the mutant above says.
 internal/engine/operator.go build.walk constant: -1 => -2
 	The position of a condition that tests an expression is never read as a position: the expression has its own columns, and the checks test only that it is negative.
 internal/engine/operator.go build.walk constant: -1 => -0
