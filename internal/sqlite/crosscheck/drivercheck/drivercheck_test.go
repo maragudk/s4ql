@@ -2250,15 +2250,12 @@ func (p *pair) compare(src string, c call, supported bool, runs [][]any, got out
 			}
 		}
 	}
-	if u := upsertOf(s); u != nil && !byText {
-		// Where a run of an upsert gives no error, none of s4ql's refusals was due, which SQLite's
-		// outcome cannot show where it converts a value that s4ql refuses.
+	if !byText {
 		for i, r := range got.runs() {
-			if r.failed != "" || i >= len(runs) {
-				continue
-			}
-			if refusals := p.upsertRefusals(src, u, boundArgs(runs[i]), o); len(refusals) > 0 {
-				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and the rules refuse it with one of %q", src, runs[i], got, refusals)
+			if i < len(runs) {
+				if failure := p.dueRefusal(src, s, runs[i], r, o); failure != "" {
+					return failure
+				}
 			}
 		}
 	}
@@ -2952,6 +2949,21 @@ func upsertOf(s stmt.Statement) *stmt.Insert {
 	return nil
 }
 
+// dueRefusal of the run r of the statement s of the text src, with the arguments args, on o, where
+// the call runs: where s is an upsert and r gives no error, what is wrong if one of s4ql's refusals
+// was due, as [pair.upsertRefusals] gives them, or "". SQLite's outcome cannot show such a refusal
+// where it converts a value that s4ql refuses.
+func (p *pair) dueRefusal(src string, s stmt.Statement, args []any, r outcome, o runner) string {
+	u := upsertOf(s)
+	if u == nil || r.failed != "" {
+		return ""
+	}
+	if refusals := p.upsertRefusals(src, u, boundArgs(args), o); len(refusals) > 0 {
+		return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and the rules refuse it with one of %q", src, args, r, refusals)
+	}
+	return ""
+}
+
 // upsertRefusals of the upsert s of the text src, with the arguments args as SQLite binds them, on
 // o, where the call runs: where SQLite prepares the text, every "not supported" that s4ql's rules
 // give for it, as [stmttest.UpsertRefusals] gives them, but those of its types in a read-only
@@ -3011,6 +3023,9 @@ func (p *pair) checkEvaluation(src string, c call, s stmt.Statement, runs [][]an
 			}
 			if !reaches(src, runs[i]) {
 				return fmt.Sprintf("%q with the arguments %#v: s4ql gives %v, and must refuse the arguments", src, runs[i], got)
+			}
+			if failure := p.dueRefusal(src, s, runs[i], r, o); failure != "" {
+				return failure
 			}
 			var w outcome
 			if res, err := o.ExecContext(tb.Context(), firstStatement(src), runs[i]...); err != nil {
@@ -4942,10 +4957,18 @@ func TestPair(t *testing.T) {
 		check(constant, [][]any{{int64(1)}}, overflow, true)
 
 		// No error where a refusal was due, where SQLite converts the value that s4ql refuses, of DO
-		// UPDATE and of the proposed row. These run in SQLite, so they come last.
+		// UPDATE and of the proposed row, also in a run of a prepared statement after one with an
+		// evaluation error. They come last, since a rule that missed them would run them in SQLite.
 		done := outcome{call: callExec, affected: "1", lastID: "0"}
 		check("insert into t4 (v1, v3) values (1, 2.0) on conflict (v1) do update set v4 = excluded.v3", [][]any{nil}, done, true)
 		check("insert into t4 (v1, v3, v4) values (9, 0.5, 2.0) on conflict (v1) do nothing", [][]any{nil}, done, true)
+		const runsOf = "insert into t4 (v1, v3, v4) values (?, ?, ?) on conflict (v1) do update set v4 = v4 + excluded.v4"
+		runs := [][]any{{int64(2), 0.5, int64(math.MaxInt64)}, {int64(1), 0.5, 2.0}}
+		failed := run(t, p.s, callExec, runsOf, runs[:1], s4qlText)
+		is.True(t, evaluated(failed), failed.String())
+		failed.call, failed.next = callPrepareExecRuns, []outcome{{affected: "1", lastID: "0"}}
+		failure := p.compare(runsOf, callPrepareExecRuns, false, runs, failed, p.o)
+		is.True(t, strings.Contains(failure, "the rules refuse it"), failure)
 	})
 
 	t.Run("should run goqite's receive with its scalar subquery, through Query and a prepared statement run several times, with rows that tie broken by goqite's index, and none on an empty queue", func(t *testing.T) {
