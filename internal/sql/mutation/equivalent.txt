@@ -660,10 +660,6 @@ internal/engine/operator.go update.check condition: position != u.key => true
 	The table of an update is the core's, which refuses a table whose primary key takes NULL, as the format does, so the column of the key is never nullable.
 internal/engine/operator.go update.run swap arguments: compare(row[u.key], old[u.key]) => compare(old[u.key], row[u.key])
 	Only whether the two keys are equal is read, which the order of the arguments does not change.
-internal/engine/operator.go update.run condition: err != nil => false #2
-	update.check has refused a value of SET that is not NULL and of another type than its column, and NULL for the key of a row that the update finds, so the new key and the old one are of one kind, and compare does not fail.
-internal/engine/operator.go update.run remove statement: return err => #2
-	update.check has refused a value of SET that is not NULL and of another type than its column, and NULL for the key of a row that the update finds, so the new key and the old one are of one kind, and compare does not fail.
 internal/engine/tx.go Conn.writeIn element: changeNothing: c.e.bugs.changeNothing, =>
 	The planted bug changeNothing is then not planted in a write of a transaction that spans statements, and is found by the statements of their own.
 internal/engine/tx.go Conn.writeIn element: , keepOldKey: c.e.bugs.keepOldKey =>
@@ -1219,8 +1215,6 @@ stmt/recognize.go recognizer.selectOf swap arguments: max(height, 2) => max(2, h
 # The scalar subquery of slice 15 in the engine, internal/engine.
 internal/engine/operator.go build.ordered condition: f != nil => true #3
 	A query without WHERE has no subqueries, so b.subs is nil and build.compute returns before it reads f.
-internal/engine/operator.go build.types remove statement: continue =>
-	The value of the condition of a subquery is computed after the check of the types, so it is nil there, and the next test continues too.
 internal/engine/subquery.go build.value condition: in.filter != nil => true #2
 	A filter of no conditions gives every row of its source, in its order, and its errors.
 internal/engine/subquery.go subqueries.lengths condition: err != nil => true #4
@@ -1415,3 +1409,158 @@ internal/expr/expr.go magnitude operator: i < 0 => i <= 0
 	Only for 0, whose magnitude is 0 both ways.
 internal/expr/expr.go magnitude constant: i < 0 => i < 1
 	Only for 0, whose magnitude is 0 both ways.
+
+# Arithmetic in the engine, internal/engine, of pull requests #154 and #156.
+
+# The classes of the rule of exact types: text and blobs are only ever compared for equality and
+# refused alike beside arithmetic, so swapping or merging their classes changes no outcome.
+internal/engine/expression.go columnClass swap cases: case s4qlpb.Type_TYPE_TEXT: return classText case s4qlpb.Type_TYPE_BLOB: return classBlob => case s4qlpb.Type_TYPE_TEXT: return classBlob case s4qlpb.Type_TYPE_BLOB: return classText
+	The class of a column is compared only with that of another column, where the swap is one to one, and by meetsArithmetic, which refuses both classes alike; no message names the class of a column.
+internal/engine/expression.go columnClass neighbour: return classAny => return classInteger
+	Every column of a table has one of the five types, which the storage formats check, so the default is never reached.
+internal/engine/expression.go valueClass swap cases: case s4qlpb.Value_Text_case: return classText case s4qlpb.Value_Blob_case: return classBlob => case s4qlpb.Value_Text_case: return classBlob case s4qlpb.Value_Blob_case: return classText
+	The class of a plain value is read only by meetsArithmetic, which refuses text and blobs alike.
+internal/engine/expression.go valueClass neighbour: return classText => return classBlob
+	As the swap above: meetsArithmetic refuses a value of either class alike.
+internal/engine/expression.go valueClass neighbour: return classBlob => return classText
+	As the swap above: meetsArithmetic refuses a value of either class alike.
+internal/engine/expression.go meetsArithmetic swap arguments: comparable(c, a) => comparable(a, c)
+	comparable is symmetric.
+
+# The bounds of the access.
+internal/engine/operator.go bounds condition: !slices.ContainsFunc(conditions, condition.perRow) => false
+	Without the shortcut the loop gives a copy of the same conditions in the same order, which the access only reads.
+internal/engine/operator.go bounds remove statement: return conditions =>
+	As the mutant above: the loop after it gives the same conditions.
+
+# The planted bug errorSkipsRow, in condition.holds.
+internal/engine/operator.go condition.holds condition: errors.Is(err, expr.ErrEvaluation) => true
+	Only with the planted bug errorSkipsRow, which then also leaves out a row whose condition fails with an internal error, which no run of the planted bugs meets; the bug is found as before.
+internal/engine/operator.go condition.holds condition: err != nil => true
+	errors.Is of a nil error is false, so the condition is the same.
+internal/engine/operator.go condition.holds boolean: false => true
+	Only with the planted bug errorSkipsRow, which then keeps a row whose condition fails in place of leaving it out, another wrong answer, which the tests of the planted bugs find.
+
+# The planted bug nullCompares in a comparison of two columns of the row, as in `a = b`, in
+# condition.holds. Every mutant of the line changes the comparison only with the planted bug, which is
+# then true of other rows, or of none of them, in this path; the tests of the planted bugs find it by
+# the comparisons of arithmetic, which condition.computed plants it in too.
+internal/engine/operator.go condition.holds condition: c.nullCompares && (v.HasNull() || c.value.HasNull()) && c.op != stmt.OpIsNull && c.op != stmt.OpIsNotNull => false
+	The planted bug nullCompares left out of a comparison of two columns, which its comparisons of arithmetic find.
+internal/engine/operator.go condition.holds condition: c.nullCompares && (v.HasNull() || c.value.HasNull()) && c.op != stmt.OpIsNull => false
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds condition: c.nullCompares && (v.HasNull() || c.value.HasNull()) => false
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds condition: c.nullCompares => false
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds remove statement: return true, nil =>
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds condition: (v.HasNull() || c.value.HasNull()) => false
+	As the mutant above: nullCompares left out of a comparison of two columns.
+internal/engine/operator.go condition.holds condition: c.op != stmt.OpIsNotNull => true
+	A comparison of two columns is never a test for NULL, so the condition is the same.
+internal/engine/operator.go condition.holds condition: c.op != stmt.OpIsNull => true
+	A comparison of two columns is never a test for NULL, so the condition is the same.
+internal/engine/operator.go condition.holds condition: c.op != stmt.OpIsNotNull => false
+	nullCompares left out of a comparison of two columns, which is never a test for NULL.
+internal/engine/operator.go condition.holds condition: c.op != stmt.OpIsNull => false
+	nullCompares left out of a comparison of two columns, which is never a test for NULL.
+internal/engine/operator.go condition.holds operator: c.op != stmt.OpIsNull => c.op == stmt.OpIsNull
+	nullCompares left out of a comparison of two columns, which is never a test for NULL.
+internal/engine/operator.go condition.holds operator: c.op != stmt.OpIsNotNull => c.op == stmt.OpIsNotNull
+	nullCompares left out of a comparison of two columns, which is never a test for NULL.
+internal/engine/operator.go condition.holds condition: (v.HasNull() || c.value.HasNull()) => true
+	The planted bug nullCompares then makes every comparison of two columns true, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds condition: (v.HasNull() || c.value.HasNull()) => !(v.HasNull() || c.value.HasNull())
+	The planted bug nullCompares then makes a comparison of two columns that are not NULL true, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds operator: v.HasNull() || c.value.HasNull() => v.HasNull() && c.value.HasNull()
+	The planted bug nullCompares then only where both columns are NULL, which its tests find as before.
+internal/engine/operator.go condition.holds condition: v.HasNull() => true
+	The planted bug nullCompares then makes every comparison of two columns true, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds condition: v.HasNull() => false
+	The planted bug nullCompares then only where the second column is NULL, which its tests find as before.
+internal/engine/operator.go condition.holds condition: v.HasNull() => !v.HasNull()
+	The planted bug nullCompares then true where the first column is not NULL, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds condition: c.value.HasNull() => true
+	The planted bug nullCompares then makes every comparison of two columns true, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds condition: c.value.HasNull() => false
+	The planted bug nullCompares then only where the first column is NULL, which its tests find as before.
+internal/engine/operator.go condition.holds condition: c.value.HasNull() => !c.value.HasNull()
+	The planted bug nullCompares then true where the second column is not NULL, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go condition.holds boolean: true => false
+	nullCompares left out of a comparison of two columns: the NULL comparison is then false, as without the bug, and its comparisons of arithmetic find it.
+internal/engine/operator.go condition.computed condition: !c.valueFirst => true
+	A value written first is then computed a second time, after the tested side; the evaluation is pure, and an error of it came the first time.
+internal/engine/operator.go update.newRow boolean: false => true
+	The check of NOT NULL then runs also for an update of plain values, where update.check has refused every such NULL before the update reads a row.
+internal/engine/operator.go update.newRow remove statement: return row, nil => #2
+	The check of NOT NULL then runs also for an update of plain values, where update.check has refused every such NULL before the update reads a row.
+internal/engine/operator.go update.newRow condition: position == u.key => false
+	The column of the primary key is never Nullable in a plan, so the check of Nullable after it refuses the NULL key as well.
+internal/engine/operator.go update.run condition: errors.Is(err, expr.ErrEvaluation) => true
+	Only with the planted bug evalStops, which then also stops and succeeds at every other error of a new row, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go update.run condition: errors.Is(err, expr.ErrEvaluation) => !errors.Is(err, expr.ErrEvaluation)
+	Only with the planted bug evalStops, which then stops and succeeds at the other errors of a new row, NOT NULL among them, another wrong answer, which the tests of the planted bugs find.
+internal/engine/operator.go update.run condition: err != nil => false #3
+	The comparison of the new key with the old cannot fail: update.check gives the new key the class of the key column, and only the planted bug copyAcross copies another class into it, which its other symptoms find.
+internal/engine/operator.go update.run remove statement: return err => #3
+	As the mutant above: the comparison of the new key with the old cannot fail outside the planted bug copyAcross.
+internal/engine/operator.go update.run swap arguments: errors.Is(err, errStopped) => errors.Is(errStopped, err)
+	changeRows gives the error of the change as it is, so the error is errStopped itself or no errStopped, and errors.Is answers the same both ways.
+internal/engine/operator.go build.walk constant: -1 => -2
+	The position of a condition that tests an expression is never read as a position: the expression has its own columns, and the checks test only that it is negative.
+internal/engine/operator.go build.walk constant: -1 => -0
+	A condition that tests an expression reads its tested side from the expression, never at its position, and serves no access; only the planted bug noRowMatches reads it, which then tests the column at 0 for NOT NULL, as it does for -1.
+internal/engine/operator.go build.walk condition: !c.ValueFirst => true
+	The names of an expression of the value written first are then looked up a second time, after the column; they were all found the first time.
+internal/engine/operator.go build.values condition: !c.ValueFirst => true
+	The arguments of the tested expression are then also checked before a value written first: each check gives only SQLite's `string or blob too big`, at no offset, so the first too long of the two gives the same error.
+internal/engine/operator.go build.values condition: c.ValueFirst => true
+	The arguments of the tested expression are then checked a second time, after the value; the check is pure, and an error of it came the first time.
+internal/engine/operator.go build.types condition: !fc.Expression.Present() => true
+	A condition whose value is a column alone tests a column alone: the pass makes a side that is a column alone the tested one, also where both are, so a condition with a tested expression never has a column alone as its value.
+internal/engine/operator.go build.types condition: fc.Expression.Present() || arithmetic != nil => true
+	build.arithmetic of a condition without arithmetic binds nothing and refuses nothing; it sets only the flags of the planted bugs errorSkipsRow, which only a computed condition reads, and nullCompares, which only a computed or a paired condition reads.
+internal/engine/operator.go build.types condition: fc.Expression.Present() => true
+	As the mutant above: build.arithmetic of a condition without arithmetic binds nothing and refuses nothing.
+internal/engine/operator.go build.types condition: arithmetic != nil => true #2
+	As the mutant above: build.arithmetic of a condition without arithmetic binds nothing and refuses nothing.
+internal/engine/operator.go build.types remove statement: continue => #2
+	The value of a subquery is computed later, so it is nil here, and the next check goes on to the next condition anyway.
+internal/engine/operator.go build.types condition: arithmetic != nil => false #3
+	The value of a condition with arithmetic is computed later, or for each row, so it is nil here, and the check of nil goes on to the next condition anyway.
+internal/engine/operator.go build.types condition: err != nil => false #3
+	valueName fails only for a value that is no literal and no parameter, and only those have a value here.
+internal/engine/operator.go build.types remove statement: return err => #3
+	As the mutant above: valueName does not fail for a literal or a parameter.
+internal/engine/operator.go build.arithmetic condition: c.constant != nil => true
+	Only with the planted bug constantsServeNothing, which then marks also a condition with a side computed for each row, which serves no access anyway.
+internal/engine/operator.go build.arithmetic condition: !fc.ValueFirst => true
+	A value written first is then bound a second time, after the tested side, to an equal bound expression; its refusals came the first time.
+internal/engine/operator.go build.arithmetic swap arguments: comparable(arithmeticClass(c.test), arithmeticClass(bound)) => comparable(arithmeticClass(bound), arithmeticClass(c.test))
+	comparable is symmetric.
+internal/engine/operator.go build.change constant: -1 => -2
+	The mark of a value that copies no column is only tested for being negative.
+internal/engine/operator.go build.change condition: filtered => true #4
+	A change without a filter has no conditions, and build.types checks none, as it does for a query without a filter.
+
+# The planted bug noRowMatches of a condition that tests an expression, in build.compute: each variant
+# tests another column for NOT NULL, or leaves the condition without a column, which then fails with an
+# internal error; each is still a wrong answer for a subquery that finds no row, which the tests of the
+# planted bugs find.
+internal/engine/subquery.go build.compute condition: conditions[i].position < 0 => true
+	noRowMatches then tests the column at 0, the key, for NOT NULL in every condition that it changes, true of every row, another wrong answer, which its tests find.
+internal/engine/subquery.go build.compute condition: conditions[i].position < 0 => false
+	noRowMatches then leaves a tested expression without a column, so the statement fails with an internal error where SQLite gives rows, which its tests find by its other statements as before.
+internal/engine/subquery.go build.compute operator: conditions[i].position < 0 => conditions[i].position <= 0
+	A condition of the column at 0 is set to the column at 0, which it is.
+internal/engine/subquery.go build.compute operator: conditions[i].position < 0 => conditions[i].position >= 0
+	noRowMatches then tests the column at 0 for NOT NULL in a condition of a column, and leaves a tested expression without a column, other wrong answers, which its tests find.
+internal/engine/subquery.go build.compute constant: conditions[i].position < 0 => conditions[i].position < 1
+	A condition of the column at 0 is set to the column at 0, which it is.
+internal/engine/subquery.go build.compute remove statement: conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 0 =>
+	As for the condition false above: a tested expression is left without a column, and the internal error is another wrong answer that the tests of noRowMatches find.
+internal/engine/subquery.go build.compute constant: conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 0 => conditions[i].op, conditions[i].position = stmt.OpIsNotNull, 1
+	noRowMatches then tests the column at 1 for NOT NULL in place of the key, true of the rows where it is not NULL, another wrong answer, which its tests find.
+internal/engine/tx.go Conn.writeIn remove statement: planted.setFromNew, planted.evalStops, planted.copyAcross, planted.copySelf = c.e.bugs.setFromNew, c.e.bugs.evalStops, c.e.bugs.copyAcross, c.e.bugs.copySelf =>
+	The planted bugs setFromNew, evalStops, copyAcross, and copySelf left out of a write in a transaction, which their statements outside one find, as for those of slice 14.

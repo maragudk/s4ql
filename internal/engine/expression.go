@@ -265,7 +265,7 @@ func protoNumber(v *s4qlpb.Value) (number, error) {
 func compareNumbers(a, b number) (int, error) {
 	switch {
 	case a.class != b.class:
-		return 0, internalError("a comparison of an %v with a %v", a.class, b.class)
+		return 0, internalError("a comparison of values of the classes %v and %v", a.class, b.class)
 	case a.class == classInteger:
 		return cmp.Compare(a.i, b.i), nil
 	case a.class == classReal:

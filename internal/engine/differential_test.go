@@ -516,6 +516,8 @@ type instance struct {
 	c *engine.Conn
 	// changes is SQLite's count of changes on the connection, as the results of the engine give it.
 	changes int64
+	// sets counts the results of [instance.execValues] that set the count of changes.
+	sets int
 	// memory is the state of an engine on a database in memory, which has no core, with each value
 	// as its argument writes it, or nil.
 	memory func(text func(*s4qlpb.Value) string) string
@@ -529,6 +531,9 @@ type instance struct {
 	opens uint64
 	// planted is set for an instance whose engine has a planted bug, which can cause an internal error.
 	planted bool
+	// events records the events of the statements of the engines of the instance whose options have
+	// no logger of their own, while it is on, or is nil before the first such engine.
+	events *recorder
 }
 
 // seeded gives the instance the seed of the flag -directions, or one that it draws, and logs it if
@@ -545,10 +550,17 @@ func (i *instance) seeded() {
 	})
 }
 
-// directed is options with the seed of the next engine of the instance, unless they have one.
+// directed is options with the seed of the next engine of the instance, unless they have one, and
+// with the logger of [instance.events], unless they have one.
 func (i *instance) directed(options engine.Options) engine.Options {
 	if !options.Seeded() {
 		options.Seed(i.seed + i.opens)
+	}
+	if options.Logger == nil {
+		if i.events == nil {
+			i.events = &recorder{}
+		}
+		options.Logger = slog.New(i.events)
 	}
 	i.opens++
 	return options
@@ -707,6 +719,7 @@ func (i *instance) execValues(src string, args []*s4qlpb.Value) answer {
 	res, err := i.c.Exec(i.t.Context(), src, args...)
 	if res.SetsChanges {
 		i.changes = res.Changes
+		i.sets++
 	}
 	if err != nil {
 		return i.errAnswer(src, err)
@@ -917,7 +930,7 @@ func messageKind(err string) string {
 	for _, kind := range []string{
 		"already exists", "no such table", "has no column named", "no such column", "values were supplied", " values for ", "duplicate column name",
 		"too many columns on", "UNIQUE constraint failed", "NOT NULL constraint failed", "syntax error", "incomplete input", "string or blob too big",
-		"attempt to write a readonly database",
+		"attempt to write a readonly database", "unrecognized token",
 	} {
 		if strings.Contains(err, kind) {
 			return kind
@@ -1054,6 +1067,11 @@ type pair struct {
 	sub *subqueryCall
 	// ran holds the texts of the statements with subqueries that the pair ran, for [pair.reachSubquery].
 	ran map[string]bool
+	// walking is set while [pair.several] runs the statements of a text of several statements one
+	// after another on the instance, which the other instance runs in one call.
+	walking bool
+	// severalFailed is set after a text of several statements failed in the transaction that is open.
+	severalFailed bool
 }
 
 // newPair of the instance i and SQLite, with the length limit of i, and a second instance of the
@@ -1086,11 +1104,14 @@ func newPairWith(t testing.TB, i *instance, y tally, options engine.Options) *pa
 // last insert rowid. A text that the engine does not support is not run in SQLite: it must not be a
 // statement of slices 1 and 2, which c.Supported says it is, and SQLite must prepare it on an empty
 // database without a syntax error. A call that the engine refuses for its arguments is not run in
-// SQLite either, and must be refused as s4ql's rule says, which [checkArguments] checks. step gives
-// what differs, or "".
+// SQLite either, and must be refused as s4ql's rule says, which [checkArguments] checks. A text of
+// several statements through Exec runs as [pair.several] says. step gives what differs, or "".
 func (p *pair) step(c stmttest.Call) string {
 	t, i, o := p.t, p.i, p.o
 	t.Helper()
+	if c.Statements > 0 && !c.Query {
+		return p.several(c)
+	}
 	src := c.Src
 	// What SQLite gives for the subqueries of the call, before it runs, and the values that the
 	// instance computes for them; see [subqueryCall].
@@ -2179,6 +2200,11 @@ func subqueryErrorOfOne(s stmt.Statement, a, b answer) (answer, bool) {
 // gives what differs, or "".
 func (p *pair) bothWays(c stmttest.Call, got answer) string {
 	i, other := p.i, p.other
+	p.otherOrdered = nil
+	if p.walking {
+		// The other instance runs the whole text, after the instance has run its statements.
+		return ""
+	}
 	byKey := !i.e.ScansAll()
 	s, _ := stmt.Check(c.Src)
 	every, everyCall := s, c
@@ -3925,20 +3951,17 @@ func variantOf(seed uint64) (restarts bool, limit int) {
 
 // sequencesOf the profile p in a test that runs n sequences of each profile: n, twice as many of
 // the profiles of the updates and deletes, the indexes, the clauses of slice 10, the values on the
-// left, the ORDER BY, the RETURNING, the subqueries, and the arithmetic, whose kinds of outcome are the most and the rarest, and five times as many of the mixed
+// left, the ORDER BY, the RETURNING, the subqueries, the arithmetic, and the several statements in
+// one Exec, whose kinds of outcome are the most and the rarest, and five times as many of the mixed
 // profile. The mixed profile is the only one in which every area meets the others, such as a default
 // with an index or a clause of slice 10 with a value on the left, and no tally of a focused profile
 // counts what only such a meeting reaches. With the default n, it runs 200 sequences, two thirds of
 // the 300 of the one sequence of all areas before the profiles.
 func sequencesOf(p *stmttest.Profile, n int) uint64 {
 	switch p {
-	case stmttest.Several:
-		// Texts of several statements, which [engine.Conn.Exec] refuses for their second statement:
-		// they are [engine.Conn.ExecAll]'s.
-		return 0
 	case stmttest.Mixed:
 		n *= 5
-	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic:
+	case stmttest.Changes, stmttest.Indexes, stmttest.Exists, stmttest.ValueFirst, stmttest.Order, stmttest.Returning, stmttest.Subquery, stmttest.Arithmetic, stmttest.Several:
 		n *= 2
 	}
 	return uint64(n)
@@ -4171,7 +4194,8 @@ func TestDifferential_plantedBugs(t *testing.T) {
 		{"orderIgnored", stmttest.Subquery, 2, []string{"and SQLite one of"}, 12},
 		// The bugs of arithmetic, on the profile of arithmetic, each found by any difference from SQLite
 		// or from s4ql's rules for arithmetic but constantsServeNothing, whose rows and errors are
-		// SQLite's and which [pair.checkAccess] finds: on 2026-11-25 10, 6, 5, 10, 4, 15, and 4 of 30.
+		// SQLite's and which [pair.checkAccess] finds: on 2026-11-25 10, 6, 5, 10, 4, 15, and 4 of 30, and
+		// nullCompares 7 on 2026-11-26, since it is planted in a comparison of two columns too.
 		{"setFromNew", stmttest.Arithmetic, 3, nil, 0},
 		{"nullCompares", stmttest.Arithmetic, 2, nil, 0},
 		{"evalStops", stmttest.Arithmetic, 1, nil, 0},
