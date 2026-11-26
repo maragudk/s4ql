@@ -1122,7 +1122,7 @@ var plantedBugs = []plantedBug{
 		// the hammer, who never pause, make common: the first 4 seeds found it, and 4 of the first 113
 		// of the single workload.
 		bug:      "fixedOnce",
-		name:     "a read that does not fix its state again when the cache moved between its two looks",
+		name:     "a read that compares its position with the second look alone",
 		workload: plant(calm(hammerWorkload), "fixedOnce"),
 		symptoms: []string{"is not the one that the instance writes to"},
 	},

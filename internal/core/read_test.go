@@ -181,28 +181,43 @@ func TestReader_Read(t *testing.T) {
 		})
 	})
 
-	t.Run("should serve a read that fixes its state before a commit and is checked after it", func(t *testing.T) {
-		bubble(t, func(t *testing.T, w *world) {
-			h := &yieldHook{Host: w.host, site: "core: a read before the check of the lease"}
-			d := w.openWith(t, "a", h, w.client(), core.Options{})
-			is.NotError(t, d.Wait(t.Context()))
-			transact(t, d, create("t1", 1, "k"))
-			before := w.manifest(t).Head
+	for _, test := range []struct {
+		commits int
+		// again is whether the read fixes its state again, after the commits.
+		again bool
+	}{{commits: 1}, {commits: 2, again: true}} {
+		t.Run(fmt.Sprint("should serve a read that fixes its state before ", test.commits, " commits and is checked after them"), func(t *testing.T) {
+			bubble(t, func(t *testing.T, w *world) {
+				h := &yieldHook{Host: w.host, site: "core: a read before the check of the lease"}
+				d := w.openWith(t, "a", h, w.client(), core.Options{})
+				is.NotError(t, d.Wait(t.Context()))
+				transact(t, d, create("t1", 1, "k"))
+				before := w.manifest(t).Head
 
-			// The commit runs once, between the read of the position and the check after it.
-			var once sync.Once
-			commit := func() { once.Do(func() { transact(t, d, upsert("t1", 1)) }) }
-			h.f.Store(&commit)
-			r, err := startRead(t, d)
-			is.NotError(t, err)
-			after := w.manifest(t).Head
-			is.True(t, after != before)
-			// The read fixed its state again, after the commit.
-			is.Equal(t, after, r.Position())
-			is.NotError(t, r.Close(t.Context()))
-			is.True(t, !isDone(d))
+				// The commits run once, between the read of the position and the check after it.
+				var once sync.Once
+				commit := func() {
+					once.Do(func() {
+						for i := range test.commits {
+							transact(t, d, upsert("t1", i))
+						}
+					})
+				}
+				h.f.Store(&commit)
+				r, err := startRead(t, d)
+				is.NotError(t, err)
+				after := w.manifest(t).Head
+				is.True(t, after != before)
+				if test.again {
+					is.Equal(t, after, r.Position())
+				} else {
+					is.Equal(t, before, r.Position())
+				}
+				is.NotError(t, r.Close(t.Context()))
+				is.True(t, !isDone(d))
+			})
 		})
-	})
+	}
 
 	t.Run("should run a read transaction on each of twenty readers at once, each on the state of its start, while writes commit", func(t *testing.T) {
 		w := newWorld(t)

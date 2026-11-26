@@ -115,15 +115,14 @@ type ReadTx struct {
 // lease can take the lease and catch up before the check. The lease is checked once more then, so
 // that a read on an instance that has stopped serving meanwhile is refused and not served late.
 //
-// With that second check, the position of the state that the read fixed is compared with what the
-// write connection has made of the position of the cache: the position that it
-// last committed, or the one that it commits now. A reader whose connection is to the file that
-// the write connection writes to always sees one of the two. Any other position means that the file
-// at the path of the cache is another, as when the files of the cache were deleted and another
-// instance made a new cache there, and the instance stops for it as for a local I/O failure, with an
-// error that wraps [ErrStopped] and [ErrLocal]. If the write connection moved the cache between the
-// two checks, the state can be at a position that neither check named, so the read fixes its state
-// again.
+// With each check, the read looks at what the write connection has made of the position of the
+// cache: the position that it last committed, or the one that it commits now. A reader whose
+// connection is to the file that the write connection writes to sees one of those of the two looks.
+// Any other position means that the file at the path of the cache is another, as when the files of
+// the cache were deleted and another instance made a new cache there, and the instance stops for it
+// as for a local I/O failure, with an error that wraps [ErrStopped] and [ErrLocal]. If the write
+// connection committed more than once between the two checks, the state can be at a position that
+// neither look named, so the read fixes its state again.
 func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 	const operation = "read"
 	d, c := rd.d, rd.c
@@ -179,21 +178,34 @@ func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 		if err != nil {
 			return nil, d.refused(ctx, operation, err)
 		}
-		// (With fixedOnce, the planted bug.)
-		if now.moves == before.moves || d.bugs.fixedOnce {
-			if r.position != now.at && r.position != now.next {
+		if d.bugs.fixedOnce {
+			// The planted bug.
+			before = now
+		}
+		// The file of the write connection is always at the position that the write connection
+		// last committed or read, or at the one that it commits now, and the read fixed its state
+		// at one moment between the two looks. With at most two changes between them, one commit,
+		// every position of that time is one of the two looks.
+		if now.moves-before.moves <= 2 {
+			if !before.holds(r.position) && !now.holds(r.position) {
 				return nil, d.stop(ctx, fmt.Errorf("%w: %v: the cache is at %v, where this instance has it at %v or %v, so the file at its path is not the one that the instance writes to, as after the files of the cache were deleted or replaced", ErrLocal, operation, r.position, now.at, now.next))
 			}
 			return r, nil
 		}
-		// The write connection moved the cache meanwhile, so the state that the read fixed can be at
-		// a position that neither look named. The read fixes its state again, after the check that
-		// passed just now, which counts for it as the one before.
+		// The write connection moved the cache more than once meanwhile, so the state that the read
+		// fixed can be at a position that neither look named. The read fixes its state again, after
+		// the check that passed just now, which counts for it as the one before.
 		if err := c.c.Exec("rollback"); err != nil {
 			return nil, d.cacheError(ctx, operation, err)
 		}
 		before = now
 	}
+}
+
+// holds reports whether the file of the write connection can be at the position while p is what
+// the write connection has made of it.
+func (p cachePosition) holds(position format.Name) bool {
+	return position == p.at || position == p.next
 }
 
 // cachePosition is what the write connection has made of the position of the cache: the state of
