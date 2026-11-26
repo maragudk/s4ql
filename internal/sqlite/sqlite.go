@@ -151,8 +151,26 @@ static int s4ql_disable_lookaside(sqlite3 *db) {
 // has ended.
 extern int s4qlInterrupted(uintptr_t h);
 
-static int s4ql_progress(void *h) {
-	return s4qlInterrupted((uintptr_t)h);
+// s4ql_progress_arg is what s4ql_progress reads: the statement of the step and the handle of what
+// Go reads.
+typedef struct s4ql_progress_arg {
+	sqlite3_stmt *stmt;
+	uintptr_t h;
+} s4ql_progress_arg;
+
+// s4ql_progress is the progress handler of a step of s4ql_step_interruptible. It stops the step
+// only while the statement runs. SQLite calls the handler once more on its way out of a step that
+// has ended, also of one that failed, and a handler that returns nonzero there turns the step's
+// result into SQLITE_INTERRUPT: an I/O error, which has rolled back the whole transaction of the
+// connection, would then look like a harmless stop. A statement that has ended, by its end or by
+// an error, is no longer busy (https://sqlite.org/c3ref/stmt_busy.html), and the handler leaves its
+// result as it is.
+static int s4ql_progress(void *arg) {
+	s4ql_progress_arg *a = arg;
+	if (!sqlite3_stmt_busy(a->stmt)) {
+		return 0;
+	}
+	return s4qlInterrupted(a->h);
 }
 
 // s4ql_step_interruptible steps stmt with s4ql_progress as the progress handler of its connection,
@@ -161,7 +179,8 @@ static int s4ql_progress(void *h) {
 // function returns, so it runs in this step and in no other.
 static int s4ql_step_interruptible(sqlite3_stmt *stmt, uintptr_t h, int period) {
 	sqlite3 *db = sqlite3_db_handle(stmt);
-	sqlite3_progress_handler(db, period, s4ql_progress, (void *)h);
+	s4ql_progress_arg arg = {stmt, h};
+	sqlite3_progress_handler(db, period, s4ql_progress, &arg);
 	int rc = sqlite3_step(stmt);
 	sqlite3_progress_handler(db, 0, 0, 0);
 	return rc;
@@ -285,7 +304,7 @@ func open(path, vfs string, flags C.int) (*Conn, error) {
 		C.sqlite3_close(db)
 		return nil, err
 	}
-	p := &progress{}
+	p := &progress{period: progressPeriod}
 	p.handle = cgo.NewHandle(p)
 	return &Conn{db: db, progress: p}, nil
 }
@@ -460,6 +479,30 @@ func (c *Conn) SetLengthLimit(n int) error {
 	return nil
 }
 
+// Autocommit reports whether the connection is outside a transaction that BEGIN started, as
+// sqlite3_get_autocommit says. A connection also leaves its transaction when SQLite rolls it back
+// for an error, such as an I/O error or a full disk, which
+// https://sqlite.org/c3ref/get_autocommit.html names: "If certain kinds of errors occur on a
+// statement within a multi-statement transaction ... then the transaction might be rolled back
+// automatically." It panics on a closed connection.
+func (c *Conn) Autocommit() bool {
+	if c.db == nil {
+		panic("sqlite: connection is closed")
+	}
+	return C.sqlite3_get_autocommit(c.db) != 0
+}
+
+// SetProgressPeriod of the connection: the number of instructions of SQLite's virtual machine
+// between two looks of [Stmt.StepContext] at its context, which is 10,000 from the open on. A period
+// of 1 looks at every jump of the program and once more at the end of each step, so that a test can
+// end a context at a chosen point of a step. It panics for a period that is not positive.
+func (c *Conn) SetProgressPeriod(n int) {
+	if n <= 0 {
+		panic("sqlite: progress period not positive")
+	}
+	c.progress.period = min(n, math.MaxInt32)
+}
+
 // Exec one SQL statement to completion, discarding any rows it returns. The SQL is checked as by
 // [Conn.Prepare].
 func (c *Conn) Exec(sql string) error {
@@ -603,7 +646,8 @@ func (s *Stmt) Step() (bool, error) {
 const progressPeriod = 10_000
 
 // StepContext is [Stmt.Step], and ends the step when ctx ends: SQLite looks at ctx.Err every 10,000
-// instructions of its virtual machine, and once it is not nil, it stops the step, which then fails
+// instructions of its virtual machine, or every period that [Conn.SetProgressPeriod] set, and once
+// it is not nil, it stops the step, which then fails
 // with the error of ctx, [context.Canceled] or [context.DeadlineExceeded]. The statement has then
 // failed with SQLITE_INTERRUPT, which [Stmt.Reset] and [Stmt.Finalize] give, and it runs again after
 // a reset. A context that has ended before the step stops it at the first look, and a step that
@@ -622,7 +666,14 @@ const progressPeriod = 10_000
 // writes, an insert, an update, or a delete, rolls back the whole transaction of an explicit BEGIN,
 // as https://sqlite.org/c3ref/interrupt.html says, so StepContext is for statements that only read:
 // SQLite stops one of those, also in an explicit transaction, and the transaction and its writes
-// stay.
+// stay. A stop that rolled back the transaction of the connection all the same fails with SQLite's
+// error SQLITE_INTERRUPT and not with the error of ctx, so that the error of ctx always means a stop
+// that left the transaction as it was.
+//
+// A step that ends otherwise, also after ctx has ended, gives its own result: a row, the end, or
+// the error that it failed with. SQLite looks at ctx once more on its way out of a step, and
+// StepContext stops the step there only while the statement still runs, so an I/O error that
+// failed the step, and that rolled back the transaction of the connection, is given as such.
 func (s *Stmt) StepContext(ctx context.Context) (bool, error) {
 	if s.stmt == nil {
 		return false, errorFromConn(nil, C.SQLITE_MISUSE)
@@ -631,10 +682,15 @@ func (s *Stmt) StepContext(ctx context.Context) (bool, error) {
 		return s.Step()
 	}
 	s.row = false
+	db := C.sqlite3_db_handle(s.stmt)
+	inTx := C.sqlite3_get_autocommit(db) == 0
 	s.progress.ctx = ctx
-	rc := C.s4ql_step_interruptible(s.stmt, C.uintptr_t(s.progress.handle), progressPeriod)
+	rc := C.s4ql_step_interruptible(s.stmt, C.uintptr_t(s.progress.handle), C.int(s.progress.period))
 	s.progress.ctx = nil
-	if rc == C.SQLITE_INTERRUPT {
+	// A stop for ctx that rolled back the transaction of the connection, as one of a write in an
+	// explicit transaction does, gives SQLite's error, so that it is not taken for a stop that left
+	// the transaction as it was.
+	if rc == C.SQLITE_INTERRUPT && (!inTx || C.sqlite3_get_autocommit(db) == 0) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}

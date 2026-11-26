@@ -15,10 +15,12 @@ import (
 )
 
 // progress is what the progress handler of a connection reads during a step of
-// [Stmt.StepContext]: the context of the step, which is nil between steps.
+// [Stmt.StepContext]: the context of the step, which is nil between steps, and the number of
+// instructions between two calls of the handler.
 type progress struct {
 	ctx    context.Context
 	handle cgo.Handle
+	period int
 }
 
 // s4qlInterrupted is the progress handler of a step of [Stmt.StepContext], which SQLite calls from
