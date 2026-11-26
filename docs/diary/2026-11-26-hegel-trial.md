@@ -172,6 +172,8 @@ A probe that counted the outcome of each statement (in a throwaway copy of the f
 
 The first version of `where` drew the column's side before the value's and then swapped them one time in five, which the review found: with `textOf` the column's side can hold a parameter too, so the arguments were appended in the wrong order for `v op left`, and `hex(?)` could get the text and `c1 || ?` the blob. Both instances bind the same way, so it gave no false failure, only other cases than the generator meant. Fixed by drawing the sides in the order of the text.
 
+The first CI run of the pull request failed in the job `crosscheck`, at its step "Check that go.mod and go.sum are tidy" (`go mod tidy && git diff --exit-code go.mod go.sum` in `/internal/sqlite/crosscheck`): that module requires the main one, so its `go.sum` needs the sums of Hegel, `purego`, and `x/sys` too. The trial had tidied only the main module. Fixed by `go mod tidy` there; `internal/simlint` needed nothing.
+
 ### What I learned
 
 Hegel's statistics need a probe to read where the cases go: the `Event`s are not printed by a passing `go test`, and the outcomes per kind of statement were what showed that the first weights reached no row and no refusal of text.
@@ -187,5 +189,3 @@ That `series.operand` writes only forms that the pass takes: no number, NULL, or
 ### Future work
 
 In `/docs/todo/hegel.md`: the next places for a Hegel test, the faults of related values that Hegel misses, and text longer than 8 bytes, which the series do not draw.
-
-The first CI run of the pull request failed in the job `crosscheck`, at its step "Check that go.mod and go.sum are tidy" (`go mod tidy && git diff --exit-code go.mod go.sum` in `/internal/sqlite/crosscheck`): that module requires the main one, so its `go.sum` needs the sums of Hegel, `purego`, and `x/sys` too. The trial had tidied only the main module. Fixed by `go mod tidy` there; `internal/simlint` needed nothing.
