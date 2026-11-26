@@ -2734,12 +2734,6 @@ type failedContext struct {
 	done chan struct{}
 }
 
-// served is [read], for a test whose variable read hides it.
-func served(t *testing.T, d *core.DB) string {
-	t.Helper()
-	return read(t, d)
-}
-
 func newFailedContext(parent context.Context, vfs *faultvfs.VFS) *failedContext {
 	return &failedContext{Context: parent, vfs: vfs, done: make(chan struct{})}
 }
@@ -2754,6 +2748,12 @@ func (c *failedContext) Err() error {
 	}
 	c.once.Do(func() { close(c.done) })
 	return context.Canceled
+}
+
+// served is [read], for a test whose variable read hides it.
+func served(t *testing.T, d *core.DB) string {
+	t.Helper()
+	return read(t, d)
 }
 
 // indexFault is a transaction of the fault tests of indexes, on top of [indexFaultBase].

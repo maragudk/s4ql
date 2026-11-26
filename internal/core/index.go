@@ -1073,9 +1073,9 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 				// A read that is running when the instance stops is aborted.
 				err = r.d.stoppedError()
 			}
-			// A stop for the context leaves the transaction as it was, unless the transaction has
-			// ended under it.
-			_, err = r.c.harmless(ctx, err)
+			// A stop for the context leaves the transaction as it was, unless the transaction of the
+			// cache has ended under it.
+			_, err = r.c.harmless(ctx, !r.done, err)
 			if err != nil {
 				yield(nil, r.d.cacheError(ctx, operation, err))
 				return
@@ -1092,7 +1092,7 @@ func (r *ReadTx) scan(ctx context.Context, name string, plan func(t *table) (*in
 			// failure stops the instance all the same.
 			unread, err := r.c.unread(ctx, t, ix, scan, given)
 			r.read += unread
-			_, err = r.c.harmless(ctx, err)
+			_, err = r.c.harmless(ctx, !r.done, err)
 			_ = r.d.cacheError(ctx, operation, err)
 		}
 	}
@@ -1127,9 +1127,9 @@ func (r *ReadTx) RowsRead() int64 {
 // reads every row within the bounds before it gives the first, and as it stops the sort when ctx
 // ends: the sequence then ends with the error of ctx, which does not fail the transaction, and the
 // transaction's writes stay, unless the transaction of the cache has ended under the stop, which
-// stops the instance and fails the transaction. The transaction must not create or drop an index or a table while it
-// scans. A loop over a scan with Order that writes rows of the
-// table and then stops early makes [Tx.RowsRead] count the rows as they are when it stops.
+// stops the instance and fails the transaction. The transaction must not create or drop an index
+// or a table while it scans. A loop over a scan with Order that writes rows of the table and then
+// stops early makes [Tx.RowsRead] count the rows as they are when it stops.
 func (tx *Tx) ScanIndex(ctx context.Context, name string, scan IndexScan) iter.Seq2[[]*s4qlpb.Value, error] {
 	return tx.scan(ctx, name, func(t *table) (*index, IndexScan, error) {
 		ix, err := scanned(t, scan, tx.c.limit, tx.c.bugs)
@@ -1160,7 +1160,7 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 		var given int64
 		stopped := false
 		for row, err := range tx.c.scanIndex(ctx, t, ix, scan, &tx.read) {
-			ok, err := tx.c.harmless(ctx, err)
+			ok, err := tx.c.harmless(ctx, !tx.done, err)
 			if ok {
 				// SQLite stopped a read for the context, which left the transaction as it was.
 				yield(nil, err)
@@ -1189,7 +1189,7 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 			// it does not for the scan.
 			unread, err := tx.c.unread(ctx, t, ix, scan, given)
 			tx.read += unread
-			if ok, err := tx.c.harmless(ctx, err); !ok {
+			if ok, err := tx.c.harmless(ctx, !tx.done, err); !ok {
 				_ = tx.fail(ctx, operation, err)
 			}
 		}

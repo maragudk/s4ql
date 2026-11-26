@@ -42,7 +42,6 @@ const (
 	codeAuth              = 23
 	codeRange             = 25
 	codeConstraintPrimary = 1555
-	codeIOErrRead         = 266
 )
 
 func TestOpen(t *testing.T) {
@@ -1524,16 +1523,7 @@ func TestStmt_StepContext(t *testing.T) {
 		is.NotError(t, c.Exec("create table t (k int primary key, b blob) strict, without rowid"))
 		is.NotError(t, c.Exec("create table t2 (k int primary key) strict, without rowid"))
 		is.NotError(t, c.Exec("insert into t values (1, x'01')"))
-
-		// Run the statement until the progress handler of its next step is due at its fourth
-		// instruction, after the jump at its start and before the read of t, as it can be for a
-		// statement that is reused: SQLite counts the instructions of a statement across its resets.
 		s := prepare(t, c, "select k, k, b from t")
-		for period-s.VMSteps()%period != 4 {
-			_, err := s.Step()
-			is.NotError(t, err)
-			is.NotError(t, s.Reset())
-		}
 
 		// Another connection changes t, so that c reads the pages of t again in its next transaction.
 		other := open(t, path)
@@ -1542,18 +1532,23 @@ func TestStmt_StepContext(t *testing.T) {
 		is.NotError(t, c.Exec("begin immediate"))
 		is.NotError(t, c.Exec("insert into t2 values (2)"))
 
+		// With a period of 1, SQLite looks at the context at every jump and on its way out of every
+		// step, and the context ends at the first look after the read of t failed, which is the look
+		// on the way out of the failed step.
+		c.SetProgressPeriod(1)
+		ctx := &failedContext{Context: t.Context(), vfs: v, done: make(chan struct{})}
 		v.Fail(faultvfs.Fault{Ops: faultvfs.Read, Files: faultvfs.MainDB})
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
 		_, stepErr := s.StepContext(ctx)
 		failures := v.Failures()
 		v.Fail(faultvfs.Fault{})
 		resetErr := s.Reset()
 
+		// SQLITE_IOERR_READ.
+		const ioErrRead = 266
 		is.Equal(t, 1, failures, "the read of t failed")
-		is.Equal(t, codeIOErrRead, code(t, stepErr))
+		is.Equal(t, ioErrRead, code(t, stepErr))
 		is.True(t, !errors.Is(stepErr, context.Canceled))
-		is.Equal(t, codeIOErrRead, code(t, resetErr))
+		is.Equal(t, ioErrRead, code(t, resetErr))
 		// The I/O error rolled back the transaction: the insert into t2 is gone, and c is out of
 		// its transaction, so the commit fails.
 		is.True(t, c.Autocommit())
@@ -1589,18 +1584,23 @@ func TestStmt_StepContext(t *testing.T) {
 		c.SetProgressPeriod(1)
 		is.NotError(t, c.Exec("create table t (k int primary key) strict, without rowid"))
 		ended := 0
-		for at := 1; ; at++ {
+		done := false
+		for at := 1; at <= 1000 && !done; at++ {
 			s := prepare(t, c, "insert into t values (1)")
 			_, err := s.StepContext(ctxtest.EndAtErr(t.Context(), at))
 			n := len(query(t, c, "select k from t"))
-			if err == nil {
+			switch {
+			case err == nil:
 				is.Equal(t, 1, n)
-				break
+				done = true
+			case n != 0:
+				t.Fatal("the insert is committed, and was stopped at the look ", at, ": ", err)
+			default:
+				is.Error(t, context.Canceled, err)
+				ended++
 			}
-			is.Error(t, context.Canceled, err)
-			is.Equal(t, 0, n, fmt.Sprint("the insert is committed, and was stopped at the look ", at))
-			ended++
 		}
+		is.True(t, done, "the insert never ran to its end")
 		is.True(t, ended > 0, "no look at the context stopped the insert")
 	})
 
@@ -2330,6 +2330,26 @@ func FuzzConn_Prepare(f *testing.F) {
 }
 
 // memory database for a test, closed when the test ends.
+// failedContext ends at the first call of its Err after an operation of its VFS has failed.
+type failedContext struct {
+	context.Context
+	vfs  *faultvfs.VFS
+	once sync.Once
+	done chan struct{}
+}
+
+func (c *failedContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *failedContext) Err() error {
+	if c.vfs.Failures() == 0 {
+		return nil
+	}
+	c.once.Do(func() { close(c.done) })
+	return context.Canceled
+}
+
 func memory(t *testing.T) *sqlite.Conn {
 	t.Helper()
 	return open(t, ":memory:")

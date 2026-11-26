@@ -134,7 +134,7 @@ var (
 var errLeaseLost = fmt.Errorf("%w: not_holder", ErrNoLease)
 
 // errTxEnded is the error of a call of a transaction whose connection has left the transaction of
-// the cache that the core holds open for it, which SQLite does only when it rolls the transaction
+// the cache while the core holds it open, which SQLite does only when it rolls the transaction
 // back for an error, such as an I/O error. It is a local failure, which stops the instance: see
 // [DB.cacheError].
 var errTxEnded = errors.New("the transaction of the cache has ended")
@@ -187,20 +187,22 @@ func ended(ctx context.Context, err error) bool {
 	return ctxErr != nil && errors.Is(err, ctxErr)
 }
 
-// harmless reports whether err, of a step of the cache in a transaction of the connection c, is a
-// stop for ctx that left the transaction as it was: the error of ctx, which has ended, while c is
-// still in the transaction of the cache. SQLite stops a read for ctx and keeps the transaction, as
-// [sqlite.Stmt.StepContext] says, but a connection that has left its transaction has lost it to an
-// error that SQLite rolled it back for, and that the step did not give. The error that harmless
-// gives is then one that wraps [errTxEnded], and not the error of ctx, and otherwise err.
-func (c *conn) harmless(ctx context.Context, err error) (bool, error) {
-	if !ended(ctx, err) {
-		return false, err
+// harmless reports whether err, of a step of the cache on the connection c, is a stop for ctx that
+// left the transaction of the cache as it was: the error of ctx, which has ended, while c is still
+// in that transaction. SQLite stops a read for ctx and keeps the transaction, as
+// [sqlite.Stmt.StepContext] says. While the transaction of the core is open, which open says, a
+// connection that has left the transaction of the cache after an error has lost it to an error
+// that SQLite rolled it back for, whatever error the step gave: the error that harmless gives is
+// then one that wraps [errTxEnded], and not err, so that the error of ctx is not taken for a stop.
+// Otherwise it gives err.
+func (c *conn) harmless(ctx context.Context, open bool, err error) (bool, error) {
+	if err == nil {
+		return false, nil
 	}
-	if c.c.Autocommit() {
-		return false, fmt.Errorf("%w, in a step that gave the error of its context: %v", errTxEnded, err)
+	if open && c.c.Autocommit() {
+		return false, fmt.Errorf("%w, after the error of a step: %v", errTxEnded, err)
 	}
-	return true, err
+	return ended(ctx, err), err
 }
 
 // isTooBig reports whether err is SQLite's SQLITE_TOOBIG, "string or blob too big".

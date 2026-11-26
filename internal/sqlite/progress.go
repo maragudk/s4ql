@@ -24,8 +24,9 @@ type progress struct {
 }
 
 // s4qlInterrupted is the progress handler of a step of [Stmt.StepContext], which SQLite calls from
-// within the step, on the goroutine of the step, every [progressPeriod] instructions: 1, which makes
-// SQLite stop the step, once the context of the step has ended, and 0 before.
+// within the step, on the goroutine of the step, every period of instructions of the connection,
+// while the statement runs: 1, which makes SQLite stop the step, once the context of the step has
+// ended, and 0 before.
 //
 //export s4qlInterrupted
 func s4qlInterrupted(h C.uintptr_t) C.int {

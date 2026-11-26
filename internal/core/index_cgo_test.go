@@ -38,6 +38,8 @@ type armedContext struct {
 	armed bool
 	left  int
 	err   error
+	// calls of Err after the arm.
+	calls int
 }
 
 func newArmedContext(parent context.Context, n int) *armedContext {
@@ -51,6 +53,13 @@ func (c *armedContext) arm() {
 	c.armed = true
 }
 
+// armedCalls is the number of calls of Err after the arm.
+func (c *armedContext) armedCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
 func (c *armedContext) Done() <-chan struct{} {
 	return c.done
 }
@@ -58,6 +67,9 @@ func (c *armedContext) Done() <-chan struct{} {
 func (c *armedContext) Err() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.armed {
+		c.calls++
+	}
 	if c.armed && c.err == nil {
 		if c.left--; c.left <= 0 {
 			c.err = context.Canceled
@@ -280,12 +292,36 @@ func TestScanIndex_interrupt(t *testing.T) {
 				ctx.arm()
 				break
 			}
-			is.Error(t, context.Canceled, ctx.Err())
+			// The cache looked once, and SQLite's progress handler in the count at least once.
+			is.True(t, ctx.armedCalls() >= 2, fmt.Sprint(ctx.armedCalls(), " looks at the context after the first row"))
 			is.True(t, isDone(d), "the instance stopped")
 			if tx != nil {
 				err := tx.Upsert(t.Context(), "big", row(bigRows+1, -2, "tx", ""))
 				is.True(t, errors.Is(err, core.ErrLocal), fmt.Sprint(err))
 			}
+		})
+
+		t.Run(fmt.Sprint("should not stop the instance for a count that SQLite stopped for the context after the loop over the scan ended the transaction, in a read transaction ", read), func(t *testing.T) {
+			w := newWorld(t)
+			d := w.serve(t, "a", core.Options{})
+			fillBig(t, d, "x")
+			s, tx, _ := beginBig(t, d, read)
+
+			ctx := newArmedContext(t.Context(), 2)
+			for _, err := range s.ScanIndex(ctx, "big", bigSorted) {
+				is.NotError(t, err)
+				if tx != nil {
+					is.NotError(t, tx.Rollback(t.Context()))
+				} else {
+					is.NotError(t, s.(*core.ReadTx).Close(t.Context()))
+				}
+				ctx.arm()
+				break
+			}
+			// The cache looked once, and SQLite's progress handler in the count at least once.
+			is.True(t, ctx.armedCalls() >= 2, fmt.Sprint(ctx.armedCalls(), " looks at the context after the first row"))
+			is.True(t, !isDone(d), "the instance stopped")
+			transact(t, d, upsert("big", bigRows+1, -2, "tx", ""))
 		})
 	}
 }
