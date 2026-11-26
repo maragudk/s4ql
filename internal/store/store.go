@@ -25,6 +25,12 @@
 // store that sends a conditional write again by itself, after the first attempt ended without an
 // answer, must report the refusal of the second attempt as an unknown outcome, because the first
 // attempt may be what made the second fail.
+//
+// No error of a call, nor of a read of the content that a call returned, wraps the cause of the end
+// of the call's context, as [context.Cause] gives it, other than [context.Canceled] or
+// [context.DeadlineExceeded]. A caller can end a context with any error, such as one that wraps one
+// of the five errors above, and an error of the store must not match it. net/http gives that cause,
+// so a store over HTTP replaces it.
 package store
 
 import (

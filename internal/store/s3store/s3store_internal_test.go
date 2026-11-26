@@ -795,12 +795,14 @@ func TestClient_endedContext(t *testing.T) {
 			is.Equal(t, 1, strings.Count(err.Error(), context.Canceled.Error()), err.Error())
 		}
 
-		// The content of a read that fails after the end of the context.
+		// The content of a read that fails after the end of the context, whose error says how it
+		// failed and wraps only the error of the context.
 		body, _, err := c.Get(d.ctx(t), "cut-body")
 		is.NotError(t, err)
 		_, err = io.ReadAll(body)
 		_ = body.Close()
-		is.True(t, errors.Is(err, io.ErrUnexpectedEOF) && errors.Is(err, context.Canceled), fmt.Sprint(err))
+		is.True(t, !errors.Is(err, io.ErrUnexpectedEOF) && errors.Is(err, context.Canceled), fmt.Sprint(err))
+		is.True(t, strings.Contains(err.Error(), io.ErrUnexpectedEOF.Error()), err.Error())
 
 		// An answer that shows what happened is the outcome, also after the end of the context.
 		version, err := c.Create(d.ctx(t), "applied", data(), nil)

@@ -425,6 +425,78 @@ func TestClient_connections(t *testing.T) {
 		is.True(t, errors.Is(err, context.Canceled), fmt.Sprint(err))
 	})
 
+	t.Run("should not wrap the cause of a context that ended in the error of a read or a write, before the request and while it is answered", func(t *testing.T) {
+		// The cause is one that matches every error that means "not applied", as an error of the
+		// caller's that wraps them would.
+		cause := fmt.Errorf("another goroutine: %w, %w, %w, %w, %w", store.ErrNotFound, store.ErrExists, store.ErrChanged, store.ErrChecksum, store.ErrTooLarge)
+		check := func(t *testing.T, op string, err error) {
+			t.Helper()
+			is.True(t, err != nil, op+": no error")
+			is.True(t, errors.Is(err, context.Canceled), op+": "+fmt.Sprint(err))
+			is.True(t, !errors.Is(err, cause), op+": the error wraps the cause: "+fmt.Sprint(err))
+		}
+
+		f := newFake(t)
+		f.put("k", []byte("data"))
+		arrived := make(chan struct{}, 1)
+		release := make(chan struct{})
+		defer close(release)
+		f.hook = func(w http.ResponseWriter, r *http.Request, f *fake) bool {
+			if !strings.HasPrefix(key(r), "slow") {
+				return false
+			}
+			if key(r) == "slow-body" {
+				w.Header().Set("ETag", `"v"`)
+				w.Header().Set("Content-Length", "100")
+				_, _ = w.Write([]byte("part"))
+				_ = http.NewResponseController(w).Flush()
+			}
+			arrived <- struct{}{}
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return true
+		}
+		c := f.client(t)
+		_, v, err := c.Get(t.Context(), "k")
+		is.NotError(t, err)
+
+		ended, cancel := context.WithCancelCause(t.Context())
+		cancel(cause)
+		_, _, err = c.Get(ended, "k")
+		check(t, "a get after the end", err)
+		_, err = c.Create(ended, "new", strings.NewReader("data"), nil)
+		check(t, "a create after the end", err)
+		_, err = c.Swap(ended, "k", v, strings.NewReader("data"), nil)
+		check(t, "a swap after the end", err)
+
+		for _, op := range []string{"get", "create", "swap"} {
+			ctx, cancel := context.WithCancelCause(t.Context())
+			go func() {
+				<-arrived
+				cancel(cause)
+			}()
+			switch op {
+			case "get":
+				_, _, err = c.Get(ctx, "slow")
+			case "create":
+				_, err = c.Create(ctx, "slow", strings.NewReader("data"), nil)
+			case "swap":
+				_, err = c.Swap(ctx, "slow", v, strings.NewReader("data"), nil)
+			}
+			check(t, "a "+op+" while it is answered", err)
+		}
+
+		ctx, cancel := context.WithCancelCause(t.Context())
+		body, _, err := c.Get(ctx, "slow-body")
+		is.NotError(t, err)
+		<-arrived
+		cancel(cause)
+		_, err = io.ReadAll(body)
+		_ = body.Close()
+		check(t, "a read of the content", err)
+	})
 }
 
 // failing content, which ends with err instead of io.EOF.

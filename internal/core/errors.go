@@ -181,6 +181,18 @@ func ended(ctx context.Context, err error) bool {
 	return ctxErr != nil && errors.Is(err, ctxErr)
 }
 
+// endedError is the error of ctx, which has ended: [context.Canceled] or [context.DeadlineExceeded],
+// as ctx.Err gives them. A cause of the end that differs from it is named in the text and not
+// wrapped, because a caller can end a context with any error, such as one of s4ql's own of another
+// statement, and an error of this one must not match it.
+func endedError(ctx context.Context) error {
+	err := ctx.Err()
+	if cause := context.Cause(ctx); cause != nil && cause != err {
+		return fmt.Errorf("%w (cause: %v)", err, cause)
+	}
+	return err
+}
+
 // isTooBig reports whether err is SQLite's SQLITE_TOOBIG, "string or blob too big".
 func isTooBig(err error) bool {
 	var sqliteErr *sqlite.Error

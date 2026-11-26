@@ -16,7 +16,8 @@
 // what happened: a success, or one of the errors of [store.Store]. Any other answer, or none, fails
 // the call with an error that wraps the [context.Canceled] or [context.DeadlineExceeded] of the
 // context, since the end of the context may be what broke the answer. So does a read of the content
-// that fails after the end of the context.
+// that fails after the end of the context. Such an error wraps nothing else: not the cause of the
+// end, which net/http gives, as [store.Store] requires.
 //
 // A write with a checksum is checked by the store: the request is signed with the checksum as the
 // SHA-256 of its payload, which the store compares with the bytes it receives before it stores
@@ -396,15 +397,22 @@ func (c *Client) put(ctx context.Context, op, key string, from store.Version, co
 	return version, nil
 }
 
-// ended is err, the failure of a call with the context ctx, and if ctx has ended, also the error of
-// its end, which err may not wrap: net/http takes an answer that comes in as the context ends, and
-// the end may be what made the answer one that the client cannot use, so the call is reported as one
-// whose context ended, and not as one that the store failed alone.
+// ended is err, the failure of a call with the context ctx, and if ctx has ended, an error with the
+// text of err that wraps the error of the end, ctx.Err, and nothing else: net/http takes an answer
+// that comes in as the context ends, and the end may be what made the answer one that the client
+// cannot use, so the call is reported as one whose context ended, and not as one that the store
+// failed alone. And net/http gives the cause of the end, which a caller can choose to be any error,
+// such as one that wraps an error of [store.Store] that means "not applied", so err is not wrapped.
 func ended(ctx context.Context, err error) error {
-	if done := ctx.Err(); done != nil && !errors.Is(err, done) {
-		return fmt.Errorf("%w, after the context ended: %w", err, done)
+	done := ctx.Err()
+	if done == nil {
+		return err
 	}
-	return err
+	text := err.Error()
+	if !errors.Is(err, done) {
+		text += ", after the context ended: " + done.Error()
+	}
+	return textOf{text: text, err: done}
 }
 
 // unknown is the error of a write whose outcome is unknown because of err. It has the text of err,

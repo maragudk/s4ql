@@ -207,7 +207,9 @@
 //     the instance.
 //   - An error that matches [ErrTooLarge], for a commit that is larger than the object store takes.
 //   - Another error, whose message starts with "s4ql: ", such as one that wraps the error of a
-//     context that ended.
+//     context that ended: [context.Canceled] or [context.DeadlineExceeded], as the context's Err
+//     gives them. It never wraps the cause that the context was ended with, such as the error of
+//     another goroutine that errgroup.WithContext ends it with, which the message may name.
 //
 // Every one of them but one that matches [ErrOutcomeUnknown] means that the statement is not
 // committed. The driver never returns [database/sql/driver.ErrBadConn], so database/sql never runs a

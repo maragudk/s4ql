@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"maragu.dev/s4ql/internal/core"
 	"maragu.dev/s4ql/internal/core/coretest"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
+	"maragu.dev/s4ql/internal/store"
 	"maragu.dev/s4ql/internal/store/simstore"
 )
 
@@ -1092,4 +1094,134 @@ func TestTx_raw(t *testing.T) {
 			readersFree(t, db)
 		})
 	}
+}
+
+// TestTx_contextCause checks that a commit whose context ends with a cause, as
+// errgroup.WithContext ends it with the error of another goroutine, fails with an error that matches
+// the error of the context and none of the cause's errors.
+func TestTx_contextCause(t *testing.T) {
+	causes := []struct {
+		name  string
+		cause error
+	}{
+		{name: "the outcome of another commit is unknown", cause: s4ql.ErrOutcomeUnknown},
+		{name: "another statement failed with SQLite's error", cause: &s4ql.Error{Code: 19, ExtendedCode: 1555, Message: "UNIQUE constraint failed: t1.v1"}},
+		{name: "another driver's connection is broken", cause: driver.ErrBadConn},
+	}
+	for _, c := range causes {
+		t.Run("should give a commit that is not committed an error that matches none of the cause's errors, when "+c.name, func(t *testing.T) {
+			commitErr := commitEndedAtSwap(t, c.cause, store.ErrChanged)
+			is.True(t, strings.HasPrefix(commitErr.Error(), "s4ql: commit: not committed: context canceled"), commitErr.Error())
+			is.True(t, strings.Contains(commitErr.Error(), c.cause.Error()), "the text names the cause: "+commitErr.Error())
+
+			is.True(t, errors.Is(commitErr, context.Canceled), "the error matches the error of the context: "+commitErr.Error())
+			var sqliteErr *s4ql.Error
+			is.True(t, !errors.Is(commitErr, s4ql.ErrOutcomeUnknown), "the error matches ErrOutcomeUnknown: "+commitErr.Error())
+			is.True(t, !errors.As(commitErr, &sqliteErr), "the error is SQLite's error: "+commitErr.Error())
+			is.True(t, !errors.Is(commitErr, driver.ErrBadConn), "the error is driver.ErrBadConn: "+commitErr.Error())
+		})
+	}
+
+	t.Run("should give a commit whose outcome is unknown an error that matches ErrOutcomeUnknown and none of the cause's errors", func(t *testing.T) {
+		cause := &s4ql.Error{Code: 19, ExtendedCode: 1555, Message: "UNIQUE constraint failed: t1.v1"}
+		commitErr := commitEndedAtSwap(t, fmt.Errorf("another goroutine: %w, %w", cause, driver.ErrBadConn), errors.New("the answer broke off"))
+		is.True(t, strings.HasPrefix(commitErr.Error(), "s4ql: commit: the outcome of the commit is unknown: context canceled"), commitErr.Error())
+
+		is.True(t, errors.Is(commitErr, s4ql.ErrOutcomeUnknown), commitErr.Error())
+		var sqliteErr *s4ql.Error
+		is.True(t, !errors.As(commitErr, &sqliteErr), "the error is SQLite's error: "+commitErr.Error())
+		is.True(t, !errors.Is(commitErr, driver.ErrBadConn), "the error is driver.ErrBadConn: "+commitErr.Error())
+	})
+
+	t.Run("should not stop the instance when the cause is the stop of another instance for a manifest that it cannot read", func(t *testing.T) {
+		w := newWorld(t)
+		_, err := w.client().Create(t.Context(), "other/manifest.json", strings.NewReader("not a manifest"), nil)
+		is.NotError(t, err)
+		opts := w.options("other")
+		opts.Prefix = "other"
+		other, err := s4ql.OpenStore(t.Context(), w.host, w.client(), opts, coreOptions())
+		is.NotError(t, err)
+		t.Cleanup(func() { _ = other.Close() })
+		cause := other.PingContext(t.Context())
+		is.True(t, errors.Is(cause, s4ql.ErrStopped), fmt.Sprint(cause))
+
+		s := &cancelAtSwap{Store: w.client()}
+		db := w.openOn(t, "a", s, coreOptions())
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, t1)
+		ctx, cancel := context.WithCancelCause(t.Context())
+		defer cancel(nil)
+		tx, err := db.BeginTx(ctx, nil)
+		is.NotError(t, err)
+		_, err = tx.ExecContext(ctx, insert1)
+		is.NotError(t, err)
+		// The refused swap makes the commit read the manifest, with the context that has ended.
+		s.arm(cancel, cause, store.ErrChanged)
+		commitErr := tx.Commit()
+		is.True(t, !errors.Is(commitErr, s4ql.ErrStopped), fmt.Sprint(commitErr))
+
+		is.NotError(t, db.PingContext(t.Context()))
+		exec(t, db, insert1)
+	})
+}
+
+// commitEndedAtSwap commits a transaction that inserts a row, and whose context ends with cause at
+// the swap of its commit, which fails with swapErr without being sent. It returns the error of the
+// commit, which must fail, after it has checked that the row is not committed or that the outcome
+// is unknown.
+func commitEndedAtSwap(t *testing.T, cause, swapErr error) error {
+	t.Helper()
+	w := newWorld(t)
+	s := &cancelAtSwap{Store: w.client()}
+	db := w.openOn(t, "a", s, coreOptions())
+	is.NotError(t, db.PingContext(t.Context()))
+	exec(t, db, t1)
+
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	tx, err := db.BeginTx(ctx, nil)
+	is.NotError(t, err)
+	_, err = tx.ExecContext(ctx, insert1)
+	is.NotError(t, err)
+	s.arm(cancel, cause, swapErr)
+	commitErr := tx.Commit()
+	is.True(t, commitErr != nil, "the commit fails")
+	if !errors.Is(commitErr, s4ql.ErrOutcomeUnknown) {
+		rows, err := db.QueryContext(t.Context(), select1)
+		is.NotError(t, err)
+		is.True(t, !rows.Next(), "nothing is committed")
+		is.NotError(t, rows.Close())
+	}
+	return commitErr
+}
+
+// cancelAtSwap is a store that, once armed, ends a context with a cause at the next swap of the
+// manifest, and fails that swap with an error without sending it.
+type cancelAtSwap struct {
+	store.Store
+
+	mu      sync.Mutex
+	cancel  context.CancelCauseFunc
+	cause   error
+	swapErr error
+}
+
+func (c *cancelAtSwap) arm(cancel context.CancelCauseFunc, cause, swapErr error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cancel, c.cause, c.swapErr = cancel, cause, swapErr
+}
+
+func (c *cancelAtSwap) Swap(ctx context.Context, key string, from store.Version, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
+	c.mu.Lock()
+	cancel, cause, swapErr := c.cancel, c.cause, c.swapErr
+	if strings.HasSuffix(key, "manifest.json") {
+		c.cancel = nil
+	}
+	c.mu.Unlock()
+	if cancel != nil && strings.HasSuffix(key, "manifest.json") {
+		cancel(cause)
+		return "", swapErr
+	}
+	return c.Store.Swap(ctx, key, from, content, checksum)
 }
