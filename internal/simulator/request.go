@@ -41,15 +41,10 @@ type Request struct {
 	Schedule []Action `json:"schedule"`
 	// Lines asks for the text trace of the scheduler in the response.
 	Lines bool `json:"lines"`
-	// Prefix of the database in the store: the key of each of its objects starts with it and a
-	// slash.
-	Prefix string `json:"prefix"`
-	// Bucket that the store holds under the prefix when the run starts, or nil for an empty store.
-	Bucket *StoredBucket `json:"bucket,omitzero"`
-
-	// seed is the bucket, checked and read.
-	seed *seed
 }
+
+// prefix of the database in the store: the key of each of its objects starts with it and a slash.
+const prefix = "db"
 
 // Faults of the store that happen at random, from the seed, each with its probability for one
 // request, as [simstore.Faults] describes. Damaged is the probability that a download of a commit
@@ -177,7 +172,6 @@ func defaultRequest() Request {
 		Leases:    []float64{30_000},
 		Latency:   50,
 		Workload:  Workload{On: true, Callers: 2, Think: 5_000, Writes: 40, Deletes: 25, Timeout: 30_000},
-		Prefix:    "db",
 	}
 }
 
@@ -193,11 +187,6 @@ func ParseRequest(b []byte) (Request, error) {
 	if err := r.check(); err != nil {
 		return Request{}, err
 	}
-	seed, err := parseBucket(r.Bucket, r.Prefix)
-	if err != nil {
-		return Request{}, fmt.Errorf("the bucket is refused: %w", err)
-	}
-	r.seed = seed
 	return r, nil
 }
 
@@ -250,9 +239,6 @@ func (r Request) check() error {
 	}
 	if c := r.Client.Instance; c != "" && !validInstance(c, r.Instances) {
 		bad("client.instance is %q, and must be empty or an instance from a to %v", c, instanceName(max(0, r.Instances-1)))
-	}
-	if !prefixPattern.MatchString(r.Prefix) {
-		bad("prefix is %q, and must be 1 to 32 of a to z, 0 to 9, and -, not starting with -", r.Prefix)
 	}
 	if len(r.Schedule) > maxSchedule {
 		bad("the schedule has %v actions, and may have at most %v", len(r.Schedule), maxSchedule)
@@ -378,15 +364,12 @@ type Session struct {
 	Workload  Workload  `json:"workload"`
 	Client    Client    `json:"client"`
 	Standby   bool      `json:"standby"`
-	// Prefix and Bucket are those of a [Request].
-	Prefix string        `json:"prefix"`
-	Bucket *StoredBucket `json:"bucket,omitzero"`
 }
 
 // defaultSession has the default of every field: those of [defaultRequest], but two instances.
 func defaultSession() Session {
 	r := defaultRequest()
-	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Latency: r.Latency, Workload: r.Workload, Prefix: r.Prefix}
+	return Session{Seed: r.Seed, Instances: 2, Leases: r.Leases, Latency: r.Latency, Workload: r.Workload}
 }
 
 // ParseSession from its JSON, with the defaults for missing fields, and check it, as
@@ -398,16 +381,10 @@ func ParseSession(b []byte) (Request, error) {
 		return Request{}, fmt.Errorf("the session is not JSON of a session: %w", err)
 	}
 	r := Request{Seed: s.Seed, End: maxEnd, Instances: s.Instances, Leases: s.Leases,
-		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload, Client: s.Client, Standby: s.Standby,
-		Prefix: s.Prefix, Bucket: s.Bucket}
+		Latency: s.Latency, Faults: s.Faults, Buggify: s.Buggify, Workload: s.Workload, Client: s.Client, Standby: s.Standby}
 	if err := r.check(); err != nil {
 		return Request{}, err
 	}
-	seed, err := parseBucket(r.Bucket, r.Prefix)
-	if err != nil {
-		return Request{}, fmt.Errorf("the bucket is refused: %w", err)
-	}
-	r.seed = seed
 	r.End = math.Inf(1)
 	return r, nil
 }

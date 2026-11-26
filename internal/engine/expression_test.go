@@ -151,6 +151,13 @@ const (
 func (p *pair) checkArithmetic(c stmttest.Call, s stmt.Statement, args []any, got answer) (excuse, failure string) {
 	t, o := p.t, p.o
 	t.Helper()
+	if refusal := stmttest.TextRefusal(s); refusal != "" && len(args) == s.Parameters() {
+		// Text is refused before the database is read, whatever it holds.
+		if got.err != "not supported" || got.message != refusal {
+			return excusedArithmeticType, fmt.Sprintf("%q with the arguments %#v: the engine gives %v, and the rule %q", c.Src, args, got, refusal)
+		}
+		return excusedArithmeticType, ""
+	}
 	if len(args) != s.Parameters() || o.prepare(t, c.Src) != nil {
 		return "", ""
 	}
@@ -1607,5 +1614,64 @@ func TestEngine_arithmetic(t *testing.T) {
 		is.Equal(t, `columns "k INT, n INT", rows ["1,11" "2,20" "3,30" "4,4"]`, i.queryValues("select k, n from t", nil).String())
 		is.NotError(t, i.c.Commit(t.Context()))
 		is.Equal(t, `columns "n INT", rows ["11"]`, i.queryValues("select n from t where k = 1", nil).String())
+	})
+}
+
+func TestEngine_text(t *testing.T) {
+	t.Run("should refuse a concatenation and a call, which the evaluator does not compute yet, after the arguments and before the database, and change nothing", func(t *testing.T) {
+		i := newInstance(t, engine.Options{})
+		for _, src := range []string{
+			"create table t (k int primary key, s text, b blob) strict, without rowid",
+			"create table u (a int primary key, x int) strict, without rowid",
+			"insert into t values (1, 'AbC', x'00ff')",
+		} {
+			is.Equal(t, "", i.exec(src).err, src)
+		}
+		before := i.state()
+		for _, c := range []struct {
+			src   string
+			args  []any
+			query bool
+			want  string
+		}{
+			{"update t set s = lower(s)", nil, false, "s4ql: not supported: call of lower (at offset 17)"},
+			{"update t set s = 'm_' || lower(hex(b)) returning *", nil, true, "s4ql: not supported: concatenation (at offset 17)"},
+			{"update t set s = 'x' where hex(b) = ?", []any{"00FF"}, false, "s4ql: not supported: call of hex (at offset 27)"},
+			{"select k from t where lower(s) = 'abc'", nil, true, "s4ql: not supported: call of lower (at offset 22)"},
+			{"select k from t where s = 'a' || 'b'", nil, true, "s4ql: not supported: concatenation (at offset 26)"},
+			{"select k from t where lower(s) || 'a' = 'abca'", nil, true, "s4ql: not supported: concatenation (at offset 22)"},
+			{"select k from t where k = (select k from t where s = lower(?))", []any{"ABC"}, true, "s4ql: not supported: call of lower (at offset 53)"},
+			{"delete from t where s || ? = 'AbCd'", []any{"d"}, false, "s4ql: not supported: concatenation (at offset 20)"},
+			// Whatever the database holds: SQLite looks the names inside a call up in an order of its
+			// own, and gives no such column: nosuch2 for the first of these.
+			{"delete from t where hex(nosuch) = nosuch2", nil, false, "s4ql: not supported: call of hex (at offset 20)"},
+			{"update t set s = lower(nosuch1) || nosuch2", nil, false, "s4ql: not supported: concatenation (at offset 17)"},
+			{"delete from t where lower(nosuch1) <> (select a from nosuch2)", nil, false, "s4ql: not supported: call of lower (at offset 20)"},
+			{"select * from t where lower(s) = (select * from u)", nil, true, "s4ql: not supported: call of lower (at offset 22)"},
+			{"update nosuch set s = lower(s)", nil, false, "s4ql: not supported: call of lower (at offset 22)"},
+			// The arguments come first.
+			{"update t set s = lower(?)", nil, false, "s4ql: wrong number of arguments: 0 for a statement with 1 parameter"},
+		} {
+			var got answer
+			if c.query {
+				got = i.queryValues(c.src, values(c.args))
+			} else {
+				got = i.execValues(c.src, values(c.args))
+			}
+			is.Equal(t, c.want, got.message, c.src)
+			if strings.HasPrefix(c.want, "s4ql: not supported: ") {
+				is.Equal(t, "not supported", got.err, c.src)
+				is.Equal(t, c.want, fmt.Sprint(engine.Check(c.src, len(c.args))), c.src)
+			}
+		}
+		_, err := i.c.ExecAll(t.Context(), "delete from t where k = 2; update t set s = lower(s)")
+		is.Equal(t, "s4ql: not supported: call of lower (at offset 44)", fmt.Sprint(err))
+		is.Equal(t, before, i.state())
+	})
+
+	t.Run("should plan a concatenation and a call as an Arithmetic, and format them", func(t *testing.T) {
+		s, err := stmt.Check("update t set s = 'm_' || lower(hex(b)) where lower(s) = ?")
+		is.NotError(t, err)
+		is.Equal(t, "update t set s = ('m_' || lower(hex(b)))\n  filter lower(s) = ?1\n    scan t\n", engine.Format(engine.NewPlan(s)))
 	})
 }

@@ -117,6 +117,8 @@ var fieldNames = map[string]string{
 	"Assignment.LParen":                  "SET of a list of columns",
 	"Values.Commas":                      "second row",
 	"SimpleSelect.Distinct":              "DISTINCT or ALL",
+	"FuncCall.Distinct":                  "DISTINCT or ALL",
+	"FuncCall.Star":                      "* as an argument",
 	"ResultColumn.As":                    "alias",
 	"ResultColumn.Alias":                 "alias",
 	"FromItem.As":                        "alias",

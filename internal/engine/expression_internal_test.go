@@ -13,6 +13,29 @@ import (
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
+func TestLeftmostOffset(t *testing.T) {
+	t.Run("should give the offset of the first leaf, after the sign of a negative literal, or of the name of a call, as SQLite gives it for row value misused", func(t *testing.T) {
+		// SQLite gives row value misused for these with a subquery of * of two columns on the right at
+		// the offsets that the comments have, measured with the pinned shell.
+		for _, c := range []struct {
+			src  string
+			want int
+		}{
+			{"select * from t where k + 1 = 1", 22},
+			{"select * from t where -5 + k = 1", 23},
+			{"select * from t where lower(v) = 1", 22},
+			{"select * from t where   LOWER (v) != 1", 24},
+			{"select * from t where hex(lower(v)) < 1", 22},
+			{"select * from t where lower(v) || 'a' = 1", 22},
+			{"select * from t where v || 'a' = 1", 22},
+		} {
+			s, err := stmt.Check(c.src)
+			is.NotError(t, err, c.src)
+			is.Equal(t, c.want, leftmostOffset(s.(*stmt.Select).Where[0].Expression), c.src)
+		}
+	})
+}
+
 func TestArgumentLengths(t *testing.T) {
 	t.Run("should give the internal error of a parameter that the arguments do not have, which no statement gives", func(t *testing.T) {
 		args := []*s4qlpb.Value{integer(1), integer(2)}

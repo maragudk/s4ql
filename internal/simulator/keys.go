@@ -14,9 +14,8 @@ import (
 type knownKeys struct {
 	mu sync.Mutex
 	// known holds the keys whose rows the application knows are in the store, in the order in which
-	// it learned them: from an acknowledged insert, from the log of a stored bucket, or from a delete
-	// that ended without an unknown outcome and without being acknowledged. A key leaves it when a
-	// delete picks it.
+	// it learned them: from an acknowledged insert, or from a delete that ended without an unknown
+	// outcome and without being acknowledged. A key leaves it when a delete picks it.
 	known []int64
 	// deletable holds the keys of known that a delete can pick: those that no delete has picked.
 	deletable []int64
@@ -34,29 +33,6 @@ const recentDeletes = 10
 
 // goneReads: one read in goneReads selects the key of a recent acknowledged delete, if there is one.
 const goneReads = 8
-
-// stored: the store holds the log of a stored bucket, from the first commit object to the head. The
-// application knows the rows of the state at the head, in the order of their inserts.
-func (k *knownKeys) stored(log []*CommitObject) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	rows := map[int64]bool{}
-	for _, o := range log {
-		for _, key := range o.Keys {
-			rows[key] = true
-		}
-		for _, key := range o.Deletes {
-			delete(rows, key)
-		}
-	}
-	for _, o := range log {
-		for _, key := range o.Keys {
-			if rows[key] {
-				k.learn(key)
-			}
-		}
-	}
-}
 
 // learn that the row of the key is in the store. It requires the mutex.
 func (k *knownKeys) learn(key int64) {
