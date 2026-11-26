@@ -107,3 +107,58 @@ The typed form is the contract for the engine step, so it carries everything the
 
 - The engine step: run DO NOTHING and DO UPDATE, pin SQLite's order of name errors, the target check against the key, and remove `upsertRefusal`.
 - The generators of `stmttest` should write upserts; mutation testing of the new code.
+
+## Step 2: long runs, self-review, and its fixes
+
+**Author:** builder (upsert-stmt)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief of Step 1) "Before you hand in: the pass's fuzz targets for five minutes in all, and `go test -count=1 -p 3 -run '^TestDifferential$' -timeout 40m ./internal/engine/ -sequences 400` once ... Run the `fabrik:code-review` skill over your diff and fix what matters."
+**Interpretation:** Show that the generated checks are undisturbed, fuzz the pass, have two independent reviewers read the diff, and fix what they find that matters.
+**Inferred intent:** Hand in a branch whose test net does not cry wolf on the new forms anywhere in the tree.
+
+### What I did
+
+- `TestDifferential` with 400 sequences: `ok maragu.dev/s4ql/internal/engine 1150.197s`.
+- Fuzzing, one process at a time, scratch on `/Volumes/990/s4ql/upsert-stmt/`: `FuzzCheck` 3 minutes (3.3 million runs), `FuzzSplit` 1 minute, `FuzzGenerate` 1 minute, all `ok`.
+- `make lint`: 0 issues.
+- Two reviewers on the diff, each measuring its claims with the shell. Fixed:
+  - Both: the driver's differential pair (`internal/sqlite/crosscheck/drivercheck`) had no rule for the refusal, so any upsert that `FuzzSequence` reached would have failed with `s4ql gives exec: exec failed with s4ql: not supported: ON CONFLICT clause (at offset 26), where the rule gives ""`. Added the rule in `checkNotSupported`, `excusedUpsert` there, and a `TestPair` subtest through Exec, Query, and Prepare, which fails without the rule.
+  - One reviewer, serious: `checkUpsert` expected the error of a target of two columns where SQLite gives `1 values for 2 columns` first (`insert into t (k, j) values (1) on conflict (k, j) do nothing`), a valid input on which `FuzzCheck` would fail. Fixed, with a case. The branch of two columns now runs the canonical texts too, and the check stops above 2,000 names, which no table holds.
+  - One reviewer: in the engine's pair the upsert rule came after the rule of the length limit, so a long literal in an upsert would have been judged by the wrong rule. Moved, with a test on an instance with the length limit.
+  - Both: `'excluded'.v` was refused as `column with the name of a table`; SQLite takes it as excluded, so it is now `single-quoted name`, like brackets and backticks.
+  - Both: comments that described callers (`upsertRefusal`, `NewPlan` and its panic text, `stmttest.UpsertRefusal`, `textRefusal`), stale comments in `recognize.go`, the doc of `Condition`, and `assignments` keyed the limit on `target == nil` where `r.doUpdate` says it.
+  - Docs: the order of the errors of names in DO UPDATE is assignment by assignment, value before column (an update names `yy` first for `set zz = yy` too, so my contrast was wrong); SQLite takes a target `t.k`; the Results table of the README, which had not been updated since before text functions.
+  - `checkExpression` now requires the zero `Table` on every node but `ExprExcluded`.
+
+### Why
+
+A differential test that fails on a correct answer is worse than none: it is the next nightly's false alarm.
+
+### What worked
+
+- Reviewers who reproduced each claim with the shell or a probe test; every serious finding came with a command.
+
+### What didn't work
+
+- My first `checkUpsert` had two oracles that were wrong on valid inputs (above); the five minutes of fuzzing did not find them, the reviewers did.
+- A shell command with a quoted `'\''` in an inline Python script was refused by the harness, yet its edits were on disk afterwards; I checked each edit with `grep` before going on.
+
+### What I learned
+
+- `excusedUpsert`-style constants are a pattern of the pairs (each excuse is a named tally), so I kept it although it is used once.
+- `TestAllowList` now allows `ColumnRef.Table` for every statement; recorded in `docs/todo/upserts.md`.
+
+### What was tricky
+
+- Two differential pairs, in two modules, each with its own idea of what "not supported" may mean for a text that the pass takes.
+
+### What warrants review
+
+- `/internal/sqlite/crosscheck/drivercheck/drivercheck_test.go`, `checkNotSupported`, and the move of the hook in `/internal/engine/differential_test.go`.
+- A pre-existing fault the reviewer found, not fixed here: on `main`, `update t1 set v1 = 1 where lower(v1) = 'a'` through `callPrepareExec` fails the driver's pair, since `checkRefused` rejects a refusal at prepare and Prepare runs `engine.Check` with `textRefusal`.
+
+### Future work
+
+- The fault above, in the driver's pair, for the lead to assign.
