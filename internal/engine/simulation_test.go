@@ -3680,6 +3680,45 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// A copy of a column alone that keeps the value of the column that it sets: 174 seeds, 136 of
 		// them by their own violation.
 		{"copySelf", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
+		// The bugs of the loop of ExecAll and its commit path, on the profile of several statements, of
+		// 1000 seeds on 2026-11-26, each bug in a process of its own, in the hammer environment, which
+		// runs more statements on one instance than the default one, but for commitLater. Every violation
+		// of the seeds that find a bug is in its list.
+		//
+		// All statements of a text outside a transaction in one commit: 999 seeds, 976 of them by their
+		// own violation. The bug acknowledges each statement by its event before the commit at the end,
+		// so a statement that started after one of them saw a state without it, of its own or in a
+		// transaction, and the values of its subqueries were not SQLite's on that state; and the commit
+		// at the end can fail, which loses statements that were acknowledged.
+		{"oneCommit", hammerWorkload, "hammer", stmttest.Several, []string{"is a statement of its own", "was acknowledged before it started", "is not in the log", "was acknowledged before it began", "and SQLite gives"}},
+		// The statements after a failed one run: 1000 seeds, all by their own violation.
+		{"goOn", hammerWorkload, "hammer", stmttest.Several, []string{"which failed"}},
+		// A statement that fails while it runs commits what it changed before it failed, which needs an
+		// update that changes rows before it fails on a later one: 234 seeds, 225 of them by their own
+		// violation, and the others by an update that failed with an evaluation error, which its caller
+		// was told as a statement refused.
+		{"commitFailed", hammerWorkload, "hammer", stmttest.Several, []string{"and its caller was told SQLite's error", "and its caller was told skipped"}},
+		// A write that another statement follows succeeds with its commit left for the next statement:
+		// a crash between the two, which the default environment has, or a commit that then fails loses
+		// it, and a statement that started after its event saw a state without it. 534 seeds, 524 of them
+		// by their own violation; of 300 seeds, 38 lost a statement whose call never returned because its
+		// instance crashed.
+		{"commitLater", defaultWorkload, "default", stmttest.Several, []string{"is not in the log", "was acknowledged before it began", "was acknowledged before it started"}},
+		// The annotation of each statement holds the whole text, whose first ID is that of the first
+		// statement: 995 seeds, 992 of them by their own violation, and the others by a statement that
+		// is then in no commit.
+		{"annotateText", hammerWorkload, "hammer", stmttest.Several, []string{" and commit ", "is not in the log"}},
+		// The annotation holds the arguments of the text from the first on, which differ from a
+		// statement's own after a statement with parameters: 507 seeds, all by their own violation.
+		{"argsFromStart", hammerWorkload, "hammer", stmttest.Several, []string{"and its caller gave the arguments"}},
+		// A failure after the first statement of a text in a write transaction rolls it back and begins a
+		// new one: 987 seeds, 510 of them by their own violation. The others find that the place of the
+		// writer was free while the caller's transaction was open, that its commit lost the writes
+		// before the failure, or that its later statements saw a newer state.
+		{"undoInTx", hammerWorkload, "hammer", stmttest.Several, []string{"whose statements that succeeded and write are", "while the write transaction", "is not in the log", "saw the states"}},
+		// The result of the first statement that sets the count of changes: 976 seeds, all by their own
+		// violation.
+		{"firstResult", hammerWorkload, "hammer", stmttest.Several, []string{"and the events of its statements"}},
 	}
 	shard := testshard.Get(t)
 	for i, b := range bugs {
