@@ -11,8 +11,10 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/sim"
 	"maragu.dev/s4ql/internal/sqlite"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
+	"maragu.dev/s4ql/internal/store/simstore"
 )
 
 // walOf the cache at path, as another connection sees it: the number of frames in its
@@ -130,13 +132,21 @@ func TestDB_checkpoint(t *testing.T) {
 			d := w.serve(t, "a", options)
 			transact(t, d, create("t1", 1, "k", "v"))
 
-			// With synchronous = normal, SQLite syncs the cache only at a checkpoint: the log before it
-			// copies pages, and the file after.
-			vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: files, Times: 1})
+			// With synchronous = full, SQLite syncs the log at every commit, and at a checkpoint the log
+			// before it copies pages and the file after. The file is synced only at a checkpoint. The
+			// fault of the log is armed again before each commit, so that the sync of the commit
+			// succeeds and the next one, which a checkpoint after that commit makes, fails. The log has
+			// not started again since the cache was made, so no commit syncs its header.
+			if files == faultvfs.MainDB {
+				vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: files, Times: 1})
+			}
 			commits := 0
 			for !isDone(d) {
 				if commits == 100 {
 					t.Fatal("no stop after 100 commits: " + name)
+				}
+				if files == faultvfs.WAL {
+					vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: files, After: 1, Times: 1})
 				}
 				// Every commit returns nil, also the one whose checkpoint fails: it is in the log and in
 				// the cache.
@@ -162,6 +172,7 @@ func TestDB_checkpoint(t *testing.T) {
 			// The commits before the stop are acknowledged, so the log has them all, and the next start
 			// from the position that the cache records serves them.
 			want := keyed(commits * 500)
+			vfs.Fail(faultvfs.Fault{})
 			is.NotError(t, d.Close(t.Context()), name)
 			again := w.serve(t, "a", core.Options{})
 			is.Equal(t, want, read(t, again), name)
@@ -169,31 +180,6 @@ func TestDB_checkpoint(t *testing.T) {
 			is.NotError(t, again.Close(t.Context()), name)
 			is.Equal(t, want, read(t, w.serve(t, "b", core.Options{})), name)
 		}
-	})
-
-	t.Run("should stop at the first checkpoint when every sync fails, where SQLite's automatic checkpoint dropped the error of each", func(t *testing.T) {
-		w := newWorld(t)
-		vfs, options := checkpointFaults(t, 0)
-		d := w.serve(t, "a", options)
-		transact(t, d, create("t1", 1, "k", "v"))
-		vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.AnyFile})
-		commits := 0
-		for !isDone(d) {
-			if commits == 200 {
-				t.Fatal("no stop after 200 commits")
-			}
-			transact(t, d, rows(commits*2000, 2000)...)
-			commits++
-		}
-		// The first checkpoint, at SQLite's default of 1000 pages, comes after many commits; its sync
-		// of the log is the first sync since the cache was made, and the first that fails.
-		is.True(t, commits > 10, fmt.Sprint(commits))
-		is.Equal(t, 1, vfs.Failures())
-		is.Error(t, core.ErrLocal, d.Err())
-		vfs.Fail(faultvfs.Fault{})
-		is.NotError(t, d.Close(t.Context()))
-		again := w.serve(t, "a", core.Options{})
-		is.Equal(t, keyed(commits*2000), read(t, again))
 	})
 
 	t.Run("should not stop while a read transaction holds the checkpoints back, and start the write-ahead log again once it has ended", func(t *testing.T) {
@@ -274,4 +260,35 @@ func TestDB_checkpoint(t *testing.T) {
 		is.NotError(t, b.Close(t.Context()))
 		is.Equal(t, want, read(t, w.serve(t, "b", core.Options{})))
 	})
+}
+
+// BenchmarkDB_checkpoint measures commits of 10 and of 200 rows on an instance with syncs on, as an
+// instance has them by default, through many checkpoints: 3000 commits of 10 rows pass the default
+// threshold of 1000 frames several times.
+func BenchmarkDB_checkpoint(b *testing.B) {
+	for _, rows := range []int{10, 200} {
+		b.Run(fmt.Sprint("rows=", rows), func(b *testing.B) {
+			h := sim.NewFree(sim.Buggify{})
+			st := simstore.New(h, simstore.Options{})
+			d, err := core.Open(b.Context(), h, st.Client("bench", nil), filepath.Join(b.TempDir(), "a.db"), "db", core.Options{})
+			is.NotError(b, err)
+			defer func() { is.NotError(b, d.Close(b.Context())) }()
+			is.NotError(b, d.Wait(b.Context()))
+			tx, err := d.Begin(b.Context())
+			is.NotError(b, err)
+			is.NotError(b, tx.CreateTable(b.Context(), tableOf("t1", 1, "k", "v")))
+			is.NotError(b, tx.Commit(b.Context()))
+			k := 0
+			for b.Loop() {
+				tx, err := d.Begin(b.Context())
+				is.NotError(b, err)
+				for range rows {
+					is.NotError(b, tx.Upsert(b.Context(), "t1", row(k, k)))
+					k++
+				}
+				is.NotError(b, tx.Commit(b.Context()))
+			}
+			b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "commits/s")
+		})
+	}
 }

@@ -59,3 +59,56 @@ The research note's measurement is the fault: under `normal`, a failed sync neve
 ### Future work
 
 - Measure the cost, write the decisions into `/docs/todo/`, update the README of the core, and run the nightly sizes.
+
+## Step 2: `synchronous = full`, measurements, and the record
+
+**Author:** core-checkpoints builder
+
+### Prompt Context
+
+**Verbatim prompt:** "An addition to your task, decided by the product owner on 2026-11-26 ("I'm leaning full. Correctness wins over speed in our design."): a production instance runs the cache with `synchronous = full`, not `normal`, together with the checkpoints that the core runs itself. So: (1) change the setting in `conn.setUp` (`internal/core/cache.go`) and rewrite its comment, which calls that sync useless: the reason for `full` is that a failed sync of the WAL must surface at the commit that caused it, so that the rule "a local I/O failure stops the instance" holds within one commit, not only at the next checkpoint. Keep the tests' unexported `syncOff` for the workloads that need speed, and say in the record which tests run with syncs on. (2) Test, with the fault-injecting VFS and without real time: under the production setting, a failing sync of the WAL at a commit stops the instance at that commit; say what becomes of the commit that was being applied (it is in the log already, so nothing is lost, and after a restart the cache catches up). (3) Measure and report, as numbers and not as a condition: commits to the cache per second, and the time to catch up on a log of a few thousand commits, each under `normal` and under `full`, on this machine's disk; say how catch-up applies commits (one cache transaction per commit, or batched) so that the cost is understood, and record as open, without building it, whether batching catch-up would be the remedy if the cost is large. (4) Record the decision with the product owner's words in your notes file. Everything else in your brief stands."
+**Interpretation:** switch the production setting to `full`, test the stop at a commit whose sync fails, measure `normal` against `full`, and record it all in the notes file of the piece of work.
+**Inferred intent:** a failed sync must stop the instance at the commit that needed it, and the cost of that must be known.
+
+### What I did
+
+- `/internal/core/cache.go`: `pragma synchronous = full` in `conn.setUp`, with a comment that gives the reason.
+- `/internal/core/cache_test.go`: `TestDB_sync`. A failing sync of the log at a commit stops the instance at that commit, the commit returns nil with the outcome `committed_and_stopped`, no checkpoint ran, and the next start and a replay into an empty cache serve the row. Every sync failing stops the instance at the first commit, where under `normal` the research note counted 200 commits that succeeded.
+- `/internal/core/checkpoint_test.go`: the subtest of a failed sync at a checkpoint now arms the fault of the log with `After: 1` before each commit, because under `full` the first sync of the log after arming is the commit's own. The old subtest "every sync fails" moved into `TestDB_sync`, since under `full` it stops at a commit.
+- `/internal/core/simulation_test.go`: the task `disk` now fails the sync of the file of the cache or of the log, by a coin, since the log is now synced at every commit and the bug is found only at a checkpoint.
+- `/internal/core/catchup_test.go`: `BenchmarkDB_catchUp`, and `BenchmarkDB_checkpoint` reports commits per second.
+- Measurements, with test binaries of `normal` and `full` run in turns six times, on `/Volumes/990` and on the main disk (TMPDIR set for each).
+- `/docs/todo/cache-checkpoints.md`: the decisions, Markus's words, the numbers, and two open points. `/docs/todo.md` indexes it. `/docs/todo/storage-core-tests.md`: the gap that the note found is marked closed. `/internal/core/README.md`: the cache's section, the events, the count of planted bugs, the layer that injects faults, and the table of planted bugs.
+
+### Why
+
+Under `normal`, a commit whose pages never reached the disk was served until the next checkpoint; under `full` the failed sync fails that commit, and the core's stop after the swap already handles it.
+
+### What worked
+
+- Red first: with the string flipped back to `normal`, both subtests of `TestDB_sync` fail with "Not true" at the check that the instance stopped; with `full` they pass.
+- The planted bug over 1000 seeds under `normal`, before the coin: "330 of 1000 seeds found the bug", "0 of 1000 seeds found the bug without what it needs", "0 of 1000 seeds found something without the bug". The traces had 8179 checkpoints that succeeded, 36 held back, and 679 commits that stopped after the swap.
+- The benchmarks (load 17 to 25): commits of 10 rows 1916 against 2091 per second on `/Volumes/990` and 2075 against 1880 on the main disk; catch-up on 3000 commits 0.49 s against 0.66 s and 0.50 s against 0.57 s, `normal` against `full`. No difference was significant (p from 0.09 to 1.0). The core's checkpoints against SQLite's automatic ones, both under `normal`: 570 µs against 561 µs a commit (p = 0.96).
+
+### What didn't work
+
+- The first catch-up benchmark panicked: `panic: simstore: a client named reader exists already`, because `b.Loop` runs the body more than once and each open made a client of the same name. Each open now has a client named by its count.
+- The first round passed `-test.benchtime 3000x` to the catch-up benchmark too, which would have run 3000 catch-ups; the script runs it with `1x`.
+
+### What I learned
+
+- On macOS, SQLite's unix VFS syncs with `fsync`, and uses `fcntl(F_FULLFSYNC)` only under `pragma fullfsync` (`full_fsync` in `sqlite3.c`). `fsync` on macOS does not flush the drive's cache, so this machine's numbers are a lower bound of what `full` costs; Linux's `fdatasync` waits for the device, and is not measured.
+- Under `full`, a failed sync of the log at a commit leaves the frames written and the index not updated, so whether the next open finds the transaction in the cache depends on recovery; the test asserts only that the next start serves it, which holds either way.
+
+### What was tricky
+
+- Aiming a fault at the checkpoint's sync of the log when every commit also syncs it: `After: 1`, armed again before each commit, skips the commit's sync and fails the next one, which only a checkpoint after that commit makes. It relies on no commit before the first checkpoint syncing the log's header, which holds because the log has not started again since the cache was made.
+
+### What warrants review
+
+- `/docs/todo/cache-checkpoints.md` as the record, and its open point on SQLite's checkpoint at the close after a stop.
+- That the engine's and the root package's tests now run with `full`; their run times are in the next step.
+
+### Future work
+
+- The engine's night-sized runs, the race detector, `-count=20`, `make test`, lint, and the review.

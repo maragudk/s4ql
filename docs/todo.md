@@ -38,3 +38,4 @@ The list is in the directory [todo](todo), one file per area, one per slice of s
 - [arithmetic.md](todo/arithmetic.md): the piece of work arithmetic, `+`, `-`, `*`, and `/` in `set` and in `where`.
 - [generated-workload.md](todo/generated-workload.md): the profiles and the random streams of the generated checks.
 - [several-statements.md](todo/several-statements.md): the piece of work several statements in one `Exec`.
+- [cache-checkpoints.md](todo/cache-checkpoints.md): the piece of work checkpoints and syncs of the cache, `synchronous = full`.

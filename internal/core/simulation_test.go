@@ -135,11 +135,12 @@ type workload struct {
 	idle   time.Duration
 	// syncs opens the cache of each node through a VFS of its own, of faultvfs, with syncs on, as an
 	// instance has them by default, and checkpoints after a few pages of the write-ahead log, so that
-	// a run has many checkpoints. With synchronous = normal, SQLite syncs the cache only at a
-	// checkpoint, and at the first commit after the log starts again.
+	// a run has many checkpoints. With synchronous = full, SQLite syncs the write-ahead log at every
+	// commit, and the log and the file of the cache at every checkpoint.
 	syncs bool
 	// syncFaults is the number of times, with syncs, that a task of each node makes the next sync of
-	// its cache fail, each at a random time.
+	// its cache fail, each at a random time: half of the time of the file of the cache, which only a
+	// checkpoint syncs, and else of the write-ahead log, which mostly a commit syncs.
 	syncFaults int
 }
 
@@ -1205,8 +1206,12 @@ func (r *run) start(ctx context.Context, name, path string) (*node, []host.Task)
 				if n.host.Sleep(ctx, time.Duration(intn(n.host, 120_000))*time.Millisecond) != nil {
 					return
 				}
-				c.world.Trace(ctx, "the next sync of the cache of %v fails", n.name)
-				n.vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: faultvfs.MainDB | faultvfs.WAL, Times: 1})
+				files, file := faultvfs.MainDB, "file"
+				if intn(n.host, 2) == 0 {
+					files, file = faultvfs.WAL, "write-ahead log"
+				}
+				c.world.Trace(ctx, "the next sync of the %v of the cache of %v fails", file, n.name)
+				n.vfs.Fail(faultvfs.Fault{Ops: faultvfs.Sync, Files: files, Times: 1})
 			}
 		}))
 	}

@@ -268,15 +268,18 @@ func (c *conn) readSchema(sql string, row func(s *sqlite.Stmt) error, args ...an
 // version with [ErrCacheVersion], and one that records another identity than the given one with
 // [ErrCacheDatabase].
 //
-// With synchronous = normal, SQLite syncs the write-ahead log only at a checkpoint. After a power
-// loss the cache can then lack its last commits, and is never corrupt
-// (https://sqlite.org/pragma.html#pragma_synchronous). A cache that is behind is what catching up
-// from the log is for, so the sync at every commit that synchronous = full adds buys nothing.
+// With synchronous = full, SQLite syncs the write-ahead log at every commit, and the log and the
+// file of the cache at every checkpoint (https://sqlite.org/pragma.html#pragma_synchronous). A sync
+// that fails then fails the commit that needed it, and the instance stops at that commit, as every
+// local I/O failure stops it, and not only at a later checkpoint: under synchronous = normal SQLite
+// would sync the log only at a checkpoint, so a commit whose pages never reached the disk would go
+// on being served until then. A commit to the cache comes after the manifest swap, so a failed one
+// is in the log already, and the next start catches the cache up to it.
 func (c *conn) setUp(syncOff bool, identity string) error {
 	if err := c.wal(); err != nil {
 		return err
 	}
-	synchronous := "pragma synchronous = normal"
+	synchronous := "pragma synchronous = full"
 	if syncOff {
 		synchronous = "pragma synchronous = off"
 	}
