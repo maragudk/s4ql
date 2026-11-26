@@ -422,7 +422,7 @@ The planted bugs, each over 1000 seeds. The control is the same workload without
 | A take of the lease that is sent again with the same bytes | 387 | 0 | 0 |
 | A scan that swaps its bounds on a descending column (over 200 seeds, on 2026-11-20) | 33 | no control | 0 |
 | A scan by an index whose key lacks the primary-key columns (over 200 seeds, on 2026-11-20) | 29 | no control | 0 |
-| A read that does not fix its state again when the cache moved between its two looks (on 2026-11-26) | FIXEDONCE | no control | 0 |
+| A read that does not fix its state again when the cache moved between its two looks (on 2026-11-26) | 974 | no control | 0 |
 
 - **Two controls found their bug in the first count, and were wrong, not the core.** The control of the lease counted from the answer had no slow answers, and found the bug in 1 of 1000 seeds: an instance also learns late of a swap whose answer a cut-off lost. It then had one instance. The control of the replay that commits early had no downloads that break off by themselves, and found the bug in 3 of 1000: content also breaks off when its client is cut off while replay renews the lease. It has no cut-offs and no outages now. Both were counted again.
 - **Two bugs have no control, because no workload without what they need can find them.** The controls of the lease counted from the answer and of "not committed" because the lease was lost had one instance, and so no takeover, which both bugs need. They found nothing in the table above, but they could not have found the bug either, so they showed only that the workload finds nothing else. They were removed on 2026-11-18: every seed that finds a bug runs again without it, which shows that for every bug.
