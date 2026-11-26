@@ -36,7 +36,10 @@ func TestSequence_several(t *testing.T) {
 				if !c.Each {
 					reached["a text that is no statement of the sequence"]++
 				}
-				is.Equal(t, c.Statements, len(c.Supports), "one of Supports for each statement")
+				is.True(t, len(c.Supports) >= c.Statements, "one of Supports for each statement")
+				if len(c.Supports) > c.Statements {
+					reached["a text of Others of two statements"]++
+				}
 				is.Equal(t, c.Each, !slices.Contains(c.Supports, false), "Each is whether all of Supports are")
 				parts, err := stmt.Split(c.Src)
 				if ns, ok := errors.AsType[*stmt.NotSupportedError](err); ok && strings.HasPrefix(ns.What, "space ") {
@@ -87,6 +90,15 @@ func TestSequence_several(t *testing.T) {
 			"create trigger", `"c;`, "'k;", "/* a; b */", "/* ; */", "-- a;", "-- ;"} {
 			is.True(t, reached[what] >= 3, fmt.Sprint(what, ": ", reached[what]))
 		}
+		// Rare: one text of Others in 24, and one form of them.
+		is.True(t, reached["a text of Others of two statements"] > 0, "a text of Others of two statements")
+	})
+
+	t.Run("should count the statements of a text of Others as SQLite reads them", func(t *testing.T) {
+		is.Equal(t, 2, statementsIn("select * from t; select * from t"))
+		is.Equal(t, 1, statementsIn("select * from t; -- c"))
+		is.Equal(t, 1, statementsIn("insert into t (a) values ('a''b); select 1"))
+		is.Equal(t, 0, statementsIn(" ; -- nothing"))
 	})
 
 	t.Run("should end no statement in a line comment that would hold the statement after it", func(t *testing.T) {

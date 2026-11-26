@@ -2222,9 +2222,11 @@ type Call struct {
 	// Each reports, of a text of several statements, whether each of them is a statement of the slices
 	// that a Sequence writes, which s4ql supports, as Supported reports it of a text of one.
 	Each bool
-	// Supports reports, of a text of several statements, for each of the texts that
-	// [Sequence.several] joined, in order, whether it is a statement of the slices that a Sequence
-	// writes, as Supported reports it of a text of one; Each is whether all of them are.
+	// Supports reports, of a text of several statements, for each of its statements as SQLite reads
+	// them, in order, whether it is a statement of the slices that a Sequence writes, as Supported
+	// reports it of a text of one; Each is whether all of them are. A text of [Others] that
+	// [Sequence.several] joined has one for each of its statements, so Supports can have more than
+	// Statements.
 	Supports []bool
 }
 
