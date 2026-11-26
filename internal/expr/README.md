@@ -4,7 +4,7 @@
 
 It does nothing else. It has no comparisons, no other functions, and no arithmetic on text or blobs, and it reads no table: the caller resolves the names of the columns and hands it the rows. It depends on `internal/sql/stmt` and `internal/s4qlpb` only, so the engine can import it.
 
-The engine uses it to evaluate arithmetic; see [the section Arithmetic of the README of the engine](../engine/README.md#arithmetic). It does not yet run a statement with text, which it refuses before the evaluator sees it. The decisions behind the package, the measurements of SQLite, and what is left for the engine are in [docs/todo/arithmetic.md](../../docs/todo/arithmetic.md) and [docs/todo/text-functions.md](../../docs/todo/text-functions.md).
+The engine uses it to evaluate arithmetic and text; see the sections [Arithmetic](../engine/README.md#arithmetic) and [Text](../engine/README.md#text) of the README of the engine. The decisions behind the package, the measurements of SQLite, and what is left for the engine are in [docs/todo/arithmetic.md](../../docs/todo/arithmetic.md) and [docs/todo/text-functions.md](../../docs/todo/text-functions.md).
 
 ## The API
 

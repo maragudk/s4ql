@@ -529,7 +529,7 @@ func (c *Conn) write(ctx context.Context, r *report, p Plan, sql string, args []
 	order := e.order(p)
 	s, err := buildSink(ctx, tx, p, args, b, e.db.lengthLimit(), e.reading(false))
 	if err != nil {
-		return Result{}, nil, err
+		return built(p, err), nil, err
 	}
 	r.reads(tx, s)
 	if returns {

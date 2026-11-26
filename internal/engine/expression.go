@@ -232,14 +232,15 @@ func computeHoisted(bs []*expr.Bound) error {
 
 // fromExpr gives the error err of the evaluator as the engine gives it: a fault of the evaluator,
 // which matches [expr.ErrInternal], as an internal error of the engine; a text longer than the length
-// limit, [expr.ErrTooLong], as SQLite's own `string or blob too big`, which SQLite gives there too;
-// and every other error, a refusal or an evaluation error, as it is.
+// limit, [expr.ErrTooLong], as SQLite's own `string or blob too big`, which SQLite gives there too,
+// when it steps the statement, as [computedTooBig] says; and every other error, a refusal or an
+// evaluation error, as it is.
 func fromExpr(err error) error {
 	switch {
 	case errors.Is(err, expr.ErrInternal):
 		return internalError("%v", err)
 	case errors.Is(err, expr.ErrTooLong):
-		return tooBig()
+		return &computedTooBig{err: tooBig()}
 	}
 	return err
 }

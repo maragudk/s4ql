@@ -12,6 +12,7 @@ import (
 
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
+	"maragu.dev/s4ql/internal/sql/sqlerr"
 	"maragu.dev/s4ql/internal/sql/stmt"
 )
 
@@ -64,6 +65,13 @@ func TestFromExpr(t *testing.T) {
 
 		long := &expr.Error{Kind: expr.ErrTooLong, Op: stmt.ExprCall, Function: stmt.FuncHex}
 		is.Equal(t, tooBig().Error(), fromExpr(long).Error())
+		_, isSQLite := errors.AsType[*sqlerr.Error](fromExpr(long))
+		is.True(t, isSQLite)
+		// A write that fails so before any row sets the count of changes to 0, and one that fails with
+		// SQLite's error of an argument that is too long leaves it.
+		is.Equal(t, Result{SetsChanges: true}, built(&Delete{}, fromExpr(long)))
+		is.Equal(t, Result{}, built(&Delete{}, tooBig()))
+		is.Equal(t, Result{}, built(&Query{}, fromExpr(long)))
 		overflow := &expr.Error{Kind: expr.ErrOverflow, Op: stmt.ExprAdd}
 		is.Equal(t, error(overflow), fromExpr(overflow))
 	})

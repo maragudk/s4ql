@@ -1892,6 +1892,11 @@ func TestEngine_text(t *testing.T) {
 				"select k from t where k = 1 and u = (select s from t where v = lower(? || ?))",
 				"select k from t where k = 99 and u = (select s from t where v = ? || ? || s)",
 			} {
+				if len(rows) > 0 {
+					// A count of changes that is not 0, which SQLite sets to 0 for a write that fails when
+					// it steps it, also before any row.
+					d.run("update t set v = v where k = 1").ok()
+				}
 				got := d.run(src, long[:strings.Count(src, "?")]...)
 				is.True(t, got.got.err != "not supported", src)
 			}
