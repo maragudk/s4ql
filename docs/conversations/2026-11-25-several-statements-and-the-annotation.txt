@@ -7563,3 +7563,66 @@
   resolving it and landing it.
 
 ✻ Worked for 22s · done 2:30 PM
+
+❯ /export                                                                       
+  ⎿  Conversation exported to /Users/maragubot/Developer/s4ql/2026-11-26-143403-
+     this-session-is-being-continued-from-a-previous-c.txt
+
+❯ exported                                                                      
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The export is filed and pushed as
+  docs/conversations/2026-11-25-several-statements-and-the-annotation.txt.
+
+  You can compact now; the builders keep running through it. I tell you when the
+  agents that are mid-landing have reported, which is the moment for the
+  restart.
+
+✻ Crunched for 12s · done 2:34 PM
+
+⏺ Agent "Mutation testing in CI, sharded" is waiting on its own background work 
+  · 1h 15m 19s
+
+⏺ The mutation workflow's first runs are going in CI; its builder is waiting on
+  them. Nothing to report yet, and nothing is waiting on you.
+
+✻ Churned for 1s · done 2:37 PM
+
+› Message from fabrik:builder
+  Pull request #180 (branch mutation-ci-fix) is ready for your local merge: all
+  29 checks pass. It is the only fix the first run needed. It changes one step
+  of mutation.yml: a round with a single shard failed its merge with "no shard
+  matches shards/*", because download-artifact puts the files of a single
+  artifact straight into shards/. A run of the branch confirmed the fix. The
+  sample round (631 mutants, 5 shards, run 45829576470) is still running on main
+  and does not need this fix; I'll report when it ends.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Agent "Mutation testing in CI, sharded" is waiting on its own background work 
+  · 1h 16m 9s
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ The mutation workflow's first run needed one fix, now merged (#180, 29 checks
+  passed): a round with a single runner could not find its own results. The tiny
+  run proved the workflow end to end.
+
+  The sample round is running in CI now: 631 of the 2,208 mutants on 5 runners.
+  Its numbers decide whether the full round is worth its compute.
+
+✻ Baked for 23s · done 2:38 PM
+
+⏺ Agent "Resolve conflict and land upsert pass" is waiting on its own background
+  work · 8m 25s
+⏺ The upsert landing has resolved its conflict and is waiting on its checks.
+  Nothing to decide.
+
+✻ Brewed for 1s · done 2:38 PM
+
+⏺ Agent "Resolve conflict and land upsert pass" is waiting on its own background
+  work · 9m 20s
+
+⏺ Agent "Resolve conflict and land upsert pass" is waiting on its own background
+  work · 9m 38s
