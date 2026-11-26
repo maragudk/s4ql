@@ -96,3 +96,92 @@ Each excuse names one sentence of `/docs/todo/text-functions.md` (or of `/docs/t
 ### Future work
 
 The long runs, the documents, and the review.
+
+## Step 3: self-review, the documents, more rules from longer runs, and the merge of main
+
+**Author:** builder (text-workload)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief of step 1) "Self-review your diff against this brief."
+**Interpretation:** run the code-review skill over `main...HEAD`, fix what matters, have a writer bring the documents up to date, and run the workload longer than the default before the nightly-sized runs.
+**Inferred intent:** the branch reaches the reviewer with no known gap.
+
+### What I did
+
+- The code review (medium) gave seven findings, all addressed: `pair.rows` is strict again, and only `pair.quirkRows` of a statement with text takes SQLite's `string or blob too big` of a guard as no row; `pair.bothWays` requires that the other instance give no error and SQLite's rows without the length limit, where the instance's text is too long and the other's is not; `subqueryCandidates` falls back to the rows without the limit only where no text without a column of the subquery is too long alone; `textLike` cuts a long text at a character; the hooks of text clear `failingRow` when they replace the WHERE; `reachServed` goes on to the kind of text where the reduction of arithmetic fails; and the todo.
+- A writer brought `/internal/sql/stmt/stmttest/README.md`, the section "The tests of text" of `/internal/engine/README.md`, and a new section of `/docs/todo/text-functions.md` up to date, on the branch `text-workload-docs`, which I merged and then corrected for the later rules.
+- Runs of 1,500 and then 2,000 sequences of `textfunctions` and of `mixed` (the nightly's 800 and 2,000 among them) found four more differences, each with a rule now: `excusedTextLimit` and `excusedTextLimitFirst`, a select with LIMIT whose direction decides whether it reads a row whose text is too long; `pair.propagated` takes a comparison whose value is a subquery as a constant, as SQLite does; and `wideRule`, split out of `subqueryRule`, refuses an update with text and two subqueries of `*` of more than one column, which `pair.checkArithmetic` had left to SQLite's error of prepare. `pair.recordSlips` is no slip where SQLite finds a text of the WHERE too long.
+- Merged `origin/main` (the Hegel tests, #185, and the upsert engine, #186); the Hegel tests and the four generated tests pass on the merge without a recount.
+
+### Why
+
+Every difference that the longer runs showed had a cause in the notes or in SQLite's plan; each rule checks that cause with SQLite.
+
+### What worked
+
+- `make test` and `make lint` passed before the merge, but for counts of `TestGenerated` that moved because `make test` compiled the generator while I changed it; the recount after the last change of the generator fixed them, and two runs gave the same counts.
+
+### What didn't work
+
+- `TestZZScratch` over 2,000 sequences of `mixed` stopped at `Expected "", but got "18/18: string or blob too big"` for `create temp table s4ql_found as select """" as k from "Ｔ１" where """" <= hex(?) ...` in `pair.recordSlips`: the engine's `string or blob too big` of a text was taken for a record that is too long.
+- The first fix of `recordSlips` used `err :=` beside a later `n, err := strconv.Atoi`: `vet: internal/engine/differential_test.go:3717:12: cannot use 2nd function result (value of interface type error) as string value in multiple assignment`.
+
+### What I learned
+
+- A scalar subquery is a constant to SQLite's propagation: `where first = ? || ? and (select ...) < ? || first` becomes `(select ...) < ? || (? || ?)`, which SQLite computes before any row.
+
+### What was tricky
+
+- Telling apart which of the general sentence's two sides a difference is: the engine fails or SQLite fails, with no row, with rows of a LIMIT, or on another path or direction of the pair's other instance. Each now has its own rule and its own check with SQLite.
+
+### What warrants review
+
+- `pair.limitedBefore` and `pair.limitedAfter`, which accept only a select without ORDER BY that gave, or of which SQLite gave, exactly as many rows as its LIMIT.
+- The check of the other instance in `pair.bothWays` against SQLite without the length limit.
+
+### Future work
+
+The nightly-sized runs, below.
+
+## Step 4: the runs at the nightly's sizes
+
+**Author:** builder (text-workload)
+
+### Prompt Context
+
+**Verbatim prompt:** "Run it at the nightly's size before you report: `go test -count=1 -p 3 -run '^TestDifferential$' -timeout 40m ./internal/engine/ -sequences 400`, and `S4QL_ENGINE_SIM_SEEDS=100 go test -count=1 -run '^TestSimulation$' ./internal/engine/` [...] From `internal/sqlite/crosscheck`: `go test ./drivercheck/`"
+**Interpretation:** run each once on the merged branch, after the last change of the generators.
+**Inferred intent:** the first nightly after the merge passes.
+
+### What I did
+
+Ran the three commands on `e1dd1da3` (the merge of `main`), with `GOTMPDIR` and `TMPDIR` in `/Volumes/990/s4ql/text-workload/tmp`, at a load of about 20, and then `make test`.
+
+### Why
+
+CI runs a tenth of the nightly's sequences, and the nightly of 2026-11-26 failed on sequences that no builder had run.
+
+### What worked
+
+`TestDifferential -sequences 400` passed in 1,112 s, `TestSimulation` with 100 seeds of each cell in 417 s, and the driver check in 46 s. No sequence failed.
+
+### What didn't work
+
+Nothing failed. The runs were without `-v`, so they logged no tally; the counts of the kinds of text that the report gives are those of the default run, in `/internal/engine/testdata/reached/TestDifferential.tsv`.
+
+### What I learned
+
+The nightly's 800 sequences of `textfunctions` and 2,000 of `mixed` are among the 2,000 that `TestZZScratch` (a scratch test, not committed) ran of each, so the rules that those runs needed were in before the long runs.
+
+### What was tricky
+
+Nothing more.
+
+### What warrants review
+
+The rules of step 2 and step 3, and whether `excusedTextInPlace` is a difference that Markus accepts; it is new to the notes.
+
+### Future work
+
+Planted bugs of text, the driver's generated test of text, a lowered length limit in `TestConn_differential` for the open question of a statement that fails in a transaction, text in texts of several statements, and mutation testing of the new rules.
