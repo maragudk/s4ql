@@ -16,7 +16,7 @@ Measured on 2026-11-26 with the shell of SQLite 3.54.1, on `t (k int primary key
 - **A row in one pass is found, checked, and written before the next row is read,** so an error of the WHERE of a later row (SQLite's `string or blob too big` of an expression with a column) comes after the error of an earlier row's SET. With two passes, every WHERE is evaluated before any row changes.
 - **The rows of RETURNING come in the order of the primary key,** for an update and a delete, by every access measured: the primary key, its range, an index with an equality, an index with a range, a scan, and a scan through an index. That follows from the rule above: RETURNING is never one pass.
 - **A delete can fail on no row in what s4ql supports:** it has no trigger and no foreign key, and RETURNING gives columns alone, so the only error of a row is one of its WHERE, whose message is the same for every row. Its order decides no error. SQLite runs it in one pass under the same rules, without the one on the columns that the statement sets.
-- **`changes()` after a statement that fails partway** is the count before the statement for a constraint error and a record that is too long, whatever row failed (the pair checks this already), so the order does not change it.
+- **`changes()` after a statement that fails partway** is 0 for a constraint error and a record that is too long, whatever row failed, as SQLite sets it when it rolls the statement back (the pair checks this already), so the order does not change it.
 
 ## Where SQLite's planner decides, and the engine cannot know it
 

@@ -613,10 +613,15 @@ func (tx *Tx) createKeyTable(t *table, name string, by []KeyColumn) error {
 	}
 	var sorted strings.Builder
 	fmt.Fprint(&sorted, "create table temp.", quote(name+"_sorted"), " (n integer primary key, ")
-	if err := typed(&sorted, "k", t.key); err != nil {
-		return err
+	err := typed(&sorted, "k", t.key)
+	if err == nil {
+		err = tx.c.c.Exec(strings.TrimSuffix(sorted.String(), ", ") + ") strict")
 	}
-	return tx.c.c.Exec(strings.TrimSuffix(sorted.String(), ", ") + ") strict")
+	if err != nil {
+		// The set is not made, so its first table goes, which [Tx.dropKeys] would drop.
+		return cmp.Or(tx.c.c.Exec(fmt.Sprint("drop table temp.", quote(name))), err)
+	}
+	return nil
 }
 
 // dropTouched drops the temporary tables of the keys that the transaction touched in the table of

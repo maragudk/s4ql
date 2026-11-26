@@ -1243,7 +1243,7 @@ func (p *pair) step(c stmttest.Call) string {
 	if mayslip {
 		is.Equal(t, "", o.run(t, "rollback to s4ql_record").err)
 		is.Equal(t, "", o.run(t, "release s4ql_record").err)
-		if (want.err == "" || strings.Contains(want.err, "UNIQUE constraint failed")) && p.recordSlips(update, args) {
+		if (want.err == "" || strings.Contains(want.err, "UNIQUE constraint failed")) && p.recordSlips(update, args, p.computed != nil) {
 			p.y.excused(excusedRecordSlip)
 			return ""
 		}
@@ -3655,14 +3655,16 @@ func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string)
 // record that is too long in docs/todo/sql-front-end.md: it finds two rows or more, and when the rows change one at
 // a time in the engine's order, as [pair.engineOrder] gives it, each by an update of that row alone
 // in SQLite, as [pair.firstError] runs them, the first error is `string or blob too big` for the
-// record of a row with the values of its SET. SQLite's `OP_MakeRecord` checks the
+// record of a row with the values of its SET. u is the statement of the engine with the values of
+// its subqueries in their place if flattened. SQLite's `OP_MakeRecord` checks the
 // limit only when the buffer of the record of an earlier row of the statement is too small for the
 // next, and that buffer has the size that the allocator gives, so a statement that changes many rows
 // can store a record over the limit by a few bytes, on some platforms. recordSlips leaves SQLite's
 // count of changes at 0, as the engine's is after the refusal.
-func (p *pair) recordSlips(u *stmt.Update, args []any) bool {
+func (p *pair) recordSlips(u *stmt.Update, args []any, flattened bool) bool {
 	order, _, ok := p.engineOrder(u, args)
-	if !ok {
+	if !ok || flattened {
+		// The engine changes the rows of the statement with its subqueries in the order of the key.
 		order = p.keyOrder(u)
 	}
 	first, n, ok := p.firstError(u, args, order)
@@ -3780,6 +3782,11 @@ func (p *pair) engineOrder(u *stmt.Update, args []any) (order, index string, ok 
 func (p *pair) sqliteOrder(u *stmt.Update, args []any) (order, index string, ok bool) {
 	t := p.t
 	t.Helper()
+	if u.Subqueries != nil {
+		// Two passes, whatever the access.
+		return p.keyOrder(u), "", true
+	}
+	table, _ := p.o.columns(t, u.Table.Value)
 	src, srcArgs := stmttest.UpdateText(u, args)
 	plan := p.o.run(t, "explain query plan "+src, srcArgs...)
 	if plan.err != "" {
@@ -3788,13 +3795,17 @@ func (p *pair) sqliteOrder(u *stmt.Update, args []any) (order, index string, ok 
 	for _, row := range plan.rows {
 		detail, err := strconv.Unquote(row[strings.LastIndex(row, `,"`)+1:])
 		is.NotError(t, err, row)
-		if !strings.HasPrefix(detail, "SCAN ") && !strings.HasPrefix(detail, "SEARCH ") {
+		scan, ok := strings.CutPrefix(detail, "SCAN ")
+		if !ok {
+			scan, ok = strings.CutPrefix(detail, "SEARCH ")
+		}
+		if rest, named := strings.CutPrefix(scan, table); !ok || !named || rest != "" && !strings.HasPrefix(rest, " ") {
 			continue
 		}
-		if _, rest, ok := strings.Cut(detail, " INDEX "); ok {
+		if _, rest, ok := strings.Cut(strings.TrimPrefix(scan, table), " INDEX "); ok {
 			// The name of the index as it was created, which may hold a space: the longest that the
 			// rest begins with.
-			table, columns := p.o.columns(t, u.Table.Value)
+			_, columns := p.o.columns(t, u.Table.Value)
 			_, indexes := p.o.tableIndexes(t, table, columns)
 			for _, ix := range indexes {
 				if (rest == ix.Name || strings.HasPrefix(rest, ix.Name+" ")) && len(ix.Name) > len(index) {
@@ -3830,7 +3841,9 @@ func rowFailure(err string) bool {
 // [pair.engineOrder] gives it, and is excused as [excusedPlannerOrder].
 func (p *pair) checkUpdateOrder(u *stmt.Update, args []any, flattened bool, got, want answer) bool {
 	sqlite, sqliteIndex, ok := p.sqliteOrder(u, args)
-	if !ok {
+	key := p.keyOrder(u)
+	if !ok || sqlite == key && got.String() == want.String() {
+		// Nothing to count, and nothing to excuse.
 		return false
 	}
 	first, _, ok := p.firstError(u, args, sqlite)
@@ -3839,7 +3852,7 @@ func (p *pair) checkUpdateOrder(u *stmt.Update, args []any, flattened bool, got,
 		// row comes after the change of a row before it.
 		return false
 	}
-	if key := p.keyOrder(u); sqlite != key {
+	if sqlite != key {
 		if byKey, _, ok := p.firstError(u, args, key); ok && byKey != first {
 			p.count(reachedUpdateOrder)
 		}
@@ -4538,10 +4551,6 @@ func TestPair_tooLongForCache(t *testing.T) {
 	})
 }
 
-// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo/sql-front-end.md, at the
-// length limit of 1000: the engine refuses the update of two rows whose second record is too long,
-// which SQLite stores on some platforms and refuses on others, and the comparison accepts either
-// only by an update of each row alone in SQLite.
 func TestPair_updateOrder(t *testing.T) {
 	// The row of the key 1 gives NULL to x, and that of the key 2 to y; ia holds the row of the key 2
 	// first. ib holds the same b in every row, so a range of b reads by ib in SQLite.
@@ -4591,6 +4600,10 @@ func TestPair_updateOrder(t *testing.T) {
 	})
 }
 
+// TestPair_recordSlips pins the known difference of a record that is too long, of docs/todo/sql-front-end.md, at the
+// length limit of 1000: the engine refuses the update of two rows whose second record is too long,
+// which SQLite stores on some platforms and refuses on others, and the comparison accepts either
+// only by an update of each row alone in SQLite.
 func TestPair_recordSlips(t *testing.T) {
 	setup := []string{
 		"create table t (k int primary key, a text, b text not null) strict, without rowid",
@@ -4618,7 +4631,7 @@ func TestPair_recordSlips(t *testing.T) {
 			got := p.i.execValues(c.src, nil)
 			is.Equal(t, c.tooBig, got.err == tooBig, got.String())
 			s, _ := stmt.Check(c.src)
-			is.Equal(t, c.slips, p.recordSlips(s.(*stmt.Update), nil))
+			is.Equal(t, c.slips, p.recordSlips(s.(*stmt.Update), nil, false))
 			changes, _ := p.o.changes(t)
 			is.Equal(t, int64(0), changes, "SQLite's count of changes after the check")
 			if c.tooBig {
