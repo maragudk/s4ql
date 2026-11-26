@@ -1,6 +1,7 @@
 package s4ql
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
 	"errors"
@@ -519,7 +520,7 @@ func arguments(query string, args []driver.NamedValue, judge func(string, int) e
 // argument a as a value: an int64 as an integer, a float64 as a real, a string as text, a []byte
 // that is not nil as a blob, which an empty one is too, and nil as NULL. nil is what
 // [conn.CheckNamedValue] gives for a nil pointer and for a [driver.Valuer] that gives nil, such as
-// a [database/sql.NullString] that is not valid. It gives "not supported" for an argument with a
+// a [database/sql.NullString] that is not valid. A blob is a copy of the bytes. It gives "not supported" for an argument with a
 // name, for a []byte that is nil, which does not say whether it means NULL or the empty blob, and
 // for one of another type, such as a bool or a time.Time. The message names the argument by its
 // position, and the type, never the value.
@@ -538,7 +539,10 @@ func argument(a driver.NamedValue) (*s4qlpb.Value, error) {
 		if v == nil {
 			return nil, notSupported(fmt.Sprintf("argument %v of type []byte, which is nil", a.Ordinal))
 		}
-		return s4qlpb.Value_builder{Blob: v}.Build(), nil
+		// The bytes are the caller's again once the call returns, and the engine can read the value
+		// later, such as the rows of a query or of a RETURNING when they are read, so the value
+		// holds a copy.
+		return s4qlpb.Value_builder{Blob: bytes.Clone(v)}.Build(), nil
 	case nil:
 		return s4qlpb.Value_builder{Null: &s4qlpb.Null{}}.Build(), nil
 	case unconverted:

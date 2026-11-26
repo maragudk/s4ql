@@ -23,6 +23,7 @@ import (
 	"maragu.dev/is"
 
 	"maragu.dev/s4ql/internal/core"
+	"maragu.dev/s4ql/internal/core/coretest"
 	"maragu.dev/s4ql/internal/engine"
 	"maragu.dev/s4ql/internal/expr"
 	"maragu.dev/s4ql/internal/s4qlpb"
@@ -629,8 +630,9 @@ func (i *instance) open(empty bool, options engine.Options) {
 	}
 	ctx := context.WithoutCancel(i.t.Context())
 	// A slow machine must not make the cache busy or the lease run out: the waits for both are far
-	// longer than any statement takes.
-	coreOptions := core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog, LengthLimit: i.limit}
+	// longer than any statement takes. No sync fails and no crash loses what the operating system
+	// holds, so syncs of the cache would check nothing.
+	coreOptions := coretest.SyncOff(core.Options{BusyTimeout: time.Minute, Lease: time.Hour, Logger: i.coreLog, LengthLimit: i.limit})
 	d, err := core.Open(ctx, i.host, i.store.Client(fmt.Sprint("client-", i.host.Uint64()), nil), i.path, "db", coreOptions)
 	is.NotError(i.t, err)
 	is.NotError(i.t, d.Wait(ctx))
@@ -882,9 +884,10 @@ const (
 	// statement in the cache is longer than the limit, which s4ql refuses as not supported. See
 	// [pair.tooLongForCache].
 	excusedCacheLimit = "a create table whose statement in the cache is longer than the length limit, checked against the length of that statement"
-	// excusedUpsert is an insert with ON CONFLICT, which the engine refuses before it reads the
-	// database, as [stmttest.UpsertRefusal] says, until it runs one.
-	excusedUpsert = "an insert with ON CONFLICT, which the engine does not run yet, checked against the refusal"
+	// excusedUpsertType is an upsert that the engine refuses by s4ql's rules of its types, of the
+	// proposed row and of DO UPDATE, also of its arithmetic and its text, checked against
+	// [stmttest.UpsertRefusals]. See [pair.checkUpsert].
+	excusedUpsertType = "an upsert refused by the rule of exact types, checked against s4ql's rules"
 	// excusedSortTooBig is a select with ORDER BY that SQLite refuses under the length limit with
 	// `string or blob too big`, for the record of what it sorts of a row, and that s4ql answers with
 	// rows: the known difference of slice 13, by the decision of the lead in docs/todo/slice-13.md.
@@ -1155,14 +1158,9 @@ func (p *pair) step(c stmttest.Call) string {
 	if err != nil || s == nil {
 		args = nil
 	}
-	// An upsert is refused before the database is read, whatever it holds, also
-	// one with a value longer than the length limit.
-	if refusal := stmttest.UpsertRefusal(s); refusal != "" && len(c.Args) == s.Parameters() {
-		if got.err != "not supported" || got.message != refusal {
-			return fmt.Sprintf("%q: the engine gives %v, and the rule %q", src, got, refusal)
-		}
-		p.y.excused(excusedUpsert)
-		return ""
+	upsert, _ := s.(*stmt.Insert)
+	if upsert != nil && !upsert.Conflict.Present() {
+		upsert = nil
 	}
 	if kind, failure := p.checkLength(c, got); kind != "" {
 		if failure == "" {
@@ -1173,7 +1171,10 @@ func (p *pair) step(c stmttest.Call) string {
 	// A statement with arithmetic has rules of its own for its types and its evaluation errors, as
 	// [pair.checkArithmetic] says.
 	check := p.checkType
-	if s != nil && expressed(s) {
+	switch {
+	case upsert != nil:
+		check = func(c stmttest.Call, args []any, got answer) (string, string) { return p.checkUpsert(c, upsert, args, got) }
+	case s != nil && expressed(s):
 		check = func(c stmttest.Call, args []any, got answer) (string, string) { return p.checkArithmetic(c, s, args, got) }
 	}
 	if kind, failure := check(c, args, got); kind != "" || failure != "" {
@@ -3597,33 +3598,55 @@ func (p *pair) checkType(c stmttest.Call, args []any, got answer) (excuse, failu
 // checkLength of the call c, whose answer of the engine is got, against s4ql's rule for a literal
 // that is longer than the length limit: an insert, an update, or a delete that SQLite prepares fails
 // with SQLite's `string or blob too big`, after the names, for a literal of an insert, of SET, or of
-// a condition of an update or a delete. SQLite meets such a literal only with a limit below the
-// length of the text that holds it, and then gives the error for a string literal only when it steps
-// the statement, which an update or a delete does only for a row that it finds, and turns a blob
-// literal into NULL, so the call is not run in SQLite. It gives [excusedLong] for an insert and
-// [excusedLongChange] for an update or a delete if the rule decides the call, or "", and what differs
-// from the rule, or "". A select with such a literal in a condition is compared with SQLite, as
-// [pair.longCondition] says.
+// a condition of an update or a delete, and of the row or of DO UPDATE of an upsert. SQLite meets
+// such a literal only with a limit below the length of the text that holds it, and then gives the
+// error for a string literal only when it steps the statement, which an update or a delete does only
+// for a row that it finds, and turns a blob literal into NULL, so the call is not run in SQLite. A
+// literal inside an expression of SET or WHERE that is longer than the limit fails when the engine
+// binds the expression, which is stricter than SQLite, which computes it where it computes its
+// operator: there `string or blob too big` is taken without SQLite, and any other answer is left to
+// the rules after. It gives [excusedLong] for an insert and [excusedLongChange] for an update or a
+// delete if the rule decides the call, or "", and what differs from the rule, or "". A select with
+// such a literal in a condition is compared with SQLite, as [pair.longCondition] says.
 func (p *pair) checkLength(c stmttest.Call, got answer) (excuse, failure string) {
 	t := p.t
 	t.Helper()
 	s, _ := stmt.Check(c.Src)
 	excuse = excusedLong
 	var terms []stmt.Term
+	var where []stmt.Condition
 	switch s := s.(type) {
 	case *stmt.Insert:
-		terms = s.Values
+		// An upsert measures the values of DO UPDATE after those of its row, as an update measures
+		// them.
+		terms, where = s.Values, s.Conflict.Where
+		for _, a := range s.Conflict.Set {
+			terms = append(terms, a.Value)
+		}
+		for _, c := range s.Conflict.Where {
+			terms = append(terms, c.Value)
+		}
 	case *stmt.Update, *stmt.Delete:
 		excuse = excusedLongChange
 		terms = changeTerms(s)
+		_, where = tableWhere(s)
 	default:
 		return "", ""
 	}
-	var n int
+	var n, inner int
 	for _, v := range terms {
-		n = max(n, byteLength(v.Value))
+		n, inner = max(n, byteLength(v.Value)), max(inner, longestLiteral(v.Expression))
 	}
-	if p.i.limit == 0 || n <= p.i.limit || p.o.prepare(t, c.Src) != nil {
+	for _, c := range where {
+		inner = max(inner, longestLiteral(c.Expression))
+	}
+	if p.i.limit == 0 || max(n, inner) <= p.i.limit || p.o.prepare(t, c.Src) != nil {
+		return "", ""
+	}
+	if n <= p.i.limit {
+		if got.err == tooBig {
+			return excuse, ""
+		}
 		return "", ""
 	}
 	if _, where := tableWhere(s); subqueried(s) && correlatedRule(t, p.o, where, subqueriesIn(s)) != "" {
@@ -3689,6 +3712,15 @@ func changeTerms(s stmt.Statement) []stmt.Term {
 	}
 	// The values of a subquery, of slice 15, are measured where it is, before the types.
 	return append(terms, subqueryTerms(s)...)
+}
+
+// longestLiteral of the expression e: the length of its longest literal of text or blob, or 0.
+func longestLiteral(e stmt.Expression) int {
+	n := byteLength(e.Value)
+	for _, o := range e.Operands {
+		n = max(n, longestLiteral(o))
+	}
+	return n
 }
 
 // longChange of src, if it holds an update or a delete with a literal longer than the length limit
@@ -4772,9 +4804,13 @@ func fuzzSQL(f *testing.F, newInstance func(t testing.TB) *instance) {
 		"select * from t1 where v1 = (select v1 from t1 where lower(v1) = 'a')",
 		"delete from t1 where hex(nosuch) = ?",
 		"select * from t1 where v1 || ? = 'x'",
-		// Upserts, which the engine refuses before it reads the database.
+		// Upserts, which the pair judges by the rules of upsert_test.go.
 		"insert into t1 values (1) on conflict (v1) do nothing",
 		"insert into t1 values (2) on conflict (v1) do update set w = excluded.v1 + 1 where excluded.v1 > 0 returning *",
+		"insert into t1 values (1) on conflict (v1) do update set v1 = excluded.v1 + 1",
+		`insert into "foo BAR" values (7) on conflict ("bar""X") do nothing returning *`,
+		"insert into t1 values (-1) on conflict (V1) do update set w = 1 where excluded.v1 * 9223372036854775807 > 0",
+		"insert into t1 values (1) on conflict (v1) do update set w = lower(?) || hex(excluded.v1) where ? || '' = lower(w) returning *",
 	} {
 		add(src, i%2 == 1)
 	}

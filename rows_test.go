@@ -1,6 +1,7 @@
 package s4ql_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -474,6 +476,70 @@ func TestRows(t *testing.T) {
 			is.Equal(t, int64(2321), k)
 		}
 		readersFree(t, db)
+	})
+}
+
+func TestRows_blob(t *testing.T) {
+	t.Run("should give each blob of the rows as bytes of the caller's own, which no later row, close, or statement changes, and whose change changes nothing stored, from a select and a RETURNING, in a transaction and outside one", func(t *testing.T) {
+		w := newWorld(t)
+		db := w.serve(t, "a")
+		exec(t, db, "create table r (k int primary key, b blob, v int) strict, without rowid", "insert into r values (1, x'01', 0)", "insert into r values (2, x'02', 0)")
+		const want = "k INT, b BLOB: 1 [1]; 2 [2]"
+		selectBlobs := func(q querier) (*sql.Rows, error) {
+			return q.QueryContext(t.Context(), "select b, b, b from r order by k")
+		}
+		returnBlobs := func(q querier) (*sql.Rows, error) {
+			return q.QueryContext(t.Context(), "update r set v = v + 1 returning b, b, b")
+		}
+
+		for _, how := range []struct {
+			name string
+			inTx bool
+			run  func(q querier) (*sql.Rows, error)
+		}{
+			{"a select", false, selectBlobs},
+			{"a select in a transaction", true, selectBlobs},
+			{"a RETURNING", false, returnBlobs},
+			{"a RETURNING in a transaction", true, returnBlobs},
+		} {
+			var q querier = db
+			var tx *sql.Tx
+			if how.inTx {
+				tx = begin(t, db, nil)
+				q = tx
+			}
+			rows, err := how.run(q)
+			is.NotError(t, err, how.name)
+			var firsts [][]byte
+			for rows.Next() {
+				var b []byte
+				var raw sql.RawBytes
+				var a any
+				is.NotError(t, rows.Scan(&b, &raw, &a), how.name)
+				is.True(t, len(b) == 1 && len(raw) == 1 && len(a.([]byte)) == 1, how.name)
+				is.EqualSlice(t, b, raw, how.name)
+				is.EqualSlice(t, b, a.([]byte), how.name)
+				// The caller's changes of what it was given, which reach nothing of s4ql's.
+				raw[0], a.([]byte)[0] = 9, 9
+				firsts = append(firsts, b)
+			}
+			is.NotError(t, rows.Err(), how.name)
+			is.Equal(t, 2, len(firsts), how.name)
+			is.NotError(t, rows.Close(), how.name)
+			if tx != nil {
+				is.NotError(t, tx.Commit(), how.name)
+			}
+			exec(t, db, "update r set b = x'07'", "update r set b = x'01' where k = 1", "update r set b = x'02' where k = 2")
+
+			// The bytes of a row that is behind, after the next row, the close, and other statements.
+			// An update gives its rows in the order in which it draws them.
+			slices.SortFunc(firsts, bytes.Compare)
+			is.EqualSlice(t, []byte{1}, firsts[0], how.name)
+			is.EqualSlice(t, []byte{2}, firsts[1], how.name)
+			is.Equal(t, want, rowsText(t, db, "select k, b from r"), how.name)
+		}
+		is.NotError(t, db.Close())
+		is.Equal(t, want, rowsText(t, w.serve(t, "b"), "select k, b from r"))
 	})
 }
 

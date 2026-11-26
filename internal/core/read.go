@@ -55,7 +55,7 @@ func (d *DB) Reader(ctx context.Context) (*Reader, error) {
 	c, err := openConn(sqlite.OpenExistingVFS, d.path, d.options)
 	if err == nil {
 		if err = c.exec("pragma query_only = on"); err != nil {
-			_ = c.close()
+			_ = c.close(false)
 		}
 	}
 
@@ -66,7 +66,7 @@ func (d *DB) Reader(ctx context.Context) (*Reader, error) {
 	case stopped != nil:
 		// The instance stopped meanwhile, and its close does not know the connection: it is closed
 		// here, before the count lets that close return.
-		_ = c.close()
+		_ = c.close(d.keepLogLocked())
 	default:
 		d.readers = append(d.readers, c)
 	}
@@ -262,7 +262,7 @@ func (rd *Reader) Close(ctx context.Context) error {
 	var closeErr error
 	if !c.closed {
 		c.closed = true
-		closeErr = c.close()
+		closeErr = c.close(d.keepLogLocked())
 	}
 	d.mu.Unlock()
 	return errors.Join(endErr, d.cacheError(ctx, "close a reader", closeErr))

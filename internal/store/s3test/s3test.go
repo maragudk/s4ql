@@ -1,6 +1,7 @@
 // Package s3test holds what the tests against a real bucket share: their settings, a prefix of each
 // test's own that is deleted with everything under it when the test ends, and the deletion of the
-// prefixes that runs which were killed left behind.
+// prefixes that runs which were killed left behind. It also holds [Isolate], which keeps the AWS
+// configuration of the machine out of a test, against a real bucket or a fake server.
 //
 // Every key that a test writes is under [Root], in a prefix of the form
 // s4ql-test/<suite>/<UTC time>-<8 random characters>/, which [NewPrefix] gives. Nothing deletes
@@ -289,6 +290,25 @@ func (c Config) Client(ctx context.Context, optFns ...func(*s3.Options)) (*s3.Cl
 		}
 		o.UsePathStyle = c.PathStyle
 	}}, optFns...)...), nil
+}
+
+// Isolate the test from the AWS configuration of the machine that runs it: no shared files, and no
+// settings of the SDK from the environment, the credentials among them. A test sets what it needs
+// after this, in the environment or in its options. It is for the tests against a fake server, and
+// for a test against a real bucket after [Load], whose settings reach the store through the options
+// only.
+func Isolate(t testing.TB) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(dir, "config"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(dir, "credentials"))
+	for _, name := range []string{
+		"AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
+		"AWS_CA_BUNDLE", "AWS_DEFAULTS_MODE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
+	} {
+		t.Setenv(name, "")
+	}
 }
 
 // NewPrefix of the suite, under which a test writes, such as s4ql-test/s3store/20261119T101500-ABCDEFGH/.
