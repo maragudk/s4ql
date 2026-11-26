@@ -370,7 +370,8 @@ func canonical(s stmt.Statement) string {
 		if s.Columns != nil {
 			list = " (" + quoteNames(s.Columns) + ")"
 		}
-		return fmt.Sprintf("insert into %v%v values (%v)%v", quote(s.Table.Value), list, strings.Join(values, ", "), canonicalReturning(s.Returning))
+		return fmt.Sprintf("insert into %v%v values (%v)%v%v", quote(s.Table.Value), list, strings.Join(values, ", "),
+			canonicalConflict(s.Conflict, canonicalExpression), canonicalReturning(s.Returning))
 	case *stmt.Select:
 		list := "*"
 		if s.Columns != nil {
@@ -443,6 +444,8 @@ func canonicalExpression(e stmt.Expression) string {
 		return "?"
 	case stmt.ExprColumn:
 		return quote(e.Column.Value)
+	case stmt.ExprExcluded:
+		return "excluded." + quote(e.Column.Value)
 	case stmt.ExprNegate:
 		return "-" + group(e.Operands[0], false)
 	case stmt.ExprCall:
@@ -473,7 +476,7 @@ func precedence(k stmt.ExpressionKind) int {
 // operators.
 func parenthesized(e stmt.Expression) string {
 	switch e.Kind {
-	case stmt.ExprValue, stmt.ExprParameter, stmt.ExprColumn:
+	case stmt.ExprValue, stmt.ExprParameter, stmt.ExprColumn, stmt.ExprExcluded:
 		return canonicalExpression(e)
 	case stmt.ExprNegate:
 		return "(-" + parenthesized(e.Operands[0]) + ")"
@@ -487,11 +490,24 @@ func parenthesized(e stmt.Expression) string {
 // conditions joined by " and ", each with its two sides in the order of the text, a subquery as its
 // canonical select in parentheses, or "" for no conditions.
 func canonicalWhere(where []stmt.Condition, subqueries []stmt.Select) string {
+	return whereText(where, subqueries, canonicalExpression)
+}
+
+// whereText of the conditions where, whose subqueries are subqueries: " where " and the conditions
+// joined by " and ", each with its two sides in the order of the text, a subquery as its canonical
+// select in parentheses, and each expression as expression writes it, or "" for no conditions.
+func whereText(where []stmt.Condition, subqueries []stmt.Select, expression func(stmt.Expression) string) string {
+	term := func(v stmt.Term) string {
+		if v.Expression.Present() {
+			return expression(v.Expression)
+		}
+		return canonicalTerm(v)
+	}
 	var conditions []string
 	for _, c := range where {
 		tested := quote(c.Column.Value)
 		if c.Expression.Present() {
-			tested = canonicalExpression(c.Expression)
+			tested = expression(c.Expression)
 		}
 		if c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull {
 			conditions = append(conditions, tested+" "+c.Operator.String())
@@ -501,7 +517,7 @@ func canonicalWhere(where []stmt.Condition, subqueries []stmt.Select) string {
 		if c.Value.Subquery > 0 {
 			value = "(" + canonical(&subqueries[c.Value.Subquery-1]) + ")"
 		} else {
-			value = canonicalTerm(c.Value)
+			value = term(c.Value)
 		}
 		switch {
 		case c.ValueFirst:
@@ -515,6 +531,28 @@ func canonicalWhere(where []stmt.Condition, subqueries []stmt.Select) string {
 		return ""
 	}
 	return " where " + strings.Join(conditions, " and ")
+}
+
+// canonicalConflict of the ON CONFLICT clause c, with each expression as expression writes it: " on
+// conflict ", its target in parentheses, and " do nothing", or " do update set " and its assignments
+// and its conditions, or "" if the statement has none.
+func canonicalConflict(c stmt.Conflict, expression func(stmt.Expression) string) string {
+	if !c.Present() {
+		return ""
+	}
+	text := " on conflict (" + quoteNames(c.Target) + ")"
+	if c.Action == stmt.DoNothing {
+		return text + " do nothing"
+	}
+	var set []string
+	for _, a := range c.Set {
+		value := canonicalTerm(a.Value)
+		if a.Value.Expression.Present() {
+			value = expression(a.Value.Expression)
+		}
+		set = append(set, quote(a.Column.Value)+" = "+value)
+	}
+	return text + " do update set " + strings.Join(set, ", ") + whereText(c.Where, nil, expression)
 }
 
 // canonicalReturning of the RETURNING clause r: " returning " and its columns, or *, or "" if the
@@ -595,6 +633,10 @@ func checkMeaning(t testing.TB, src string, s stmt.Statement) {
 	case *stmt.CreateTable:
 		checkCreateTable(t, open, src, s)
 	case *stmt.Insert:
+		if s.Conflict.Present() {
+			checkUpsert(t, open, src, s)
+			break
+		}
 		checkInsert(t, open, src, s)
 	case *stmt.Select:
 		checkSelect(t, open, src, s)
@@ -1076,6 +1118,232 @@ func checkInsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.In
 	// find, in the order of the list.
 	other.must(createColumns(table, intColumns(append([]string{"s4ql other"}, names[1:]...), 0)))
 	sqliteError(t, src, other.exec(src, args...), 1, "table "+s.Table.Value+" has no column named "+s.Columns[0].Value)
+}
+
+// conflictExpressions of the ON CONFLICT clause c: the expressions of its assignments and of its
+// conditions.
+func conflictExpressions(c stmt.Conflict) []stmt.Expression {
+	var expressions []stmt.Expression
+	for _, a := range c.Set {
+		expressions = append(expressions, a.Value.Expression)
+	}
+	for _, w := range c.Where {
+		expressions = append(expressions, w.Expression, w.Value.Expression)
+	}
+	return slices.DeleteFunc(expressions, func(e stmt.Expression) bool { return !e.Present() })
+}
+
+// upsertText of the insert s with ON CONFLICT, as [canonical] writes it, with each expression of the
+// clause as expression writes it.
+func upsertText(s *stmt.Insert, expression func(stmt.Expression) string) string {
+	c := *s
+	c.Conflict, c.Returning = stmt.Conflict{}, stmt.Returning{}
+	return canonical(&c) + canonicalConflict(s.Conflict, expression) + canonicalReturning(s.Returning)
+}
+
+// checkUpsert is [checkMeaning] of an INSERT with ON CONFLICT. Each literal has the value that SQLite
+// gives its text, and SQLite gives `no such table` for src without the table. On a table of a column
+// of the type ANY for each name of the statement, with the column of the target as its primary key,
+// src does what its canonical text does, and what the text does in which every operator of the clause
+// has parentheses of its own, so that SQLite reads the clause with the tree of s: on the empty table,
+// which takes the row, and on tables with a row of the key of the row of the insert, with values from
+// [expressionSamples], and another row. The three give the same rows of RETURNING, the same error,
+// the same count of changes, and the same rows left in the table. Without a list of columns, the
+// table has a column for each value, and the check is made only if the statement names no more
+// columns than that, and in no case for more than 2,000 names. With a list of another number of
+// columns than values, SQLite gives `N values for M columns`, and with a target of more than one
+// column, which no index of such a table has, `ON CONFLICT clause does not match any PRIMARY KEY or
+// UNIQUE constraint`.
+func checkUpsert(t testing.TB, open func(testing.TB) *db, src string, s *stmt.Insert) {
+	t.Helper()
+	for _, v := range s.Values {
+		if v.Parameter == 0 {
+			lit := src[v.Span.Start:v.Span.End]
+			if got, want := show(open(t).value("select "+lit)), show(v.Value); got != want {
+				t.Fatalf("%q: the value is %v, SQLite gives %v for %q", src, want, got, lit)
+			}
+		}
+	}
+	expressions := conflictExpressions(s.Conflict)
+	for _, e := range expressions {
+		for _, n := range nodesOf(e) {
+			if n.Kind == stmt.ExprValue {
+				lit := src[n.Span.Start:n.Span.End]
+				if got, want := show(open(t).value("select "+lit)), show(n.Value); got != want {
+					t.Fatalf("%q: the value is %v, SQLite gives %v for %q", src, want, got, lit)
+				}
+			}
+		}
+	}
+	args := make([]stmt.Value, s.Parameters())
+	for i := range args {
+		args[i] = expressionSamples[(len(src)+3*i)%len(expressionSamples)]
+	}
+	_, _, err := open(t).run(src, args)
+	sqliteError(t, src, err, 1, "no such table: "+s.Table.Value)
+
+	// The names of the statement, once each, the target first.
+	named := slices.Concat(s.Conflict.Target, s.Columns)
+	for _, a := range s.Conflict.Set {
+		named = append(named, a.Column)
+	}
+	for _, c := range s.Conflict.Where {
+		if c.Column != (stmt.Name{}) {
+			named = append(named, c.Column)
+		}
+	}
+	for _, e := range expressions {
+		for _, n := range nodesOf(e) {
+			if n.Kind == stmt.ExprColumn || n.Kind == stmt.ExprExcluded {
+				named = append(named, n.Column)
+			}
+		}
+	}
+	named = distinct(append(named, s.Returning.Columns...))
+	var names []string
+	for _, n := range named {
+		names = append(names, swapCase(n.Value))
+	}
+	if len(names) > 2000 {
+		// No table has more columns, SQLITE_MAX_COLUMN.
+		return
+	}
+	if s.Columns != nil && len(s.Columns) != len(s.Values) {
+		// SQLite counts the values against the list once it has found the table, before the target.
+		d := open(t)
+		d.must(createColumns(swapCase(s.Table.Value), intColumns(names, 0)))
+		_, _, err := d.run(src, args)
+		sqliteError(t, src, err, 1, fmt.Sprintf("%v values for %v columns", len(s.Values), len(s.Columns)))
+		return
+	}
+	if s.Columns == nil {
+		if len(names) > len(s.Values) {
+			return
+		}
+		for i := len(names); i < len(s.Values); i++ {
+			names = append(names, fmt.Sprint("s4ql c", i+1))
+		}
+	}
+	var defs []string
+	for i, n := range names {
+		if i == 0 {
+			defs = append(defs, quote(n)+" any primary key")
+		} else {
+			defs = append(defs, quote(n)+" any")
+		}
+	}
+	table := swapCase(s.Table.Value)
+	create := fmt.Sprintf("create table %v (%v) strict, without rowid", quote(table), strings.Join(defs, ", "))
+	if len(s.Conflict.Target) > 1 {
+		for _, sql := range []string{src, canonical(s), upsertText(s, parenthesized)} {
+			d := open(t)
+			d.must(create)
+			_, _, err := d.run(sql, args)
+			sqliteError(t, sql, err, 1, "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint")
+		}
+		return
+	}
+
+	// The key of the row of the insert, which an argument of NULL would leave without one.
+	key := -1
+	if s.Columns == nil {
+		key = 0
+	}
+	for i, c := range s.Columns {
+		if c.Fold() == s.Conflict.Target[0].Fold() {
+			key = i
+		}
+	}
+	var keyValue stmt.Value
+	if key >= 0 {
+		keyValue = s.Values[key].Value
+		if p := s.Values[key].Parameter; p > 0 {
+			if _, ok := args[p-1].(stmt.Null); ok {
+				args[p-1] = stmt.Integer(1)
+			}
+			keyValue = args[p-1]
+		}
+	}
+	_, null := keyValue.(stmt.Null)
+	keyed := keyValue != nil && !null
+	states := [][][]stmt.Value{nil}
+	if keyed {
+		// The value that the insert gives each column of the table, or nil.
+		proposed := make([]stmt.Value, len(names))
+		for i, v := range s.Values {
+			j := i
+			if s.Columns != nil {
+				j = slices.IndexFunc(named, func(n stmt.Name) bool { return n.Fold() == s.Columns[i].Fold() })
+			}
+			proposed[j] = v.Value
+			if v.Parameter > 0 {
+				proposed[j] = args[v.Parameter-1]
+			}
+		}
+		// Each sample in each column, a row with the values of the insert, and rows with one value in
+		// every column, so that a condition between two columns holds.
+		for k := range len(expressionSamples) + 3 {
+			conflicting, other := make([]stmt.Value, len(names)), make([]stmt.Value, len(names))
+			conflicting[0], other[0] = keyValue, stmt.Text("s4ql other")
+			if show(keyValue) == show(other[0]) {
+				other[0] = stmt.Text("s4ql another")
+			}
+			for i := 1; i < len(names); i++ {
+				switch {
+				case k == len(expressionSamples) && proposed[i] != nil:
+					conflicting[i] = proposed[i]
+				case k == len(expressionSamples)+1:
+					conflicting[i] = stmt.Integer(7)
+				case k == len(expressionSamples)+2:
+					conflicting[i] = stmt.Null{}
+				default:
+					conflicting[i] = expressionSamples[(k+i)%len(expressionSamples)]
+				}
+				other[i] = expressionSamples[(k+2*i+1)%len(expressionSamples)]
+			}
+			states = append(states, [][]stmt.Value{conflicting, other})
+		}
+	}
+	// A second set of arguments, with the same key, so that a condition on an argument both holds
+	// and does not.
+	others := make([]stmt.Value, len(args))
+	for i := range others {
+		others[i] = expressionSamples[(len(src)+3*i+5)%len(expressionSamples)]
+		if key >= 0 && key < len(s.Values) && s.Values[key].Parameter == i+1 {
+			others[i] = args[i]
+		}
+	}
+	for i := range 2 * len(states) {
+		if i%2 == 1 && len(args) == 0 {
+			continue
+		}
+		rows := states[i/2]
+		args := args
+		if i%2 == 1 {
+			args = others
+		}
+		run := func(sql string) string {
+			d := open(t)
+			d.must(create)
+			if rows != nil {
+				d.insert(table, rows)
+			}
+			returned, got, err := d.run(sql, args)
+			if err != nil {
+				if keyed {
+					t.Fatalf("%q: %v", sql, err)
+				}
+				return err.Error()
+			}
+			is.Equal(t, d.parameters(sql), len(args), sql)
+			_, left, err := d.run("select * from "+quote(table), nil)
+			is.NotError(t, err)
+			return fmt.Sprint(returned, "\n", showRows(got), show(d.value("select changes()")), "\n", sortedRows(left))
+		}
+		got := run(src)
+		is.Equal(t, run(canonical(s)), got, fmt.Sprint(src, " in the state ", i))
+		is.Equal(t, run(upsertText(s, parenthesized)), got, fmt.Sprint(src, " in the state ", i))
+	}
 }
 
 // checkNotNull of the insert src, with args, whose values give NULL to the columns of nulls, by the
@@ -2399,6 +2667,7 @@ func checkPositions(t testing.TB, src string, s stmt.Statement) {
 		for _, v := range s.Values {
 			names = append(names, checkTerm(t, src, b, &end, &parameters, v, nil)...)
 		}
+		names = append(names, checkConflict(t, src, b, &end, &parameters, s.Conflict)...)
 		names = append(names, checkReturning(t, src, b, end, s.Returning)...)
 		is.Equal(t, parameters, s.Parameters(), src)
 	case *stmt.Select:
@@ -2582,6 +2851,87 @@ func checkReturning(t testing.TB, src string, b stmt.Span, end int, r stmt.Retur
 	return r.Columns
 }
 
+// checkConflict of the ON CONFLICT clause c of an insert of src in the bounds b, after the end of
+// what comes before it and after as many parameters: an insert without the clause has the zero
+// Conflict. The span of a clause starts at the keyword ON, after end, and holds its target, one or
+// more columns, each after the one before it, and its action. That of DO NOTHING has no assignment
+// and no condition and ends at NOTHING; that of DO UPDATE has its assignments after the target, as
+// those of an update are, none to a column of the target, and its conditions after them, without a
+// subquery, and ends where the last of them ends. A ? has the number after that of the ? before it.
+// It moves end and parameters past c, and gives the names of c.
+func checkConflict(t testing.TB, src string, b stmt.Span, end, parameters *int, c stmt.Conflict) []stmt.Name {
+	t.Helper()
+	if !c.Present() {
+		if c.Target != nil || c.Action != 0 || c.Set != nil || c.Where != nil {
+			t.Fatalf("%q: no ON CONFLICT, and the clause %+v", src, c)
+		}
+		return nil
+	}
+	sp := c.Span
+	if sp.Start < *end || sp.End > b.End || sp.Start+len("on") > sp.End || !strings.EqualFold(src[sp.Start:sp.Start+len("on")], "on") {
+		t.Fatalf("%q: ON CONFLICT at %v, after %v", src, sp, *end)
+	}
+	if len(c.Target) == 0 {
+		t.Fatalf("%q: ON CONFLICT without a target", src)
+	}
+	checkOnce(t, src, c.Target)
+	names := slices.Clone(c.Target)
+	at := sp.Start + len("on")
+	target := map[string]bool{}
+	for _, n := range c.Target {
+		if n.Offset < at {
+			t.Fatalf("%q: the target %q at %v", src, n.Raw, n.Offset)
+		}
+		at = n.Offset + len(n.Raw)
+		target[n.Fold()] = true
+	}
+	switch c.Action {
+	case stmt.DoNothing:
+		var words []string
+		for _, tk := range token.Tokens(src[at:sp.End]) {
+			if tk.Kind != token.Space && tk.Kind != token.Comment {
+				words = append(words, strings.ToLower(tk.Text(src[at:sp.End])))
+			}
+		}
+		if c.Set != nil || c.Where != nil || fmt.Sprint(words) != "[) do nothing]" {
+			t.Fatalf("%q: DO NOTHING at %v, with %v after the target", src, sp, words)
+		}
+	case stmt.DoUpdate:
+		if len(c.Set) == 0 {
+			t.Fatalf("%q: DO UPDATE without an assignment", src)
+		}
+		var columns []stmt.Name
+		for _, a := range c.Set {
+			if a.Column.Offset < at || target[a.Column.Fold()] {
+				t.Fatalf("%q: the assignment of %q at %v", src, a.Column.Raw, a.Column.Offset)
+			}
+			at = a.Column.Offset + len(a.Column.Raw)
+			columns = append(columns, a.Column)
+			names = append(names, checkTerm(t, src, b, &at, parameters, a.Value, nil)...)
+		}
+		checkOnce(t, src, columns)
+		names = append(names, columns...)
+		names = append(names, checkConditions(t, src, b, at, parameters, c.Where, nil)...)
+		// After the last name or value come only the closing parentheses of an expression that a
+		// condition tests and the words of a test for NULL.
+		last := conditionsEnd(at, c.Where)
+		if last > sp.End {
+			t.Fatalf("%q: DO UPDATE at %v, which ends at %v", src, sp, last)
+		}
+		for _, tk := range token.Tokens(src[last:sp.End]) {
+			switch text := strings.ToLower(tk.Text(src[last:sp.End])); {
+			case tk.Kind == token.Space, tk.Kind == token.Comment, text == ")", text == "is", text == "not", text == "null":
+			default:
+				t.Fatalf("%q: DO UPDATE at %v, with %q after its last value", src, sp, text)
+			}
+		}
+	default:
+		t.Fatalf("%q: the action %v", src, c.Action)
+	}
+	*end = sp.End
+	return names
+}
+
 // checkOnce that no two of names are one name, as [stmt.Name.Fold] compares them.
 func checkOnce(t testing.TB, src string, names []stmt.Name) {
 	t.Helper()
@@ -2658,7 +3008,9 @@ func checkConditions(t testing.TB, src string, b stmt.Span, end int, parameters 
 	var names []stmt.Name
 	column := func(c stmt.Condition) {
 		if c.Expression.Present() {
-			if c.Column != (stmt.Name{}) || c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull || !c.Expression.HasColumn() {
+			// A test for NULL tests a column, or excluded.c in the DO UPDATE of an upsert.
+			isNull := c.Operator == stmt.OpIsNull || c.Operator == stmt.OpIsNotNull
+			if c.Column != (stmt.Name{}) || isNull && c.Expression.Kind != stmt.ExprExcluded || !c.Expression.HasColumn() {
 				t.Fatalf("%q: the condition on %q and the expression at %v, %v", src, c.Column.Raw, c.Expression.Span, c.Operator)
 			}
 			names = append(names, checkExpression(t, src, b, &end, parameters, c.Expression)...)
@@ -2708,6 +3060,9 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 	if sp.Start < *end || sp.End > b.End || sp.Start >= sp.End {
 		t.Fatalf("%q: the expression %v at %v, after %v", src, e.Kind, sp, *end)
 	}
+	if e.Kind != stmt.ExprExcluded && e.Table != (stmt.Name{}) {
+		t.Fatalf("%q: the expression %v with the table %+v", src, e.Kind, e.Table)
+	}
 	var names []stmt.Name
 	switch e.Kind {
 	case stmt.ExprValue:
@@ -2726,10 +3081,18 @@ func checkExpression(t testing.TB, src string, b stmt.Span, end, parameters *int
 			t.Fatalf("%q: the parameter %+v, after %v", src, e, *parameters-1)
 		}
 	case stmt.ExprColumn:
-		if e.Column.Offset != sp.Start || src[sp.Start:sp.End] != e.Column.Raw || e.Operands != nil || e.Value != nil || e.Parameter != 0 {
+		if e.Column.Offset != sp.Start || src[sp.Start:sp.End] != e.Column.Raw || e.Operands != nil || e.Value != nil || e.Parameter != 0 || e.Table != (stmt.Name{}) {
 			t.Fatalf("%q: the column %+v", src, e)
 		}
 		names = append(names, e.Column)
+	case stmt.ExprExcluded:
+		// The name excluded, a dot, and the column, with spaces and comments between them.
+		if e.Table.Offset != sp.Start || src[sp.Start:sp.Start+len(e.Table.Raw)] != e.Table.Raw || !strings.EqualFold(e.Table.Value, "excluded") ||
+			!oneToken(src[sp.Start+len(e.Table.Raw):e.Column.Offset], token.Dot) || e.Column.Offset+len(e.Column.Raw) != sp.End ||
+			src[e.Column.Offset:sp.End] != e.Column.Raw || e.Operands != nil || e.Value != nil || e.Parameter != 0 || e.Function != 0 {
+			t.Fatalf("%q: the column of excluded %+v", src, e)
+		}
+		names = append(names, e.Table, e.Column)
 	case stmt.ExprNegate:
 		// A second sign is refused, but a negation in parentheses is an operator, as in `-(-v)`.
 		if len(e.Operands) != 1 || e.Value != nil || e.Parameter != 0 || e.Column != (stmt.Name{}) || e.Function != 0 ||
@@ -3104,10 +3467,10 @@ func TestExpressionKind_String(t *testing.T) {
 	t.Run("should give each kind as SQL writes its operator, or its name, and nothing for no kind", func(t *testing.T) {
 		var got []string
 		for _, k := range []stmt.ExpressionKind{0, stmt.ExprValue, stmt.ExprParameter, stmt.ExprColumn, stmt.ExprNegate, stmt.ExprAdd,
-			stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprConcat, stmt.ExprCall, stmt.ExprCall + 1} {
+			stmt.ExprSubtract, stmt.ExprMultiply, stmt.ExprDivide, stmt.ExprConcat, stmt.ExprCall, stmt.ExprExcluded, stmt.ExprExcluded + 1} {
 			got = append(got, k.String())
 		}
-		is.Equal(t, fmt.Sprint([]string{"", "value", "parameter", "column", "-", "+", "-", "*", "/", "||", "call", ""}), fmt.Sprint(got))
+		is.Equal(t, fmt.Sprint([]string{"", "value", "parameter", "column", "-", "+", "-", "*", "/", "||", "call", "excluded", ""}), fmt.Sprint(got))
 		is.True(t, !stmt.Expression{}.Present())
 	})
 }
@@ -3119,6 +3482,23 @@ func TestFunction_String(t *testing.T) {
 			got = append(got, f.String())
 		}
 		is.Equal(t, fmt.Sprint([]string{"", "lower", "hex", ""}), fmt.Sprint(got))
+	})
+}
+
+func TestConflictAction_String(t *testing.T) {
+	t.Run("should give each action as SQL writes it, and nothing for no action", func(t *testing.T) {
+		var got []string
+		for a := stmt.ConflictAction(0); a <= stmt.DoUpdate+1; a++ {
+			got = append(got, a.String())
+		}
+		is.Equal(t, fmt.Sprint([]string{"", "DO NOTHING", "DO UPDATE", ""}), fmt.Sprint(got))
+	})
+}
+
+func TestConflict_Present(t *testing.T) {
+	t.Run("should report a clause by its span, and no clause for the zero Conflict", func(t *testing.T) {
+		is.True(t, !stmt.Conflict{}.Present())
+		is.True(t, stmt.Conflict{Span: stmt.Span{Start: 30, End: 50}}.Present())
 	})
 }
 
