@@ -796,10 +796,13 @@ async function landing(p) {
     await until(() => fig.dataset.aloft === undefined);
     expect(edge.wide <= 0 && doc.scrollWidth <= doc.clientWidth, `at ${width} px, the stick figure carried to the right edge does not make the page wider (${edge.wide} px wider)`);
   }
-  // At the widths of phones and tablets, upright and on their side, nothing scrolls sideways.
+  // At the widths of phones and tablets, upright and on their side, nothing scrolls sideways. Their
+  // scroll bars take no width, so the frame is as much wider as a scroll bar of this Chromium takes.
   const wide = [];
   for (const width of [320, 390, 820, 834, 1180, 1194]) {
     p.win.frameElement.style.width = width + "px";
+    await p.frames(2);
+    p.win.frameElement.style.width = 2 * width - doc.clientWidth + "px";
     await p.frames(2);
     if (doc.scrollWidth > doc.clientWidth) wide.push(`${width}: ${doc.scrollWidth}`);
   }
