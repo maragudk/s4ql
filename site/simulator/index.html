@@ -300,11 +300,11 @@ h2 {
    alone: solid while it works, dashed while the connection hangs, cut while it is disconnected, and
    crossed while the disk fails. */
 
-.panel { padding: 20px 0 0; }
+.panel { padding: 40px 0 0; }
 
 .system {
   --g: 64px; /* between the two instances */
-  --stub: 24px; /* the edges from an instance down to its disk and its clocks */
+  --stub: 40px; /* the edges from an instance down to its disk and its clocks */
   --drop: 48px; /* the edges from the instances down to S3 */
   --solid: linear-gradient(var(--lumin), var(--lumin));
   --dash-y: repeating-linear-gradient(to bottom, var(--lumin) 0 6px, transparent 6px 11px);
@@ -542,8 +542,8 @@ h2 {
 @media (max-width: 1139px) {
   .fork { display: none; }
   .instances { grid-template-columns: minmax(0, 1fr); margin-bottom: 32px; }
-  .inst { padding-top: 32px; }
-  .in { display: block; position: absolute; top: 0; left: 24px; width: 12px; height: 32px; }
+  .inst { padding-top: 40px; }
+  .in { display: block; position: absolute; top: 0; left: 24px; width: 12px; height: 40px; }
   .inst[data-requests="true"] .in::after { top: 0; }
   .inst[data-requests="true"] .head .tag { display: inline; }
   .links, .inst[data-instance="a"] .links {
@@ -589,14 +589,17 @@ h2 {
    transform moves it. It is drawn in pixels of 2 px. page.js has its right and its pixels as RIGHT
    and PX, to keep it on the line: change them together. A poke makes it react, and a drag carries it
    to the top line of another frame, which then holds it: each frame that it can stand on is
-   positioned. Its ::before widens what a finger hits to 44 px each way, around and above it, and not
-   into the frame below; a touch on it drags it and does not scroll the page. */
-.dancer { position: absolute; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+   positioned. The room above the requests, the instances, the disks, and the clocks is as high as
+   the figure, and where a line has less, it stands in front of what is above it, but behind the
+   sticky bar, so that it scrolls under the bar with its frame; carried, it is in front of all. Its
+   ::before widens what a finger hits to 44 px each way, around and above it, and not into the frame
+   below; page.js has its reach as HIT. A touch on it drags it and does not scroll the page. */
+.dancer { position: absolute; z-index: 2; right: 40px; bottom: calc(100% + 1px); width: 30px; height: 36px; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 .dancer::before { content: ""; position: absolute; inset: -8px -7px 0; }
 .dancer svg { display: block; width: 100%; height: 100%; }
 .dancer:active, .dancer[data-aloft] { cursor: grabbing; }
 .dancer[data-aloft] { z-index: 10; }
-.node, .s3, .ask-box { position: relative; }
+.requests, .node, .s3, .ask-box { position: relative; }
 .logs > section { min-width: 0; }
 .logs > .objects { border-left: var(--rule); }
 .log-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding: 12px 20px; border-bottom: var(--rule); }

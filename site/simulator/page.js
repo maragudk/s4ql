@@ -938,11 +938,16 @@ async function reset() {
 // POKES, by chance and never the one of the poke before; PESTERS pokes within PESTER ms make it sulk.
 // Then it stands, strolls on, and dances to the next sound. A press on it that moves TAP px picks it
 // up: it dangles from the pointer, its legs kicking, and when it is let go it falls onto the top
-// line of a frame of STAGES, the one it is in or over, or the nearest one. That frame holds it from
-// then on, and its line is the stretch of the top line with room above it for the figure: see
-// stretch. The frame of .logs always holds it. Under reduced motion a poke is one still pose for
-// STILL ms, and a drop lands at once, where it stays. Before the page's animation frame runs, as
-// while the engine loads, it takes no poke or drag.
+// line of a frame of STAGES, every framed box of the page: it falls down to the first line below its
+// feet, never up, unless no line is below them: see dancerLand. That frame holds it from then on,
+// and its line is the stretch of the top line clear of the words and buttons that stand above it:
+// see stretch. The frame of .logs always has its whole line. Where the room above a line is lower
+// than the figure, it stands in front of what is above, and behind the sticky bar, so that it scrolls
+// away with its frame. Under reduced motion a poke is one still pose for STILL ms, and a drop lands
+// at once, where it stays. Before the page's animation frame runs, as while the engine loads, it
+// takes no poke or drag. Carried, it stays inside the viewport, so that the page never grows wider
+// under it: a phone's or a tablet's browser widens the page for good when anything passes its right
+// edge, and then it scrolls sideways.
 const DW = 15, DH = 18; // the grid of the figure, in its pixels; the feet are on its last row
 const PX = 2; // the size in px of a pixel of the grid, as the width of .dancer in index.html sets it
 const RIGHT = 40; // px from the right end of the line to the figure's old place, as .dancer's right sets it
@@ -958,13 +963,13 @@ const TAP = 6; // px, how far a press moves before it picks the figure up and is
 const FLAIL = 130; // ms, each pose of the kicking while it is held
 const GRAVITY = 0.004; // px per ms², of the fall after a drop
 const LAND = 150; // ms, how long it crouches after the fall
-const GAP = 8; // px, the least room between the figure and words or a box beside it above a line
-// STAGES are the frames whose top line it can stand on. .requests is not one: the sticky bar stands
-// right above it. CROWD is what takes room above a line, besides the frames themselves; the lines
-// of the edges between the frames do not, and it walks in front of them.
-// The disk and the clocks are not either: their edges up to the instance are shorter than the figure.
-const STAGES = ".node, .s3, .logs, .ask-box";
-const CROWD = STAGES + ", .requests, .box, .link > .btn, .ask-head > *, #failure";
+const GAP = 8; // px, the least room between the figure and words or a button beside it above a line
+const HIT = 8; // px, how far the hit area of .dancer's ::before in index.html reaches past the figure
+// STAGES are the frames whose top line it can stand on: every framed box of the page. BLOCK is what
+// stands free above a line that the figure keeps clear of, words and buttons; it walks in front of
+// the lines of the edges between the frames, and of a frame above a line that is close to it.
+const STAGES = ".requests, .node, .box, .s3, .logs, .ask-box";
+const BLOCK = ".link > .btn, .link > .to, .ask-head > *";
 
 // POSES by name: the head's centre h, the neck n, the pelvis p, the elbow and hand of each arm, la
 // and ra, and the knee and foot of each leg, ll and rl, on the grid, with the line under row 17. l is
@@ -1383,22 +1388,25 @@ function home(frame) {
 }
 
 // stretch of the frame: the line on which the figure can stand, {a, b} in px from the left of the
-// frame inside its border, or null. It is the longest stretch of the top line with nothing of CROWD
-// in the room above it, as high as the figure, and GAP px from anything there, if it is at least
-// three figures long. The frame of .logs always has its whole line.
+// frame inside its border, or null for a frame that is not shown. It is the longest stretch of the
+// top line with nothing of BLOCK in the room above it, as high as the figure, and GAP px from
+// anything there, so that it never stands in front of a button. Only a line without a stretch as wide
+// as the figure, which no layout of the page has, is whole. The frame of .logs always has its whole
+// line.
 function stretch(frame) {
   const r = frame.getBoundingClientRect(), left = r.left + frame.clientLeft, top = r.top;
-  if (frame === dancer.home) return { a: 0, b: frame.clientWidth };
   if (!r.width || !r.height) return null;
+  const whole = { a: 0, b: frame.clientWidth };
+  if (frame === dancer.home) return whole;
   let free = [[left, left + frame.clientWidth]];
-  for (const el of document.querySelectorAll(CROWD)) {
-    if (el === frame || el.contains(frame) || frame.contains(el)) continue;
+  for (const el of document.querySelectorAll(BLOCK)) {
+    if (frame.contains(el)) continue;
     const o = el.getBoundingClientRect();
     if (!o.width || !o.height || o.bottom <= top - PX * DH || o.top >= top) continue;
     free = free.flatMap(([a, b]) => [[a, Math.min(b, o.left - GAP)], [Math.max(a, o.right + GAP), b]]).filter(([a, b]) => b > a);
   }
   const [a, b] = free.reduce((w, s) => (s[1] - s[0] > w[1] - w[0] ? s : w), [0, 0]);
-  return b - a >= 3 * PX * DW ? { a: a - left, b: b - left } : null;
+  return b - a >= PX * DW ? { a: a - left, b: b - left } : whole;
 }
 
 // dancerStage moves the figure into the frame, with its line s, and has it measure the frame.
@@ -1418,7 +1426,7 @@ function dancerStage(frame, s) {
 }
 
 // dancerRestage measures the frame that holds the figure again, after a change of layout, and lands
-// it on the nearest frame if this one has no line any more.
+// it on another frame if this one is not shown any more.
 function dancerRestage() {
   if (!dancer.box || dancer.hold || dancer.fall) return;
   const frame = dancer.box.parentElement, s = stretch(frame);
@@ -1431,8 +1439,11 @@ function dancerRestage() {
 }
 
 // dancerLand puts the figure, whose left and bottom are where they are in the viewport, onto the top
-// line of a frame: of the one whose line is under its feet, or that its feet are in, the highest, and
-// else the nearest. It falls there when fall is true, and is there at once otherwise.
+// line of a frame, by gravity: the first line below its feet, of the frames whose line is level with
+// its feet or below them, that has its feet's x on it; if its feet are beside all of them, the
+// nearest of them, at the closest point; and only if no line is below its feet, the nearest line of
+// all. A frame that its feet are in does not hold it, as its line is above them: it falls on, out of
+// the frame. It falls there when fall is true, and is there at once otherwise.
 function dancerLand(left, bottom, fall) {
   const now = performance.now(), feet = left + (PX * DW) / 2;
   let best = null;
@@ -1441,9 +1452,10 @@ function dancerLand(left, bottom, fall) {
     if (!s) continue;
     const r = frame.getBoundingClientRect(), a = r.left + frame.clientLeft + s.a, b = r.left + frame.clientLeft + s.b;
     const dx = Math.max(0, a - feet, feet - b), dy = r.top - bottom;
-    // under: whether it is above the line or in the frame; far: how far it is from the line.
-    const under = dx === 0 && bottom <= r.bottom, far = under ? Math.max(0, dy) : Math.hypot(dx, dy);
-    if (!best || under > best.under || (under === best.under && far < best.far)) best = { frame, s, under, far };
+    // rank: 2 for a line below the feet at their x, 1 for one below them and beside, 0 for one above
+    // them; far: how far the feet are from the line, straight down at rank 2.
+    const below = dy >= -PX, rank = below ? (dx === 0 ? 2 : 1) : 0, far = rank === 2 ? dy : Math.hypot(dx, dy);
+    if (!best || rank > best.rank || (rank === best.rank && far < best.far)) best = { frame, s, rank, far };
   }
   if (!best) return;
   dancerStage(best.frame, best.s);
@@ -1452,12 +1464,15 @@ function dancerLand(left, bottom, fall) {
   const to = Math.max(lo, Math.min(hi, Math.round(x / PX)));
   dancerRest(now);
   walker.shown = null;
-  if (!fall) {
+  if (!fall || y > -PX) {
     walker.x = to;
-    return dancerPlace();
+    delete dancer.box.dataset.aloft;
+    dancerPlace();
+    // A drop on its line, or up onto the nearest line when none is below, lands at once, in a crouch.
+    if (fall) dancerPlay([["crouch", LAND]], now);
+    return;
   }
-  // From below the line, or on it, it hops up a little to fall.
-  dancer.fall = { t: now, x, y: Math.min(y, -4 * PX), to };
+  dancer.fall = { t: now, x, y, to };
   falling(now);
 }
 
@@ -1489,11 +1504,15 @@ function dancerGrab(e) {
   dancer.hold = { id: e.pointerId, x: e.clientX, y: e.clientY, held: false };
 }
 
-// dancerCarry places the figure that is carried under the pointer, at x and y in the viewport.
+// dancerCarry places the figure that is carried under the pointer, at x and y in the viewport, by its
+// head, and keeps it and its hit area inside the viewport: anything past the right or the bottom edge
+// would make the page larger.
 function dancerCarry(x, y) {
-  const o = home(dancer.box.parentElement);
+  const o = home(dancer.box.parentElement), view = document.documentElement;
   dancer.hold.at = [x, y];
-  dancer.box.style.transform = `translate(${x - o.left - (PX * DW) / 2}px, ${y - o.bottom + PX * (DH - 1)}px)`;
+  const left = Math.max(HIT, Math.min(view.clientWidth - HIT - PX * DW, x - (PX * DW) / 2));
+  const bottom = Math.max(PX * DH + HIT, Math.min(Math.max(view.clientHeight, window.innerHeight), y + PX * (DH - 1)));
+  dancer.box.style.transform = `translate(${left - o.left}px, ${bottom - o.bottom}px)`;
 }
 
 function dancerDrag(e) {
