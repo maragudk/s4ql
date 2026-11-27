@@ -201,3 +201,56 @@ The lowered floor in `TestSimulation.kinds`, the minimum that left `hammerReache
 ### Future work
 
 The full engine planted run over 1000 seeds after the last merge of `main`, if the lead wants it before the merge; the nightly runs it too.
+
+## Step 5: the findings of the independent review
+
+**Author:** core-hardening-fix builder
+
+### Prompt Context
+
+**Verbatim prompt:** "You fix the findings of an independent review on a branch of the Go repository `maragudk/s4ql` [...] **Findings to fix.** 1. **A false, permanent stop in `Reader.Read`'s position check, on a shared cache.** [...] 2. **Test gap: `d.moved(name)` after each replay in `catchUpFrom` (catchup.go around line 124) is unguarded.** [...] 3. **Test gaps that fail no test when undone:** the second read of the position in `checkObjects` (cache.go around 395 to 404), and the restart loop in `catchUp` (catchup.go around 62 to 74). [...] 4. **Nit:** the comment above the lowered floor in `internal/engine/testdata/reached/TestSimulation.kinds` [...] 5. Also: `TestTx_Commit_exists` fails with a nil-pointer panic, not a clean assertion, when the upload accepts `ErrExists` without reading the object."
+**Interpretation:** on a branch `core-hardening-fix` from `core-hardening` with `main` merged, make a deterministic test of the false stop fail first, fix it, and for each unguarded piece of code either guard it with a test or remove it.
+**Inferred intent:** a read must never stop the instance for a committed state of the log, and every line of the hardening must be one that a test can tell from its absence.
+
+### What I did
+
+- Merged `origin/main` (b9e40829) into the branch without a conflict.
+- **Finding 1, test first.** `TestReader_Read` in `/internal/core/read_test.go` got three subtests that run under `synctest` with a new `onceHook`, a host that runs a function once at the next yield of a site. a is cut off from the store, b takes the lease and commits X, b commits Y and releases the lease, and a takes it back. The first subtest is the reviewer's scenario on a shared cache (the read fixes its state at X between its checks); on the branch it failed with "the instance has stopped: local I/O failure: read: the cache is at 716c..., where this instance has it at 1cc3... or 1cc3...".
+- **The fix, which also closes finding 2.** A catch-up runs only while the instance does not serve (`resumeLocked` in `/internal/core/lease.go` is the only place that sets `serving`, after a catch-up that succeeded), so no read passes a check during it. The per-replay `moving` and `moved`, and the `moved` at its start, are gone; `DB.caughtUp` in `/internal/core/read.go` records the position once, at the end. It adds 3 to the count when the position is not `d.cache.at`, since a cache never comes back to a position it left, and 1 otherwise, which keeps every decision of the simulation's reads as it was: the branch counted 1 + 2N for N commits applied, so a read restarted exactly when it does now. The window of finding 2 does not exist any more, and the second and third subtests fail if `caughtUp` is left out at either of its two calls.
+- **Finding 3, the restart loop.** Removed: `catchUp` in `/internal/core/catchup.go` fails with `errCacheMoved`, and the lease task's next try starts from the position the cache then records. After both reviewers of this step pointed out that this logged a warning and waited out a back-off, `resumeLocked` waits `retrySoon` for `errCacheMoved`, and the event is at Info. `TestDB_catchUp_moved` now runs in a bubble, bounds its wait to a minute, and checks that a serves within a second and that the failed catch-up is an Info event; each of the two changes fails it when reverted ("Not true ... 1s", "Expected "INFO", but got "WARN"").
+- **Finding 3, the second read in `checkObjects`.** Removed by removing its window: `conn.setUp` in `/internal/core/cache.go` reads the record and the schema in one read transaction (`checkCache`). No test reaches the moment between two statements of the open, which has no yield, and the comment says so.
+- **Finding 4.** The comment of the floor in `/internal/engine/testdata/reached/TestSimulation.kinds` explains the drop from 86 to 82 (84 that day, 83 now). The minimum `"event unknown_outcome/renewal/renewed": 1` is back in `hammerReaches` in `/internal/core/workloads_test.go`: the 30 default seeds of the hammer reach it 4 times again, both at the merge before my changes and after them.
+- **Finding 5.** `TestTx_Commit_exists` asserts that the commit failed before it reads the error; with the read of `ErrExists` replaced by `return nil` it now fails cleanly.
+- `/internal/core/README.md` describes `caughtUp`, the catch-up that fails on a moved cache, and the open's read transaction.
+
+### Why
+
+The fix that the reviewer suggested, bumping the count when catch-up reads another position than `at`, would have left the per-replay records and their unguarded window. Recording once, where the instance starts serving again, is the smaller rule and the one whose correctness follows from one fact: only a catch-up stands between not serving and serving.
+
+### What worked
+
+- Reverting each line one at a time with a small script in the scratch directory, which restores the file after the run: every new line now fails at least one test.
+- Comparing the events of the hammer's 30 seeds at the merge and at the fix: identical counts, which confirms that the new rule changes no decision of the simulation.
+
+### What didn't work
+
+- A first mutation run without the early return of `errCacheMoved` in `fetchAgain` hung, because `TestDB_catchUp_moved` ran outside a bubble on real time and the catch-up retried forever; the bubble and the bounded wait turn that into "context deadline exceeded".
+- The worktree guard refused Python here-documents that edit test files and a `cd` into a computed directory; edits went through the editor and the script took plain arguments.
+
+### What I learned
+
+The rule "at most one commit between the looks" needs no knowledge of other instances while the instance serves, because a holder that lost its lease can only finish a commit whose object the new holder's catch-up must replay under the same write lock.
+
+### What was tricky
+
+Seeing that only the first scenario failed on the branch: a read that fixes its state after the catch-up is at `now.at`, so it passes whatever the count says. The other two subtests guard the new record, not the old fault.
+
+### What warrants review
+
+`DB.caughtUp` and its two calls in `catchUp`, the `retrySoon` for `errCacheMoved` in `resumeLocked`, and the read transaction in `conn.setUp`.
+
+Runs on the final code: `go test -count=1 ./internal/core/` 54 s and with `-race` 2 min 9 s, `go test -count=1 ./internal/engine/` 2 min 40 s, the new tests with `-count=50` and with `-race -count=50`, `golangci-lint run ./internal/core/` with 0 issues; `S4QL_SIM_SEEDS=1000 go test -count=1 -run '^TestSimulation_plantedBugs$' ./internal/core/` passed in 26 min 29 s (`fixedOnce` found in 977 of 1000 seeds, no clean run found anything); `S4QL_ENGINE_SIM_SEEDS=100 go test -count=1 -run '^TestSimulation$' ./internal/engine/` passed in 3 min 41 s. The two long runs ran at the same time.
+
+### Future work
+
+None.
