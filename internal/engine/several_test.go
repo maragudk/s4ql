@@ -228,7 +228,9 @@ func TestConn_ExecAll(t *testing.T) {
 		}{
 			{src: t1 + "; insert into t1 (v1) values (?)", n: 2},
 			{src: t1 + "; insert into t1 (v1) values (?)", n: 0},
+			{src: t1 + "; insert into t1 (v1) values (?)", n: 1},
 			{src: t1 + "; insert into t1 (v1) values (?); selec", n: 3},
+			{src: t1 + "; selec", n: 1},
 			{src: "insert into t1 (v1) values (?);", n: 2},
 			{src: "insert into t1 (v1) values (?);", n: 0},
 			{src: "selec; " + t1, n: 0},

@@ -25,8 +25,12 @@ func TestRunner_run(t *testing.T) {
 		"internal/sql/other/other.go":      "package other\n\nimport \"maragu.dev/s4ql/internal/sql/parser\"\n\nfunc Three() int {\n\treturn parser.Add(1, 2)\n}\n",
 		"internal/sql/other/other_test.go": "package other\n\nimport \"testing\"\n\nfunc TestThree(t *testing.T) {\n\tif Three() != 3 {\n\t\tt.Error(\"not 3\")\n\t}\n}\n",
 		// The package at the root, with a test that needs a real bucket, which fails here.
-		"r.go":      "package root\n\nimport \"maragu.dev/s4ql/internal/sql/parser\"\n\nfunc Four() int {\n\treturn parser.Add(2, 2)\n}\n",
+		"r.go":      "package root\n\nimport \"maragu.dev/s4ql/internal/sql/parser\"\n\nfunc Four() int {\n\treturn parser.Add(2, 2)\n}\n\nfunc Five() int {\n\treturn 5\n}\n",
 		"r_test.go": "package root\n\nimport \"testing\"\n\nfunc TestFour(t *testing.T) {\n\tif Four() != 4 {\n\t\tt.Error(\"not 4\")\n\t}\n}\n\nfunc TestOpen_realBucket(t *testing.T) {\n\tt.Fatal(\"no bucket\")\n}\n",
+		// The driver check, in a module of its own that replaces the module with the tree.
+		"internal/sqlite/crosscheck/go.mod": "module " + module + "/internal/sqlite/crosscheck\n\ngo 1.24\n\nrequire " + module + " v0.0.0\n\nreplace " + module + " => ../../..\n",
+		"internal/sqlite/crosscheck/drivercheck/d_test.go": "package drivercheck\n\nimport (\n\t\"testing\"\n\n\troot \"" + module + "\"\n)\n\n" +
+			"func TestGenerated(t *testing.T) {\n\tif root.Five() != 5 {\n\t\tt.Error(\"not 5\")\n\t}\n}\n\nfunc TestSeveral(t *testing.T) {\n\tif root.Four() != 4 {\n\t\tt.Error(\"not 4\")\n\t}\n}\n",
 	}
 	for name, text := range files {
 		path := filepath.Join(root, name)
@@ -47,12 +51,13 @@ func TestRunner_run(t *testing.T) {
 		is.Equal(t, 1, len(r.stages["internal/sql/loop"]))
 	})
 
-	t.Run("should plan a stage for the tests of the package at the root, without those that need a real bucket", func(t *testing.T) {
+	t.Run("should plan stages for the tests of the package at the root, without those that need a real bucket, and of the driver check", func(t *testing.T) {
 		var got []string
 		for _, s := range r.stages["."] {
 			got = append(got, s.layer+" "+s.pkg+" "+strings.Join(s.tests, ","))
 		}
-		is.EqualSlice(t, []string{"hand-written . TestFour"}, got)
+		is.EqualSlice(t, []string{"hand-written . TestFour", "generator " + driverCheckPkg + " TestGenerated",
+			"other packages " + driverCheckPkg + " TestSeveral"}, got)
 	})
 
 	// A mutant that loops for good is over any time limit, so a short one tells it apart without
@@ -74,6 +79,8 @@ func TestRunner_run(t *testing.T) {
 			from: "i++", to: "i--", status: statusTimeout, layer: layerHand, detail: "over the time limit of 1s"},
 		{name: "should kill a mutant of the package at the root that its tests notice", file: "r.go",
 			from: "2, 2", to: "2, 3", status: statusKilled, layer: layerHand, detail: "TestFour: r_test.go:7: not 4"},
+		{name: "should kill a mutant of the package at the root that only the driver check notices, in its layer", file: "r.go",
+			from: "return 5", to: "return 6", status: statusKilled, layer: layerGenerator, detail: "TestGenerated: d_test.go:11: not 5"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -99,8 +106,8 @@ func TestRunner_run(t *testing.T) {
 	})
 }
 
-// TestEngineLayers checks the layers of the tests of the engine and of the evaluator against their
-// test files.
+// TestEngineLayers checks the layers of the tests of the engine, of the evaluator, and of the pass
+// after the parser against their test files.
 func TestEngineLayers(t *testing.T) {
 	tests := []struct {
 		pkg     string
@@ -109,6 +116,7 @@ func TestEngineLayers(t *testing.T) {
 	}{
 		{pkg: enginePkg, layers: engineLayers, targets: 12},
 		{pkg: exprPkg, layers: exprLayers, targets: 1},
+		{pkg: stmtPkg, layers: stmtLayers, targets: 5},
 	}
 	for _, test := range tests {
 		t.Run("should count the seeds of every fuzz target of "+test.pkg+" in the layer fuzz seeds", func(t *testing.T) {
@@ -137,6 +145,10 @@ func TestEngineLayers(t *testing.T) {
 
 	t.Run("should run the differential test of the evaluator in the layer generator", func(t *testing.T) {
 		is.Equal(t, layerGenerator, exprLayers["TestDifferential"])
+	})
+
+	t.Run("should run the differential test of the split in the layer generator", func(t *testing.T) {
+		is.Equal(t, layerGenerator, stmtLayers["TestSplit_differential"])
 	})
 }
 
