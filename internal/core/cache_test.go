@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"embed"
 	"errors"
 	"fmt"
 	"iter"
@@ -432,7 +433,24 @@ func TestScanRange(t *testing.T) {
 	})
 }
 
+// utf16Files are files of SQLite in UTF-16, which a build without UTF-16 cannot make, made with
+// SQLite's shell: UTF-16le.db by "pragma page_size = 512; pragma encoding = 'UTF-16le'; create table
+// x (a); insert into x values ('abc')", UTF-16le-empty.db by the same with "drop table x" in place of
+// the insert, and the files of UTF-16be likewise.
+//
+//go:embed testdata/UTF-16*.db
+var utf16Files embed.FS
+
 func TestOpen_cache_foreign(t *testing.T) {
+	// utf16 is whether the build of SQLite has UTF-16: the build in a browser has SQLITE_OMIT_UTF16.
+	utf16 := !slices.Contains(sqlite.CompileOptions(), "OMIT_UTF16")
+	// writeUTF16File of utf16Files with the name to path.
+	writeUTF16File := func(t *testing.T, path, name string) {
+		t.Helper()
+		b, err := utf16Files.ReadFile("testdata/" + name)
+		is.NotError(t, err)
+		is.NotError(t, os.WriteFile(path, b, 0o600))
+	}
 	// made is a cache with the table t1 of the columns k and v, with the row 1,1 and the index i1 on
 	// v, that the instance closed. It returns the world and the path of the cache.
 	made := func(t *testing.T) (*world, string) {
@@ -504,19 +522,24 @@ drop table saved`, why: `its table "s4ql_cache" is not declared as s4ql declares
 		for _, encoding := range []string{"UTF-16le", "UTF-16be"} {
 			w := newWorld(t)
 			path := filepath.Join(w.dir, "a.db")
-			c, err := sqlite.Open(path)
-			is.NotError(t, err)
-			// The encoding is written to the file with its first table.
-			is.NotError(t, c.Exec("pragma encoding = '"+encoding+"'"))
-			is.NotError(t, c.Exec("create table x (a)"))
-			is.NotError(t, c.Exec("drop table x"))
-			is.NotError(t, c.Close())
+			if utf16 {
+				c, err := sqlite.Open(path)
+				is.NotError(t, err)
+				// The encoding is written to the file with its first table.
+				is.NotError(t, c.Exec("pragma encoding = '"+encoding+"'"))
+				is.NotError(t, c.Exec("create table x (a)"))
+				is.NotError(t, c.Exec("drop table x"))
+				is.NotError(t, c.Close())
+			} else {
+				// A build without UTF-16 cannot make the file, and would write UTF-8 to it.
+				writeUTF16File(t, path, encoding+"-empty.db")
+			}
 
-			_, err = core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
 			is.Error(t, core.ErrCacheVersion, err, encoding)
 			is.True(t, strings.Contains(err.Error(), "its text is in the encoding "+encoding+", not UTF-8"), err.Error())
 			// The open puts the file into the journal mode wal before it looks, and writes nothing else.
-			c, err = sqlite.Open(path)
+			c, err := sqlite.Open(path)
 			is.NotError(t, err)
 			s, err := c.Prepare("select count(*) from sqlite_schema")
 			is.NotError(t, err)
@@ -526,6 +549,24 @@ drop table saved`, why: `its table "s4ql_cache" is not declared as s4ql declares
 			is.Equal(t, int64(0), s.ColumnInt64(0), encoding)
 			is.NotError(t, s.Finalize())
 			is.NotError(t, c.Close())
+		}
+	})
+
+	t.Run("should refuse at the open a file whose schema is in UTF-16", func(t *testing.T) {
+		for _, encoding := range []string{"UTF-16le", "UTF-16be"} {
+			w := newWorld(t)
+			path := filepath.Join(w.dir, "a.db")
+			writeUTF16File(t, path, encoding+".db")
+
+			_, err := core.Open(t.Context(), w.host, w.client(), path, "db", core.Options{})
+			if utf16 {
+				is.Error(t, core.ErrCacheVersion, err, encoding)
+				is.True(t, strings.Contains(err.Error(), "its text is in the encoding "+encoding+", not UTF-8"), err.Error())
+				continue
+			}
+			// A build without UTF-16 reads the schema as UTF-8, and SQLite itself refuses it.
+			is.Error(t, core.ErrLocal, err, encoding)
+			is.True(t, strings.Contains(err.Error(), "malformed database schema"), err.Error())
 		}
 	})
 

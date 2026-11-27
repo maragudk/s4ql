@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"iter"
@@ -358,6 +359,13 @@ func (c *conn) checkCache(identity string) error {
 // checkEncoding of the cache is UTF-8, the encoding of every text that the core writes, in which
 // SQLite's BINARY order of text is the order of its bytes. SQLite gives a new file that encoding,
 // so a cache in another is a file that something other than s4ql made.
+//
+// A build of SQLite with SQLITE_OMIT_UTF16, such as the one in a browser, has no PRAGMA encoding,
+// which then gives no row. Such a build reads and writes every text in UTF-8, whatever the header of
+// the file says, and fails to open a file whose schema is in UTF-16, as a malformed schema. A file
+// whose header says UTF-16 and whose schema is empty would open, and get its text in UTF-8 under a
+// header that says UTF-16, so the encoding is then read from the header itself, as
+// [conn.headerEncoding] does.
 func (c *conn) checkEncoding() error {
 	var encoding string
 	if err := c.query("pragma encoding", func(s *sqlite.Stmt) error {
@@ -366,10 +374,39 @@ func (c *conn) checkEncoding() error {
 	}); err != nil {
 		return err
 	}
+	if encoding == "" {
+		var err error
+		if encoding, err = c.headerEncoding(); err != nil {
+			return err
+		}
+	}
 	if encoding != "UTF-8" {
 		return foreign("its text is in the encoding %v, not UTF-8", encoding)
 	}
 	return nil
+}
+
+// headerEncoding of the cache, by the name that PRAGMA encoding gives it, from the text encoding of
+// the header of the file (https://sqlite.org/fileformat.html), which it reads from the first page
+// in the table sqlite_dbpage, through the write-ahead log. A build of SQLite with UTF-16 takes the
+// encoding from the two lowest bits of the field, and gives a new file, which has no page or a field
+// of 0, UTF-8. The table gives the whole page as one blob, which may be longer than the length limit
+// of the connection, so it is read under SQLite's largest, as [conn.unlimited] does.
+func (c *conn) headerEncoding() (string, error) {
+	var field []byte
+	if err := c.queryUnlimited("select substr(data, 57, 4) from sqlite_dbpage where pgno = 1", func(s *sqlite.Stmt) error {
+		field = s.ColumnBlob(0)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	if field == nil {
+		return "UTF-8", nil
+	}
+	if len(field) != 4 {
+		return "", foreign("its first page has no header")
+	}
+	return [...]string{"UTF-8", "UTF-8", "UTF-16le", "UTF-16be"}[binary.BigEndian.Uint32(field)&3], nil
 }
 
 // checkObjects of the schema of the cache: each is one that this package makes or that SQLite makes

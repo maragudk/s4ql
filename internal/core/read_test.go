@@ -196,8 +196,11 @@ func TestReader_Read(t *testing.T) {
 			a := w.serve(t, "a", core.Options{})
 			transact(t, a, create("t1", 1, "k"))
 
+			// The cache, its write-ahead log, and its wal-index, which the VFS of a browser keeps in memory.
 			for _, suffix := range []string{"", "-wal", "-shm"} {
-				is.NotError(t, os.Remove(filepath.Join(w.dir, "a.db"+suffix)))
+				if err := os.Remove(filepath.Join(w.dir, "a.db"+suffix)); suffix != "-shm" || !errors.Is(err, os.ErrNotExist) {
+					is.NotError(t, err)
+				}
 			}
 			_ = w.open(t, "a", core.Options{})
 

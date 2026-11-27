@@ -254,3 +254,56 @@ Runs on the final code: `go test -count=1 ./internal/core/` 54 s and with `-race
 ### Future work
 
 None.
+
+## Step 6: the encoding check in the browser
+
+**Author:** core-hardening-browser builder
+
+### Prompt Context
+
+**Verbatim prompt:** "You fix one fault on an open pull request of the Go repository `maragudk/s4ql`, then land the pull request. [...] **The fault.** The branch hardens the core's `Open` with a check that the cache's text encoding is UTF-8: `conn.checkEncoding` in `internal/core/cache.go`, which reads `pragma encoding`. The browser build of SQLite (the official sqlite-wasm [...]) is compiled with `SQLITE_OMIT_UTF16`, and there `pragma encoding` returns no row. The encoding stays \"\", and `Open` fails with \"its text is in the encoding , not UTF-8\", so no instance opens in the browser. [...] 2. Fix it so that the check means the same in both builds: a cache whose text is not UTF-8 is refused, and a UTF-8 cache opens."
+**Interpretation:** confirm the cause from CI's logs and SQLite's source, make `checkEncoding` give the same answer in both builds, run the browser's shards and the site check that failed, and land pull request #194.
+**Inferred intent:** no instance may fail to open in the browser, and no cache in UTF-16 may open in either build.
+
+### What I did
+
+- Confirmed the cause. The failing jobs of run 45984625273 all show `open the cache: the cache is not one that this version of s4ql reads: its text is in the encoding , not UTF-8`. In the amalgamation, the entry `encoding` of the PRAGMA table and its case `PragTyp_ENCODING` are both inside `#if !defined(SQLITE_OMIT_UTF16)`, so the PRAGMA is unknown there and gives no row. Under `SQLITE_OMIT_UTF16`, `sqlite3InitOne` sets the encoding of the connection to UTF-8 whatever the header says.
+- Ran the official build on four fixtures made with the sqlite3 shell (`/internal/core/testdata/UTF-16le.db`, `UTF-16be.db`, and their `-empty.db`). A file in UTF-16 with a table fails at `sqlite.Open` with `malformed database schema (x)` (le) and `malformed database schema () - orphan index` (be), as `sqlite3InitCallback` predicts. A file whose header says UTF-16 and whose schema is empty opens there.
+- First fix: no row counts as UTF-8, with a source argument in the comment. The two reviewers both found the hole: `sqlite3StartTable` writes the encoding into the header only while the file format is 0, so such a build wrote UTF-8 under a header that still said UTF-16, and the cgo build refused the same file. The check did not mean the same in both builds.
+- Final fix: `conn.headerEncoding` in `/internal/core/cache.go`. When the PRAGMA gives no row, it reads bytes 57 to 60 of page 1 from `sqlite_dbpage`, which the official build has (`ENABLE_DBPAGE_VTAB`) and which reads through the write-ahead log, under SQLite's largest length limit, and maps the two lowest bits as SQLite does. A file with no page gets UTF-8.
+- `TestOpen_cache_foreign` in `/internal/core/cache_test.go`: the UTF-16 subtest makes its file with the PRAGMA where the build has UTF-16, as before, and from the `-empty` fixture where it has not, with the same assertions in both. A new subtest opens the fixtures with a table: `ErrCacheVersion` natively, `ErrLocal` with "malformed database schema" in the browser. The build is told apart by `OMIT_UTF16` in `sqlite.CompileOptions`, not by the PRAGMA under test.
+- Shard 4 then failed on a second fault of the branch, which the first had masked: the new subtest of `TestReader_Read` about a new cache at the holder's path removed `a.db-shm`, which the browser's VFS keeps in memory: `remove /tmp/TestReader_Read.../001/a.db-shm: No such file or directory`. It now accepts a missing `-shm`, as a later test in `/internal/core/read_test.go` already did.
+
+### Why
+
+The brief asked for the same meaning in both builds. Accepting no row would have let the browser take in a file that the cgo build refuses. Reading the header refuses it in both, with the same `ErrCacheVersion` and reason.
+
+### What worked
+
+- Checking the source's prediction against the official build with an embedded fixture before writing the fix.
+- Red check: with `headerEncoding` always giving UTF-8, the browser's UTF-16 subtest fails with `Expected "the cache is not one that this version of s4ql reads" [...] but got "<nil>"`.
+
+### What didn't work
+
+- The first fix, as above: right for a file whose schema really is UTF-16, wrong for one whose schema is empty.
+- The first version of `headerEncoding` used `conn.query`. In the browser, shard 4 (`make test-browser BROWSERSHARD=4/6`) then failed 454 subtests that open with a small `LengthLimit`, all with `open the cache: local I/O failure: sqlite: string or blob too big (code 18)`. `sqlite_dbpage` gives the whole page of 4096 bytes as one blob before `substr` cuts it, so the read now runs under `conn.unlimited`.
+- The branch `core-hardening-land` is checked out in another worktree, so `git checkout -B core-hardening-land` failed with `fatal: 'core-hardening-land' is already used by worktree at '.../agent-a4eb2afc3f60660ee'`. The work went on the local branch `core-hardening-browser`, which tracks it, and was pushed to `core-hardening-land`.
+- Both Fable reviewers stopped on a rate limit (HTTP 429). They were run again on Opus.
+
+### What I learned
+
+A build without UTF-16 never fails on a UTF-16 header. It treats the file as UTF-8, and the header byte stays wrong for good, because SQLite writes it only into a file of format 0.
+
+### What was tricky
+
+The native build has no `sqlite_dbpage` and the browser has no PRAGMA encoding, so the check needs two sources. The PRAGMA comes first, and the table is read only where the PRAGMA gives no row. A build that had neither would fail at the prepare, and would not pass by accident.
+
+### What warrants review
+
+Self-review by two reviewers. Both found the divergence above, and both found that the official build has `sqlite_dbpage`. Also taken from them: the build is now told apart by `sqlite.CompileOptions` and not by the PRAGMA under test, the comment no longer names SQLite's C functions, and the embed pattern is narrowed to `testdata/UTF-16*.db`. Left alone: a crafted file whose schema stores its SQL as blobs could get past the malformed check in a build without UTF-16. The header check refuses it now anyway.
+
+`conn.checkEncoding` and `conn.headerEncoding` in `/internal/core/cache.go`, and the two UTF-16 subtests of `TestOpen_cache_foreign`.
+
+### Future work
+
+None.
