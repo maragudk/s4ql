@@ -229,6 +229,7 @@ func TestReplay(t *testing.T) {
 		"creates a table that exists under a name in another case":        {changes: []*s4qlpb.Change{createTable(tableOf("T1", 1, "k"))}, reason: `it creates the table "T1", and the table "t1" exists`},
 		"creates a table whose name is reserved":                          {changes: []*s4qlpb.Change{createTable(tableOf("s4ql_x", 1, "k"))}, reason: `it creates the table "s4ql_x", whose name is reserved`},
 		"creates a table with more columns than the cache can hold":       {changes: []*s4qlpb.Change{createTable(tableOf("t3", 1, manyColumns(2001)...))}, reason: `sqlite: too many columns on t3`},
+		"creates a table with a longer primary key than a write takes":    {changes: []*s4qlpb.Change{createTable(tableOf("t3", 251, manyColumns(251)...))}, reason: `it creates the table "t3" with a primary key of 251 columns, where the limit is 250`},
 		"drops a table that does not exist":                               {changes: []*s4qlpb.Change{dropTableChange("t3")}, reason: `it drops the table "t3", which does not exist`},
 		"drops the cache's own table":                                     {changes: []*s4qlpb.Change{dropTableChange("s4ql_cache")}, reason: `it drops the table "s4ql_cache", which does not exist`},
 		"upserts rows of a table that does not exist":                     {changes: []*s4qlpb.Change{upsertRows("t3", []uint32{0}, row(1))}, reason: `it upserts rows of the table "t3", which does not exist`},

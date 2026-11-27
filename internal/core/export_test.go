@@ -46,6 +46,7 @@ var plantable = map[string]func(b *bugs){
 	"keepIdleTx":            func(b *bugs) { b.keepIdleTx = true },
 	"turnDescBound":         func(b *bugs) { b.turnDescBound = true },
 	"shortKey":              func(b *bugs) { b.shortKey = true },
+	"fixedOnce":             func(b *bugs) { b.fixedOnce = true },
 	"unlockedCounter":       func(b *bugs) { b.unlockedCounter = true },
 }
 
@@ -184,6 +185,12 @@ func (d *DB) PauseUnlessChanged(ctx context.Context, duration time.Duration, sta
 // Margin of the wait for a lease of the given duration.
 func Margin(duration time.Duration) time.Duration {
 	return margin(duration)
+}
+
+// WatchWait is how long an instance that has watched the manifest for elapsed waits for a holder's
+// lease of the given duration, at most watch, or zero once it may take the lease.
+func WatchWait(duration, elapsed, watch time.Duration) time.Duration {
+	return watchWait(duration, elapsed, watch)
 }
 
 // Quote an identifier.

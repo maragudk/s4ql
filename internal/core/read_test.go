@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,35 @@ import (
 	"maragu.dev/s4ql/internal/s4qlpb"
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 )
+
+// onceHook is a host that calls the function that [onceHook.on] gave a site at the next yield of
+// that site, and then no more.
+type onceHook struct {
+	host.Host
+	mu sync.Mutex
+	f  map[string]func()
+}
+
+// on the next yield of the site, call f.
+func (h *onceHook) on(site string, f func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.f == nil {
+		h.f = map[string]func(){}
+	}
+	h.f[site] = f
+}
+
+func (h *onceHook) Yield(ctx context.Context, site string) {
+	h.mu.Lock()
+	f := h.f[site]
+	delete(h.f, site)
+	h.mu.Unlock()
+	if f != nil {
+		f()
+	}
+	h.Host.Yield(ctx, site)
+}
 
 // yieldHook is a host that calls the function in f, if there is one, at each yield of the site.
 type yieldHook struct {
@@ -158,6 +188,138 @@ func TestReader_Read(t *testing.T) {
 		is.NotError(t, r.Close(t.Context()))
 		is.Equal(t, "t1(k*0,v): 1,11 | 2,20", read(t, d))
 	})
+
+	// The adversarial review of 2026-11-26 found that such a read served the new, empty cache as
+	// fresh.
+	t.Run("should stop the instance, and serve nothing, when another instance has made a new cache at the path of the holder's", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			a := w.serve(t, "a", core.Options{})
+			transact(t, a, create("t1", 1, "k"))
+
+			// The cache, its write-ahead log, and its wal-index, which the VFS of a browser keeps in memory.
+			for _, suffix := range []string{"", "-wal", "-shm"} {
+				if err := os.Remove(filepath.Join(w.dir, "a.db"+suffix)); suffix != "-shm" || !errors.Is(err, os.ErrNotExist) {
+					is.NotError(t, err)
+				}
+			}
+			_ = w.open(t, "a", core.Options{})
+
+			_, err := startRead(t, a)
+			is.Error(t, core.ErrStopped, err)
+			is.Error(t, core.ErrLocal, err)
+			is.True(t, strings.Contains(err.Error(), "is not the one that the instance writes to"), err.Error())
+			is.True(t, isDone(a))
+			is.Error(t, core.ErrStopped, beginErr(t, a))
+		})
+	})
+
+	for _, test := range []struct {
+		commits int
+		// again is whether the read fixes its state again, after the commits.
+		again bool
+	}{{commits: 1}, {commits: 2, again: true}} {
+		t.Run(fmt.Sprint("should serve a read that fixes its state before ", test.commits, " commits and is checked after them"), func(t *testing.T) {
+			bubble(t, func(t *testing.T, w *world) {
+				h := &yieldHook{Host: w.host, site: "core: a read before the check of the lease"}
+				d := w.openWith(t, "a", h, w.client(), core.Options{})
+				is.NotError(t, d.Wait(t.Context()))
+				transact(t, d, create("t1", 1, "k"))
+				before := w.manifest(t).Head
+
+				// The commits run once, between the read of the position and the check after it.
+				var once sync.Once
+				commit := func() {
+					once.Do(func() {
+						for i := range test.commits {
+							transact(t, d, upsert("t1", i))
+						}
+					})
+				}
+				h.f.Store(&commit)
+				r, err := startRead(t, d)
+				is.NotError(t, err)
+				after := w.manifest(t).Head
+				is.True(t, after != before)
+				if test.again {
+					is.Equal(t, after, r.Position())
+				} else {
+					is.Equal(t, before, r.Position())
+				}
+				is.NotError(t, r.Close(t.Context()))
+				is.True(t, !isDone(d))
+			})
+		})
+	}
+
+	// Instance a holds the lease, and a read on a passes its first check. a is then cut off from the
+	// store for longer than its lease, b takes the lease, and commits X. a takes the lease back after
+	// b has released it, and catches up. The read fixes its state between the two checks, and must be
+	// served at a committed state of the log, never stop the instance. The review of 2026-11-27 found
+	// the first case: a read on a cache that b shares and that b moved to X and then to Y stopped a,
+	// because a's catch-up found the cache at the head and counted that as one change. The other two
+	// fail if the catch-up records nothing when it is done.
+	for _, test := range []struct {
+		name string
+		// shared is whether b runs on a's cache. With a cache of its own, b's commits reach a's
+		// cache only through a's catch-up.
+		shared bool
+		// fixed is whether the read fixes its state at X, while a does not hold the lease. Otherwise
+		// it fixes its state after a has caught up.
+		fixed bool
+	}{
+		{name: "should serve a read whose state another instance on the same cache moved between its checks, while the instance had lost its lease", shared: true, fixed: true},
+		{name: "should serve a read that fixes its state after the instance lost its lease and took it back on the same cache", shared: true},
+		{name: "should serve a read that fixes its state after the instance lost its lease, took it back, and caught up"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bubble(t, func(t *testing.T, w *world) {
+				s := newScriptStore(w.client())
+				h := &onceHook{Host: w.host}
+				a := w.openWith(t, "a", h, s, core.Options{})
+				is.NotError(t, a.Wait(t.Context()))
+				transact(t, a, create("t1", 1, "k"))
+
+				cache := "b"
+				if test.shared {
+					cache = "a"
+				}
+				var b *core.DB
+				// takeOver cuts a off, has b take the lease, and has b commit X.
+				takeOver := func() {
+					s.on("swap", "", drop, -1)
+					s.on("get", "", drop, -1)
+					b = w.open(t, cache, core.Options{})
+					is.NotError(t, b.Wait(t.Context()))
+					transact(t, b, upsert("t1", 1))
+				}
+				// giveBack has b commit Y and release the lease, and waits until a serves again.
+				giveBack := func() {
+					transact(t, b, upsert("t1", 2))
+					is.NotError(t, b.Close(t.Context()))
+					s.clear()
+					is.NotError(t, a.Wait(t.Context()))
+				}
+				fixing, fixed := "core: a read before the state of the cache is fixed", "core: a read before the check of the lease"
+				if test.fixed {
+					h.on(fixing, takeOver)
+					h.on(fixed, giveBack)
+				} else {
+					h.on(fixing, func() { takeOver(); giveBack() })
+				}
+
+				r, err := startRead(t, a)
+				is.NotError(t, err)
+				head := w.manifest(t).Head
+				is.Equal(t, a.ID(), w.manifest(t).Lease.Holder)
+				is.Equal(t, head, r.Position())
+				state, err := dump(t.Context(), r)
+				is.NotError(t, err)
+				is.Equal(t, "t1(k*0): 1 | 2", show(state))
+				is.NotError(t, r.Close(t.Context()))
+				is.True(t, !isDone(a))
+			})
+		})
+	}
 
 	t.Run("should run a read transaction on each of twenty readers at once, each on the state of its start, while writes commit", func(t *testing.T) {
 		w := newWorld(t)

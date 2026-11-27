@@ -3822,8 +3822,10 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// quirk on every row, in 86.
 		{"evalStops", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
 		// A row whose comparison fails with an evaluation error left out: 287 seeds, 271 of them by their
-		// own violation.
-		{"errorSkipsRow", hammerWorkload, "hammer", stmttest.Arithmetic, arithmeticFinds(", and in SQLite")},
+		// own violation. A row left out of the rows of a scalar subquery gives the subquery the value
+		// of another row, or NULL, as in seed 22797, whose comparison "x.y" + ? overflows for the
+		// largest integer, and which finds nothing without the bug.
+		{"errorSkipsRow", hammerWorkload, "hammer", stmttest.Arithmetic, append(arithmeticFinds(", and in SQLite"), "gives the subquery")},
 		// A copy of a column alone into a column of another class: 222 seeds, 119 of them by the storage
 		// core, which refuses the value of another kind than its column; the rules of the types refuse
 		// the update that succeeded in a transaction, or whose commit the log holds; and a copy into
@@ -3870,8 +3872,10 @@ func TestSimulation_plantedBugs(t *testing.T) {
 		// A failure after the first statement of a text in a write transaction rolls it back and begins a
 		// new one: 987 seeds, 510 of them by their own violation. The others find that the place of the
 		// writer was free while the caller's transaction was open, that its commit lost the writes
-		// before the failure, or that its later statements saw a newer state.
-		{"undoInTx", hammerWorkload, "hammer", stmttest.Several, []string{"whose statements that succeeded and write are", "while the write transaction", "is not in the log", "saw the states"}},
+		// before the failure, or that its later statements saw a newer state. When the new transaction
+		// cannot begin, the caller's transaction has none left to end, as in seed 27822, which finds
+		// nothing without the bug.
+		{"undoInTx", hammerWorkload, "hammer", stmttest.Several, []string{"whose statements that succeeded and write are", "while the write transaction", "is not in the log", "saw the states", "no transaction is open on the connection"}},
 		// The result of the first statement that sets the count of changes: 983 seeds, all by their own
 		// violation, 976 before the result of a call that failed was checked too.
 		{"firstResult", hammerWorkload, "hammer", stmttest.Several, []string{"and the events of its statements"}},

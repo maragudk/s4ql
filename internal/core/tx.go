@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -434,6 +435,9 @@ func (tx *Tx) changed(name string) *txTable {
 	return e
 }
 
+// maxKeyColumns is the largest number of columns of a primary key: see [checkCreateTable].
+const maxKeyColumns = 250
+
 // checkCreateTable is one that a commit object can hold and the cache can make. Its error wraps
 // [ErrInvalid] or [ErrReservedName].
 func checkCreateTable(ct *s4qlpb.CreateTable, commitTime time.Time) error {
@@ -455,8 +459,8 @@ func checkCreateTable(ct *s4qlpb.CreateTable, commitTime time.Time) error {
 	// A row is found by a condition with a term for each column of its primary key, and SQLite
 	// refuses a condition that is nested deeper than a thousand levels, which a few hundred terms
 	// are.
-	if len(ct.GetPrimaryKey()) > 250 {
-		return invalidf("a primary key of %v columns, where the limit is 250", len(ct.GetPrimaryKey()))
+	if len(ct.GetPrimaryKey()) > maxKeyColumns {
+		return invalidf("a primary key of %v columns, where the limit is %v", len(ct.GetPrimaryKey()), maxKeyColumns)
 	}
 	for _, c := range ct.GetColumns() {
 		if _, err := typeSQL(c.GetType()); err != nil {
@@ -1626,9 +1630,11 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 	}
 	if d.bugs.cacheFirst {
 		// The planted bug: the cache has the transaction before the log does.
+		d.moving(out.name)
 		if err := tx.c.c.Exec("commit"); err != nil {
 			return d.cacheError(ctx, "commit", err)
 		}
+		d.moved(out.name)
 	}
 
 	// The upload needs no lock, so the lease is renewed while a large commit object is on its way.
@@ -1645,10 +1651,13 @@ func (tx *Tx) Commit(ctx context.Context) (err error) {
 		d.host.Yield(ctx, "core: a commit between the manifest swap and the cache")
 		outcome = "committed"
 		if !d.bugs.cacheFirst {
+			d.moving(out.name)
 			if err := tx.commitCache(ctx); err != nil && !d.bugs.ignoreCacheError {
 				_ = tx.c.c.Exec("rollback")
 				_ = d.stop(ctx, fmt.Errorf("%w: the commit of the cache after the manifest swap: %w", ErrLocal, err))
 				outcome = "committed_and_stopped"
+			} else if err == nil {
+				d.moved(out.name)
 			}
 		}
 		// The transaction is committed in the log and in the cache, so a checkpoint that fails stops
@@ -1723,39 +1732,63 @@ func (r *spoolReader) Seek(offset int64, whence int) (int64, error) {
 }
 
 // upload the commit object under its name, with its checksum, if no object is there. An object
-// that is there already can only be this commit object, left by an upload that reported a failure,
-// so it counts as success. An upload that ends without an answer is sent again until ctx is done,
-// which is harmless, because the object is named by its content and created only if absent. An
-// upload that the store refuses as too large fails at once with [ErrTooLarge].
+// that is there already is this commit object, left by an upload that reported a failure, if its
+// content as it is read has the checksum that is the name, and the upload then counts as success.
+// Content without it was damaged on its way, which another read can tell, or is another object,
+// which only a tool outside s4ql can put there and which the log must never name: after ten reads
+// in a row that do not have the checksum, the upload fails, and nothing is committed. An upload or
+// a read that ends without an answer is sent again until ctx is done, which is harmless, because
+// the object is named by its content and created only if absent. An upload that the store refuses
+// as too large fails at once with [ErrTooLarge].
 func (tx *Tx) upload(ctx context.Context, out *spooled, attempts *int) error {
 	d := tx.d
 	sum := store.Checksum(out.name)
 	wait := retrySoon
-	var mismatches int
+	var mismatches, others int
+	// exists is whether the store has said that an object is at the key, which stays there: no
+	// object of the log is deleted.
+	var exists bool
 	for {
 		if err := d.usable(); err != nil {
 			return err
 		}
-		if err := out.spool.rewind(); err != nil {
-			return d.spoolError(ctx, err)
-		}
-		content := &spoolReader{s: out.spool}
-		*attempts++
-		rctx, cancel := d.host.WithTimeout(ctx, d.options.ObjectTimeout)
-		_, err := d.store.Create(rctx, d.commitKey(out.name), content, &sum)
-		cancel()
-		switch {
-		case content.err != nil:
-			return d.spoolError(ctx, content.err)
-		case err == nil, errors.Is(err, store.ErrExists):
-			return nil
-		case errors.Is(err, store.ErrTooLarge):
-			// Every attempt sends the same bytes, so none can succeed.
-			return fmt.Errorf("%w: %v", ErrTooLarge, err)
-		case errors.Is(err, store.ErrChecksum):
-			// The bytes may have been damaged on their way once. Twice, it is the file.
-			if mismatches++; mismatches == 2 {
-				return d.spoolError(ctx, fmt.Errorf("the commit object read back from it does not have its checksum: %w", err))
+		var err error
+		if exists {
+			var same bool
+			if same, err = tx.uploaded(ctx, out); err == nil {
+				if same {
+					return nil
+				}
+				err = fmt.Errorf("the object at the key %v is not the commit object: its content does not have the checksum that is the commit object's name", d.commitKey(out.name))
+				if others++; others == 10 {
+					return err
+				}
+			}
+		} else {
+			if err := out.spool.rewind(); err != nil {
+				return d.spoolError(ctx, err)
+			}
+			content := &spoolReader{s: out.spool}
+			*attempts++
+			rctx, cancel := d.host.WithTimeout(ctx, d.options.ObjectTimeout)
+			_, err = d.store.Create(rctx, d.commitKey(out.name), content, &sum)
+			cancel()
+			switch {
+			case content.err != nil:
+				return d.spoolError(ctx, content.err)
+			case err == nil:
+				return nil
+			case errors.Is(err, store.ErrExists):
+				exists = true
+				continue
+			case errors.Is(err, store.ErrTooLarge):
+				// Every attempt sends the same bytes, so none can succeed.
+				return fmt.Errorf("%w: %v", ErrTooLarge, err)
+			case errors.Is(err, store.ErrChecksum):
+				// The bytes may have been damaged on their way once. Twice, it is the file.
+				if mismatches++; mismatches == 2 {
+					return d.spoolError(ctx, fmt.Errorf("the commit object read back from it does not have its checksum: %w", err))
+				}
 			}
 		}
 		if sleepErr := d.host.Sleep(ctx, wait); sleepErr != nil {
@@ -1763,6 +1796,26 @@ func (tx *Tx) upload(ctx context.Context, out *spooled, attempts *int) error {
 		}
 		wait = min(2*wait, retryAfter)
 	}
+}
+
+// uploaded reports whether the object at the key of the commit object out is that commit object:
+// whether its content has the length of the spool file and the checksum that is the name. It reads
+// at most one byte more than the spool file holds.
+func (tx *Tx) uploaded(ctx context.Context, out *spooled) (bool, error) {
+	d := tx.d
+	rctx, cancel := d.host.WithTimeout(ctx, d.options.ObjectTimeout)
+	defer cancel()
+	body, _, err := d.store.Get(rctx, d.commitKey(out.name))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = body.Close() }()
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(body, out.spool.size+1))
+	if err != nil {
+		return false, err
+	}
+	return n == out.spool.size && store.Checksum(h.Sum(nil)) == store.Checksum(out.name), nil
 }
 
 // publishing is what became of the manifest swap of a commit.

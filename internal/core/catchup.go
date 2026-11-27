@@ -25,7 +25,13 @@ import (
 // [ErrLogBroken]. It never skips a commit object and never rebuilds the cache. A download that
 // fails for another reason, such as one of the store, is tried again where it failed, so that a
 // long log is caught up also when not every download of it succeeds in a row. It fails only when
-// the instance stops, loses the lease, or ctx is done.
+// the instance stops, loses the lease, or ctx is done, or with an error that wraps
+// [errCacheMoved] when another instance on the same cache commits to it meanwhile, such as a holder
+// that lost its lease while it committed a transaction whose manifest swap was applied: the next
+// catch-up, which can start soon, starts from the position that the cache then records, and trusts
+// it as it trusts any position it starts from, only if the walk from the head finds it.
+//
+// When it has caught up, it records the position for [Reader.Read] with [DB.caughtUp].
 func (d *DB) catchUp(ctx context.Context) (err error) {
 	clock := d.stopwatch()
 	from, err := d.w.position()
@@ -34,6 +40,7 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 	}
 	head := d.man.Head
 	if from == head {
+		d.caughtUp(from)
 		return nil
 	}
 
@@ -44,8 +51,9 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 		outcome, level := "caught_up", slog.LevelInfo
 		if err != nil {
 			outcome, level = "failed", slog.LevelWarn
-			if errors.Is(d.stoppedError(), ErrClosed) {
-				// A close ended it, which is no failure.
+			if errors.Is(d.stoppedError(), ErrClosed) || errors.Is(err, errCacheMoved) {
+				// A close ended it, or another instance on the same cache committed to it, which is
+				// no failure.
 				level = slog.LevelInfo
 			}
 		}
@@ -77,6 +85,9 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 		name = parent
 	}
 
+	// The walk hands replay each commit object after the one before it, the first after from, so an
+	// error of replay that wraps errCacheMoved means that another instance has committed to the
+	// cache since its position was read.
 	for i := len(missing) - 1; i >= 0; i-- {
 		name := missing[i]
 		err := d.fetchAgain(ctx, name, func(body io.Reader) error {
@@ -96,6 +107,7 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	d.caughtUp(head)
 	return nil
 }
 
@@ -119,12 +131,14 @@ func parentOf(name format.Name, body io.Reader) (format.Name, error) {
 
 // fetchAgain fetches the commit object with the given name as [DB.fetch] does, and again for as
 // long as it fails for a reason that another try can cure, with a longer wait after each failure
-// and a renewal of the lease when one is due. It requires the manifest lock.
+// and a renewal of the lease when one is due. An error that wraps [errCacheMoved] it returns at
+// once, since another try would apply the commit object to a cache that is elsewhere. It requires
+// the manifest lock.
 func (d *DB) fetchAgain(ctx context.Context, name format.Name, use func(body io.Reader) error) error {
 	wait := retrySoon
 	for {
 		err := d.fetch(ctx, name, use)
-		if err == nil || errors.Is(err, ErrStopped) || errors.Is(err, ErrNoLease) || (errors.Is(err, format.ErrNameMismatch) && d.bugs.skipUnreadable) {
+		if err == nil || errors.Is(err, ErrStopped) || errors.Is(err, ErrNoLease) || errors.Is(err, errCacheMoved) || (errors.Is(err, format.ErrNameMismatch) && d.bugs.skipUnreadable) {
 			return err
 		}
 		if sleepErr := d.host.Sleep(ctx, wait); sleepErr != nil {

@@ -1203,4 +1203,53 @@ func TestLease_duration(t *testing.T) {
 		_, err := core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "a.db"), "db", core.Options{Lease: 366 * 24 * time.Hour, RenewAfter: time.Hour})
 		is.True(t, err != nil)
 	})
+
+	// The adversarial review of 2026-11-26 (docs/research/adversarial-core-2026-11-26.md) found that
+	// a Watch longer than a holder's lease of centuries made the wait overflow, and the instance took
+	// the lease at once. Open now refuses such a Watch, and the table of WatchWait below has the
+	// overflow; the scenario with the longest Watch that Open takes passed before the fix too.
+	t.Run("should refuse to watch the manifest less often than once a year", func(t *testing.T) {
+		w := newWorld(t)
+		_, err := core.Open(t.Context(), w.host, w.client(), filepath.Join(w.dir, "a.db"), "db", core.Options{Watch: 1<<63 - 1})
+		is.True(t, err != nil)
+	})
+
+	t.Run("should not take at once the lease of a holder that renewed a moment ago and whose lease lasts for centuries", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			l := newHandLog(t, w)
+			data, err := format.Manifest{Lease: &format.Lease{Holder: "another", Duration: 9_000_000_000_000_000_000, Renewed: time.Now(), Salt: 1}}.Marshal()
+			is.NotError(t, err)
+			l.publishBytes(data)
+
+			d := w.open(t, "a", core.Options{Watch: 365 * 24 * time.Hour})
+			time.Sleep(time.Minute)
+			is.True(t, !serves(t, d), "the instance took a lease that lasts for centuries a minute after its renewal")
+			is.Equal(t, "another", w.manifest(t).Lease.Holder)
+		})
+	})
+
+	t.Run("should compute the wait for any duration of the holder's lease and any watch without an overflow", func(t *testing.T) {
+		const largest = time.Duration(1<<63 - 1)
+		tests := []struct {
+			name                     string
+			duration, elapsed, watch time.Duration
+			expected                 time.Duration
+		}{
+			{name: "the largest lease, watched for a minute, with the largest watch", duration: largest, elapsed: time.Minute, watch: largest, expected: largest},
+			{name: "a lease of centuries, watched for a minute, with the largest watch", duration: 9_000_000_000_000_000_000, elapsed: time.Minute, watch: largest, expected: largest},
+			{name: "a lease of centuries, watched for a minute, with a watch of a year", duration: 9_000_000_000_000_000_000, elapsed: time.Minute, watch: 365 * 24 * time.Hour, expected: 365 * 24 * time.Hour},
+			{name: "the largest lease, watched for its whole length less a second", duration: largest, elapsed: largest - time.Second, watch: largest, expected: time.Second + largest/10},
+			{name: "the largest lease, watched for its whole length", duration: largest, elapsed: largest, watch: 5 * time.Second, expected: 5 * time.Second},
+			{name: "a lease of 30 seconds, watched for 20", duration: 30 * time.Second, elapsed: 20 * time.Second, watch: 5 * time.Second, expected: 5 * time.Second},
+			{name: "a lease of 30 seconds, watched for 30", duration: 30 * time.Second, elapsed: 30 * time.Second, watch: 5 * time.Second, expected: 3 * time.Second},
+			{name: "a lease of 30 seconds, watched for 33", duration: 30 * time.Second, elapsed: 33 * time.Second, watch: 5 * time.Second, expected: 0},
+			{name: "a lease of 30 seconds, watched for the largest time", duration: 30 * time.Second, elapsed: largest, watch: 5 * time.Second, expected: 0},
+			{name: "a lease of 30 seconds, by a monotonic clock that went back", duration: 30 * time.Second, elapsed: -largest, watch: 5 * time.Second, expected: 5 * time.Second},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				is.Equal(t, test.expected, core.WatchWait(test.duration, test.elapsed, test.watch))
+			})
+		}
+	})
 }

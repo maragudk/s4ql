@@ -357,12 +357,8 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 			// The planted bug.
 			duration = d.options.Lease
 		}
-		// The duration is what the manifest says, and can be any, so it is compared before it is
-		// added to, and no sum leaves the range of a duration.
-		if left := duration - (now - d.watch.since); left >= d.options.Watch {
-			return d.options.Watch
-		} else if remaining := left + margin(duration); remaining > 0 {
-			return min(remaining, d.options.Watch)
+		if wait := watchWait(duration, now-d.watch.since, d.options.Watch); wait > 0 {
+			return wait
 		}
 	}
 
@@ -423,6 +419,26 @@ func (d *DB) acquire(ctx context.Context) time.Duration {
 		slog.String(attrLeaseHolder, d.id), slog.String(attrLeasePrevious, previous), slog.Duration(attrLeaseDuration, d.options.Lease),
 		slog.String(attrCommit, next.Head.String()), clock.total())
 	return d.resumeLocked(ctx)
+}
+
+// watchWait is how long an instance that has watched the manifest stand still for elapsed waits
+// before it reads the manifest again, which is at most interval, or zero once it has watched for the
+// duration of the holder's lease and the margin, and may take the lease.
+//
+// The duration is what the manifest says, so it can be any positive duration up to the largest,
+// and the wait is computed without a sum or a difference that can leave the range of a duration:
+// the time left of the lease is compared with the interval before the margin is added to it. An elapsed time below
+// zero, of a monotonic clock that went back, counts as none.
+func watchWait(duration, elapsed, interval time.Duration) time.Duration {
+	m := margin(duration)
+	// Neither difference leaves the range: duration is above zero and elapsed is not below it, and
+	// the margin is at most a tenth of the largest duration, or two seconds.
+	left := duration - max(elapsed, 0)
+	if left >= interval-m {
+		return interval
+	}
+	// left is below interval - m here, so the sum is below interval.
+	return max(left+m, 0)
 }
 
 // endForLease ends the write transaction that is open, unless it is committing or rolling back,
@@ -533,7 +549,10 @@ func (d *DB) resumeLocked(ctx context.Context) time.Duration {
 	if err := d.keepLease(ctx); err != nil {
 		return retrySoon
 	}
-	if err := d.catchUp(ctx); err != nil {
+	if err := d.catchUp(ctx); errors.Is(err, errCacheMoved) {
+		// The store answered every request, and the cache is where another instance committed it.
+		return retrySoon
+	} else if err != nil {
 		return backOff
 	}
 

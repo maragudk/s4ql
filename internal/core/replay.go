@@ -43,15 +43,16 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // It calls tick, if it is not nil, before each change, and stops with its error.
 //
 // Its error wraps [format.ErrNewerVersion], [format.ErrMalformed], or [format.ErrNameMismatch] as
-// the reader reports them, and [ErrLogBroken] for a commit object that the reader accepts and that
-// does not fit the cache: another parent, a table that is there already or is not there, a column
-// position outside the table, a row or a key that does not fit the table, a value of the wrong
-// storage class, a row to change or delete that is not there, an index on a table that is not
-// there or on a column outside the table, an index whose name a table or an index has or that is
-// reserved, and an index to drop that is not there. The cache is right up to the
-// parent, so such a commit object is wrong, and applying a part of it would leave the cache in a
-// state that the log never had. An error of body, of tick, or of the cache is passed on as it is.
-// After any error, the cache is as it was.
+// the reader reports them; [errCacheMoved] for a commit object whose parent is not the position of
+// the cache; and [ErrLogBroken] for a commit object that the reader accepts and that
+// does not fit the cache: a table that is there already or is not there, a primary key of more
+// columns than a write takes, a column position outside the table, a row or a key that does not fit
+// the table, a value of the wrong storage class, a row to change or delete that is not there, an
+// index on a table that is not there or on a column outside the table, an index whose name a table
+// or an index has or that is reserved, and an index to drop that is not there. The cache is right
+// up to the parent, so such a commit object is wrong, and applying a part of it would leave the
+// cache in a state that the log never had. An error of body, of tick, or of the cache is passed on
+// as it is. After any error, the cache is as it was.
 func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs bugs) (done replayed, err error) {
 	counted := &countingReader{r: body}
 	r := format.NewCommitReader(counted, name)
@@ -88,7 +89,7 @@ func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs b
 		return done, err
 	}
 	if parent != position {
-		return done, authentic(r, brokenf("the commit object %v has the parent %v, and the cache is at %v", name, parent, position))
+		return done, authentic(r, fmt.Errorf("%w: the commit object %v has the parent %v, and the cache is at %v", errCacheMoved, name, parent, position))
 	}
 
 	for {
@@ -135,8 +136,12 @@ func replay(c *conn, name format.Name, body io.Reader, tick func() error, bugs b
 // isFromBody reports whether err is an error of reading a commit object, and none of the cache or
 // of the checks of [replay].
 func isFromBody(err error) bool {
-	return classify(err) == kindOther && !isSQLite(err) && !errors.Is(err, ErrLogBroken) && !errors.Is(err, ErrCacheVersion)
+	return classify(err) == kindOther && !isSQLite(err) && !errors.Is(err, ErrLogBroken) && !errors.Is(err, ErrCacheVersion) && !errors.Is(err, errCacheMoved)
 }
+
+// errCacheMoved is wrapped by the error of [replay] for a cache that is not at the parent of the
+// commit object, of which replay then applies nothing.
+var errCacheMoved = errors.New("the cache is not at the parent of the commit object")
 
 // authentic returns refusal if the bytes of the commit object that r reads match its name, which r
 // knows at the end. Until then nothing that r handed out can be trusted, so a commit object that
@@ -161,6 +166,9 @@ func apply(c *conn, change *s4qlpb.Change) (int, error) {
 		ct := change.GetCreateTable()
 		if reserved(ct.GetTable()) {
 			return 0, brokenf("it creates the table %q, whose name is reserved", ct.GetTable())
+		}
+		if len(ct.GetPrimaryKey()) > maxKeyColumns {
+			return 0, brokenf("it creates the table %q with a primary key of %v columns, where the limit is %v", ct.GetTable(), len(ct.GetPrimaryKey()), maxKeyColumns)
 		}
 		existing, err := c.lookUp(ct.GetTable())
 		if err != nil {

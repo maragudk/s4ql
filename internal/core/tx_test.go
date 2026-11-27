@@ -1452,6 +1452,68 @@ func TestTx_Commit_checksum(t *testing.T) {
 	})
 }
 
+// squatter is a store that puts other bytes at the key of each commit object before its create
+// reaches the store, as a tool outside s4ql could.
+type squatter struct {
+	store.Store
+}
+
+func (s squatter) Create(ctx context.Context, key string, content io.ReadSeeker, checksum *store.Checksum) (store.Version, error) {
+	if strings.Contains(key, "/commits/") {
+		_, _ = s.Store.Create(ctx, key, strings.NewReader("not a commit object"), nil)
+	}
+	return s.Store.Create(ctx, key, content, checksum)
+}
+
+func TestTx_Commit_exists(t *testing.T) {
+	t.Run("should commit when the object at the key of the commit object is the one that an earlier attempt uploaded", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, _, tx := committing(t, w, core.Options{})
+			// The upload is applied and its answer lost, so the next attempt finds the object there.
+			s.on("create", "commits/", lose, 1)
+			is.NotError(t, tx.Commit(t.Context()))
+			is.Equal(t, 2, len(w.commits(t)))
+		})
+	})
+
+	t.Run("should read the object again, and upload it no more, when its bytes are damaged on their way nine times, and commit", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			s, _, tx := committing(t, w, core.Options{})
+			s.on("create", "commits/", lose, 1)
+			s.damage("commits/", "", 9)
+			is.NotError(t, tx.Commit(t.Context()))
+			is.Equal(t, 2, len(w.commits(t)))
+			// The create of the table t1, the create of t2 whose answer was lost, and the one that found
+			// the object there; then only reads.
+			is.Equal(t, 3, s.count("create", "commits/"))
+		})
+	})
+
+	// The adversarial review of 2026-11-26 found that any object at the key counted as the commit
+	// object, and the manifest swap then made the log name an object that no one can read.
+	t.Run("should not commit when the object at the key of the commit object has other bytes, and go on serving", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			d := w.openOn(t, "a", squatter{Store: w.client()}, core.Options{})
+			is.NotError(t, d.Wait(t.Context()))
+			head := w.manifest(t).Head
+			tx, err := d.Begin(t.Context())
+			is.NotError(t, err)
+			create("t1", 1, "k")(t, tx)
+			start := time.Now()
+			err = tx.Commit(t.Context())
+			is.True(t, err != nil, "the commit succeeded with another object at the key of its commit object")
+			is.True(t, strings.Contains(err.Error(), "not committed: the object at the key"), err.Error())
+			is.True(t, strings.Contains(err.Error(), "is not the commit object"), err.Error())
+			// Ten reads, with a wait after each of them but the last.
+			is.True(t, time.Since(start) < 10*time.Second, fmt.Sprint(time.Since(start)))
+			is.True(t, !errors.Is(err, core.ErrStopped))
+			is.Equal(t, head, w.manifest(t).Head)
+			is.True(t, serves(t, d))
+			is.Equal(t, "", read(t, d))
+		})
+	})
+}
+
 func TestTx_Commit_tooLarge(t *testing.T) {
 	t.Run("should fail at once with ErrTooLarge for a commit object that the store can never take, commit nothing, and commit the next transaction", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {

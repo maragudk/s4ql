@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"iter"
@@ -295,6 +296,10 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 		return err
 	}
 
+	if err := c.checkEncoding(); err != nil {
+		return err
+	}
+
 	// A cache that has its table is only read, so that an instance of the same database opens it
 	// while another one writes to it. A new cache gets its table in a transaction that holds the
 	// write lock from its start, and that looks again whether the table is there: of two instances
@@ -320,6 +325,23 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 		}
 	}
 
+	// The record and the schema are read in one read transaction, so that both are of one state of
+	// the cache, also while another instance on the same cache commits to it: read apart, a commit of
+	// the first table could land between them, and the cache would look empty and hold a table. The
+	// open has no yield between two statements, so no test of the scheduler reaches that moment.
+	if err := c.c.Exec("begin"); err != nil {
+		return err
+	}
+	err = c.checkCache(identity)
+	if endErr := c.c.Exec("rollback"); err == nil {
+		err = endErr
+	}
+	return err
+}
+
+// checkCache checks the record of the cache, as [record.check] does, and its schema, as
+// [conn.checkObjects] does.
+func (c *conn) checkCache(identity string) error {
 	r, err := c.record()
 	if err != nil {
 		return err
@@ -327,7 +349,64 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 	if err := r.check(identity); err != nil {
 		return err
 	}
-	return c.checkObjects()
+	position, err := r.position()
+	if err != nil {
+		return err
+	}
+	return c.checkObjects(position == format.EmptyLog)
+}
+
+// checkEncoding of the cache is UTF-8, the encoding of every text that the core writes, in which
+// SQLite's BINARY order of text is the order of its bytes. SQLite gives a new file that encoding,
+// so a cache in another is a file that something other than s4ql made.
+//
+// A build of SQLite with SQLITE_OMIT_UTF16, such as the one in a browser, has no PRAGMA encoding,
+// which then gives no row. Such a build reads and writes every text in UTF-8, whatever the header of
+// the file says, and fails to open a file whose schema is in UTF-16, as a malformed schema. A file
+// whose header says UTF-16 and whose schema is empty would open, and get its text in UTF-8 under a
+// header that says UTF-16, so the encoding is then read from the header itself, as
+// [conn.headerEncoding] does.
+func (c *conn) checkEncoding() error {
+	var encoding string
+	if err := c.query("pragma encoding", func(s *sqlite.Stmt) error {
+		encoding = s.ColumnText(0)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if encoding == "" {
+		var err error
+		if encoding, err = c.headerEncoding(); err != nil {
+			return err
+		}
+	}
+	if encoding != "UTF-8" {
+		return foreign("its text is in the encoding %v, not UTF-8", encoding)
+	}
+	return nil
+}
+
+// headerEncoding of the cache, by the name that PRAGMA encoding gives it, from the text encoding of
+// the header of the file (https://sqlite.org/fileformat.html), which it reads from the first page
+// in the table sqlite_dbpage, through the write-ahead log. A build of SQLite with UTF-16 takes the
+// encoding from the two lowest bits of the field, and gives a new file, which has no page or a field
+// of 0, UTF-8. The table gives the whole page as one blob, which may be longer than the length limit
+// of the connection, so it is read under SQLite's largest, as [conn.unlimited] does.
+func (c *conn) headerEncoding() (string, error) {
+	var field []byte
+	if err := c.queryUnlimited("select substr(data, 57, 4) from sqlite_dbpage where pgno = 1", func(s *sqlite.Stmt) error {
+		field = s.ColumnBlob(0)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	if field == nil {
+		return "UTF-8", nil
+	}
+	if len(field) != 4 {
+		return "", foreign("its first page has no header")
+	}
+	return [...]string{"UTF-8", "UTF-8", "UTF-16le", "UTF-16be"}[binary.BigEndian.Uint32(field)&3], nil
 }
 
 // checkObjects of the schema of the cache: each is one that this package makes or that SQLite makes
@@ -341,9 +420,12 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 //   - a table whose name starts with "sqlite_", which only SQLite makes, such as sqlite_stat1.
 //
 // It refuses everything else: a view, a trigger, a table under another name that starts with
-// "s4ql_", and an index on a table with a reserved name.
-func (c *conn) checkObjects() error {
-	return c.query("select type, name, tbl_name, sql from main.sqlite_schema", func(s *sqlite.Stmt) error {
+// "s4ql_", and an index on a table with a reserved name. It also refuses a table of the database
+// in a cache that is empty, at the position [format.EmptyLog], since the log has no commit object
+// that made it; empty must be of the state of the cache whose schema it reads.
+func (c *conn) checkObjects(empty bool) error {
+	var tables []string
+	err := c.query("select type, name, tbl_name, sql from main.sqlite_schema", func(s *sqlite.Stmt) error {
 		typ, name, owner := s.ColumnText(0), s.ColumnText(1), s.ColumnText(2)
 		switch {
 		case typ == "table" && name == "s4ql_cache":
@@ -354,12 +436,17 @@ func (c *conn) checkObjects() error {
 		case typ == "table" && strings.HasPrefix(fold(name), "sqlite_"):
 			return nil
 		case typ == "table" && !reserved(name):
+			tables = append(tables, name)
 			return nil
 		case typ == "index" && !reserved(owner):
 			return nil
 		}
 		return foreign("it holds the %v %q on the table %q, which s4ql does not make", typ, name, owner)
 	})
+	if err != nil || !empty || len(tables) == 0 {
+		return err
+	}
+	return foreign("it records no commit object, and holds the table %q", tables[0])
 }
 
 // foreign is the error that wraps [ErrCacheVersion] for a cache that holds what this package does

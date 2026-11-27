@@ -221,7 +221,11 @@ var (
 	// the workload reached 88 of them before the readers and 80 after, about 4 in 10 seeds, which is
 	// less than the minimum of 5 that the 10 seeds had. On 2026-11-20 the scans with pins and bounds
 	// moved the draws, and the 30 seeds reached none, so that minimum left the workload; over 200
-	// seeds it then reached 102 of them.
+	// seeds it then reached 102 of them. On 2026-11-26 the read of an object that an upload finds at
+	// its key, and the check of the position of a read, moved the draws again, and the 30 seeds
+	// reached no renewal of unknown outcome that was then found renewed, of which the minimum is 1,
+	// while over 200 seeds the workload reached 21 of them. On 2026-11-27, after another merge of
+	// main, the 30 seeds reached 4 of them again.
 	hammerReaches = map[string]int64{
 		"bounded scans backward":                     8,
 		"bounded scans on a descending column":       8,
@@ -1015,7 +1019,9 @@ var plantedBugs = []plantedBug{
 		control: new(plant(competing(func(w *workload) {
 			w.faults.BrokenRead, w.faults.CutOff, w.faults.Outage, w.options.ObjectTimeout, w.crashes = 0, 0, 0, 5*time.Minute, 1
 		}), "replayCommitsEarly")),
-		symptoms: []string{"the cache of", "the instance stopped", "a read saw at commit", "the replay of the whole log"},
+		// A part of the first commit object that is kept in a cache at the empty log makes the open
+		// after a crash refuse the cache.
+		symptoms: []string{"the cache of", "the instance stopped", "a read saw at commit", "the replay of the whole log", "it records no commit object"},
 	},
 	{
 		bug:      "keyTwice",
@@ -1052,7 +1058,9 @@ var plantedBugs = []plantedBug{
 		control: new(plant(competing(func(w *workload) {
 			w.damaged, w.crashes = 0, 1
 		}), "skipUnreadable")),
-		symptoms: []string{"the cache of", "a read saw at commit", "the instance stopped", "began at the position", "the replay of the whole log"},
+		// A cache that lacks a commit object that the bug skipped also gives a write transaction
+		// other rows than the model, as in seed 177, which finds nothing without the bug.
+		symptoms: []string{"the cache of", "a read saw at commit", "the instance stopped", "began at the position", "the replay of the whole log", "a transaction scanned"},
 	},
 	{
 		// A take is sent from a manifest without a lease entry, whose version comes back whenever a
@@ -1113,6 +1121,16 @@ var plantedBugs = []plantedBug{
 		name:     "a scan by an index whose key lacks the primary-key columns that the index does not hold",
 		workload: plant(calm(singleWorkload), "shortKey"),
 		symptoms: []string{"a transaction scanned", "scan by a key: "},
+	},
+	{
+		// A read finds the cache moved between its two looks only if a commit to the cache comes
+		// between the read of its position and the check of the lease after it, which the callers of
+		// the hammer, who never pause, make common: the first 4 seeds found it, and 4 of the first 113
+		// of the single workload.
+		bug:      "fixedOnce",
+		name:     "a read that compares its position with the second look alone",
+		workload: plant(calm(hammerWorkload), "fixedOnce"),
+		symptoms: []string{"is not the one that the instance writes to"},
 	},
 }
 

@@ -1176,6 +1176,11 @@ func (tx *Tx) scan(ctx context.Context, name string, plan func(t *table) (*index
 				yield(nil, tx.Lost())
 				return
 			}
+			// A scan that is running when the instance stops is aborted, as one of a read is.
+			if err := tx.d.stoppedError(); err != nil {
+				yield(nil, err)
+				return
+			}
 			if given++; !yield(row, nil) {
 				// The loop over the scan stopped early, and the statement of the scan is at rest once
 				// this loop has ended.
