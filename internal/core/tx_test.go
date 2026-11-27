@@ -1501,6 +1501,7 @@ func TestTx_Commit_exists(t *testing.T) {
 			create("t1", 1, "k")(t, tx)
 			start := time.Now()
 			err = tx.Commit(t.Context())
+			is.True(t, err != nil, "the commit succeeded with another object at the key of its commit object")
 			is.True(t, strings.Contains(err.Error(), "not committed: the object at the key"), err.Error())
 			is.True(t, strings.Contains(err.Error(), "is not the commit object"), err.Error())
 			// Ten reads, with a wait after each of them but the last.
