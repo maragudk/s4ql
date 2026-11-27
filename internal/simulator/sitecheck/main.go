@@ -16,7 +16,11 @@
 // in the state, and an action switched off again takes it away; the client keeps
 // calling a while a is crashed and after its restart, and its switch moves its calls to b and back; a
 // crash of the instance that serves lets the other take over; fake time goes
-// past 10 minutes; and the page writes nothing into its address. The box for SQL, while paused,
+// past 10 minutes; and the page writes nothing into its address. The stick figure, carried and let
+// go at 1280 and 390 px, lands on the top line of each framed box that it is let go above, and falls
+// down out of the middle of each box, up only when no line is below; carried to the right edge, it
+// does not make the page wider; and the page does not scroll sideways at the widths of phones and
+// tablets. The box for SQL, while paused,
 // selects from barcodes, creates a table, inserts, selects with order by and limit, shows an error of
 // the engine and the refusal of a write to barcodes, moves fake time only until each answer, and lets
 // a write wait while the connection to S3 hangs. Then the keys of the page: Space plays and pauses, and

@@ -730,11 +730,82 @@ async function check() {
 
   expect(new URL(p.win.location.href).pathname === address && p.win.location.search === "" && p.win.location.hash === "", "the page writes nothing into its address");
 
+  play.click();
+  await until(() => !p.win.s4qlPage.playing && p.idle());
+  await landing(p);
+
   p.win.frameElement.remove();
   forget();
   await database(address);
   await kept();
   await broken();
+}
+
+// landing checks where the stick figure lands when it is carried and let go, at 1280 and 390 px: let
+// go above the top line of each framed box, it lands on that line; let go in the middle of a box, it
+// falls down, to a line below the point, and up only if no line is below it. Carried to the right
+// edge, it does not make the page wider, nor does the page scroll sideways at the widths of phones
+// and tablets. The press is of Pointer Events made by the check, as a mouse's.
+async function landing(p) {
+  const fig = p.$("#figure"), doc = p.win.document.documentElement;
+  const frames = () => [...p.win.document.querySelectorAll(".requests, .node, .box, .s3, .logs, .ask-box")];
+  const name = (el) => el.className.split(" ")[0] + (el.closest(".inst") ? " " + el.closest(".inst").dataset.instance : "");
+  const pointer = (type, x, y) => fig.dispatchEvent(new p.win.PointerEvent(type, { pointerId: 1, isPrimary: true, button: 0, clientX: x, clientY: y, bubbles: true, cancelable: true, pointerType: "mouse" }));
+  // carry the figure by its head until its feet are at x and y in the viewport, and say where they
+  // are, and how much wider than the viewport the page is.
+  const carry = (x, y) => {
+    const r = fig.getBoundingClientRect();
+    pointer("pointerdown", r.left + 15, r.top + 4);
+    pointer("pointermove", r.left + 25, r.top + 14);
+    pointer("pointermove", x, y - 34);
+    return { feet: fig.getBoundingClientRect().bottom, wide: doc.scrollWidth - doc.clientWidth };
+  };
+  // drop the figure with its feet at x and y, and wait until it stands.
+  const drop = async (x, y) => {
+    const held = carry(x, y);
+    pointer("pointerup", x, y - 34);
+    await until(() => fig.dataset.aloft === undefined);
+    await p.frames(2);
+    return { held, frame: fig.parentElement, feet: fig.getBoundingClientRect().bottom, line: fig.parentElement.getBoundingClientRect().top };
+  };
+  // see the box, its middle in the middle of the viewport, or with top, its top line 300 px down.
+  const see = async (el, top) => {
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    if (top) p.win.scrollBy({ top: el.getBoundingClientRect().top - 300, behavior: "instant" });
+    await p.frames(2);
+    return el.getBoundingClientRect();
+  };
+  for (const width of [1280, 390]) {
+    p.win.frameElement.style.width = width + "px";
+    await p.frames(2);
+    const missed = [], rose = [];
+    for (const el of frames()) {
+      let r = await see(el, true);
+      const on = await drop(r.left + r.width * 0.7, r.top - 40);
+      if (on.frame !== el || Math.abs(on.feet - on.line) > 0.5) missed.push(`${name(el)}: on ${name(on.frame)}`);
+      r = await see(el);
+      const into = await drop(r.left + r.width / 2, r.top + r.height / 2);
+      const below = frames().some((f) => f.getBoundingClientRect().top >= into.held.feet - 2);
+      if (Math.abs(into.feet - into.line) > 0.5 || (into.feet < into.held.feet - 2 && below)) rose.push(`${name(el)}: to ${name(into.frame)}`);
+    }
+    expect(missed.length === 0, `at ${width} px, the stick figure let go above the top line of each framed box lands on that line (${missed.join(" | ") || frames().length + " boxes"})`);
+    expect(rose.length === 0, `at ${width} px, the stick figure let go in the middle of each box falls down to a line, and up only if no line is below (${rose.join(" | ") || frames().length + " boxes"})`);
+    const r = await see(p.$(".s3"), true);
+    const edge = carry(doc.clientWidth - 1, r.top - 40);
+    pointer("pointerup", doc.clientWidth - 1, r.top - 40);
+    await until(() => fig.dataset.aloft === undefined);
+    expect(edge.wide <= 0 && doc.scrollWidth <= doc.clientWidth, `at ${width} px, the stick figure carried to the right edge does not make the page wider (${edge.wide} px wider)`);
+  }
+  // At the widths of phones and tablets, upright and on their side, nothing scrolls sideways.
+  const wide = [];
+  for (const width of [320, 390, 820, 834, 1180, 1194]) {
+    p.win.frameElement.style.width = width + "px";
+    await p.frames(2);
+    if (doc.scrollWidth > doc.clientWidth) wide.push(`${width}: ${doc.scrollWidth}`);
+  }
+  expect(wide.length === 0, `the page does not scroll sideways at the widths of phones and tablets (${wide.join(" | ") || "320 to 1194 px"})`);
+  p.win.frameElement.style.width = "1280px";
+  await p.frames(2);
 }
 
 // TOGGLES are the items of localStorage in which the page remembers its toggles Turbo and Sound.
