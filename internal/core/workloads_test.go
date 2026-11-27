@@ -223,8 +223,9 @@ var (
 	// moved the draws, and the 30 seeds reached none, so that minimum left the workload; over 200
 	// seeds it then reached 102 of them. On 2026-11-26 the read of an object that an upload finds at
 	// its key, and the check of the position of a read, moved the draws again, and the 30 seeds
-	// reached no renewal of unknown outcome that was then found renewed, of which the minimum was 1;
-	// it left the workload too, and over 200 seeds the workload reached 21 of them.
+	// reached no renewal of unknown outcome that was then found renewed, of which the minimum is 1,
+	// while over 200 seeds the workload reached 21 of them. On 2026-11-27, after another merge of
+	// main, the 30 seeds reached 4 of them again.
 	hammerReaches = map[string]int64{
 		"bounded scans backward":                     8,
 		"bounded scans on a descending column":       8,
@@ -251,7 +252,8 @@ var (
 		"event refusal/refused":                      171,
 		"event stop/closed":                          15,
 		"event unknown_outcome/commit/not_committed": 1,
-		"failed commits":                             3,
+		"event unknown_outcome/renewal/renewed":      1,
+		"failed commits":                            3,
 		"indexes created":                            58,
 		"indexes dropped":                            21,
 		"indexes refused":                            55,

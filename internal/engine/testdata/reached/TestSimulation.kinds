@@ -139,6 +139,9 @@
 # profile with a subquery whose WHERE has arithmetic now and then gets the refusal of its arithmetic,
 # or another WHERE: 87 that day. Lowered from 87 by the fixes after the review of the workload on
 # the same day, which compare a subquery with an expression, whose refusal is of its arithmetic: 86.
+# Lowered from 86 by the hardening of the storage core on 2026-11-26: a commit whose upload finds
+# an object at its key reads that object, a download more, which moves the draws of the seeds, and
+# the runs reached 84 that day, with the engine unchanged. 83 on 2026-11-27, after a merge of main.
 82	statements with a subquery of another type than its column, refused
 63	statements with subqueries and an argument of LIMIT that s4ql refuses
 35	statements with subqueries that failed: no lease
