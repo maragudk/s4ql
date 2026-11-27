@@ -1551,10 +1551,6 @@ internal/engine/tx.go Conn.writeIn remove statement: planted.setFromNew, planted
 # The planted bugs of a text of several statements, in internal/engine/bugs.go. ofText decides
 # whether ExecAll puts the text in the context of each statement, which only the planted bugs read:
 # with no bug planted, or with one that does not need it, a text in the context changes nothing.
-internal/engine/bugs.go bugs.ofText condition: b.commitFailed || b.commitLater || b.annotateText => true
-	The text is then in the context while argsFromStart or no bug is planted too, and only the planted bugs read it, each behind its own flag.
-internal/engine/bugs.go bugs.ofText condition: b.argsFromStart => true
-	As for the whole condition: the text in the context is read only behind the flag of each planted bug.
 internal/engine/bugs.go bugs.ofText condition: b.commitFailed || b.commitLater => true
 	As for the whole condition: the text in the context is read only behind the flag of each planted bug.
 internal/engine/bugs.go bugs.ofText condition: b.annotateText => true
@@ -1575,19 +1571,6 @@ internal/engine/bugs.go textRun.commit operator: t != nil => t == nil
 	The text is never nil here, as above, so this is the whole condition false: commitLater never commits the write that it left open, which its tests find.
 internal/engine/bugs.go textRun.commit remove statement: t.later = nil =>
 	The planted bug commitLater then commits the same write again at the next statement and at the end of the text; the commit of a write that has ended fails, and the bug drops its error.
-
-# bugs.annotation: the guard of the two planted bugs of the annotation only saves the lookup of the
-# text, since each bug changes the annotation behind its own flag after it.
-internal/engine/bugs.go bugs.annotation condition: !b.annotateText && !b.argsFromStart => false
-	Without either bug, the text is looked up, and neither flag changes the text or the arguments, so they are given as they came.
-internal/engine/bugs.go bugs.annotation condition: !b.annotateText => false
-	As for the whole condition false: without either bug, neither flag after it changes the annotation.
-internal/engine/bugs.go bugs.annotation condition: !b.argsFromStart => false
-	As for the whole condition false: without either bug, neither flag after it changes the annotation.
-internal/engine/bugs.go bugs.annotation remove statement: return sql, args => #2
-	As for the condition false: the code after the guard gives the text and the arguments as they came without either bug.
-internal/engine/bugs.go bugs.annotation condition: b.argsFromStart => true
-	Reached only with annotateText or argsFromStart planted: annotateText then also annotates the arguments of the text from the first on, another wrong annotation, which its tests find.
 
 # Conn.commitFailed, the planted bug commitFailed. Each variant plants it with other bugs of the text
 # too, or on a statement alone, or leaves the transaction to a roll back after its commit; each is
@@ -1737,5 +1720,3 @@ stmt/split.go trimmedEnd condition: end == len(src) => false
 	As for the removal of its return: where the trim leaves the text as it is, no token runs past its end, and the loop gives nil.
 stmt/split.go staysComment condition: pos >= end => false
 	A comment never starts at or after end, as above, so the guard holds only by its first operand either way.
-internal/engine/bugs.go bugs.annotation condition: b.annotateText => true
-	Reached only with annotateText or argsFromStart planted: argsFromStart then annotates with the whole text too, another wrong annotation that its tests find.

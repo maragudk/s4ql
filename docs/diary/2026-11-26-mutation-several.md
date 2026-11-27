@@ -95,3 +95,49 @@ The brief's lessons: a timeout counts only after a run alone, and every survivor
 ### Future work
 
 - The rerun's results.
+
+## Step 3: The rerun, the self-review, and the second merge of `main`
+
+**Author:** mutation-several builder
+
+### Prompt Context
+
+**Verbatim prompt:** (excerpt from the lead's brief) "Before handing in: `git merge main`; `go test ./internal/sql/mutation/` passes (`TestEquivalent`); for entries that moved in the merge, run the mutant again before you update its entry. `make test` and the lint target pass; the engine package passes without `-short`; new tests pass with `-count=20` and `-race`."
+**Interpretation:** Finish the rerun, review the branch, merge `main` again, and run again what the merge changed.
+**Inferred intent:** A branch that lands on the code as it is.
+
+### What I did
+
+- The rerun of 152 took 3 h 3 min: 18 killed (the 4 that the new tests kill, 6 of the timeouts, and 8 of the new mutants), 10 not compiled, 10 timed out again, 114 survived. Eight of the survivors had timed out in the first run, at the limit of one minute of the layers `generator` and `mutants` under load, and are equivalent: `Check`'s guard, the tails beside the errors of `statementAt`, `tail <= len(src)` in `Split`, the shortcut of `trimmedEnd`, a guard of `staysComment`, and `annotateText => true` in `bugs.annotation`. The 10 that time out again loop or wait for good.
+- The self-review (the `code-review` skill, at medium, over `main...HEAD`) found no bug and four nits. Fixed: `testPackages` returns an error of the stat of the driver check other than its absence, where it left the check out silently; the counts of the merge say that it replaced 9 mutants with 18. Answered: the driver check runs only on mutants of the root, as no test outside `internal` runs on the engine's; the 20 survivors of the engine and `stmt` outside the planted bugs ran against its `TestGenerated` and `TestSeveral` with `scripts/drv.sh`, and all survive. The local rerun follows the brief, which asked for it, and this branch cannot be pushed to start the workflow; it is noted here.
+- `main` moved by 66 commits meanwhile, among them the annotation of a statement as its text alone (#191), which removed the planted bug `argsFromStart` and changed `bugs.ofText`, `bugs.annotation`, `Conn.commitFailed`, `Conn.write`, `Conn.writeIn`, and the text of the planted bugs in `Conn.execAll`. The second merge was clean. 68 mutants of the selection went and 38 came; seven entries named mutants that are gone, and are removed. The 38 new ones and the 41 survivors and timeouts of the changed declarations ran again in 1 h 4 min (`out3/`): 23 killed, 16 not compiled, 2 timed out, 38 survived, all in the list, and `bugs.annotation condition: !b.annotateText => false`, which the new shape of `bugs.annotation` lets the simulation kill, left the list.
+- Final: 1,104 mutants, 237 not compiled, 755 killed, 10 timed out, 102 equivalent, none unexplained. The record is the section "Several statements in one `Exec`" of `/internal/sql/mutation/README.md`, the section at the end of `/internal/sql/mutation/equivalent.txt`, and the heading "Mutation testing" of `/docs/todo/several-statements.md`.
+
+### Why
+
+The merge changed declarations of the round, so their survivors had to meet the new code and its tests.
+
+### What worked
+
+- Comparing the keys of `-list` before and after a merge, with the last result of each mutant: it named exactly the gone and the new mutants, so the reruns took 152 and 79 mutants and not the whole selection.
+
+### What didn't work
+
+- An edit of `scripts/run2.sh` failed with "File has not been read yet", and the `-list` that followed used the old regular expression and counted 139 mutants instead of 79; after a Read and the edit it counted 79.
+- `gofmt -l internal/sql/mutation` listed `run.go`, for a blank line that `main` brought; it is formatted now.
+
+### What I learned
+
+- `main`'s runner plans only the packages that have mutants to run, so a rerun of the engine alone plans in 3 min 35 s, where the first run, which planned the parser and every package that depends on it, took 12 min 35 s.
+
+### What was tricky
+
+- Keeping the counts right over two merges: the table counts the last result of each mutant of the selection on the final code.
+
+### What warrants review
+
+- The removal of the seven entries of `argsFromStart` and the old `bugs.annotation`, and that of `bugs.annotation condition: !b.annotateText => false`.
+
+### Future work
+
+- `internal/sql/mutation/round.txt` is not changed: this round mutated the declarations of the pull requests of several statements, not every declaration since the commit there. Issue #179 lists survivors of `bugs.go` and `several.go` that this round explains.
