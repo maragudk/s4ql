@@ -24,21 +24,27 @@ import (
 // reader; and a commit object that is not in the store or does not fit the cache, with
 // [ErrLogBroken]. It never skips a commit object and never rebuilds the cache. A download that
 // fails for another reason, such as one of the store, is tried again where it failed, so that a
-// long log is caught up also when not every download of it succeeds in a row. A cache that another
-// instance on the same cache commits to meanwhile is caught up from the position it then records.
-// It fails only when the instance stops, loses the lease, or ctx is done.
+// long log is caught up also when not every download of it succeeds in a row. It fails only when
+// the instance stops, loses the lease, or ctx is done, or with an error that wraps
+// [errCacheMoved] when another instance on the same cache commits to it meanwhile, such as a holder
+// that lost its lease while it committed a transaction whose manifest swap was applied: the next
+// catch-up starts from the position that the cache then records, and trusts it as it trusts any
+// position it starts from, only if the walk from the head finds it.
+//
+// When it has caught up, it records the position for [Reader.Read] with [DB.caughtUp].
 func (d *DB) catchUp(ctx context.Context) (err error) {
 	clock := d.stopwatch()
 	from, err := d.w.position()
 	if err != nil {
 		return d.cacheError(ctx, "catch up", err)
 	}
-	d.moved(from)
 	head := d.man.Head
 	if from == head {
+		d.caughtUp(from)
 		return nil
 	}
 
+	var missing []format.Name
 	var applied int
 	var bytes int64
 	defer func() {
@@ -54,34 +60,6 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 			slog.String(attrCatchUpTo, head.String()), slog.Int(attrCatchUpCommits, applied), slog.Int64(attrBytes, bytes), clock.total(), errAttr(err))
 	}()
 
-	// The cache moves under the catch-up only when another instance on the same cache commits to it,
-	// which the writer lock of this instance does not keep out. The catch-up then starts again from
-	// the position that the cache records, which it trusts as it trusts the position it started from:
-	// only if the walk from the head finds that commit object, and otherwise the instance stops with
-	// [ErrCacheNotInLog].
-	for at := from; ; {
-		err := d.catchUpFrom(ctx, at, head, &applied, &bytes)
-		if !errors.Is(err, errCacheMoved) {
-			return err
-		}
-		if at, err = d.w.position(); err != nil {
-			return d.cacheError(ctx, "catch up", err)
-		}
-		d.moved(at)
-		if at == head {
-			return nil
-		}
-	}
-}
-
-// catchUpFrom is [DB.catchUp] from the position from to head, which differ, and adds to applied and
-// bytes what it applied and read. The walk hands [replay] each commit object after the one before
-// it, the first after from, so an error of replay that wraps [errCacheMoved] means that the cache
-// is no longer at the position that the walk started from: another instance on the same cache has
-// committed to it, such as a holder that lost its lease while it committed a transaction whose
-// manifest swap was applied. The error is returned then.
-func (d *DB) catchUpFrom(ctx context.Context, from, head format.Name, applied *int, bytes *int64) error {
-	var missing []format.Name
 	// Each commit object is read to its end here, so that its parent is known to be what its
 	// writer wrote, and read once more when it is applied.
 	for name := head; name != from; {
@@ -106,12 +84,14 @@ func (d *DB) catchUpFrom(ctx context.Context, from, head format.Name, applied *i
 		name = parent
 	}
 
+	// The walk hands replay each commit object after the one before it, the first after from, so an
+	// error of replay that wraps errCacheMoved means that another instance has committed to the
+	// cache since its position was read.
 	for i := len(missing) - 1; i >= 0; i-- {
 		name := missing[i]
-		d.moving(name)
 		err := d.fetchAgain(ctx, name, func(body io.Reader) error {
 			done, err := replay(d.w, name, body, func() error { return d.keepLease(ctx) }, d.bugs)
-			*bytes += done.bytes
+			bytes += done.bytes
 			return err
 		})
 		if d.bugs.skipUnreadable && errors.Is(err, format.ErrNameMismatch) {
@@ -121,12 +101,12 @@ func (d *DB) catchUpFrom(ctx context.Context, from, head format.Name, applied *i
 		if err != nil {
 			return err
 		}
-		d.moved(name)
-		*applied++
+		applied++
 		if err := d.checkpoint(ctx); err != nil {
 			return err
 		}
 	}
+	d.caughtUp(head)
 	return nil
 }
 

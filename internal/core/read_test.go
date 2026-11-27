@@ -20,6 +20,35 @@ import (
 	"maragu.dev/s4ql/internal/sqlite/faultvfs"
 )
 
+// onceHook is a host that calls the function that [onceHook.on] gave a site at the next yield of
+// that site, and then no more.
+type onceHook struct {
+	host.Host
+	mu sync.Mutex
+	f  map[string]func()
+}
+
+// on the next yield of the site, call f.
+func (h *onceHook) on(site string, f func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.f == nil {
+		h.f = map[string]func(){}
+	}
+	h.f[site] = f
+}
+
+func (h *onceHook) Yield(ctx context.Context, site string) {
+	h.mu.Lock()
+	f := h.f[site]
+	delete(h.f, site)
+	h.mu.Unlock()
+	if f != nil {
+		f()
+	}
+	h.Host.Yield(ctx, site)
+}
+
 // yieldHook is a host that calls the function in f, if there is one, at each yield of the site.
 type yieldHook struct {
 	host.Host
@@ -215,6 +244,75 @@ func TestReader_Read(t *testing.T) {
 				}
 				is.NotError(t, r.Close(t.Context()))
 				is.True(t, !isDone(d))
+			})
+		})
+	}
+
+	// Instance a holds the lease, and a read on a passes its first check. a is then cut off from the
+	// store for longer than its lease, b takes the lease, and commits X. a takes the lease back after
+	// b has released it, and catches up. The read fixes its state between the two checks, and must be
+	// served at a committed state of the log, never stop the instance. The review of 2026-11-27 found
+	// that a read on a cache that b shares and that b moved to X and then to Y stopped a, because a's
+	// catch-up found the cache at the head and counted that as one change.
+	for _, test := range []struct {
+		name string
+		// shared is whether b runs on a's cache. With a cache of its own, b's commits reach a's
+		// cache only through a's catch-up.
+		shared bool
+		// fixed is whether the read fixes its state at X, while a does not hold the lease. Otherwise
+		// it fixes its state after a has caught up.
+		fixed bool
+	}{
+		{name: "should serve a read whose state another instance on the same cache moved between its checks, while the instance had lost its lease", shared: true, fixed: true},
+		{name: "should serve a read that fixes its state after the instance lost its lease and took it back on the same cache", shared: true},
+		{name: "should serve a read that fixes its state after the instance lost its lease, took it back, and caught up"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bubble(t, func(t *testing.T, w *world) {
+				s := newScriptStore(w.client())
+				h := &onceHook{Host: w.host}
+				a := w.openWith(t, "a", h, s, core.Options{})
+				is.NotError(t, a.Wait(t.Context()))
+				transact(t, a, create("t1", 1, "k"))
+
+				cache := "b"
+				if test.shared {
+					cache = "a"
+				}
+				var b *core.DB
+				// takeOver cuts a off, has b take the lease, and has b commit X.
+				takeOver := func() {
+					s.on("swap", "", drop, -1)
+					s.on("get", "", drop, -1)
+					b = w.open(t, cache, core.Options{})
+					is.NotError(t, b.Wait(t.Context()))
+					transact(t, b, upsert("t1", 1))
+				}
+				// giveBack has b commit Y and release the lease, and waits until a serves again.
+				giveBack := func() {
+					transact(t, b, upsert("t1", 2))
+					is.NotError(t, b.Close(t.Context()))
+					s.clear()
+					is.NotError(t, a.Wait(t.Context()))
+				}
+				fixing, fixed := "core: a read before the state of the cache is fixed", "core: a read before the check of the lease"
+				if test.fixed {
+					h.on(fixing, takeOver)
+					h.on(fixed, giveBack)
+				} else {
+					h.on(fixing, func() { takeOver(); giveBack() })
+				}
+
+				r, err := startRead(t, a)
+				is.NotError(t, err)
+				head := w.manifest(t).Head
+				is.Equal(t, a.ID(), w.manifest(t).Lease.Holder)
+				is.Equal(t, head, r.Position())
+				state, err := dump(t.Context(), r)
+				is.NotError(t, err)
+				is.Equal(t, "t1(k*0): 1 | 2", show(state))
+				is.NotError(t, r.Close(t.Context()))
+				is.True(t, !isDone(a))
 			})
 		})
 	}

@@ -174,32 +174,44 @@ func TestDB_catchUp_moved(t *testing.T) {
 		return l, c1
 	}
 
-	t.Run("should catch up from the commit object that the cache moved to, in the middle of the log", func(t *testing.T) {
-		w := newWorld(t)
-		l, c1 := setUp(t, w)
-		path := filepath.Join(w.dir, "a.db")
-		s := &moveStore{Store: w.client(), key: c1.String(), at: 2, move: func() { setCachePosition(t, path, c1.String()) }}
-		d := w.openOn(t, "a", s, core.Options{})
-		is.NotError(t, d.Wait(t.Context()))
+	// The catch-up that finds the cache moved fails, and the lease task starts the next one after a
+	// wait, from the position that the cache then records. A catch-up that tried the same commit
+	// object again would never get past it, so the wait to serve is bounded.
+	wait := func(t *testing.T, d *core.DB) error {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		return d.Wait(ctx)
+	}
 
-		// What the cache holds for c1 is what the other instance committed with it, here nothing.
-		is.Equal(t, "t1(k*0,v): 1,10 | 2,20 | 4,40\nt2(a*0,b*1,c): 1,1,100", read(t, d))
-		position, _, err := cacheDump(path)
-		is.NotError(t, err)
-		is.Equal(t, l.head, position)
+	t.Run("should catch up from the commit object that the cache moved to, in the middle of the log", func(t *testing.T) {
+		bubble(t, func(t *testing.T, w *world) {
+			l, c1 := setUp(t, w)
+			path := filepath.Join(w.dir, "a.db")
+			s := &moveStore{Store: w.client(), key: c1.String(), at: 2, move: func() { setCachePosition(t, path, c1.String()) }}
+			d := w.openOn(t, "a", s, core.Options{})
+			is.NotError(t, wait(t, d))
+
+			// What the cache holds for c1 is what the other instance committed with it, here nothing.
+			is.Equal(t, "t1(k*0,v): 1,10 | 2,20 | 4,40\nt2(a*0,b*1,c): 1,1,100", read(t, d))
+			position, _, err := cacheDump(path)
+			is.NotError(t, err)
+			is.Equal(t, l.head, position)
+		})
 	})
 
 	t.Run("should stop with ErrCacheNotInLog when the cache moved to a commit object that is not in the log", func(t *testing.T) {
-		w := newWorld(t)
-		_, c1 := setUp(t, w)
-		path := filepath.Join(w.dir, "a.db")
-		elsewhere := strings.Repeat("ab", 32)
-		s := &moveStore{Store: w.client(), key: c1.String(), at: 2, move: func() { setCachePosition(t, path, elsewhere) }}
-		d := w.openOn(t, "a", s, core.Options{})
-		err := d.Wait(t.Context())
-		is.Error(t, core.ErrStopped, err)
-		is.Error(t, core.ErrCacheNotInLog, err)
-		is.True(t, strings.Contains(err.Error(), "the cache is at "+elsewhere), err.Error())
+		bubble(t, func(t *testing.T, w *world) {
+			_, c1 := setUp(t, w)
+			path := filepath.Join(w.dir, "a.db")
+			elsewhere := strings.Repeat("ab", 32)
+			s := &moveStore{Store: w.client(), key: c1.String(), at: 2, move: func() { setCachePosition(t, path, elsewhere) }}
+			d := w.openOn(t, "a", s, core.Options{})
+			err := wait(t, d)
+			is.Error(t, core.ErrStopped, err)
+			is.Error(t, core.ErrCacheNotInLog, err)
+			is.True(t, strings.Contains(err.Error(), "the cache is at "+elsewhere), err.Error())
+		})
 	})
 }
 
