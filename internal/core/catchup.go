@@ -28,8 +28,8 @@ import (
 // the instance stops, loses the lease, or ctx is done, or with an error that wraps
 // [errCacheMoved] when another instance on the same cache commits to it meanwhile, such as a holder
 // that lost its lease while it committed a transaction whose manifest swap was applied: the next
-// catch-up starts from the position that the cache then records, and trusts it as it trusts any
-// position it starts from, only if the walk from the head finds it.
+// catch-up, which can start soon, starts from the position that the cache then records, and trusts
+// it as it trusts any position it starts from, only if the walk from the head finds it.
 //
 // When it has caught up, it records the position for [Reader.Read] with [DB.caughtUp].
 func (d *DB) catchUp(ctx context.Context) (err error) {
@@ -51,8 +51,9 @@ func (d *DB) catchUp(ctx context.Context) (err error) {
 		outcome, level := "caught_up", slog.LevelInfo
 		if err != nil {
 			outcome, level = "failed", slog.LevelWarn
-			if errors.Is(d.stoppedError(), ErrClosed) {
-				// A close ended it, which is no failure.
+			if errors.Is(d.stoppedError(), ErrClosed) || errors.Is(err, errCacheMoved) {
+				// A close ended it, or another instance on the same cache committed to it, which is
+				// no failure.
 				level = slog.LevelInfo
 			}
 		}

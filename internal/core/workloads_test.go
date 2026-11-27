@@ -253,7 +253,7 @@ var (
 		"event stop/closed":                          15,
 		"event unknown_outcome/commit/not_committed": 1,
 		"event unknown_outcome/renewal/renewed":      1,
-		"failed commits":                            3,
+		"failed commits":                             3,
 		"indexes created":                            58,
 		"indexes dropped":                            21,
 		"indexes refused":                            55,

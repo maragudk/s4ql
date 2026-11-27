@@ -252,8 +252,9 @@ func TestReader_Read(t *testing.T) {
 	// store for longer than its lease, b takes the lease, and commits X. a takes the lease back after
 	// b has released it, and catches up. The read fixes its state between the two checks, and must be
 	// served at a committed state of the log, never stop the instance. The review of 2026-11-27 found
-	// that a read on a cache that b shares and that b moved to X and then to Y stopped a, because a's
-	// catch-up found the cache at the head and counted that as one change.
+	// the first case: a read on a cache that b shares and that b moved to X and then to Y stopped a,
+	// because a's catch-up found the cache at the head and counted that as one change. The other two
+	// fail if the catch-up records nothing when it is done.
 	for _, test := range []struct {
 		name string
 		// shared is whether b runs on a's cache. With a cache of its own, b's commits reach a's

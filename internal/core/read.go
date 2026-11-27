@@ -197,8 +197,8 @@ func (rd *Reader) Read(ctx context.Context) (_ *ReadTx, err error) {
 			}
 			return r, nil
 		}
-		// The write connection moved the cache more than once meanwhile, so the state that the read
-		// fixed can be at a position that neither look named. The read fixes its state again, after
+		// The write connection moved the cache more than once meanwhile, or a catch-up found it
+		// elsewhere, so the state that the read fixed can be at a position that neither look named. The read fixes its state again, after
 		// the check that passed just now, which counts for it as the one before.
 		if err := c.c.Exec("rollback"); err != nil {
 			return nil, d.cacheError(ctx, operation, err)

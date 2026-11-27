@@ -549,7 +549,10 @@ func (d *DB) resumeLocked(ctx context.Context) time.Duration {
 	if err := d.keepLease(ctx); err != nil {
 		return retrySoon
 	}
-	if err := d.catchUp(ctx); err != nil {
+	if err := d.catchUp(ctx); errors.Is(err, errCacheMoved) {
+		// The store answered every request, and the cache is where another instance committed it.
+		return retrySoon
+	} else if err != nil {
 		return backOff
 	}
 

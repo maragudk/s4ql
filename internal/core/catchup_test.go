@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -174,9 +175,9 @@ func TestDB_catchUp_moved(t *testing.T) {
 		return l, c1
 	}
 
-	// The catch-up that finds the cache moved fails, and the lease task starts the next one after a
-	// wait, from the position that the cache then records. A catch-up that tried the same commit
-	// object again would never get past it, so the wait to serve is bounded.
+	// The catch-up that finds the cache moved fails, and the lease task starts the next one soon,
+	// from the position that the cache then records. The test bounds its wait, so that a catch-up
+	// that tried the same commit object again, and never got past it, fails the test.
 	wait := func(t *testing.T, d *core.DB) error {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
@@ -189,8 +190,16 @@ func TestDB_catchUp_moved(t *testing.T) {
 			l, c1 := setUp(t, w)
 			path := filepath.Join(w.dir, "a.db")
 			s := &moveStore{Store: w.client(), key: c1.String(), at: 2, move: func() { setCachePosition(t, path, c1.String()) }}
-			d := w.openOn(t, "a", s, core.Options{})
+			events := &recorder{}
+			start := time.Now()
+			d := w.openOn(t, "a", s, core.Options{Logger: events.logger()})
 			is.NotError(t, wait(t, d))
+			// Another instance on the same cache commits to it in the course of things, so the next
+			// catch-up is no back-off away, and the one that found the cache moved is no warning.
+			is.True(t, time.Since(start) < time.Second, fmt.Sprint(time.Since(start)))
+			failed := events.with("catch_up", "outcome", "failed")
+			is.Equal(t, 1, len(failed))
+			is.Equal[any](t, slog.LevelInfo, failed[0]["level"])
 
 			// What the cache holds for c1 is what the other instance committed with it, here nothing.
 			is.Equal(t, "t1(k*0,v): 1,10 | 2,20 | 4,40\nt2(a*0,b*1,c): 1,1,100", read(t, d))
