@@ -324,6 +324,23 @@ func (c *conn) setUp(syncOff bool, identity string) error {
 		}
 	}
 
+	// The record and the schema are read in one read transaction, so that both are of one state of
+	// the cache, also while another instance on the same cache commits to it: read apart, a commit of
+	// the first table could land between them, and the cache would look empty and hold a table. The
+	// open has no yield between two statements, so no test of the scheduler reaches that moment.
+	if err := c.c.Exec("begin"); err != nil {
+		return err
+	}
+	err = c.checkCache(identity)
+	if endErr := c.c.Exec("rollback"); err == nil {
+		err = endErr
+	}
+	return err
+}
+
+// checkCache checks the record of the cache, as [record.check] does, and its schema, as
+// [conn.checkObjects] does.
+func (c *conn) checkCache(identity string) error {
 	r, err := c.record()
 	if err != nil {
 		return err
@@ -368,7 +385,7 @@ func (c *conn) checkEncoding() error {
 // It refuses everything else: a view, a trigger, a table under another name that starts with
 // "s4ql_", and an index on a table with a reserved name. It also refuses a table of the database
 // in a cache that is empty, at the position [format.EmptyLog], since the log has no commit object
-// that made it.
+// that made it; empty must be of the state of the cache whose schema it reads.
 func (c *conn) checkObjects(empty bool) error {
 	var tables []string
 	err := c.query("select type, name, tbl_name, sql from main.sqlite_schema", func(s *sqlite.Stmt) error {
@@ -392,17 +409,7 @@ func (c *conn) checkObjects(empty bool) error {
 	if err != nil || !empty || len(tables) == 0 {
 		return err
 	}
-	// The position was read in a statement of its own, before the schema, so another instance on
-	// the same cache can have committed a table and its position in between. A commit writes both in
-	// one transaction, so the position that is read now is at that commit, if there was one.
-	position, err := c.position()
-	if err != nil {
-		return err
-	}
-	if position == format.EmptyLog {
-		return foreign("it records no commit object, and holds the table %q", tables[0])
-	}
-	return nil
+	return foreign("it records no commit object, and holds the table %q", tables[0])
 }
 
 // foreign is the error that wraps [ErrCacheVersion] for a cache that holds what this package does
