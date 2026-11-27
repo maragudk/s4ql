@@ -144,3 +144,88 @@ Left, as not worth the code: if reduced motion is switched on in the middle of a
 ### Future work
 
 None.
+
+
+## Step 3: Every frame holds the figure, a drop falls down, and the page no longer grows wider
+
+**Author:** builder (simulator dancer landing)
+
+### Prompt Context
+
+**Verbatim prompt:** (the brief from the lead, abridged to its requirements, with two messages that came during the work)
+
+> Markus reports two bugs:
+> 1. "The stick figure can't land on all platforms, fix that." Every framed box's top line must be a platform the figure can be dropped on and stroll along, at every viewport width, including Requests, Disk, Clocks, and instance a on mobile. Where the room above a line is too short for the figure, find a way that looks right [...] Strolling stays within each line's ends and clear of the line's own label/text if any, as now. The sticky bar above Requests: the figure may be partly behind or in front; pick what looks sane and keep it attached to its frame when the page scrolls.
+> 2. "Sometimes, when dropped in the middle of a box, it moves up instead of falling down." Gravity: on release the figure always falls down, to the first platform below its feet at the drop's x (a box's top line counts only if the feet are above it). It moves up only if there is no platform anywhere below the drop point; then pick the nearest platform. If the drop x is beside every platform below, take the nearest platform below and land at the closest point on it. Find the actual cause of the upward move (reproduce it first [...]) and make sure it's covered.
+>
+> Update from Markus: "Feel free to also change the layout to add more space if needed."
+>
+> One more, from Markus: "there's sideways scrolling on an iPad 11", we should fix that as well."
+
+**Interpretation:** make every framed box of the page (`.requests`, both `.node`s, the four `.box`es, `.s3`, `.logs`, `.ask-box`) a frame that holds the figure; replace the rule of `dancerLand` with gravity; find and fix what makes an iPad scroll sideways; check all three in `make site-check`.
+
+**Inferred intent:** the toy should behave the way a visitor expects of a falling thing on every box, at every width, and must not break the page around it.
+
+### What I did
+
+- Measured the frames at 1440 and 390 px with `make site-serve SITEADDR=127.0.0.1:8139` and `playwright-cli -s=lf run-code`: 20 px between the sticky bar and `.requests`, 24 px of `--stub` above the disks and clocks, 31 px above instance a when the instances stack.
+- Layout, in `/site/simulator/index.html`: `.panel` padding-top 20 to 40 px, `--stub` 24 to 40 px, and in the stacked layout (below 1140 px) `.inst` padding-top and the arrow `.in` 32 to 40 px. Every frame now has at least 36 px above its line, the figure's height, at every width from 320 to 1440 px. Screenshots before and after at both widths: the diagram is the same, a little taller.
+- `.dancer` has `z-index: 2`: in front of what is above a line that is close to it, and behind the sticky bar (`z-index: 3`), so that on `.requests` it scrolls under the bar with its frame. Carried, it keeps `z-index: 10`. `.requests` is positioned, to hold it.
+- `/site/simulator/page.js`: `STAGES` is every framed box. `CROWD` became `BLOCK`, only what stands free above a line, the buttons and the "S3" of the edges to S3 and the heading of SQL; frames no longer take room. `stretch` gives the longest stretch clear of `BLOCK` if it is at least a figure wide, and the whole line only otherwise (no layout of 320 to 1440 px has a stretch under 60 px), and `null` only for a frame that is not shown.
+- `dancerLand` ranks the frames: a line level with the feet or below them with the feet's x on its stretch first, the nearest straight down; then a line below and beside, the nearest; then, only when no line is below, the nearest of all. A drop on a line, or up onto one, lands at once in a crouch; the fall starts where the figure is.
+- `dancerCarry` keeps the carried figure and its hit area (`HIT`, 8 px) inside the viewport.
+- `/internal/simulator/sitecheck/check.html`: a step `landing`, run paused, after the step at 11 minutes. At 1280 and 390 px it drops the figure, by Pointer Events made in the check, above each of the ten boxes and in the middle of each; it carries it to the right edge; and it checks that the page does not scroll sideways at 320, 390, 820, 834, 1180, and 1194 px. The package comment of `/internal/simulator/sitecheck/main.go` says so.
+
+### Why
+
+The cause of the upward move had two parts, both in the old `dancerLand`:
+
+- Its first choice was "the frame its feet are in or above". Let go inside a box, the feet were in that box, so the box's own top line won, above the feet: the figure flew up to the top of the box it was dropped in. Let go between boxes, no frame was "under", and the nearest line overall could be above.
+- The fall started at `Math.min(y, -4 * PX)`: a figure let go below its line, or on it, jumped to 8 px above the line and fell from there.
+
+With the old page, the new check failed for exactly these: "node a: to node a | node b: to node b | s3: to s3 | logs: to logs" at 1280 px.
+
+The iPad: carried near the right edge, the figure's box and its `::before` passed the right edge of the viewport, and the page grew wider. A mobile browser then widens its layout viewport for good. In Chromium with `isMobile` and touch at 834 by 1194, a touch drag to the right edge left `innerWidth` at 855 and `scrollWidth` at 855 after the drop; the page then scrolls sideways. Without the drag, nothing on the simulator page or the front page passes the edge at the four iPad sizes, in Chromium or WebKit, also after 24 s of play.
+
+### What worked
+
+- Pointer Events made by a script (`new PointerEvent("pointerdown", { pointerId: 1, ... })`) drive the real `dancerGrab`, `dancerDrag`, and `dancerDrop`: `setPointerCapture` takes the mouse's pointer id 1 without a real press. That made a grid test possible: drops every 61 to 113 px down the whole page and across it, at 1440, 834, 390, and 320 px, 279 to 513 drops each, checking that the feet end on the line of the frame that holds them, that the figure never goes up while any line is below, and that no frame's line lies between the drop and the landing. All clean.
+- Real mouse drags at 1440 px, with the wheel scrolling while it is held, landed on Requests, the clocks of b, the disk of a, and SQL; on the disk it walked 20 s within its line, and on SQL 25 s, never closer than 92 px to "to a". Real touch drags at 390 by 844 (CDP `Input.dispatchTouchEvent` in a context with `isMobile`) landed on S3, the clocks, disk, and instance b, the clocks, disk, and instance a, and Requests, each with the feet on the line and no scroll during the drag. Reduced motion lands at once, standing. A resize from 1440 to 390 px with the figure on the clocks of b keeps it there, inside the line. No errors in the console.
+- `make site-check`: `sitecheck: ok`, four times. `go test -count=1 -tags s4ql_browser ./internal/simulator/...`: ok.
+
+### What didn't work
+
+- My first real drags missed: `page.locator('#figure').boundingBox()` of a figure off screen gave a point that no press reaches, so the press scrolled the page, the next drag was from the wrong place, and the figure "landed" on the frame it never left. Scrolling the figure into view first, and the target with the wheel while it is held, fixed the test.
+- The first run of the new check failed: "FAIL at 390 px, the stick figure let go above the top line of each framed box lands on that line (logs: on ask-box)". `.logs` is 817 px tall at 390 px, so centred in the check's frame of 900 px its top line was 41 px down, the drop point 40 px above it was at the top of the viewport, and `dancerCarry` kept the figure's feet at 44 px, below the line. The check now scrolls each top line 300 px down before a drop above it.
+- In CI the job `site` failed: "FAIL the page does not scroll sideways at the widths of phones and tablets (320: 310)". Chromium on the Linux runner has scroll bars that take 15 px, so the frame of 320 px had 305 px for the page, and below 320 px the links of the header pass the edge (`playwright-cli resize 305 800`: the `nav` ends at 310). On macOS the scroll bars take no width, as on phones and tablets. The check now widens the frame by the scroll bar's width, so that the page has the width of the device.
+- Escaping: an `edit` of `check.html` from the REPL with template literals inside a template literal failed to parse ("Expected ")" but found "$"").
+
+### What I learned
+
+- A mobile browser does not shrink its layout viewport back once something has passed its right edge, even for a moment: a transform of an element that is carried is enough to make the page scroll sideways from then on.
+- `setPointerCapture` accepts the mouse's pointer id from a synthetic event in Chromium, which lets a check drive a drag in a frame without CDP.
+
+### What was tricky
+
+- Telling an artifact of the test from a fault: three of the failures on the way were of the test, a figure off screen or a drop point above the viewport.
+- What should still keep the figure away: frames above a line no longer do, because the figure stands in front of them; buttons must, or a tap on Hang would poke the figure.
+
+### What warrants review
+
+- `dancerLand` and `stretch` in `/site/simulator/page.js`, and the new step `landing` in `/internal/simulator/sitecheck/check.html`.
+- The layout: `.panel`, `--stub`, and `.inst`/`.in` in `/site/simulator/index.html`, at 1440 and 390 px.
+- That the cause of Markus's sideways scrolling on the iPad was the carried figure: it is the one cause found in emulation, without a device.
+
+### Self-review
+
+The code-review skill (medium, over the uncommitted diff) reported five possible problems. Fixed:
+
+- The fallback to the whole line, for a stretch under two figures, could put the figure, now at `z-index: 2`, in front of a Hang or Disconnect button at some width. The fallback now comes only for a stretch narrower than one figure, and a sweep of 320 to 1440 px in steps of 20 px found no frame with a stretch under 60 px.
+- `landing` ran while the page played, so the texts of the boxes, and with them the lines below, could move between a drop and its landing on a slow runner. It now pauses first and waits until the page is idle.
+- The carried figure's feet were kept above `clientHeight`, which on iOS Safari with its toolbar hidden is less than the visible area. The bottom is now the larger of `clientHeight` and `innerHeight`.
+
+Left, as not worth the code: the figure's hit area reaches 4 px above the room of 40 px, into the padding at the bottom of a node, where nothing is to click; and a frame that holds the figure and stops being shown would land it from a rect of zeros, near the top left, but no frame of `STAGES` is ever hidden on this page (it was so before too).
+
+### Future work
+
+None.
