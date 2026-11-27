@@ -36,6 +36,33 @@ func (h *clocked) duration(t *testing.T, i int) time.Duration {
 	return d
 }
 
+func TestConn_ExecAll_panic(t *testing.T) {
+	t.Run("should log the event of a statement of a text that panics in the engine with the outcome internal_error, after those of the statements before it", func(t *testing.T) {
+		for _, src := range []string{"insert into t1 (v1) values (3); select * from t1", "select * from t1; insert into t1 (v1) values (3); select * from t1"} {
+			h := &recorder{}
+			f := newFake().with("t1", []string{"v1"}, []int64{1})
+			f.insertPanics = true
+			c := newLoggedConn(f, bugs{}, h)
+			func() {
+				defer func() { is.Equal(t, any("the insert panics"), recover(), src) }()
+				_, _ = c.ExecAll(t.Context(), src)
+			}()
+			is.Equal(t, 0, f.open, src)
+			var outcomes []string
+			for _, e := range h.events {
+				outcomes = append(outcomes, e[attrKind]+" "+e[attrOutcome])
+			}
+			want := []string{"insert internal_error"}
+			if src[0] == 's' {
+				want = []string{"select ok", "insert internal_error"}
+			}
+			is.EqualSlice(t, want, outcomes, src)
+			last := h.events[len(h.events)-1]
+			is.Equal(t, "s4ql: internal error: the statement panicked", last[attrError], src)
+		}
+	})
+}
+
 func TestConn_ExecAll_duration(t *testing.T) {
 	// The clock of the host moves by a second at each reading, so the first reading of a call is a
 	// second after the clock before it, and the event of a statement whose duration runs from that

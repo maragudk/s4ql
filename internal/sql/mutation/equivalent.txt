@@ -1173,9 +1173,9 @@ internal/engine/engine.go Conn.write condition: returnsOf(s) != nil => true
 	The planted bug rowsOfFailed also for a statement without RETURNING through Query: a commit that fails then succeeds, with no rows, which is the bug of a lost error that TestSimulation_plantedBugs finds as it finds rowsOfFailed, by an acknowledged write that is not in the log.
 internal/engine/engine.go Conn.write operator: returnsOf(s) != nil => returnsOf(s) == nil
 	The planted bug rowsOfFailed for the statements without RETURNING through Query only: a commit that fails then succeeds, which TestSimulation_plantedBugs finds by an acknowledged write that is not in the log, as for the mutant above.
-internal/engine/engine.go Conn.write remove statement: r.rows = n => #2
+internal/engine/engine.go Conn.write remove statement: r.rows = n => #3
 	In the planted bug rowsOfFailed, only the attribute statement.rows of the event of the statement whose commit failed changes; the bug, the rows and the success of a commit that failed, stays, and TestSimulation_plantedBugs finds it by a write that is not in the log, which reads no event.
-internal/engine/engine.go Conn.write element: , SetsChanges: setsChanges(p) =>
+internal/engine/engine.go Conn.write element: , SetsChanges: setsChanges(p) => #2
 	In the planted bug rowsOfFailed, the result of the statement whose commit failed then sets no count of changes, so the simulation compares no count for it (run.statement reads one only where SetsChanges is set); the bug, the rows and the success of a commit that failed, stays, and TestSimulation_plantedBugs finds it by its own violation, a write that is not in the log.
 internal/engine/operator.go insert.run remove statement: i.ret.add(row) => #2
 	In the planted bug skipUnique, an insert with RETURNING then gives no row as well; the bug, a row written without the check of its key, stays, and the tests of the planted bugs find it as before.
@@ -1545,3 +1545,178 @@ internal/engine/subquery.go build.compute constant: conditions[i].op, conditions
 	noRowMatches then tests the column at 1 for NOT NULL in place of the key, true of the rows where it is not NULL, another wrong answer, which its tests find.
 internal/engine/tx.go Conn.writeIn remove statement: planted.setFromNew, planted.evalStops, planted.copyAcross, planted.copySelf = c.e.bugs.setFromNew, c.e.bugs.evalStops, c.e.bugs.copyAcross, c.e.bugs.copySelf =>
 	The planted bugs setFromNew, evalStops, copyAcross, and copySelf left out of a write in a transaction, which their statements outside one find, as for those of slice 14.
+
+# Several statements in one Exec, of pull requests #157, #158, #160, #163, and #168.
+
+# The planted bugs of a text of several statements, in internal/engine/bugs.go. ofText decides
+# whether ExecAll puts the text in the context of each statement, which only the planted bugs read:
+# with no bug planted, or with one that does not need it, a text in the context changes nothing.
+internal/engine/bugs.go bugs.ofText condition: b.commitFailed || b.commitLater => true
+	As for the whole condition: the text in the context is read only behind the flag of each planted bug.
+internal/engine/bugs.go bugs.ofText condition: b.annotateText => true
+	As for the whole condition: the text in the context is read only behind the flag of each planted bug.
+internal/engine/bugs.go bugs.ofText condition: b.commitFailed => true
+	As for the whole condition: the text in the context is read only behind the flag of each planted bug.
+internal/engine/bugs.go bugs.ofText condition: b.commitLater => true
+	As for the whole condition: the text in the context is read only behind the flag of each planted bug.
+internal/engine/bugs.go textRun.commit condition: t != nil => true
+	ExecAll calls commit only on a text that is not nil: it calls it, and defers it, only where it has made one.
+internal/engine/bugs.go textRun.commit condition: t != nil && t.later != nil => false
+	The planted bug commitLater then never commits the write that it left open, which loses it where the bug kept it for the next statement, another wrong answer, which its tests find.
+internal/engine/bugs.go textRun.commit condition: t != nil => false
+	As for the whole condition false: commitLater never commits the write that it left open, which its tests find.
+internal/engine/bugs.go textRun.commit condition: t.later != nil => false
+	As for the whole condition false: commitLater never commits the write that it left open, which its tests find.
+internal/engine/bugs.go textRun.commit operator: t != nil => t == nil
+	The text is never nil here, as above, so this is the whole condition false: commitLater never commits the write that it left open, which its tests find.
+internal/engine/bugs.go textRun.commit remove statement: t.later = nil =>
+	The planted bug commitLater then commits the same write again at the next statement and at the end of the text; the commit of a write that has ended fails, and the bug drops its error.
+
+# Conn.commitFailed, the planted bug commitFailed. Each variant plants it with other bugs of the text
+# too, or on a statement alone, or leaves the transaction to a roll back after its commit; each is
+# reached only with a planted bug, and is still a wrong answer that the tests of the bugs find.
+internal/engine/bugs.go Conn.commitFailed operator: !c.e.bugs.commitFailed || textOf(ctx) == nil => !c.e.bugs.commitFailed && textOf(ctx) == nil
+	Without a planted bug there is no text, so it gives false as before. With commitFailed it also commits a failed statement alone, and with another bug of the text it commits a failed statement of the text: wrong answers that the tests of those bugs find.
+internal/engine/bugs.go Conn.commitFailed condition: !c.e.bugs.commitFailed => false
+	There is a text only while a planted bug of the text is, so this plants commitFailed beside each of them, another wrong answer that their tests find.
+internal/engine/bugs.go Conn.commitFailed condition: textOf(ctx) == nil => false
+	Reached only with commitFailed planted, which then commits a failed statement alone too, another wrong answer that its tests find.
+internal/engine/bugs.go Conn.commitFailed operator: textOf(ctx) == nil => textOf(ctx) != nil
+	Reached only with commitFailed planted, which then commits a failed statement alone and not one of a text, another wrong answer that its tests find.
+internal/engine/bugs.go Conn.commitFailed boolean: true => false
+	The write is committed either way; Conn.write then takes the transaction for open and rolls it back, which fails on a transaction that has ended, and drops that error.
+
+# Conn.inOneCommit, the planted bug oneCommit.
+internal/engine/bugs.go Conn.inOneCommit operator: len(parts) < 2 => len(parts) <= 2
+	oneCommit then leaves out a text of two statements, and its tests find it by the texts of three or more.
+internal/engine/bugs.go Conn.inOneCommit constant: len(parts) < 2 => len(parts) < 3
+	As for <= 2: its tests find it by the texts of three statements or more.
+internal/engine/bugs.go Conn.inOneCommit constant: len(parts) < 2 => len(parts) < 1
+	oneCommit then wraps a text of one statement too, and its tests find it by the texts of several as before.
+internal/engine/bugs.go Conn.inOneCommit remove statement: return c.execAll(ctx, src, args) =>
+	Without the return, the code after it runs the text with c.execAll and, with no transaction open, since none was begun or the begin failed, returns its result and its error, which is what the return gave.
+internal/engine/bugs.go Conn.inOneCommit condition: c.tx == nil => false
+	The transaction that it began is open after the text: s4ql refuses BEGIN, COMMIT, and ROLLBACK, and a statement that fails in a transaction leaves it open, so c.tx is never nil here.
+internal/engine/bugs.go Conn.inOneCommit remove statement: return res, err => #2
+	Unreachable, as for the condition above: the transaction is open after the text.
+internal/engine/bugs.go Conn.inOneCommit condition: err == nil => true
+	oneCommit then gives the error of the commit in place of that of a failed statement, another wrong answer that its tests find.
+internal/engine/bugs.go Conn.inOneCommit condition: err == nil => false
+	oneCommit then drops the error of its commit, which does not fail in its tests, so its answers are those of the bug as before.
+internal/engine/bugs.go Conn.inOneCommit operator: err == nil => err != nil
+	As for true and false: the error of a failed statement gives way to that of the commit, and a commit's error is dropped, wrong answers of the bug that its tests find.
+
+# Conn.write and Conn.ExecAll: the planted bugs commitLater and oneCommit. The two entries of
+# rowsOfFailed in Conn.write are #3 and #2 since the branch of commitLater came before them.
+internal/engine/engine.go Conn.write condition: t.follows => true
+	commitLater then leaves the commit of the last write of a text open too, which ExecAll's deferred commit makes when the text ends; its tests find the bug by the writes before.
+internal/engine/engine.go Conn.write condition: t.follows => !t.follows
+	commitLater then leaves only the commit of the last write of a text open, for the end of the text, and commits the others at once; its tests find the bug by that write, as by every other.
+internal/engine/engine.go Conn.write remove statement: t.later = func(ctx context.Context) { _ = tx.commit(ctx) } =>
+	commitLater then never commits a write that another statement follows, which loses it, another wrong answer that its tests find.
+internal/engine/engine.go Conn.write remove statement: _ = tx.commit(ctx) =>
+	As for the removal of t.later: commitLater never commits a write that another statement follows, which its tests find.
+internal/engine/several.go Conn.ExecAll condition: c.tx == nil => true
+	In a transaction, oneCommit's begin fails with ErrTxOpen, and inOneCommit then runs the text as without the bug, so the bug stays outside a transaction.
+
+# Conn.execAll: the text of the planted bugs, and their hooks in the loop.
+internal/engine/several.go Conn.execAll condition: c.e.bugs.ofText() && !one => true
+	The text is then in the context of every text, also of one statement and with no bug planted; only the planted bugs read it, each behind its own flag, and its commit does nothing while no write is left open.
+internal/engine/several.go Conn.execAll condition: c.e.bugs.ofText() => true
+	As for the whole condition true: without a planted bug the text in the context is read by nothing.
+internal/engine/several.go Conn.execAll operator: c.e.bugs.ofText() && !one => c.e.bugs.ofText() || !one
+	Without a planted bug, as for the condition true. With a bug of the text, it also plants it in a text of one statement, another wrong answer that its tests find by the texts of several.
+internal/engine/several.go Conn.execAll condition: !one => true
+	Reached only with a planted bug of the text, which it then also plants in a text of one statement, another wrong answer that its tests find by the texts of several.
+internal/engine/several.go Conn.execAll remove statement: defer text.commit(ctx) =>
+	The write that commitLater leaves open is that of a statement that another follows, and the loop commits it when that statement starts, before any return; the deferred commit always finds nothing open.
+internal/engine/several.go Conn.execAll remove statement: text.commit(ctx) =>
+	commitLater then commits only the last write that it left open, at the end of the text, and loses those before it, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll operator: i < len(parts)-1 => i <= len(parts)-1
+	commitLater then leaves the last write of a text open too, for the deferred commit at the end of the text; its tests find the bug by the writes before.
+internal/engine/several.go Conn.execAll operator: i < len(parts)-1 => i >= len(parts)-1
+	commitLater then leaves only the last write of a text open, for the deferred commit at the end, which its tests find, as by every other write.
+internal/engine/several.go Conn.execAll operator: len(parts)-1 => len(parts)+1
+	As for i <= len(parts)-1: commitLater leaves the last write open too, and its tests find it by the writes before.
+internal/engine/several.go Conn.execAll constant: len(parts)-1 => len(parts)-2
+	commitLater then commits the write before the last at once, and leaves the others before open, which its tests find.
+internal/engine/several.go Conn.execAll constant: len(parts)-1 => len(parts)-0
+	As for i <= len(parts)-1: commitLater leaves the last write open too, and its tests find it by the writes before.
+internal/engine/several.go Conn.execAll swap arguments: min(len(args), used+n) => min(used+n, len(args))
+	min is commutative.
+internal/engine/several.go Conn.execAll condition: !res.SetsChanges => false
+	Without the planted bug firstResult the operand before it holds. With it, ExecAll never keeps a result, another wrong count that its tests find.
+internal/engine/several.go Conn.execAll negation: !res.SetsChanges => res.SetsChanges
+	As for false: without firstResult the operand before it holds, and with it no result is ever kept, which its tests find.
+internal/engine/several.go Conn.execAll condition: c.tx.write != nil => true
+	Reached only with undoInTx planted, which then undoes a read-only transaction too, by a roll back and the begin of a write transaction, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll condition: i > 0 => true #2
+	Reached only with undoInTx planted, which then undoes the transaction after a failure of the first statement too, which its tests find by the later ones.
+internal/engine/several.go Conn.execAll condition: err != nil => true #2
+	Reached only with undoInTx planted, which then undoes the transaction after every statement but the first, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll operator: err != nil => err == nil #2
+	Reached only with undoInTx planted, which then undoes the transaction after a statement that succeeds and not after one that fails, which its tests find.
+internal/engine/several.go Conn.execAll operator: i > 0 => i >= 0 #2
+	As for i > 0 true: undoInTx also undoes after a failure of the first statement, which its tests find by the later ones.
+internal/engine/several.go Conn.execAll operator: i > 0 => i <= 0 #2
+	Reached only with undoInTx planted, which then undoes only after a failure of the first statement, which undoes the statements before the text, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll condition: err != nil => true #3
+	With goOn planted, a statement that succeeds then continues the loop, as it would anyway, and sets first to its nil error only while first is nil; without goOn the condition is false as before.
+internal/engine/several.go Conn.execAll condition: first == nil => true
+	Reached only with goOn planted, which then gives the error of the last statement that failed, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll condition: first == nil => false
+	Reached only with goOn planted, which then gives no error of a statement, only that of a statement that Split refused, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll operator: first == nil => first != nil
+	As for false: first is never set, and goOn's tests find the call that succeeds where a statement failed.
+internal/engine/several.go Conn.execAll remove statement: first = err =>
+	As for false: first is never set, and goOn's tests find the call that succeeds where a statement failed.
+internal/engine/several.go Conn.execAll condition: first != nil => false
+	first is set only with goOn planted, which then gives the error of a statement that Split refused in place of that of the first statement that failed, another wrong answer that its tests find.
+internal/engine/several.go Conn.execAll remove statement: return res, first => #2
+	As for the condition false: first is set only with goOn planted, whose tests find the other error.
+internal/engine/several.go Conn.split remove statement: defer r.panicked(ctx) =>
+	It logs an event only if stmt.Split panics, which it does on no text: FuzzSplit, TestSplit_differential, and every check of the engine and the driver give it texts. The guard is kept so that a fault of Split is logged as a panic of the check of Exec is.
+internal/engine/several.go before swap cases: case len(parts) == 1 && failed == nil: return nil case failed != nil: // The statements before one that failed to check leave the arguments after theirs to i... => case len(parts) == 1 && failed == nil: // The statements before one that failed to check leave the arguments after theirs to it. return nil case failed != ni...
+	The two cases swap their bodies, which are both return nil; only the comment moves.
+internal/engine/several.go before condition: failed == nil => true
+	A text of one statement that Split refused after it then returns nil at that case, which the next case returns for it anyway.
+
+# The split of a text into its statements, internal/sql/stmt.
+stmt/check.go Check operator: err != nil || s == nil => err != nil && s == nil
+	statementAt never gives a statement with an error, and a rest without a statement has its tail at the end of the text, so Check then finds no second statement there and gives the nil statement and the nil error, as the return did.
+stmt/check.go statementAt constant: return nil, 0, ns => return nil, 1, ns
+	The tail beside an error is read by no caller: Check and Split return at the error.
+stmt/split.go Split condition: tail < len(src) => true
+	For a first statement whose tail is the end of the text, trimmedEnd reads no token after it and gives nil, and the statement ends the view, trimmed or not, so its part runs to the end of the text as before.
+stmt/split.go trimmedEnd remove statement: return nil => #2
+	Without the shortcut for a text that the trim leaves as it is, no token runs past its end, so the loop gives no error and the function returns nil after it.
+stmt/split.go trimmedEnd swap arguments: max(pos, end) => max(end, pos)
+	max is commutative.
+# staysComment is called only for a comment that runs past the end of the trimmed text. A comment
+# starts with - or /, which no space is, so it starts before that end; and a token that is not a
+# comment does not become one when its end is cut, since its first bytes decide its kind. The prefix
+# of a comment is a comment to the end, or for /* at the end of the text, a slash of one byte.
+stmt/split.go staysComment operator: kind != token.Comment || pos >= end => kind != token.Comment && pos >= end
+	A comment starts before end, so the guard holds for no comment either way; a token that is not a comment then goes on, and its cut prefix is no comment, so it gives false as the guard did.
+stmt/split.go staysComment condition: kind != token.Comment => false
+	As for &&: a token that is not a comment goes on, and its cut prefix is no comment, so it gives false.
+stmt/split.go staysComment operator: pos >= end => pos > end
+	A comment never starts at end, which is a space or the end of the text.
+stmt/split.go staysComment operator: k == token.Comment && n == end-pos => k == token.Comment || n == end-pos
+	The prefix is either a comment that runs to end, true either way, or the slash of a /* at the end of the text, one byte of the two before end, false either way.
+# These timed out in the first run, at the limit of one minute of the layers generator and mutants
+# under load, and survived the rerun with a limit of five minutes.
+stmt/check.go Check condition: err != nil => false #2
+	statementAt gives no statement with an error, so s == nil holds where err != nil does, and the return is taken as before.
+stmt/check.go Check condition: s == nil => false
+	A rest without a statement has its tail at the end of the text, so Check then finds no second statement and gives the nil statement and the nil error, as the return did.
+stmt/check.go statementAt constant: 0 => 1
+	The tail beside the error of a limit of the parser is read by no caller: Check and Split return at the error.
+stmt/check.go statementAt constant: 0 => 1 #2
+	The tail beside SQLite's syntax error is read by no caller: Check and Split return at the error.
+stmt/split.go Split operator: tail < len(src) => tail <= len(src)
+	As for the condition true: for a first statement whose tail is the end of the text, trimmedEnd reads no token after it and gives nil, and the statement ends the view.
+stmt/split.go trimmedEnd condition: end == len(src) => false
+	As for the removal of its return: where the trim leaves the text as it is, no token runs past its end, and the loop gives nil.
+stmt/split.go staysComment condition: pos >= end => false
+	A comment never starts at or after end, as above, so the guard holds only by its first operand either way.
